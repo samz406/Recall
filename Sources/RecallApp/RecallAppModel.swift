@@ -138,13 +138,15 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
-    func approveReminder(_ reminder: ReminderCandidate) {
+    func approveReminder(_ reminder: ReminderCandidate, dueAt: Date) {
+        guard dueAt > Date.now else {
+            errorMessage = "请为提醒选择一个未来时间。"
+            return
+        }
         Task {
             do {
                 var updated = reminder
-                if updated.dueAt == nil {
-                    updated.dueAt = Calendar.current.date(byAdding: .day, value: 1, to: .now)?.addingTimeInterval(9 * 3600)
-                }
+                updated.dueAt = dueAt
                 let granted = try await notificationScheduler.requestAuthorization()
                 guard granted else {
                     throw ReminderNotificationError.authorizationRequired
@@ -153,7 +155,7 @@ final class RecallAppModel: ObservableObject {
                 updated.status = .scheduled
                 try await store.updateReminder(updated)
                 await refresh()
-                noticeMessage = "提醒已安排。"
+                noticeMessage = "提醒已安排在 \(dueAt.formatted(date: .abbreviated, time: .shortened))。"
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -163,11 +165,13 @@ final class RecallAppModel: ObservableObject {
     func dismissReminder(_ reminder: ReminderCandidate) {
         Task {
             do {
+                let wasScheduled = reminder.status == .scheduled
                 var updated = reminder
                 updated.status = .dismissed
                 notificationScheduler.cancel(updated)
                 try await store.updateReminder(updated)
                 await refresh()
+                noticeMessage = wasScheduled ? "提醒已取消。" : "已忽略该提醒候选。"
             } catch {
                 errorMessage = error.localizedDescription
             }

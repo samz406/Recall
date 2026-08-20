@@ -9,6 +9,7 @@ struct RecallVerifier {
             try verifyPrivacy()
             try verifySearch()
             try verifyReminders()
+            try await verifyReminderSchedulePersistence()
             try await verifyNotificationHostGuard()
             try await verifyCapturePipeline()
             try verifyConversationContextCompression()
@@ -19,9 +20,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 13 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 14 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 12 integration checks.")
+                print("PASS: RecallVerifier completed 13 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -62,6 +63,26 @@ struct RecallVerifier {
         try expect(candidates.count == 1, "应从待办文本创建一个提醒候选")
         try expect(candidates.first?.dueAt != nil, "未推断出明天的提醒时间")
         try expect(extractor.candidates(from: [capture], existing: candidates).isEmpty, "提醒候选去重失败")
+    }
+
+    private static func verifyReminderSchedulePersistence() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        let candidate = ReminderCandidate(title: "在用户指定时间提醒", detail: "验证自定义提醒时间。", confidence: 0.8)
+        try await store.replaceReminders([candidate])
+
+        let selectedDate = Date(timeIntervalSince1970: 1_800_000_000)
+        var scheduled = candidate
+        scheduled.dueAt = selectedDate
+        scheduled.status = .scheduled
+        try await store.updateReminder(scheduled)
+
+        let reloaded = try FileMemoryStore(storage: storage)
+        let restored = await reloaded.snapshot().reminders.first
+        try expect(restored?.status.rawValue == ReminderStatus.scheduled.rawValue, "用户确认的提醒状态没有保存")
+        try expect(abs((restored?.dueAt?.timeIntervalSince1970 ?? 0) - selectedDate.timeIntervalSince1970) < 0.01, "用户选择的提醒时间没有保存")
     }
 
     @MainActor

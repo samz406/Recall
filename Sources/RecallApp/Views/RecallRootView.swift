@@ -474,6 +474,7 @@ private struct ChatComposer: View {
 
 private struct RemindersView: View {
     @EnvironmentObject private var model: RecallAppModel
+    @State private var reminderBeingScheduled: ReminderCandidate?
 
     private var proposed: [ReminderCandidate] {
         model.state.reminders.filter { $0.status == .proposed }
@@ -500,6 +501,11 @@ private struct RemindersView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .sheet(item: $reminderBeingScheduled) { reminder in
+            ReminderScheduleSheet(reminder: reminder) { dueAt in
+                model.approveReminder(reminder, dueAt: dueAt)
+            }
+        }
     }
 
     private var reminderHeader: some View {
@@ -557,7 +563,7 @@ private struct RemindersView: View {
                     }
                     ForEach(proposed) { reminder in
                         ReminderCandidateCard(reminder: reminder, isScheduled: false, approve: {
-                            model.approveReminder(reminder)
+                            reminderBeingScheduled = reminder
                         }, dismiss: {
                             model.dismissReminder(reminder)
                         })
@@ -651,6 +657,72 @@ private struct ReminderFeature: View {
     }
 }
 
+private struct ReminderScheduleSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let reminder: ReminderCandidate
+    let onConfirm: (Date) -> Void
+    @State private var selectedDate: Date
+
+    init(reminder: ReminderCandidate, onConfirm: @escaping (Date) -> Void) {
+        self.reminder = reminder
+        self.onConfirm = onConfirm
+        let calendar = Calendar.current
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: .now) ?? .now.addingTimeInterval(24 * 60 * 60)
+        let fallback = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow) ?? tomorrow
+        let earliest = Date.now.addingTimeInterval(60)
+        _selectedDate = State(initialValue: max(reminder.dueAt ?? fallback, earliest))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("设置提醒时间")
+                    .font(.title2.weight(.semibold))
+                Text(reminder.title)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                if let suggestedDate = reminder.dueAt {
+                    Text("已根据记录中的时间线索预填建议时间，你可以直接修改。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("建议：\(suggestedDate.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Text("记录中没有明确时间；已预填明天上午 9:00，请按需要调整。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            DatePicker(
+                "提醒时间",
+                selection: $selectedDate,
+                in: Date.now...,
+                displayedComponents: [.date, .hourAndMinute]
+            )
+            .datePickerStyle(.field)
+
+            HStack {
+                Text("创建后仍可在“已安排”中取消提醒。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("取消") { dismiss() }
+                Button("确认并创建") {
+                    onConfirm(selectedDate)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedDate <= Date.now)
+            }
+        }
+        .padding(24)
+        .frame(width: 480)
+    }
+}
+
 private struct ReminderCandidateCard: View {
     let reminder: ReminderCandidate
     let isScheduled: Bool
@@ -669,9 +741,12 @@ private struct ReminderCandidateCard: View {
                 HStack(spacing: 10) {
                     Label("来源 \(reminder.sourceCaptureIDs.count) 条记忆", systemImage: "link")
                     if let dueAt = reminder.dueAt {
-                        Label(dueAt.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
+                        Label(
+                            isScheduled ? dueAt.formatted(date: .abbreviated, time: .shortened) : "建议：\(dueAt.formatted(date: .abbreviated, time: .shortened))",
+                            systemImage: "calendar"
+                        )
                     } else {
-                        Label("确认后选择时间", systemImage: "calendar.badge.clock")
+                        Label("创建前选择时间", systemImage: "calendar.badge.clock")
                     }
                     if !isScheduled {
                         Text("可信度 \(Int(reminder.confidence * 100))%")
@@ -682,15 +757,20 @@ private struct ReminderCandidateCard: View {
             }
             Spacer()
             if isScheduled {
-                Text("已安排")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.green)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 6)
-                    .background(Color.green.opacity(0.10), in: Capsule())
+                VStack(alignment: .trailing, spacing: 8) {
+                    Text("已安排")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(Color.green.opacity(0.10), in: Capsule())
+                    Button("取消提醒", role: .destructive, action: dismiss)
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                }
             } else {
                 VStack(alignment: .trailing, spacing: 8) {
-                    Button("创建提醒", action: approve)
+                    Button("选择时间并创建", action: approve)
                         .buttonStyle(.borderedProminent)
                     Button("忽略", role: .destructive, action: dismiss)
                         .buttonStyle(.borderless)
