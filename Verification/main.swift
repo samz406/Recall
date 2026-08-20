@@ -137,6 +137,13 @@ struct RecallVerifier {
         } catch CapturePipelineError.duplicateCapture {
             // Expected.
         }
+
+        let enterRule = EventRule(template: .enterKeyTrigger, isEnabled: true, scope: .textOnly)
+        let enterCapture = try await pipeline.record(using: enterRule, userText: "通过 Enter 发送的问一问内容")
+        let afterEnterCapture = await store.snapshot()
+        try expect(enterCapture.eventTemplate == .enterKeyTrigger, "Enter 发送没有写入对应事件模板")
+        try expect(enterCapture.imageRelativePath == nil, "Enter 发送记录不应依赖截图")
+        try expect(afterEnterCapture.captures.count == 2, "Enter 发送没有写入时间线")
     }
 
     private static func verifyConversationContextCompression() throws {
@@ -318,10 +325,10 @@ private final class HeaderInspectingURLProtocol: URLProtocol, @unchecked Sendabl
 private final class MockCapturer: ScreenCapturing {
     func capture(scope: CaptureScope) async throws -> CapturePayload {
         CapturePayload(
-            imageData: Data("fake-png-binary".utf8),
+            imageData: scope == .textOnly ? nil : Data("fake-png-binary".utf8),
             sourceAppName: "Mock Editor",
             sourceBundleIdentifier: "com.example.mockeditor",
-            windowTitle: "设计文档"
+            windowTitle: scope == .textOnly ? nil : "设计文档"
         )
     }
 

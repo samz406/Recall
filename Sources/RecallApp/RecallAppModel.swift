@@ -155,6 +155,15 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
+    func recordEnterTriggeredChatSend(_ text: String) {
+        guard let rule = state.rules.first(where: { $0.template == .enterKeyTrigger }), rule.isEnabled else { return }
+        guard !state.privacy.screenCapturePaused else { return }
+        var textOnlyRule = rule
+        textOnlyRule.scope = .textOnly
+        textOnlyRule.retainImageDays = 0
+        record(rule: textOnlyRule, userText: text)
+    }
+
     func ask(_ question: String) {
         guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         isThinking = true

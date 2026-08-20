@@ -261,7 +261,12 @@ private struct ChatView: View {
                 } else {
                     messageTimeline
                 }
-                ChatComposer(question: $question, isSending: model.isThinking, onSend: send) {
+                ChatComposer(
+                    question: $question,
+                    isSending: model.isThinking,
+                    onSend: { send(recordingEnterEvent: false) },
+                    onEnterSend: { send(recordingEnterEvent: true) }
+                ) {
                     scrollRequest += 1
                 }
             }
@@ -366,11 +371,14 @@ private struct ChatView: View {
         }
     }
 
-    private func send() {
+    private func send(recordingEnterEvent: Bool) {
         let text = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         question = ""
         scrollRequest += 1
+        if recordingEnterEvent {
+            model.recordEnterTriggeredChatSend(text)
+        }
         model.ask(text)
     }
 }
@@ -569,6 +577,7 @@ private struct ChatComposer: View {
     @Binding var question: String
     let isSending: Bool
     let onSend: () -> Void
+    let onEnterSend: () -> Void
     let onJumpToLatest: () -> Void
 
     var body: some View {
@@ -578,7 +587,7 @@ private struct ChatComposer: View {
                     .textFieldStyle(.plain)
                     .lineLimit(1...6)
                     .font(.body)
-                    .onSubmit(onSend)
+                    .onSubmit(onEnterSend)
                 Button(action: onSend) {
                     Image(systemName: isSending ? "ellipsis" : "arrow.up")
                         .font(.system(size: 14, weight: .bold))
