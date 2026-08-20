@@ -822,6 +822,7 @@ private struct PrivacyAndModelView: View {
     @State private var loaded = false
     @State private var savedKeyExists = false
     @State private var activeConfiguration = LLMConfiguration()
+    @State private var isEditingModelConnection = false
 
     var body: some View {
         ScrollView {
@@ -881,7 +882,7 @@ private struct PrivacyAndModelView: View {
                     HStack {
                         Toggle("允许问一问发送已检索的脱敏文本", isOn: privacyBinding(\.cloudUseEnabled))
                         Spacer()
-                        Button("编辑模型连接", action: openModelConnectionEditor)
+                        Button("编辑模型连接") { isEditingModelConnection = true }
                             .buttonStyle(.borderedProminent)
                     }
                 }
@@ -900,6 +901,19 @@ private struct PrivacyAndModelView: View {
         }
         .navigationTitle("隐私与模型")
         .onAppear(perform: load)
+        .sheet(isPresented: $isEditingModelConnection) {
+            ModelConnectionEditorSheet(
+                configuration: activeConfiguration,
+                savedKeyExists: savedKeyExists
+            ) { configuration, key in
+                let excluded = Set(excludedApps.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+                activeConfiguration = configuration
+                model.saveModelConnection(configuration: configuration, apiKey: key, excludedBundleIdentifiers: excluded)
+                if !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    savedKeyExists = true
+                }
+            }
+        }
     }
 
     private func settingsCard<Content: View>(title: String, icon: String, tint: Color = .accentColor, @ViewBuilder content: () -> Content) -> some View {
@@ -923,16 +937,6 @@ private struct PrivacyAndModelView: View {
         loaded = true
     }
 
-    private func openModelConnectionEditor() {
-        ModelConnectionPanel.present(configuration: activeConfiguration, savedKeyExists: savedKeyExists) { configuration, key in
-            let excluded = Set(excludedApps.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
-            activeConfiguration = configuration
-            model.saveModelConnection(configuration: configuration, apiKey: key, excludedBundleIdentifiers: excluded)
-            if !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                savedKeyExists = true
-            }
-        }
-    }
 
     private func privacyBinding(_ keyPath: WritableKeyPath<PrivacySettings, Bool>) -> Binding<Bool> {
         Binding(
@@ -943,5 +947,105 @@ private struct PrivacyAndModelView: View {
                 model.updatePrivacy(privacy)
             }
         )
+    }
+}
+
+
+private struct ModelConnectionEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let initialConfiguration: LLMConfiguration
+    let savedKeyExists: Bool
+    let onSave: (LLMConfiguration, String) -> Void
+
+    @State private var provider: LLMProviderKind
+    @State private var baseURL: String
+    @State private var modelName: String
+    @State private var apiKey = ""
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable {
+        case baseURL, model, apiKey
+    }
+
+    init(configuration: LLMConfiguration, savedKeyExists: Bool, onSave: @escaping (LLMConfiguration, String) -> Void) {
+        initialConfiguration = configuration
+        self.savedKeyExists = savedKeyExists
+        self.onSave = onSave
+        _provider = State(initialValue: configuration.provider == .anthropicCompatible ? .anthropicCompatible : .openAICompatible)
+        _baseURL = State(initialValue: configuration.baseURLString)
+        _modelName = State(initialValue: configuration.model)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("编辑模型连接").font(.title2.weight(.semibold))
+                    Text("直接输入服务地址、模型名称和 API Key。保存后将在下一次“问一问”中使用。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+
+            Form {
+                Section("模型类型") {
+                    Picker("模型类型", selection: $provider) {
+                        Text("兼容 OpenAI API").tag(LLMProviderKind.openAICompatible)
+                        Text("兼容 Anthropic API").tag(LLMProviderKind.anthropicCompatible)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+                Section("连接信息") {
+                    TextField("API 地址", text: $baseURL)
+                        .focused($focusedField, equals: .baseURL)
+                    TextField("模型名称", text: $modelName)
+                        .focused($focusedField, equals: .model)
+                    // 使用普通文本框而非密码框，主动避免 macOS Passwords 自动填充接管粘贴事件。
+                    TextField(savedKeyExists ? "输入新 API Key 以替换已保存凭据" : "粘贴 API Key", text: $apiKey)
+                        .focused($focusedField, equals: .apiKey)
+                }
+                Section {
+                    Text("API Key 在此仅以普通文本暂存；点击保存后立即写入本机 Keychain，不会保存到应用状态文件。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+
+            Divider()
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }
+                Button("保存并用于问一问", action: save)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (!savedKeyExists && apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+            }
+            .padding(16)
+        }
+        .frame(width: 620, height: 440)
+        .onAppear {
+            DispatchQueue.main.async { focusedField = .baseURL }
+        }
+        .onChange(of: provider) { _, nextProvider in
+            baseURL = nextProvider.defaultBaseURL
+            modelName = nextProvider.defaultModel
+        }
+    }
+
+    private func save() {
+        let configuration = LLMConfiguration(
+            provider: provider,
+            baseURLString: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
+            model: modelName.trimmingCharacters(in: .whitespacesAndNewlines),
+            keychainAccount: initialConfiguration.keychainAccount,
+            anthropicVersion: initialConfiguration.anthropicVersion,
+            maxOutputTokens: initialConfiguration.maxOutputTokens
+        )
+        onSave(configuration, apiKey)
+        dismiss()
     }
 }
