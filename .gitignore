@@ -1,0 +1,14 @@
+.DS_Store
+.build/
+.swiftpm/
+xcuserdata/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+.env
+.env.*
+*.key
+*.pem
+RecallData/
+Screenshots/
+recall-state.json
