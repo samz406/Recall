@@ -9,6 +9,7 @@ struct RecallVerifier {
             try verifyPrivacy()
             try verifySearch()
             try verifyReminders()
+            try await verifyNotificationHostGuard()
             try await verifyCapturePipeline()
             try verifyConversationContextCompression()
             try await verifyPersistence()
@@ -18,9 +19,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 12 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 13 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 11 integration checks.")
+                print("PASS: RecallVerifier completed 12 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -61,6 +62,16 @@ struct RecallVerifier {
         try expect(candidates.count == 1, "应从待办文本创建一个提醒候选")
         try expect(candidates.first?.dueAt != nil, "未推断出明天的提醒时间")
         try expect(extractor.candidates(from: [capture], existing: candidates).isEmpty, "提醒候选去重失败")
+    }
+
+    @MainActor
+    private static func verifyNotificationHostGuard() async throws {
+        do {
+            _ = try await LocalNotificationScheduler().requestAuthorization()
+            throw VerificationError.failed("命令行验证器不应直接触发系统通知授权")
+        } catch ReminderNotificationError.hostApplicationRequired {
+            // Expected: a raw SwiftPM executable is not a notification-capable .app host.
+        }
     }
 
     @MainActor

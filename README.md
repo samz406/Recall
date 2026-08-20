@@ -45,16 +45,16 @@ Recall 是一个原生 Swift Package 项目，要求 **macOS 14 或更高版本*
 git clone https://github.com/your-org/recall.git
 cd recall
 swift build --jobs 1
-swift run RecallApp
+./scripts/run-app.sh
 ```
 
-首次记录截图前，请在 **系统设置 → 隐私与安全性 → 屏幕与系统音频录制** 中允许 Recall。应用只有在用户点击“记录此刻”或启用的特定事件触发时才请求屏幕内容。
+首次记录截图前，请在 **系统设置 → 隐私与安全性 → 屏幕与系统音频录制** 中允许 Recall。应用只有在用户点击“记录此刻”或启用的特定事件触发时才请求屏幕内容。创建首个提醒时，macOS 会在用户主动点击“创建提醒”后请求通知授权；请使用 `./scripts/run-app.sh` 启动，因为本地通知需要带 Bundle 标识的 `Recall.app`，而不能直接运行原始 SwiftPM 可执行文件。
 
-> 在本仓库当前开发环境中，完整 Xcode 尚未安装，因此使用 `swift build` 和 `swift run RecallVerifier` 验证核心逻辑。安装完整 Xcode 后，可直接打开 `Package.swift` 进行界面调试、签名与发布。
+> 在本仓库当前开发环境中，完整 Xcode 尚未安装，因此使用 `swift build` 和 `swift run RecallVerifier` 验证核心逻辑。`scripts/run-app.sh` 会把当前构建包装成开发用 `Recall.app` 并启动它。安装完整 Xcode 后，可直接打开 `Package.swift` 进行界面调试、签名与发布。
 
 ## 验证
 
-项目提供无网络、无真实截图、无真实云端密钥的集成验证器。它覆盖事件规则、隐私脱敏、应用排除、模拟截图到 OCR 的记录管线、重复记录拦截、检索排序、提醒去重、本地持久化、自定义模型连接配置、长对话压缩和可追溯回答。另提供可选的真实 Anthropic 兼容服务探测。
+项目提供无网络、无真实截图、无真实云端密钥的集成验证器。它覆盖事件规则、隐私脱敏、应用排除、模拟截图到 OCR 的记录管线、重复记录拦截、检索排序、提醒去重、通知宿主保护、本地持久化、自定义模型连接配置、长对话压缩和可追溯回答。另提供可选的真实 Anthropic 兼容服务探测。
 
 ```bash
 swift build --jobs 1
@@ -64,7 +64,7 @@ swift run RecallVerifier
 成功输出如下：
 
 ```text
-PASS: RecallVerifier completed 9 integration checks.
+PASS: RecallVerifier completed 12 integration checks.
 ```
 
 ## 事件模板

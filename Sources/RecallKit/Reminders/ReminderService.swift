@@ -47,11 +47,23 @@ public final class LocalNotificationScheduler {
     public init() {}
 
     public func requestAuthorization() async throws -> Bool {
-        try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+        let center = try notificationCenter()
+        let settings = await center.notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional:
+            return true
+        case .denied:
+            return false
+        case .notDetermined:
+            return try await center.requestAuthorization(options: [.alert, .sound])
+        @unknown default:
+            return false
+        }
     }
 
     public func schedule(_ reminder: ReminderCandidate) async throws {
-        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        let center = try notificationCenter()
+        let settings = await center.notificationSettings()
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
             throw ReminderNotificationError.authorizationRequired
         }
@@ -67,11 +79,12 @@ public final class LocalNotificationScheduler {
             content: content,
             trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
         )
-        try await UNUserNotificationCenter.current().add(request)
+        try await center.add(request)
     }
 
     public func scheduleDailyReview(hour: Int = 18, minute: Int = 0) async throws {
-        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        let center = try notificationCenter()
+        let settings = await center.notificationSettings()
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
             throw ReminderNotificationError.authorizationRequired
         }
@@ -87,26 +100,43 @@ public final class LocalNotificationScheduler {
             content: content,
             trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
         )
-        try await UNUserNotificationCenter.current().add(request)
+        try await center.add(request)
     }
 
     public func cancelDailyReview() {
+        guard isNotificationHostAvailable else { return }
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["im.recall.app.daily-review"])
     }
 
     public func cancel(_ reminder: ReminderCandidate) {
+        guard isNotificationHostAvailable else { return }
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [reminder.id.uuidString])
+    }
+
+    private var isNotificationHostAvailable: Bool {
+        let mainBundle = Bundle.main
+        return mainBundle.bundleURL.pathExtension.lowercased() == "app"
+            && !(mainBundle.bundleIdentifier?.isEmpty ?? true)
+    }
+
+    private func notificationCenter() throws -> UNUserNotificationCenter {
+        guard isNotificationHostAvailable else {
+            throw ReminderNotificationError.hostApplicationRequired
+        }
+        return UNUserNotificationCenter.current()
     }
 }
 
 public enum ReminderNotificationError: LocalizedError {
     case authorizationRequired
     case missingDueDate
+    case hostApplicationRequired
 
     public var errorDescription: String? {
         switch self {
         case .authorizationRequired: "请先允许应用发送提醒通知。"
         case .missingDueDate: "请为提醒选择一个时间。"
+        case .hostApplicationRequired: "提醒通知需要从 Recall.app 启动；当前调试可执行文件无法安全请求系统通知。"
         }
     }
 }
