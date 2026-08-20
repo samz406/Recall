@@ -465,7 +465,8 @@ private struct ChatComposer: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary, lineWidth: 1))
         .shadow(color: .black.opacity(0.06), radius: 18, y: 6)
-        .padding(.horizontal, 32)
+        .frame(maxWidth: 820)
+        .frame(maxWidth: .infinity)
         .padding(.vertical, 18)
     }
 }
@@ -473,45 +474,232 @@ private struct ChatComposer: View {
 private struct RemindersView: View {
     @EnvironmentObject private var model: RecallAppModel
 
-    private var active: [ReminderCandidate] {
-        model.state.reminders.filter { $0.status == .proposed || $0.status == .scheduled }
+    private var proposed: [ReminderCandidate] {
+        model.state.reminders.filter { $0.status == .proposed }
+    }
+
+    private var scheduled: [ReminderCandidate] {
+        model.state.reminders.filter { $0.status == .scheduled }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("提醒候选")
-                        .font(.title2.weight(.semibold))
-                    Text("系统只提出候选；你确认后才会创建本地通知。")
-                        .foregroundStyle(.secondary)
+        ScrollView {
+            VStack(spacing: 28) {
+                reminderHeader
+                workflow
+                if proposed.isEmpty && scheduled.isEmpty {
+                    ReminderEmptyState(onDiscover: model.proposeReminders)
+                } else {
+                    reminderLists
                 }
-                Spacer()
-                Button("从记录中检查") { model.proposeReminders() }
             }
-            .padding()
-            if active.isEmpty {
-                ContentUnavailableView("暂无提醒", systemImage: "bell.slash", description: Text("可以从“待办或承诺创建”事件开始记录，或手动检查已有记录。"))
-            } else {
-                List(active) { reminder in
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(reminder.title).font(.headline)
-                            Text(reminder.detail).foregroundStyle(.secondary)
-                            Text("置信度 \(Int(reminder.confidence * 100))% · \(reminder.status == .scheduled ? "已安排" : "待确认")")
-                                .font(.caption).foregroundStyle(.tertiary)
-                        }
-                        Spacer()
-                        if reminder.status == .proposed {
-                            Button("创建提醒") { model.approveReminder(reminder) }
-                                .buttonStyle(.borderedProminent)
-                        }
-                        Button("忽略", role: .destructive) { model.dismissReminder(reminder) }
+            .frame(maxWidth: 980)
+            .padding(.horizontal, 40)
+            .padding(.vertical, 34)
+            .frame(maxWidth: .infinity)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var reminderHeader: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 7) {
+                Label("提醒", systemImage: "bell.badge")
+                    .font(.system(size: 22, weight: .semibold))
+                Text("Recall 只从已有记忆中提出候选；是否提醒、何时提醒，始终由你决定。")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button {
+                model.proposeReminders()
+            } label: {
+                Label("从记忆中发现", systemImage: "magnifyingglass")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private var workflow: some View {
+        HStack(spacing: 0) {
+            ReminderWorkflowStep(number: "1", title: "发现线索", detail: "从待办、承诺与截止记录中识别")
+            workflowConnector
+            ReminderWorkflowStep(number: "2", title: "由你确认", detail: "检查来源后再创建提醒")
+            workflowConnector
+            ReminderWorkflowStep(number: "3", title: "按时通知", detail: "只投递你明确同意的事项")
+        }
+        .padding(18)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary, lineWidth: 1))
+    }
+
+    private var workflowConnector: some View {
+        Image(systemName: "arrow.right")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .frame(width: 42)
+    }
+
+    @ViewBuilder
+    private var reminderLists: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            if !proposed.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("待你确认")
+                            .font(.title3.weight(.semibold))
+                        Text("\(proposed.count)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.accentColor.opacity(0.12), in: Capsule())
                     }
-                    .padding(.vertical, 4)
+                    ForEach(proposed) { reminder in
+                        ReminderCandidateCard(reminder: reminder, isScheduled: false, approve: {
+                            model.approveReminder(reminder)
+                        }, dismiss: {
+                            model.dismissReminder(reminder)
+                        })
+                    }
+                }
+            }
+            if !scheduled.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("已安排")
+                        .font(.title3.weight(.semibold))
+                    ForEach(scheduled) { reminder in
+                        ReminderCandidateCard(reminder: reminder, isScheduled: true, approve: {}, dismiss: {
+                            model.dismissReminder(reminder)
+                        })
+                    }
                 }
             }
         }
+    }
+}
+
+private struct ReminderWorkflowStep: View {
+    let number: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(number)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 23, height: 23)
+                .background(Color.accentColor, in: Circle())
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.subheadline.weight(.semibold))
+                Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ReminderEmptyState: View {
+    let onDiscover: () -> Void
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "bell.and.waves.left.and.right")
+                .font(.system(size: 30, weight: .light))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 72, height: 72)
+                .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 22))
+            VStack(spacing: 7) {
+                Text("还没有待确认的提醒")
+                    .font(.title2.weight(.semibold))
+                Text("你可以让 Recall 检查已有记忆中的待办、承诺和截止事项；它只会提出候选，不会自动打扰你。")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 460)
+            }
+            Button(action: onDiscover) {
+                Label("从记忆中发现提醒", systemImage: "sparkle.magnifyingglass")
+            }
+            .buttonStyle(.borderedProminent)
+            Divider().padding(.vertical, 4)
+            HStack(spacing: 22) {
+                ReminderFeature(icon: "checkmark.circle", title: "识别待办", detail: "例如“明天回复客户”")
+                ReminderFeature(icon: "person.crop.circle.badge.clock", title: "关联来源", detail: "查看它来自哪条记忆")
+                ReminderFeature(icon: "hand.tap", title: "由你决定", detail: "确认后才安排通知")
+            }
+        }
+        .padding(38)
+        .frame(maxWidth: 760)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 24))
+        .overlay(RoundedRectangle(cornerRadius: 24).stroke(.quaternary, lineWidth: 1))
+    }
+}
+
+private struct ReminderFeature: View {
+    let icon: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Image(systemName: icon).foregroundStyle(Color.accentColor)
+            Text(title).font(.caption.weight(.semibold))
+            Text(detail).font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ReminderCandidateCard: View {
+    let reminder: ReminderCandidate
+    let isScheduled: Bool
+    let approve: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: isScheduled ? "bell.fill" : "bell.badge")
+                .foregroundStyle(isScheduled ? Color.green : Color.accentColor)
+                .frame(width: 36, height: 36)
+                .background((isScheduled ? Color.green : Color.accentColor).opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 6) {
+                Text(reminder.title).font(.headline)
+                Text(reminder.detail).font(.subheadline).foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    Label("来源 \(reminder.sourceCaptureIDs.count) 条记忆", systemImage: "link")
+                    if let dueAt = reminder.dueAt {
+                        Label(dueAt.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
+                    } else {
+                        Label("确认后选择时间", systemImage: "calendar.badge.clock")
+                    }
+                    if !isScheduled {
+                        Text("可信度 \(Int(reminder.confidence * 100))%")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            }
+            Spacer()
+            if isScheduled {
+                Text("已安排")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(Color.green.opacity(0.10), in: Capsule())
+            } else {
+                VStack(alignment: .trailing, spacing: 8) {
+                    Button("创建提醒", action: approve)
+                        .buttonStyle(.borderedProminent)
+                    Button("忽略", role: .destructive, action: dismiss)
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                }
+            }
+        }
+        .padding(18)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.quaternary, lineWidth: 1))
     }
 }
 
@@ -655,10 +843,6 @@ private struct PrivacyAndModelView: View {
                     .textContentType(.URL)
                 TextField("模型", text: $configuration.model)
                 SecureField("API Key（仅保存到钥匙串）", text: $apiKey)
-                if configuration.provider == .anthropicCompatible {
-                    TextField("Anthropic API 版本", text: $configuration.anthropicVersion)
-                }
-                Stepper("最多生成 \(configuration.maxOutputTokens) tokens", value: $configuration.maxOutputTokens, in: 256...8_192, step: 256)
                 Text("地址、模型与 API Key 均可按你的兼容服务修改。调用时只会发送当前问题需要的脱敏文本、压缩摘要与最近会话窗口。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
