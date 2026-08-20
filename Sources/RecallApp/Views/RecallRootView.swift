@@ -465,7 +465,7 @@ private struct ChatComposer: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary, lineWidth: 1))
         .shadow(color: .black.opacity(0.06), radius: 18, y: 6)
-        .frame(maxWidth: 820)
+        .frame(maxWidth: 640)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 18)
     }
@@ -821,53 +821,116 @@ private struct PrivacyAndModelView: View {
     @State private var apiKey = ""
     @State private var excludedApps = ""
     @State private var loaded = false
+    @State private var savedKeyExists = false
 
     var body: some View {
-        Form {
-            Section("屏幕与数据") {
-                Toggle("暂停全部屏幕采集", isOn: privacyBinding(\.screenCapturePaused))
-                Toggle("保留原始截图", isOn: privacyBinding(\.retainScreenshots))
-                TextField("排除的 Bundle ID（逗号分隔）", text: $excludedApps)
-                Button("请求/检查屏幕录制权限") { model.requestScreenRecordingAccess() }
-            }
-            Section("模型会话") {
-                Picker("模型类型", selection: Binding(
-                    get: { configuration.provider == .anthropicCompatible ? .anthropicCompatible : .openAICompatible },
-                    set: { configuration.applyDefaults(for: $0) }
-                )) {
-                    Text("兼容 OpenAI API").tag(LLMProviderKind.openAICompatible)
-                    Text("兼容 Anthropic API").tag(LLMProviderKind.anthropicCompatible)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 26) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("隐私与模型")
+                        .font(.system(size: 26, weight: .semibold))
+                    Text("管理本地数据边界，并配置“问一问”实际调用的模型连接。")
+                        .foregroundStyle(.secondary)
                 }
-                Toggle("允许在我提问时发送已检索的脱敏文本", isOn: privacyBinding(\.cloudUseEnabled))
-                TextField("地址", text: $configuration.baseURLString)
-                    .textContentType(.URL)
-                TextField("模型", text: $configuration.model)
-                SecureField("API Key（仅保存到钥匙串）", text: $apiKey)
-                Text("地址、模型与 API Key 均可按你的兼容服务修改。调用时只会发送当前问题需要的脱敏文本、压缩摘要与最近会话窗口。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("保存隐私与模型设置") {
-                    var privacy = model.state.privacy
-                    privacy.excludedBundleIdentifiers = Set(excludedApps.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
-                    model.updatePrivacy(privacy)
-                    model.updateLLM(configuration: configuration, apiKey: apiKey)
-                    apiKey = ""
+
+                settingsCard(title: "屏幕与数据", icon: "lock.shield") {
+                    Toggle("暂停全部屏幕采集", isOn: privacyBinding(\.screenCapturePaused))
+                    Toggle("保留原始截图", isOn: privacyBinding(\.retainScreenshots))
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("排除的 Bundle ID")
+                            .font(.subheadline.weight(.medium))
+                        TextField("例如：com.apple.MobileSMS, com.apple.Passwords", text: $excludedApps)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Button("请求/检查屏幕录制权限") { model.requestScreenRecordingAccess() }
+                        .buttonStyle(.bordered)
+                }
+
+                settingsCard(title: "模型连接", icon: "cpu") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("模型类型")
+                            .font(.subheadline.weight(.medium))
+                        Picker("模型类型", selection: Binding(
+                            get: { configuration.provider == .anthropicCompatible ? .anthropicCompatible : .openAICompatible },
+                            set: { configuration.applyDefaults(for: $0) }
+                        )) {
+                            Text("兼容 OpenAI API").tag(LLMProviderKind.openAICompatible)
+                            Text("兼容 Anthropic API").tag(LLMProviderKind.anthropicCompatible)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                    }
+
+                    ConnectionField(title: "API 地址", placeholder: "输入服务地址", text: $configuration.baseURLString, contentType: .URL)
+                    ConnectionField(title: "模型名称", placeholder: "输入模型标识，例如 MiniMax-M3.0", text: $configuration.model)
+                    ConnectionSecretField(title: "API Key", text: $apiKey, savedKeyExists: savedKeyExists)
+
+                    HStack(alignment: .top, spacing: 9) {
+                        Image(systemName: "lock.fill")
+                            .foregroundStyle(Color.accentColor)
+                        Text("地址、模型和 API Key 默认可以直接编辑。点击保存后，连接会立即启用并用于“问一问”；Key 仅保存到本机 Keychain。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(12)
+                    .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+
+                    HStack {
+                        Toggle("允许问一问发送已检索的脱敏文本", isOn: privacyBinding(\.cloudUseEnabled))
+                        Spacer()
+                        Button("保存并用于问一问", action: saveModelConnection)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(configuration.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (!savedKeyExists && apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                    }
+                }
+
+                settingsCard(title: "危险操作", icon: "exclamationmark.triangle", tint: .red) {
+                    Text("删除会同时移除本地记录、关联截图、会话和提醒；此操作无法撤销。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("删除全部本地记忆", role: .destructive) { model.clearAllData() }
                 }
             }
-            Section("危险操作") {
-                Button("删除全部本地记忆", role: .destructive) { model.clearAllData() }
-            }
+            .frame(maxWidth: 900, alignment: .leading)
+            .padding(.horizontal, 38)
+            .padding(.vertical, 30)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
-        .formStyle(.grouped)
         .navigationTitle("隐私与模型")
-        .onAppear {
-            guard !loaded else { return }
-            configuration = model.state.llmConfiguration
-            if configuration.provider == .localOnly {
-                configuration.applyDefaults(for: .openAICompatible)
-            }
-            excludedApps = model.state.privacy.excludedBundleIdentifiers.sorted().joined(separator: ", ")
-            loaded = true
+        .onAppear(perform: load)
+    }
+
+    private func settingsCard<Content: View>(title: String, icon: String, tint: Color = .accentColor, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 17) {
+            Label(title, systemImage: icon)
+                .font(.headline)
+                .foregroundStyle(tint)
+            content()
+        }
+        .padding(20)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary, lineWidth: 1))
+    }
+
+    private func load() {
+        guard !loaded else { return }
+        configuration = model.state.llmConfiguration
+        if configuration.provider == .localOnly {
+            configuration.applyDefaults(for: .openAICompatible)
+        }
+        excludedApps = model.state.privacy.excludedBundleIdentifiers.sorted().joined(separator: ", ")
+        savedKeyExists = (try? KeychainStore.shared.load(account: configuration.keychainAccount)) != nil
+        loaded = true
+    }
+
+    private func saveModelConnection() {
+        configuration.baseURLString = configuration.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        configuration.model = configuration.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let excluded = Set(excludedApps.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+        model.saveModelConnection(configuration: configuration, apiKey: apiKey, excludedBundleIdentifiers: excluded)
+        if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            savedKeyExists = true
+            apiKey = ""
         }
     }
 
@@ -880,5 +943,57 @@ private struct PrivacyAndModelView: View {
                 model.updatePrivacy(privacy)
             }
         )
+    }
+}
+
+private struct ConnectionField: View {
+    let title: String
+    let placeholder: String
+    @Binding var text: String
+    let contentType: NSTextContentType?
+
+    init(title: String, placeholder: String, text: Binding<String>, contentType: NSTextContentType? = nil) {
+        self.title = title
+        self.placeholder = placeholder
+        _text = text
+        self.contentType = contentType
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title).font(.subheadline.weight(.medium))
+            if let contentType {
+                TextField(placeholder, text: $text)
+                    .textContentType(contentType)
+                    .textFieldStyle(.roundedBorder)
+            } else {
+                TextField(placeholder, text: $text)
+                    .textFieldStyle(.roundedBorder)
+            }
+        }
+    }
+}
+
+private struct ConnectionSecretField: View {
+    let title: String
+    @Binding var text: String
+    let savedKeyExists: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text(title).font(.subheadline.weight(.medium))
+                if savedKeyExists {
+                    Label("已保存", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+            }
+            SecureField(savedKeyExists ? "输入新 Key 以替换已保存凭据" : "粘贴 API Key", text: $text)
+                .textFieldStyle(.roundedBorder)
+            Text(savedKeyExists ? "为保护凭据，已保存的 Key 不会回显；输入新值并保存即可替换。" : "输入后点击“保存并用于问一问”。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }

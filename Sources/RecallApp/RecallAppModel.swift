@@ -200,6 +200,27 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
+    /// 模型连接表单的提交入口。用户主动点击后，下一次“问一问”会直接使用此配置。
+    func saveModelConnection(configuration: LLMConfiguration, apiKey: String, excludedBundleIdentifiers: Set<String>) {
+        Task {
+            do {
+                let cleanedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !cleanedKey.isEmpty {
+                    try KeychainStore.shared.save(cleanedKey, account: configuration.keychainAccount)
+                }
+                var privacy = state.privacy
+                privacy.excludedBundleIdentifiers = excludedBundleIdentifiers
+                privacy.cloudUseEnabled = true
+                try await store.updatePrivacy(privacy)
+                try await store.updateLLMConfiguration(configuration)
+                await refresh()
+                noticeMessage = "模型连接已保存；下一次“问一问”将使用 \(configuration.model)。"
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     private func makeDailyReviewText() -> String {
         let start = Calendar.current.startOfDay(for: .now)
         let todaysCaptures = state.captures.filter { $0.createdAt >= start && $0.eventTemplate != .dailyReview }
