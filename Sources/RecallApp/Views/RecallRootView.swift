@@ -961,7 +961,14 @@ private struct ModelConnectionEditorSheet: View {
     @State private var baseURL: String
     @State private var modelName: String
     @State private var apiKey = ""
+    @State private var isTestingConnection = false
+    @State private var connectionStatus: ConnectionStatus?
     @FocusState private var focusedField: Field?
+
+    private enum ConnectionStatus {
+        case success(String)
+        case failure(String)
+    }
 
     private enum Field: Hashable {
         case baseURL, model, apiKey
@@ -1008,10 +1015,25 @@ private struct ModelConnectionEditorSheet: View {
                     TextField(savedKeyExists ? "输入新 API Key 以替换已保存凭据" : "粘贴 API Key", text: $apiKey)
                         .focused($focusedField, equals: .apiKey)
                 }
-                Section {
-                    Text("API Key 在此仅以普通文本暂存；点击保存后立即写入本机 Keychain，不会保存到应用状态文件。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                Section("连接验证") {
+                    Button(isTestingConnection ? "正在测试…" : "测试当前 Key") { testConnection() }
+                        .disabled(isTestingConnection || normalizedAPIKey.isEmpty)
+                    if let connectionStatus {
+                        switch connectionStatus {
+                        case .success(let message):
+                            Label(message, systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .font(.caption)
+                        case .failure(let message):
+                            Text(message)
+                                .foregroundStyle(.red)
+                                .font(.caption)
+                        }
+                    } else {
+                        Text("请先粘贴 Key 并测试连接。测试成功后再保存，避免无效 Key 覆盖当前可用连接。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .formStyle(.grouped)
@@ -1022,7 +1044,7 @@ private struct ModelConnectionEditorSheet: View {
                 Button("取消") { dismiss() }
                 Button("保存并用于问一问", action: save)
                     .buttonStyle(.borderedProminent)
-                    .disabled(baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (!savedKeyExists && apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                    .disabled(baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !maySaveConnection)
             }
             .padding(16)
         }
@@ -1033,11 +1055,25 @@ private struct ModelConnectionEditorSheet: View {
         .onChange(of: provider) { _, nextProvider in
             baseURL = nextProvider.defaultBaseURL
             modelName = nextProvider.defaultModel
+            connectionStatus = nil
+        }
+        .onChange(of: apiKey) { _, _ in
+            connectionStatus = nil
         }
     }
 
-    private func save() {
-        let configuration = LLMConfiguration(
+    private var normalizedAPIKey: String {
+        apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var maySaveConnection: Bool {
+        if normalizedAPIKey.isEmpty { return savedKeyExists }
+        if case .success = connectionStatus { return true }
+        return false
+    }
+
+    private func makeConfiguration() -> LLMConfiguration {
+        LLMConfiguration(
             provider: provider,
             baseURLString: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
             model: modelName.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1045,7 +1081,35 @@ private struct ModelConnectionEditorSheet: View {
             anthropicVersion: initialConfiguration.anthropicVersion,
             maxOutputTokens: initialConfiguration.maxOutputTokens
         )
-        onSave(configuration, apiKey)
+    }
+
+    private func testConnection() {
+        guard !normalizedAPIKey.isEmpty else { return }
+        isTestingConnection = true
+        connectionStatus = nil
+        let configuration = makeConfiguration()
+        let key = normalizedAPIKey
+        Task {
+            do {
+                let answer = try await CompatibleLLM(configuration: configuration, apiKey: key).answer(
+                    to: LLMRequest(question: "仅回复连接成功", context: [])
+                )
+                await MainActor.run {
+                    isTestingConnection = false
+                    connectionStatus = .success("连接成功：\(answer.content.prefix(80))")
+                }
+            } catch {
+                await MainActor.run {
+                    isTestingConnection = false
+                    connectionStatus = .failure("认证或连接失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func save() {
+        let configuration = makeConfiguration()
+        onSave(configuration, normalizedAPIKey)
         dismiss()
     }
 }
