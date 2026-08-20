@@ -307,8 +307,13 @@ private struct ChatView: View {
             ScrollView {
                 LazyVStack(spacing: 22) {
                     ForEach(model.state.messages) { message in
-                        RecallMessageCard(message: message)
-                            .id(message.id)
+                        RecallMessageCard(
+                            message: message,
+                            animateTyping: model.assistantMessageNeedingAnimationID == message.id,
+                            onTypingProgress: { scrollRequest += 1 },
+                            onTypingFinished: { model.finishAssistantMessageAnimation(id: message.id) }
+                        )
+                        .id(message.id)
                     }
                     if model.isThinking {
                         ThinkingCard()
@@ -431,47 +436,118 @@ private struct ChatWelcomeView: View {
 
 private struct RecallMessageCard: View {
     let message: ConversationMessage
+    let animateTyping: Bool
+    let onTypingProgress: () -> Void
+    let onTypingFinished: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            if message.role != .user {
-                Image(systemName: "sparkle")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 28, height: 28)
-                    .background(Color.accentColor, in: Circle())
-            } else {
-                Spacer(minLength: 80)
-            }
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text(message.role == .user ? "你" : "Recall")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(message.createdAt.formatted(date: .omitted, time: .shortened))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+        Group {
+            if message.role == .user {
+                HStack(alignment: .top) {
+                    Spacer(minLength: 180)
+                    messageBody
+                    Spacer(minLength: 24)
                 }
+            } else {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "sparkle")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 28, height: 28)
+                        .background(Color.accentColor, in: Circle())
+                    messageBody
+                    Spacer(minLength: 24)
+                }
+            }
+        }
+    }
+
+    private var messageBody: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(message.role == .user ? "你" : "Recall")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(message.createdAt.formatted(date: .omitted, time: .shortened))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            if message.role == .assistant {
+                MarkdownTypewriterText(
+                    markdown: message.content,
+                    shouldAnimate: animateTyping,
+                    onProgress: onTypingProgress,
+                    onFinished: onTypingFinished
+                )
+            } else {
                 Text(message.content)
                     .textSelection(.enabled)
                     .lineSpacing(4)
-                if !message.citations.isEmpty {
-                    HStack(spacing: 6) {
-                        Image(systemName: "link")
-                        Text("引用了 \(message.citations.count) 条记忆来源")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(Color.accentColor)
-                    .padding(.top, 2)
-                }
             }
-            .padding(16)
-            .frame(maxWidth: message.role == .user ? 590 : .infinity, alignment: .leading)
-            .background(message.role == .user ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(message.role == .user ? Color.clear : Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1))
-            if message.role == .user { Spacer(minLength: 32) }
+            if !message.citations.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "link")
+                    Text("引用了 \(message.citations.count) 条记忆来源")
+                }
+                .font(.caption)
+                .foregroundStyle(Color.accentColor)
+                .padding(.top, 2)
+            }
         }
+        .padding(16)
+        .frame(maxWidth: message.role == .user ? 590 : .infinity, alignment: .leading)
+        .background(message.role == .user ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(message.role == .user ? Color.clear : Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1))
+    }
+}
+
+private struct MarkdownTypewriterText: View {
+    let markdown: String
+    let shouldAnimate: Bool
+    let onProgress: () -> Void
+    let onFinished: () -> Void
+    @State private var visibleCharacterCount = 0
+    @State private var animationTask: Task<Void, Never>?
+
+    private var visibleMarkdown: String {
+        guard shouldAnimate else { return markdown }
+        return String(markdown.prefix(visibleCharacterCount))
+    }
+
+    var body: some View {
+        Text(markdownAttributedString(from: visibleMarkdown))
+            .textSelection(.enabled)
+            .lineSpacing(4)
+            .task(id: shouldAnimate) {
+                animationTask?.cancel()
+                guard shouldAnimate else {
+                    visibleCharacterCount = markdown.count
+                    return
+                }
+                visibleCharacterCount = 0
+                let total = markdown.count
+                let step = max(1, min(8, total / 160))
+                while visibleCharacterCount < total && !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 16_000_000)
+                    guard !Task.isCancelled else { return }
+                    visibleCharacterCount = min(total, visibleCharacterCount + step)
+                    onProgress()
+                }
+                guard !Task.isCancelled else { return }
+                onFinished()
+            }
+            .onDisappear {
+                animationTask?.cancel()
+            }
+    }
+
+    private func markdownAttributedString(from source: String) -> AttributedString {
+        guard !source.isEmpty else { return AttributedString() }
+        if let parsed = try? AttributedString(markdown: source, options: .init(interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible)) {
+            return parsed
+        }
+        return AttributedString(source)
     }
 }
 

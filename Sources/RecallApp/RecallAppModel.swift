@@ -10,6 +10,7 @@ final class RecallAppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var noticeMessage: String?
     @Published private(set) var enterKeyMonitorStatus: GlobalEnterKeyRecorderStatus = .disabled
+    @Published private(set) var assistantMessageNeedingAnimationID: UUID?
 
     let storage: RecallStorage
     private let store: FileMemoryStore
@@ -160,12 +161,18 @@ final class RecallAppModel: ObservableObject {
         Task {
             defer { isThinking = false }
             do {
-                _ = try await assistant.ask(question)
+                let assistantMessage = try await assistant.ask(question)
+                assistantMessageNeedingAnimationID = assistantMessage.id
                 await refresh()
             } catch {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    func finishAssistantMessageAnimation(id: UUID) {
+        guard assistantMessageNeedingAnimationID == id else { return }
+        assistantMessageNeedingAnimationID = nil
     }
 
     func proposeReminders() {
