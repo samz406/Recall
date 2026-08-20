@@ -60,6 +60,11 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 PLIST
 
 /usr/bin/plutil -lint "$CONTENTS/Info.plist" >/dev/null
+# UserNotifications validates the app's signed identifier, not only Info.plist.
+# Give both the executable and enclosing Bundle the stable identifier used by Recall.
+/usr/bin/codesign --force --sign - --identifier im.recall.app "$CONTENTS/MacOS/RecallApp"
+/usr/bin/codesign --force --sign - --identifier im.recall.app "$APP_BUNDLE"
+/usr/bin/codesign --verify --deep --strict "$APP_BUNDLE"
 open "$APP_BUNDLE"
 
 echo "Started $APP_BUNDLE"

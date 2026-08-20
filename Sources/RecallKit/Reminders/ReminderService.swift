@@ -55,7 +55,11 @@ public final class LocalNotificationScheduler {
         case .denied:
             return false
         case .notDetermined:
-            return try await center.requestAuthorization(options: [.alert, .sound])
+            do {
+                return try await center.requestAuthorization(options: [.alert, .sound])
+            } catch {
+                throw notificationError(from: error)
+            }
         @unknown default:
             return false
         }
@@ -79,7 +83,11 @@ public final class LocalNotificationScheduler {
             content: content,
             trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
         )
-        try await center.add(request)
+        do {
+            try await center.add(request)
+        } catch {
+            throw notificationError(from: error)
+        }
     }
 
     public func scheduleDailyReview(hour: Int = 18, minute: Int = 0) async throws {
@@ -100,7 +108,11 @@ public final class LocalNotificationScheduler {
             content: content,
             trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
         )
-        try await center.add(request)
+        do {
+            try await center.add(request)
+        } catch {
+            throw notificationError(from: error)
+        }
     }
 
     public func cancelDailyReview() {
@@ -125,18 +137,30 @@ public final class LocalNotificationScheduler {
         }
         return UNUserNotificationCenter.current()
     }
+
+    private func notificationError(from error: Error) -> ReminderNotificationError {
+        let systemError = error as NSError
+        if systemError.domain == "UNErrorDomain" && systemError.code == 1 {
+            return .notificationNotPermitted
+        }
+        return .notificationSchedulingFailed
+    }
 }
 
 public enum ReminderNotificationError: LocalizedError {
     case authorizationRequired
     case missingDueDate
     case hostApplicationRequired
+    case notificationNotPermitted
+    case notificationSchedulingFailed
 
     public var errorDescription: String? {
         switch self {
         case .authorizationRequired: "请先允许应用发送提醒通知。"
         case .missingDueDate: "请为提醒选择一个时间。"
         case .hostApplicationRequired: "提醒通知需要从 Recall.app 启动；当前调试可执行文件无法安全请求系统通知。"
+        case .notificationNotPermitted: "macOS 拒绝了此提醒请求。请退出并重新通过 Recall.app 启动，然后在系统设置 → 通知 → Recall 中允许通知。"
+        case .notificationSchedulingFailed: "提醒未能安排。请检查系统设置 → 通知 → Recall 的授权状态后重试。"
         }
     }
 }
