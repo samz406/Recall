@@ -933,7 +933,7 @@ private struct PrivacyAndModelView: View {
         let savedConfiguration = model.state.llmConfiguration
         activeConfiguration = savedConfiguration
         excludedApps = model.state.privacy.excludedBundleIdentifiers.sorted().joined(separator: ", ")
-        savedKeyExists = (try? KeychainStore.shared.load(account: savedConfiguration.keychainAccount)) != nil
+        savedKeyExists = !savedConfiguration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         loaded = true
     }
 
@@ -981,6 +981,7 @@ private struct ModelConnectionEditorSheet: View {
         _provider = State(initialValue: configuration.provider == .anthropicCompatible ? .anthropicCompatible : .openAICompatible)
         _baseURL = State(initialValue: configuration.baseURLString)
         _modelName = State(initialValue: configuration.model)
+        _apiKey = State(initialValue: configuration.apiKey)
     }
 
     var body: some View {
@@ -1011,8 +1012,7 @@ private struct ModelConnectionEditorSheet: View {
                         .focused($focusedField, equals: .baseURL)
                     TextField("模型名称", text: $modelName)
                         .focused($focusedField, equals: .model)
-                    // 使用普通文本框而非密码框，主动避免 macOS Passwords 自动填充接管粘贴事件。
-                    TextField(savedKeyExists ? "输入新 API Key 以替换已保存凭据" : "粘贴 API Key", text: $apiKey)
+                    TextField("API Key", text: $apiKey)
                         .focused($focusedField, equals: .apiKey)
                 }
                 Section("连接验证") {
@@ -1077,7 +1077,7 @@ private struct ModelConnectionEditorSheet: View {
             provider: provider,
             baseURLString: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
             model: modelName.trimmingCharacters(in: .whitespacesAndNewlines),
-            keychainAccount: initialConfiguration.keychainAccount,
+            apiKey: normalizedAPIKey,
             anthropicVersion: initialConfiguration.anthropicVersion,
             maxOutputTokens: initialConfiguration.maxOutputTokens
         )

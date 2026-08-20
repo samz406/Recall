@@ -52,9 +52,8 @@ public final class MemoryAssistant {
             guard state.privacy.cloudUseEnabled else {
                 throw LLMError.serviceError("请先在隐私设置中明确开启云端模型使用。")
             }
-            guard let key = try KeychainStore.shared.load(account: state.llmConfiguration.keychainAccount), !key.isEmpty else {
-                throw LLMError.missingAPIKey
-            }
+            let key = state.llmConfiguration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { throw LLMError.missingAPIKey }
             let safeContext = privacyEngine.cloudContext(from: plan.evidence, settings: state.privacy)
             let safeSummary = plan.rollingSummary.map(privacyEngine.redact)
             let safeRecentMessages = plan.recentMessages.map { message in

@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 public enum LLMProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     /// 保留该值以兼容早期本地摘要配置；设置界面不会将其暴露为可选模型类型。
@@ -35,7 +34,8 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
     public var provider: LLMProviderKind
     public var baseURLString: String
     public var model: String
-    public var keychainAccount: String
+    /// 项目所有者明确选择的本机普通文本凭据，仅持久化在用户 Application Support 配置中。
+    public var apiKey: String
     public var anthropicVersion: String
     public var maxOutputTokens: Int
 
@@ -43,14 +43,14 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
         provider: LLMProviderKind = .openAICompatible,
         baseURLString: String = "https://api.openai.com/v1",
         model: String = "gpt-4.1-mini",
-        keychainAccount: String = "cloud-model-api-key",
+        apiKey: String = "",
         anthropicVersion: String = "2023-06-01",
         maxOutputTokens: Int = 1_000
     ) {
         self.provider = provider
         self.baseURLString = baseURLString
         self.model = model
-        self.keychainAccount = keychainAccount
+        self.apiKey = apiKey
         self.anthropicVersion = anthropicVersion
         self.maxOutputTokens = maxOutputTokens
     }
@@ -62,7 +62,7 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case provider, baseURLString, model, keychainAccount, anthropicVersion, maxOutputTokens
+        case provider, baseURLString, model, apiKey, anthropicVersion, maxOutputTokens
     }
 
     public init(from decoder: Decoder) throws {
@@ -71,7 +71,7 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
         provider = decodedProvider
         baseURLString = try container.decodeIfPresent(String.self, forKey: .baseURLString) ?? decodedProvider.defaultBaseURL
         model = try container.decodeIfPresent(String.self, forKey: .model) ?? decodedProvider.defaultModel
-        keychainAccount = try container.decodeIfPresent(String.self, forKey: .keychainAccount) ?? "cloud-model-api-key"
+        apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
         anthropicVersion = try container.decodeIfPresent(String.self, forKey: .anthropicVersion) ?? "2023-06-01"
         maxOutputTokens = try container.decodeIfPresent(Int.self, forKey: .maxOutputTokens) ?? 1_000
     }
@@ -430,66 +430,6 @@ private struct AnthropicResponse: Decodable {
         let text: String?
     }
     let content: [ContentBlock]
-}
-
-public final class KeychainStore: @unchecked Sendable {
-    public static let shared = KeychainStore()
-    private let service = "im.recall.app"
-
-    private init() {}
-
-    public func save(_ secret: String, account: String) throws {
-        let data = Data(secret.utf8)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        SecItemDelete(query as CFDictionary)
-        var addition = query
-        addition[kSecValueData as String] = data
-        let status = SecItemAdd(addition as CFDictionary, nil)
-        guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
-    }
-
-    public func load(account: String) throws -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = item as? Data else {
-            throw KeychainError.unexpectedStatus(status)
-        }
-        return String(data: data, encoding: .utf8)
-    }
-
-    public func delete(account: String) throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw KeychainError.unexpectedStatus(status)
-        }
-    }
-}
-
-public enum KeychainError: LocalizedError {
-    case unexpectedStatus(OSStatus)
-
-    public var errorDescription: String? {
-        switch self {
-        case .unexpectedStatus(let status): "钥匙串操作失败（状态码：\(status)）。"
-        }
-    }
 }
 
 private extension String {

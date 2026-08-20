@@ -188,10 +188,11 @@ final class RecallAppModel: ObservableObject {
     func updateLLM(configuration: LLMConfiguration, apiKey: String?) {
         Task {
             do {
+                var updatedConfiguration = configuration
                 if let apiKey, !apiKey.isEmpty {
-                    try KeychainStore.shared.save(apiKey, account: configuration.keychainAccount)
+                    updatedConfiguration.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
-                try await store.updateLLMConfiguration(configuration)
+                try await store.updateLLMConfiguration(updatedConfiguration)
                 await refresh()
                 noticeMessage = configuration.provider == .localOnly ? "已切换为本地摘要模式。" : "云端模型配置已保存；只有检索到的文本片段会在提问时发送。"
             } catch {
@@ -205,16 +206,17 @@ final class RecallAppModel: ObservableObject {
         Task {
             do {
                 let cleanedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                var updatedConfiguration = configuration
                 if !cleanedKey.isEmpty {
-                    try KeychainStore.shared.save(cleanedKey, account: configuration.keychainAccount)
+                    updatedConfiguration.apiKey = cleanedKey
                 }
                 var privacy = state.privacy
                 privacy.excludedBundleIdentifiers = excludedBundleIdentifiers
                 privacy.cloudUseEnabled = true
                 try await store.updatePrivacy(privacy)
-                try await store.updateLLMConfiguration(configuration)
+                try await store.updateLLMConfiguration(updatedConfiguration)
                 await refresh()
-                noticeMessage = "模型连接已保存；下一次“问一问”将使用 \(configuration.model)。"
+                noticeMessage = "模型连接已保存；下一次“问一问”将使用 \(updatedConfiguration.model)。"
             } catch {
                 errorMessage = error.localizedDescription
             }

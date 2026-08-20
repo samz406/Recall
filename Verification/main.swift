@@ -130,7 +130,8 @@ struct RecallVerifier {
         let custom = LLMConfiguration(
             provider: .anthropicCompatible,
             baseURLString: "https://example.invalid/custom-anthropic",
-            model: "my-custom-model"
+            model: "my-custom-model",
+            apiKey: "plain-text-test-key"
         )
         try await store.updateLLMConfiguration(custom)
         let reloaded = try FileMemoryStore(storage: storage)
@@ -138,6 +139,7 @@ struct RecallVerifier {
         try expect(restored.provider == .anthropicCompatible, "自定义模型类型没有保存")
         try expect(restored.baseURLString == custom.baseURLString, "自定义 API 地址没有保存")
         try expect(restored.model == custom.model, "自定义模型名称没有保存")
+        try expect(restored.apiKey == "plain-text-test-key", "普通文本 API Key 没有保存")
     }
 
     private static func verifyLiveAnthropicCompatibility() async throws {
