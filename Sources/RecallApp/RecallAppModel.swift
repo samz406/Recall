@@ -92,6 +92,9 @@ final class RecallAppModel: ObservableObject {
                 if rule.participatesInReminders {
                     proposeReminders()
                 }
+            } catch CapturePipelineError.screenRecordingPermissionRequired {
+                // 记录失败不应阻塞其他本地功能；提醒发现只读取已有记录，无需此权限。
+                noticeMessage = "未能截图记录：如需保存屏幕内容，请在系统设置中允许屏幕与系统音频录制。"
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -125,8 +128,14 @@ final class RecallAppModel: ObservableObject {
     }
 
     func proposeReminders() {
+        // 此操作只读取已经持久化在 state 中的 OCR 记录；不调用截图管线，也不需要屏幕录制权限。
+        // 同时清除先前一次记录操作留下的非致命采集错误，避免其误显示在提醒流程中。
+        errorMessage = nil
         let newCandidates = reminderExtractor.candidates(from: state.captures, existing: state.reminders)
-        guard !newCandidates.isEmpty else { return }
+        guard !newCandidates.isEmpty else {
+            noticeMessage = "已检查现有记忆，暂未发现新的待确认提醒。"
+            return
+        }
         Task {
             do {
                 try await store.replaceReminders(newCandidates + state.reminders)
