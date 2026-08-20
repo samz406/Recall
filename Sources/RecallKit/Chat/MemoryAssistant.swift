@@ -25,7 +25,7 @@ public final class MemoryAssistant {
         let recordsAllowedInChat = state.captures.filter { capture in
             state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
         }
-        let results = searchEngine.search(MemorySearchQuery(text: question), in: recordsAllowedInChat)
+        let results = searchEngine.search(searchQuery(for: question), in: recordsAllowedInChat)
         let retrieved = results.map(\.capture)
         let plan = contextManager.plan(
             history: state.messages,
@@ -76,5 +76,25 @@ public final class MemoryAssistant {
         try await store.addMessage(userMessage)
         try await store.addMessage(assistantMessage)
         return assistantMessage
+    }
+
+    /// 将常见的自然语言日期范围转换为确定性本地过滤条件。
+    /// 这让“今天做什么”即便未包含记录正文中的关键词，也能汇总当天记忆。
+    private func searchQuery(for question: String, now: Date = .now) -> MemorySearchQuery {
+        let normalized = question.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        let calendar = Calendar.current
+
+        if normalized.contains("今天") || normalized.contains("今日") || normalized.localizedCaseInsensitiveContains("today"),
+           let interval = calendar.dateInterval(of: .day, for: now) {
+            return MemorySearchQuery(text: question, startDate: interval.start, endDate: interval.end)
+        }
+
+        if normalized.contains("昨天") || normalized.contains("昨日") || normalized.localizedCaseInsensitiveContains("yesterday"),
+           let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           let interval = calendar.dateInterval(of: .day, for: yesterday) {
+            return MemorySearchQuery(text: question, startDate: interval.start, endDate: interval.end)
+        }
+
+        return MemorySearchQuery(text: question)
     }
 }

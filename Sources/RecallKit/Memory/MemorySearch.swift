@@ -32,15 +32,25 @@ public struct MemorySearchEngine: Sendable {
 
     public func search(_ query: MemorySearchQuery, in captures: [CaptureRecord], limit: Int = 8) -> [MemorySearchResult] {
         let terms = normalizedTerms(from: query.text)
+        // 时间概览问题（如“今天做什么”）的价值来自日期过滤；即使没有文本关键词命中，
+        // 也应将该时间范围内的记录交给会话层综合，而不是错误地报告“没有记忆”。
+        let hasTimeWindow = query.startDate != nil || query.endDate != nil
         return captures.compactMap { capture in
             guard matchesFilters(capture, query: query) else { return nil }
             let searchable = [capture.ocrText, capture.summary ?? "", capture.sourceAppName ?? "", capture.windowTitle ?? "", capture.tags.joined(separator: " ")]
                 .joined(separator: " ")
                 .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             let matches = terms.filter { searchable.contains($0) }
-            guard terms.isEmpty || !matches.isEmpty else { return nil }
+            guard terms.isEmpty || !matches.isEmpty || hasTimeWindow else { return nil }
             let recency = max(0, 1 - Date.now.timeIntervalSince(capture.createdAt) / (60 * 60 * 24 * 30))
-            let coverage = terms.isEmpty ? 0.1 : Double(matches.count) / Double(terms.count)
+            let coverage: Double
+            if terms.isEmpty {
+                coverage = 0.1
+            } else if matches.isEmpty {
+                coverage = hasTimeWindow ? 0.05 : 0
+            } else {
+                coverage = Double(matches.count) / Double(terms.count)
+            }
             let score = coverage * 0.8 + recency * 0.2
             return MemorySearchResult(capture: capture, score: score, matchedTerms: matches)
         }

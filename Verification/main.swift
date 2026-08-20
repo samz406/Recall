@@ -14,12 +14,13 @@ struct RecallVerifier {
             try await verifyPersistence()
             try await verifyCustomModelConfigurationPersistence()
             try await verifyMiniMaxAuthenticationHeaders()
+            try await verifyTodayQuestionUsesTimeline()
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 11 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 12 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 10 integration checks.")
+                print("PASS: RecallVerifier completed 11 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -180,6 +181,21 @@ struct RecallVerifier {
         )
         try expect(!answer.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "实时模型没有返回可解析文本")
         try expect(answer.citedCaptureIDs == [evidence.id], "实时模型回答没有保留本地记忆引用")
+    }
+
+    @MainActor
+    private static func verifyTodayQuestionUsesTimeline() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        let capture = makeCapture(text: "上午完成了 Recall 的时间线检索修复。", app: "Xcode")
+        try await store.addCapture(capture)
+        try await store.updateLLMConfiguration(LLMConfiguration(provider: .localOnly))
+
+        let answer = try await MemoryAssistant(store: store).ask("今天做了什么？")
+        try expect(answer.citations == [capture.id], "今天的问题没有引用当天的时间线记录")
+        try expect(answer.content.contains("时间线检索修复"), "今天的问题没有返回当天的记录内容")
     }
 
     private static func verifyLocalAnswer() async throws {
