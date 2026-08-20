@@ -179,7 +179,9 @@ struct RecallVerifier {
         let answer = try await CompatibleLLM(configuration: configuration, apiKey: apiKey).answer(
             to: LLMRequest(question: "只回答 LIVE_MODEL_OK", context: [evidence])
         )
-        try expect(!answer.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "实时模型没有返回可解析文本")
+        let normalizedAnswer = answer.content.replacingOccurrences(of: " ", with: "")
+        try expect(!normalizedAnswer.isEmpty, "实时模型没有返回可解析文本")
+        try expect(!normalizedAnswer.contains("记忆证据为空") && !normalizedAnswer.contains("没有可用记忆"), "实时模型忽略了已提供的记忆证据")
         try expect(answer.citedCaptureIDs == [evidence.id], "实时模型回答没有保留本地记忆引用")
     }
 

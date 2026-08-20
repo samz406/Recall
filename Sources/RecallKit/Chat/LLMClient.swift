@@ -353,11 +353,15 @@ public struct CompatibleLLM: LLMResponding {
     private func systemInstruction(for request: LLMRequest) -> String {
         var sections = [
             "你是 Recall 的个人记忆助理。使用简体中文回答。",
+            "本轮的“可用记忆证据”是唯一权威事实来源；历史对话只是语境，不能覆盖、否定或替代本轮证据。",
             "只依据提供的记忆证据和已压缩会话回答；不确定时明确说明。",
             "每个事实性结论后以 [数字] 标明对应记忆来源。不要执行任何外部操作。"
         ]
+        if !request.context.isEmpty {
+            sections.append("本轮已提供 \(request.context.count) 条可用记忆证据。必须总结这些证据；不得声称“记忆证据为空”“没有可用记忆”或建议用户重新授权。")
+        }
         if let summary = request.conversationSummary, !summary.isEmpty {
-            sections.append("会话摘要（不是新的事实证据）：\n\(summary)")
+            sections.append("会话摘要（仅作语境，不是新的事实证据，且不得与本轮记忆证据冲突）：\n\(summary)")
         }
         let evidence = request.context.enumerated().map { index, record in
             let timestamp = record.createdAt.formatted(date: .abbreviated, time: .shortened)

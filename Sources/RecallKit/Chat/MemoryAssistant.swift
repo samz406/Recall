@@ -37,11 +37,14 @@ public final class MemoryAssistant {
             try await store.updateConversationSummary(plan.rollingSummary, coveredMessageCount: plan.coveredMessageCount)
         }
 
+        // 对“今天/昨天”概览问题，当前检索到的时间线是唯一事实来源。
+        // 不带入先前助手的结论，避免旧的“没有记忆”回答被模型机械复述。
+        let requiresFreshEvidenceTurn = isTemporalOverviewQuestion(question) && !plan.evidence.isEmpty
         let request = LLMRequest(
             question: question,
             context: plan.evidence,
-            conversationSummary: plan.rollingSummary,
-            recentMessages: plan.recentMessages
+            conversationSummary: requiresFreshEvidenceTurn ? nil : plan.rollingSummary,
+            recentMessages: requiresFreshEvidenceTurn ? [] : plan.recentMessages
         )
         let response: LLMAnswer
 
@@ -54,21 +57,25 @@ public final class MemoryAssistant {
             }
             let key = state.llmConfiguration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty else { throw LLMError.missingAPIKey }
-            let safeContext = privacyEngine.cloudContext(from: plan.evidence, settings: state.privacy)
-            let safeSummary = plan.rollingSummary.map(privacyEngine.redact)
-            let safeRecentMessages = plan.recentMessages.map { message in
+            let safeContext = privacyEngine.cloudContext(from: request.context, settings: state.privacy)
+            let safeSummary = request.conversationSummary.map(privacyEngine.redact)
+            let safeRecentMessages = request.recentMessages.map { message in
                 var copy = message
                 copy.content = privacyEngine.redact(copy.content)
                 return copy
             }
-            response = try await CompatibleLLM(configuration: state.llmConfiguration, apiKey: key).answer(
-                to: LLMRequest(
-                    question: question,
-                    context: safeContext,
-                    conversationSummary: safeSummary,
-                    recentMessages: safeRecentMessages
-                )
+            let cloudRequest = LLMRequest(
+                question: question,
+                context: safeContext,
+                conversationSummary: safeSummary,
+                recentMessages: safeRecentMessages
             )
+            let cloudAnswer = try await CompatibleLLM(configuration: state.llmConfiguration, apiKey: key).answer(to: cloudRequest)
+            // 已传入证据时，不能接受模型仍声称“记忆为空”的幻觉式回答。
+            // 此时保留本地可追溯摘要，确保用户至少得到真实的时间线内容。
+            response = !safeContext.isEmpty && claimsEvidenceIsEmpty(cloudAnswer.content)
+                ? try await ExtractiveMemoryResponder().answer(to: request)
+                : cloudAnswer
         }
 
         let userMessage = ConversationMessage(role: .user, content: question)
@@ -78,23 +85,46 @@ public final class MemoryAssistant {
         return assistantMessage
     }
 
+    private func claimsEvidenceIsEmpty(_ answer: String) -> Bool {
+        let normalized = answer.replacingOccurrences(of: " ", with: "").lowercased()
+        let emptyEvidencePhrases = [
+            "记忆证据为空", "没有可用的记忆", "没有任何可用的记忆",
+            "没有可用记忆", "没有相关的记忆", "没有相关记忆",
+            "没有在本地记忆中找到", "无法回答这个问题"
+        ]
+        return emptyEvidencePhrases.contains { normalized.contains($0) }
+    }
+
     /// 将常见的自然语言日期范围转换为确定性本地过滤条件。
     /// 这让“今天做什么”即便未包含记录正文中的关键词，也能汇总当天记忆。
     private func searchQuery(for question: String, now: Date = .now) -> MemorySearchQuery {
         let normalized = question.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
         let calendar = Calendar.current
 
-        if normalized.contains("今天") || normalized.contains("今日") || normalized.localizedCaseInsensitiveContains("today"),
+        if isTodayOverviewQuestion(normalized),
            let interval = calendar.dateInterval(of: .day, for: now) {
             return MemorySearchQuery(text: question, startDate: interval.start, endDate: interval.end)
         }
 
-        if normalized.contains("昨天") || normalized.contains("昨日") || normalized.localizedCaseInsensitiveContains("yesterday"),
+        if isYesterdayOverviewQuestion(normalized),
            let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
            let interval = calendar.dateInterval(of: .day, for: yesterday) {
             return MemorySearchQuery(text: question, startDate: interval.start, endDate: interval.end)
         }
 
         return MemorySearchQuery(text: question)
+    }
+
+    private func isTemporalOverviewQuestion(_ question: String) -> Bool {
+        let normalized = question.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        return isTodayOverviewQuestion(normalized) || isYesterdayOverviewQuestion(normalized)
+    }
+
+    private func isTodayOverviewQuestion(_ normalizedQuestion: String) -> Bool {
+        normalizedQuestion.contains("今天") || normalizedQuestion.contains("今日") || normalizedQuestion.localizedCaseInsensitiveContains("today")
+    }
+
+    private func isYesterdayOverviewQuestion(_ normalizedQuestion: String) -> Bool {
+        normalizedQuestion.contains("昨天") || normalizedQuestion.contains("昨日") || normalizedQuestion.localizedCaseInsensitiveContains("yesterday")
     }
 }
