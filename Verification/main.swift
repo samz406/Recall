@@ -13,12 +13,13 @@ struct RecallVerifier {
             try verifyConversationContextCompression()
             try await verifyPersistence()
             try await verifyCustomModelConfigurationPersistence()
+            try await verifyMiniMaxAuthenticationHeaders()
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 10 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 11 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 9 integration checks.")
+                print("PASS: RecallVerifier completed 10 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -142,6 +143,27 @@ struct RecallVerifier {
         try expect(restored.apiKey == "plain-text-test-key", "普通文本 API Key 没有保存")
     }
 
+    private static func verifyMiniMaxAuthenticationHeaders() async throws {
+        HeaderInspectingURLProtocol.reset()
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.protocolClasses = [HeaderInspectingURLProtocol.self]
+        let session = URLSession(configuration: sessionConfiguration)
+        let configuration = LLMConfiguration(
+            provider: .anthropicCompatible,
+            baseURLString: "https://api.minimaxi.com/anthropic",
+            model: "MiniMax-M3"
+        )
+        let evidence = makeCapture(text: "MiniMax 认证头离线验证", app: "Verifier")
+        let response = try await CompatibleLLM(configuration: configuration, apiKey: "test-key", session: session).answer(
+            to: LLMRequest(question: "仅回复连接成功", context: [evidence])
+        )
+        let headers = HeaderInspectingURLProtocol.headers()
+        try expect(response.content == "连接成功", "MiniMax 认证头验证未收到模拟响应")
+        try expect(headers["X-Api-Key"] == "test-key", "MiniMax 请求缺少 X-Api-Key")
+        try expect(headers["Authorization"] == "Bearer test-key", "MiniMax 请求缺少 Bearer 认证回退")
+        try expect(headers["anthropic-version"] == "2023-06-01", "MiniMax 请求缺少 Anthropic 版本头")
+    }
+
     private static func verifyLiveAnthropicCompatibility() async throws {
         guard let apiKey = ProcessInfo.processInfo.environment["RECALL_LIVE_API_KEY"], !apiKey.isEmpty else {
             throw VerificationError.failed("实时 Anthropic 验证需要 RECALL_LIVE_API_KEY 环境变量。")
@@ -182,6 +204,46 @@ struct RecallVerifier {
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
         guard condition() else { throw VerificationError.failed(message) }
+    }
+}
+
+private final class HeaderInspectingURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let requestLock = NSLock()
+    nonisolated(unsafe) private static var capturedHeaders: [String: String] = [:]
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.requestLock.lock()
+        Self.capturedHeaders = request.allHTTPHeaderFields ?? [:]
+        Self.requestLock.unlock()
+
+        let response = HTTPURLResponse(
+            url: request.url ?? URL(string: "https://example.invalid")!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        let body = Data("{\"content\":[{\"type\":\"text\",\"text\":\"连接成功\"}]}".utf8)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    static func reset() {
+        requestLock.lock()
+        capturedHeaders = [:]
+        requestLock.unlock()
+    }
+
+    static func headers() -> [String: String] {
+        requestLock.lock()
+        defer { requestLock.unlock() }
+        return capturedHeaders
     }
 }
 

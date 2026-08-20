@@ -289,7 +289,13 @@ public struct CompatibleLLM: LLMResponding {
         )
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
-        urlRequest.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        // Anthropic 的标准认证头。显式使用规范大小写，避免个别兼容网关错误地按大小写匹配。
+        urlRequest.setValue(apiKey, forHTTPHeaderField: "X-Api-Key")
+        // MiniMax 的订阅/令牌计划网关还接受（且有时要求）标准 Bearer 认证。
+        // 同时发送两种等价认证形式，使它能够与官方 Anthropic SDK 的鉴权优先级保持一致。
+        if usesMiniMaxAuthenticationFallback(for: endpoint) {
+            urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
         urlRequest.setValue(configuration.anthropicVersion, forHTTPHeaderField: "anthropic-version")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = try JSONEncoder().encode(body)
@@ -336,6 +342,12 @@ public struct CompatibleLLM: LLMResponding {
         case .localOnly:
             throw LLMError.invalidBaseURL
         }
+    }
+
+    private func usesMiniMaxAuthenticationFallback(for endpoint: URL) -> Bool {
+        guard let host = endpoint.host?.lowercased() else { return false }
+        return host == "api.minimaxi.com" || host.hasSuffix(".minimaxi.com")
+            || host == "api.minimax.io" || host.hasSuffix(".minimax.io")
     }
 
     private func systemInstruction(for request: LLMRequest) -> String {
