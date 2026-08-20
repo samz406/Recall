@@ -57,6 +57,8 @@ public struct RecallState: Codable, Sendable {
     public var reminders: [ReminderCandidate]
     public var privacy: PrivacySettings
     public var llmConfiguration: LLMConfiguration
+    public var conversationSummary: String?
+    public var conversationSummaryCoveredMessageCount: Int?
 
     public init(
         rules: [EventRule] = EventRule.defaults(),
@@ -64,7 +66,9 @@ public struct RecallState: Codable, Sendable {
         messages: [ConversationMessage] = [],
         reminders: [ReminderCandidate] = [],
         privacy: PrivacySettings = PrivacySettings(),
-        llmConfiguration: LLMConfiguration = LLMConfiguration()
+        llmConfiguration: LLMConfiguration = LLMConfiguration(),
+        conversationSummary: String? = nil,
+        conversationSummaryCoveredMessageCount: Int? = 0
     ) {
         self.rules = rules
         self.captures = captures
@@ -72,6 +76,8 @@ public struct RecallState: Codable, Sendable {
         self.reminders = reminders
         self.privacy = privacy
         self.llmConfiguration = llmConfiguration
+        self.conversationSummary = conversationSummary
+        self.conversationSummaryCoveredMessageCount = conversationSummaryCoveredMessageCount
     }
 }
 
@@ -116,6 +122,12 @@ public actor FileMemoryStore {
 
     public func updateLLMConfiguration(_ configuration: LLMConfiguration) throws {
         state.llmConfiguration = configuration
+        try persist()
+    }
+
+    public func updateConversationSummary(_ summary: String?, coveredMessageCount: Int) throws {
+        state.conversationSummary = summary
+        state.conversationSummaryCoveredMessageCount = coveredMessageCount
         try persist()
     }
 

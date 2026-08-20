@@ -10,9 +10,15 @@ struct RecallVerifier {
             try verifySearch()
             try verifyReminders()
             try await verifyCapturePipeline()
+            try verifyConversationContextCompression()
             try await verifyPersistence()
             try await verifyLocalAnswer()
-            print("PASS: RecallVerifier completed 7 integration checks.")
+            if CommandLine.arguments.contains("--live-anthropic") {
+                try await verifyLiveAnthropicCompatibility()
+                print("PASS: RecallVerifier completed 9 checks, including live Anthropic compatibility.")
+            } else {
+                print("PASS: RecallVerifier completed 8 integration checks.")
+            }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
             Foundation.exit(1)
@@ -81,6 +87,27 @@ struct RecallVerifier {
         }
     }
 
+    private static func verifyConversationContextCompression() throws {
+        let history = (0..<12).flatMap { index in
+            [
+                ConversationMessage(role: .user, content: "第 \(index) 轮用户问题：请记录这条内容。"),
+                ConversationMessage(role: .assistant, content: "第 \(index) 轮 Recall 回答：已根据本地来源整理。")
+            ]
+        }
+        let manager = ConversationContextManager(maxRecentMessages: 8, maxSummaryCharacters: 1_000)
+        let plan = manager.plan(history: history, existingSummary: nil, coveredMessageCount: 0, retrievedEvidence: [])
+        try expect(plan.coveredMessageCount == 16, "长对话应将早期 16 条消息纳入摘要")
+        try expect(plan.recentMessages.count == 8, "长对话应仅保留最近 8 条消息")
+        try expect(plan.rollingSummary?.contains("第 0 轮用户问题") == true, "摘要未保留早期会话信息")
+        let secondPlan = manager.plan(
+            history: history,
+            existingSummary: plan.rollingSummary,
+            coveredMessageCount: plan.coveredMessageCount,
+            retrievedEvidence: []
+        )
+        try expect(secondPlan.rollingSummary == plan.rollingSummary, "没有新历史时不应重复压缩相同消息")
+    }
+
     private static func verifyPersistence() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -92,6 +119,24 @@ struct RecallVerifier {
         let snapshot = await reloaded.snapshot()
         try expect(snapshot.captures.count == 1, "重新加载后记录丢失")
         try expect(snapshot.captures.first?.ocrText == "本地持久化验证", "重新加载后的 OCR 文本不一致")
+    }
+
+    private static func verifyLiveAnthropicCompatibility() async throws {
+        guard let apiKey = ProcessInfo.processInfo.environment["RECALL_LIVE_API_KEY"], !apiKey.isEmpty else {
+            throw VerificationError.failed("实时 Anthropic 验证需要 RECALL_LIVE_API_KEY 环境变量。")
+        }
+        let configuration = LLMConfiguration(
+            provider: .anthropicCompatible,
+            baseURLString: "https://api.minimaxi.com/anthropic",
+            model: "MiniMax-M3.0",
+            maxOutputTokens: 96
+        )
+        let evidence = makeCapture(text: "Recall 的测试记忆只允许回答 LIVE_MODEL_OK。", app: "Verifier")
+        let answer = try await CompatibleLLM(configuration: configuration, apiKey: apiKey).answer(
+            to: LLMRequest(question: "只回答 LIVE_MODEL_OK", context: [evidence])
+        )
+        try expect(!answer.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "实时模型没有返回可解析文本")
+        try expect(answer.citedCaptureIDs == [evidence.id], "实时模型回答没有保留本地记忆引用")
     }
 
     private static func verifyLocalAnswer() async throws {

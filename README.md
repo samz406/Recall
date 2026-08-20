@@ -16,8 +16,8 @@ Recall 的默认行为是 **本地优先、明确触发、可追溯、可删除*
 | 显式采集 | 使用菜单栏入口与“记录此刻”窗口触发；支持当前窗口、当前显示器与仅文本三种范围。 |
 | 本地 OCR | 通过 `Vision` 的 `VNRecognizeTextRequest` 在设备端提取中文和英文文本。 |
 | 本地记忆 | 将时间、来源应用、OCR、摘要、标签和可选截图保存在 `~/Library/Application Support/Recall/`。 |
-| 搜索与问答 | 提供时间线搜索和检索增强会话；本地模式不会进行网络请求。 |
-| 模型接入 | 提供 OpenAI 兼容接口；API Key 只保存于 macOS Keychain，云端模式必须在界面中明确开启。 |
+| 搜索与问答 | 提供时间线搜索和检索增强会话；长对话采用滚动摘要、最近消息窗口和独立记忆证据三层上下文管理。 |
+| 模型接入 | 提供可编辑的 OpenAI 与 Anthropic 兼容接口；地址、模型、API Key 均可配置，密钥只保存于 macOS Keychain。 |
 | 提醒 | 从待办/承诺类文本提出提醒候选，用户确认且授权通知后才会创建本地通知。 |
 | 隐私控制 | 支持暂停采集、截图开关、应用 Bundle ID 排除列表、基本敏感信息脱敏与记录删除。 |
 
@@ -54,7 +54,7 @@ swift run RecallApp
 
 ## 验证
 
-项目提供无网络、无真实截图、无真实云端密钥的集成验证器。它覆盖事件规则、隐私脱敏、应用排除、模拟截图到 OCR 的记录管线、重复记录拦截、检索排序、提醒去重、本地持久化和可追溯回答。
+项目提供无网络、无真实截图、无真实云端密钥的集成验证器。它覆盖事件规则、隐私脱敏、应用排除、模拟截图到 OCR 的记录管线、重复记录拦截、检索排序、提醒去重、本地持久化、长对话压缩和可追溯回答。另提供可选的真实 Anthropic 兼容服务探测。
 
 ```bash
 swift build --jobs 1
@@ -64,7 +64,7 @@ swift run RecallVerifier
 成功输出如下：
 
 ```text
-PASS: RecallVerifier completed 7 integration checks.
+PASS: RecallVerifier completed 8 integration checks.
 ```
 
 ## 事件模板
@@ -84,7 +84,7 @@ PASS: RecallVerifier completed 7 integration checks.
 
 本地 OCR、搜索、摘要回退、提醒候选与数据持久化均可离线运行。截图文件和 JSON 状态默认位于 `~/Library/Application Support/Recall/`。模型 API Key 使用 Keychain 保存；它不会写进 JSON、日志或 Git 仓库。
 
-如果用户在“隐私与模型”中切换到兼容 OpenAI 的云端模型，Recall 仍只会将**与当前问题相关的、经过基础脱敏的 OCR 文本片段**发送到用户配置的服务端。云端模式未启用或未配置密钥时，会话会回退到本地可追溯摘要。详见 [隐私设计](docs/PRIVACY.md)。
+用户可在“隐私与模型”中选择**兼容 OpenAI API**或**兼容 Anthropic API**，并自行编辑地址、模型名称与 API Key。云端模式仍只会发送当前问题、经过基础脱敏的检索证据、压缩摘要和最近会话窗口；云端模式未启用或未配置密钥时，会话会回退到本地可追溯摘要。详见 [隐私设计](docs/PRIVACY.md)。
 
 ## 项目结构
 

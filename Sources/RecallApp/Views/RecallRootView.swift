@@ -228,77 +228,245 @@ private struct ChatView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var question = ""
 
+    private var isCloudModel: Bool {
+        model.state.llmConfiguration.provider != .localOnly && model.state.privacy.cloudUseEnabled
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("问一问你的记忆")
-                    .font(.title2.weight(.semibold))
-                Text("回答只基于检索到的记录；云端模式也只接收经过筛选和脱敏的文本片段。")
+        ZStack {
+            Color(nsColor: .windowBackgroundColor)
+                .ignoresSafeArea()
+            VStack(spacing: 0) {
+                chatHeader
+                Divider().opacity(0.55)
+                if model.state.messages.isEmpty {
+                    ChatWelcomeView(onSelect: { question = $0 })
+                } else {
+                    messageTimeline
+                }
+                ChatComposer(question: $question, isSending: model.isThinking, onSend: send)
+            }
+        }
+    }
+
+    private var chatHeader: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "sparkle")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 9))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("问一问")
+                    .font(.system(size: 18, weight: .semibold))
+                Text("基于你的本地记忆与可追溯来源")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding()
-            Divider()
+            Spacer()
+            HStack(spacing: 6) {
+                Image(systemName: isCloudModel ? "cloud.fill" : "lock.fill")
+                Text(isCloudModel ? model.state.llmConfiguration.provider.title : "本地模式")
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(isCloudModel ? Color.accentColor : Color.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.quaternary, in: Capsule())
+            if model.state.conversationSummary != nil {
+                Label("长对话已压缩", systemImage: "text.compress")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 32)
+        .padding(.vertical, 18)
+    }
+
+    private var messageTimeline: some View {
+        ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    if model.state.messages.isEmpty {
-                        Text("例如：我上周和某人讨论过什么？今天有哪些待办？")
-                            .foregroundStyle(.secondary)
-                            .padding()
-                    }
+                LazyVStack(spacing: 22) {
                     ForEach(model.state.messages) { message in
-                        MessageBubble(message: message)
+                        RecallMessageCard(message: message)
+                            .id(message.id)
+                    }
+                    if model.isThinking {
+                        ThinkingCard()
                     }
                 }
-                .padding()
+                .frame(maxWidth: 860)
+                .padding(.horizontal, 32)
+                .padding(.vertical, 30)
             }
-            Divider()
-            HStack(alignment: .bottom) {
-                TextField("向记忆提问", text: $question, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(1...4)
-                    .onSubmit(send)
-                Button(action: send) {
-                    Label("发送", systemImage: "arrow.up.circle.fill")
+            .onChange(of: model.state.messages.count) { _, _ in
+                if let last = model.state.messages.last {
+                    withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isThinking)
             }
-            .padding()
         }
     }
 
     private func send() {
-        let text = question
+        let text = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
         question = ""
         model.ask(text)
     }
 }
 
-private struct MessageBubble: View {
-    @EnvironmentObject private var model: RecallAppModel
+private struct ChatWelcomeView: View {
+    let onSelect: (String) -> Void
+
+    private let suggestions = [
+        ("今天做了什么？", "clock.arrow.circlepath", "汇总今天记录到的工作节点"),
+        ("我答应谁做什么？", "checklist", "查找待办、承诺与截止事项"),
+        ("上周讨论过什么？", "person.2", "从会议、文档与网页记忆中检索"),
+        ("帮我整理研究线索", "wand.and.stars", "把已保存的材料组织成摘要")
+    ]
+
+    var body: some View {
+        VStack(spacing: 26) {
+            Spacer()
+            Image(systemName: "brain.head.profile")
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 76, height: 76)
+                .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 24))
+            VStack(spacing: 8) {
+                Text("今天想回忆什么？")
+                    .font(.system(size: 30, weight: .semibold))
+                Text("Recall 会先检索相关记忆，再给出带来源的回答。")
+                    .foregroundStyle(.secondary)
+            }
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                ForEach(suggestions, id: \.0) { suggestion in
+                    Button {
+                        onSelect(suggestion.0)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 9) {
+                            Image(systemName: suggestion.1)
+                                .foregroundStyle(Color.accentColor)
+                            Text(suggestion.0)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                            Text(suggestion.2)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.leading)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
+                        .padding(16)
+                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.quaternary, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .frame(maxWidth: 720)
+            Spacer()
+        }
+        .padding(.horizontal, 32)
+    }
+}
+
+private struct RecallMessageCard: View {
     let message: ConversationMessage
 
     var body: some View {
-        HStack {
-            if message.role == .user { Spacer(minLength: 80) }
-            VStack(alignment: .leading, spacing: 8) {
-                Text(message.role == .user ? "你" : "Recall")
+        HStack(alignment: .top, spacing: 12) {
+            if message.role != .user {
+                Image(systemName: "sparkle")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background(Color.accentColor, in: Circle())
+            } else {
+                Spacer(minLength: 80)
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text(message.role == .user ? "你" : "Recall")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(message.createdAt.formatted(date: .omitted, time: .shortened))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
                 Text(message.content)
                     .textSelection(.enabled)
+                    .lineSpacing(4)
                 if !message.citations.isEmpty {
-                    Divider()
-                    Text("依据 \(message.citations.count) 条本地记忆记录")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Image(systemName: "link")
+                        Text("引用了 \(message.citations.count) 条记忆来源")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.top, 2)
                 }
             }
-            .padding(12)
-            .background(message.role == .user ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
-            if message.role != .user { Spacer(minLength: 80) }
+            .padding(16)
+            .frame(maxWidth: message.role == .user ? 590 : .infinity, alignment: .leading)
+            .background(message.role == .user ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(message.role == .user ? Color.clear : Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1))
+            if message.role == .user { Spacer(minLength: 32) }
         }
+    }
+}
+
+private struct ThinkingCard: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            Text("Recall 正在检索记忆并组织回答…")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(16)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+private struct ChatComposer: View {
+    @Binding var question: String
+    let isSending: Bool
+    let onSend: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack(alignment: .bottom, spacing: 12) {
+                TextField("向 Recall 提问", text: $question, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...6)
+                    .font(.body)
+                    .onSubmit(onSend)
+                Button(action: onSend) {
+                    Image(systemName: isSending ? "ellipsis" : "arrow.up")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 32, height: 32)
+                        .background(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending ? Color.secondary : Color.accentColor, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
+            }
+            HStack {
+                Label("回答附带记忆来源", systemImage: "checkmark.shield")
+                Spacer()
+                Text("Enter 发送 · ⇧Enter 换行")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary, lineWidth: 1))
+        .shadow(color: .black.opacity(0.06), radius: 18, y: 6)
+        .padding(.horizontal, 32)
+        .padding(.vertical, 18)
     }
 }
 
@@ -474,18 +642,26 @@ private struct PrivacyAndModelView: View {
                 TextField("排除的 Bundle ID（逗号分隔）", text: $excludedApps)
                 Button("请求/检查屏幕录制权限") { model.requestScreenRecordingAccess() }
             }
-            Section("大模型会话") {
-                Picker("回答方式", selection: $configuration.provider) {
-                    ForEach(LLMProviderKind.allCases) { provider in
-                        Text(provider.title).tag(provider)
-                    }
+            Section("模型会话") {
+                Picker("模型类型", selection: Binding(
+                    get: { configuration.provider == .anthropicCompatible ? .anthropicCompatible : .openAICompatible },
+                    set: { configuration.applyDefaults(for: $0) }
+                )) {
+                    Text("兼容 OpenAI API").tag(LLMProviderKind.openAICompatible)
+                    Text("兼容 Anthropic API").tag(LLMProviderKind.anthropicCompatible)
                 }
-                if configuration.provider == .openAICompatible {
-                    Toggle("允许在我提问时发送已检索的脱敏文本", isOn: privacyBinding(\.cloudUseEnabled))
-                    TextField("服务地址", text: $configuration.baseURLString)
-                    TextField("模型名称", text: $configuration.model)
-                    SecureField("API Key（仅保存到钥匙串）", text: $apiKey)
+                Toggle("允许在我提问时发送已检索的脱敏文本", isOn: privacyBinding(\.cloudUseEnabled))
+                TextField("地址", text: $configuration.baseURLString)
+                    .textContentType(.URL)
+                TextField("模型", text: $configuration.model)
+                SecureField("API Key（仅保存到钥匙串）", text: $apiKey)
+                if configuration.provider == .anthropicCompatible {
+                    TextField("Anthropic API 版本", text: $configuration.anthropicVersion)
                 }
+                Stepper("最多生成 \(configuration.maxOutputTokens) tokens", value: $configuration.maxOutputTokens, in: 256...8_192, step: 256)
+                Text("地址、模型与 API Key 均可按你的兼容服务修改。调用时只会发送当前问题需要的脱敏文本、压缩摘要与最近会话窗口。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Button("保存隐私与模型设置") {
                     var privacy = model.state.privacy
                     privacy.excludedBundleIdentifiers = Set(excludedApps.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
@@ -503,6 +679,9 @@ private struct PrivacyAndModelView: View {
         .onAppear {
             guard !loaded else { return }
             configuration = model.state.llmConfiguration
+            if configuration.provider == .localOnly {
+                configuration.applyDefaults(for: .openAICompatible)
+            }
             excludedApps = model.state.privacy.excludedBundleIdentifiers.sorted().joined(separator: ", ")
             loaded = true
         }

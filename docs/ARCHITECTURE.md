@@ -28,11 +28,11 @@ Recall 使用一个 Swift Package 组织原生 macOS 应用与可复用核心。
 | Swift Package 构建 | `swift build --jobs 1` | 通过 | 编译 `RecallKit`、`RecallApp` 和 `RecallVerifier`。 |
 | 事件模板完整性 | `RecallVerifier` | 通过 | 覆盖全部 8 个模板及默认开关。 |
 | 基础隐私脱敏与应用排除 | `RecallVerifier` | 通过 | 覆盖邮箱、卡号、密码形式文本及 Bundle ID 排除。 |
-| 记录管线、搜索、提醒去重、持久化、会话引用 | `RecallVerifier` | 通过 | 共 7 项无网络集成检查，包含模拟截图到 OCR、脱敏、截图保存和重复记录拦截。 |
+| 记录管线、搜索、提醒去重、持久化、会话引用、长对话压缩 | `RecallVerifier` | 通过 | 共 8 项无网络集成检查，包含模拟截图到 OCR、脱敏、截图保存、重复记录拦截和滚动摘要窗口。 |
 | 原生应用启动 | `open .build/.../RecallApp` | 通过 | 已在目标 Mac 上确认进程启动。 |
 | 实际屏幕权限、真实截图、Vision OCR | 人工验收 | 待用户授权后执行 | 不自动截取用户桌面，以避免采集无关敏感内容。 |
 | 本地通知投递 | 人工验收 | 待用户授权后执行 | 通知权限应在用户创建首个提醒时由系统请求。 |
-| 云端模型请求 | 人工验收 | 待用户自填密钥后执行 | 不使用或保存任何开发环境的服务密钥。 |
+| Anthropic 兼容模型请求 | `RecallVerifier --live-anthropic` | 通过 | 使用用户提供的 MiniMax Anthropic 兼容服务进行一次最小化真实请求；密钥未保存到代码或日志。 |
 
 ## 人工验收脚本
 
