@@ -243,6 +243,7 @@ private struct CaptureRow: View {
 private struct ChatView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var question = ""
+    @State private var scrollRequest = 0
 
     private var isCloudModel: Bool {
         model.state.llmConfiguration.provider != .localOnly && model.state.privacy.cloudUseEnabled
@@ -260,7 +261,9 @@ private struct ChatView: View {
                 } else {
                     messageTimeline
                 }
-                ChatComposer(question: $question, isSending: model.isThinking, onSend: send)
+                ChatComposer(question: $question, isSending: model.isThinking, onSend: send) {
+                    scrollRequest += 1
+                }
             }
         }
     }
@@ -310,15 +313,50 @@ private struct ChatView: View {
                     if model.isThinking {
                         ThinkingCard()
                     }
+                    Color.clear
+                        .frame(height: 1)
+                        .id(ChatScrollAnchor.bottom)
                 }
                 .frame(maxWidth: 860)
                 .padding(.horizontal, 32)
                 .padding(.vertical, 30)
             }
-            .onChange(of: model.state.messages.count) { _, _ in
-                if let last = model.state.messages.last {
-                    withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(last.id, anchor: .bottom) }
+            .overlay(alignment: .bottomTrailing) {
+                Button {
+                    scrollToLatest(using: proxy)
+                } label: {
+                    Label("最新", systemImage: "arrow.down.to.line.compact")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
                 }
+                .buttonStyle(.borderedProminent)
+                .padding(18)
+                .help("滚动到最新消息")
+            }
+            .onAppear {
+                scrollToLatest(using: proxy, animated: false)
+            }
+            .onChange(of: model.state.messages.last?.id) { _, _ in
+                scrollToLatest(using: proxy)
+            }
+            .onChange(of: model.isThinking) { _, _ in
+                scrollToLatest(using: proxy)
+            }
+            .onChange(of: scrollRequest) { _, _ in
+                scrollToLatest(using: proxy)
+            }
+        }
+    }
+
+    private func scrollToLatest(using proxy: ScrollViewProxy, animated: Bool = true) {
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.25)) {
+                    proxy.scrollTo(ChatScrollAnchor.bottom, anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo(ChatScrollAnchor.bottom, anchor: .bottom)
             }
         }
     }
@@ -327,8 +365,13 @@ private struct ChatView: View {
         let text = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         question = ""
+        scrollRequest += 1
         model.ask(text)
     }
+}
+
+private enum ChatScrollAnchor {
+    static let bottom = "chat-scroll-bottom"
 }
 
 private struct ChatWelcomeView: View {
@@ -450,6 +493,7 @@ private struct ChatComposer: View {
     @Binding var question: String
     let isSending: Bool
     let onSend: () -> Void
+    let onJumpToLatest: () -> Void
 
     var body: some View {
         VStack(spacing: 10) {
@@ -472,6 +516,10 @@ private struct ChatComposer: View {
             HStack {
                 Label("回答附带记忆来源", systemImage: "checkmark.shield")
                 Spacer()
+                Button(action: onJumpToLatest) {
+                    Label("最新", systemImage: "arrow.down.to.line.compact")
+                }
+                .buttonStyle(.plain)
                 Text("Enter 发送 · ⇧Enter 换行")
             }
             .font(.caption)
