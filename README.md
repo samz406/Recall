@@ -54,7 +54,7 @@ swift run RecallApp
 
 ## 验证
 
-项目提供无网络、无真实截图、无真实云端密钥的集成验证器。它覆盖事件规则、隐私脱敏、应用排除、模拟截图到 OCR 的记录管线、重复记录拦截、检索排序、提醒去重、本地持久化、长对话压缩和可追溯回答。另提供可选的真实 Anthropic 兼容服务探测。
+项目提供无网络、无真实截图、无真实云端密钥的集成验证器。它覆盖事件规则、隐私脱敏、应用排除、模拟截图到 OCR 的记录管线、重复记录拦截、检索排序、提醒去重、本地持久化、自定义模型连接配置、长对话压缩和可追溯回答。另提供可选的真实 Anthropic 兼容服务探测。
 
 ```bash
 swift build --jobs 1
@@ -64,7 +64,7 @@ swift run RecallVerifier
 成功输出如下：
 
 ```text
-PASS: RecallVerifier completed 8 integration checks.
+PASS: RecallVerifier completed 9 integration checks.
 ```
 
 ## 事件模板

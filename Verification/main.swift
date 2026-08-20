@@ -12,12 +12,13 @@ struct RecallVerifier {
             try await verifyCapturePipeline()
             try verifyConversationContextCompression()
             try await verifyPersistence()
+            try await verifyCustomModelConfigurationPersistence()
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 9 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 10 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 8 integration checks.")
+                print("PASS: RecallVerifier completed 9 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -119,6 +120,24 @@ struct RecallVerifier {
         let snapshot = await reloaded.snapshot()
         try expect(snapshot.captures.count == 1, "重新加载后记录丢失")
         try expect(snapshot.captures.first?.ocrText == "本地持久化验证", "重新加载后的 OCR 文本不一致")
+    }
+
+    private static func verifyCustomModelConfigurationPersistence() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        let custom = LLMConfiguration(
+            provider: .anthropicCompatible,
+            baseURLString: "https://example.invalid/custom-anthropic",
+            model: "my-custom-model"
+        )
+        try await store.updateLLMConfiguration(custom)
+        let reloaded = try FileMemoryStore(storage: storage)
+        let restored = await reloaded.snapshot().llmConfiguration
+        try expect(restored.provider == .anthropicCompatible, "自定义模型类型没有保存")
+        try expect(restored.baseURLString == custom.baseURLString, "自定义 API 地址没有保存")
+        try expect(restored.model == custom.model, "自定义模型名称没有保存")
     }
 
     private static func verifyLiveAnthropicCompatibility() async throws {

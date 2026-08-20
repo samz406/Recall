@@ -1,5 +1,6 @@
 import RecallKit
 import SwiftUI
+import AppKit
 
 struct RecallRootView: View {
     @EnvironmentObject private var model: RecallAppModel
@@ -817,7 +818,9 @@ struct RecallSettingsView: View {
 
 private struct PrivacyAndModelView: View {
     @EnvironmentObject private var model: RecallAppModel
-    @State private var configuration = LLMConfiguration()
+    @State private var draftProvider: LLMProviderKind = .openAICompatible
+    @State private var draftBaseURL = "https://api.openai.com/v1"
+    @State private var draftModel = "gpt-4.1-mini"
     @State private var apiKey = ""
     @State private var excludedApps = ""
     @State private var loaded = false
@@ -850,10 +853,7 @@ private struct PrivacyAndModelView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("模型类型")
                             .font(.subheadline.weight(.medium))
-                        Picker("模型类型", selection: Binding(
-                            get: { configuration.provider == .anthropicCompatible ? .anthropicCompatible : .openAICompatible },
-                            set: { configuration.applyDefaults(for: $0) }
-                        )) {
+                        Picker("模型类型", selection: $draftProvider) {
                             Text("兼容 OpenAI API").tag(LLMProviderKind.openAICompatible)
                             Text("兼容 Anthropic API").tag(LLMProviderKind.anthropicCompatible)
                         }
@@ -861,9 +861,35 @@ private struct PrivacyAndModelView: View {
                         .pickerStyle(.segmented)
                     }
 
-                    ConnectionField(title: "API 地址", placeholder: "输入服务地址", text: $configuration.baseURLString, contentType: .URL)
-                    ConnectionField(title: "模型名称", placeholder: "输入模型标识，例如 MiniMax-M3.0", text: $configuration.model)
-                    ConnectionSecretField(title: "API Key", text: $apiKey, savedKeyExists: savedKeyExists)
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("API 地址").font(.subheadline.weight(.medium))
+                        NativeEditableTextField(placeholder: "输入服务地址", text: $draftBaseURL)
+                            .frame(height: 28)
+                    }
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("模型名称").font(.subheadline.weight(.medium))
+                        NativeEditableTextField(placeholder: "输入模型标识，例如 MiniMax-M3.0", text: $draftModel)
+                            .frame(height: 28)
+                    }
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack {
+                            Text("API Key").font(.subheadline.weight(.medium))
+                            if savedKeyExists {
+                                Label("已保存", systemImage: "checkmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            }
+                        }
+                        NativeEditableTextField(
+                            placeholder: savedKeyExists ? "输入新 Key 以替换已保存凭据" : "粘贴 API Key",
+                            text: $apiKey,
+                            isSecure: true
+                        )
+                        .frame(height: 28)
+                        Text(savedKeyExists ? "已保存的 Key 不会回显；输入新值并保存即可替换。" : "输入后点击“保存并用于问一问”。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
 
                     HStack(alignment: .top, spacing: 9) {
                         Image(systemName: "lock.fill")
@@ -880,7 +906,7 @@ private struct PrivacyAndModelView: View {
                         Spacer()
                         Button("保存并用于问一问", action: saveModelConnection)
                             .buttonStyle(.borderedProminent)
-                            .disabled(configuration.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (!savedKeyExists && apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                            .disabled(draftBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (!savedKeyExists && apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                     }
                 }
 
@@ -898,6 +924,11 @@ private struct PrivacyAndModelView: View {
         }
         .navigationTitle("隐私与模型")
         .onAppear(perform: load)
+        .onChange(of: draftProvider) { _, provider in
+            guard loaded else { return }
+            draftBaseURL = provider.defaultBaseURL
+            draftModel = provider.defaultModel
+        }
     }
 
     private func settingsCard<Content: View>(title: String, icon: String, tint: Color = .accentColor, @ViewBuilder content: () -> Content) -> some View {
@@ -914,18 +945,21 @@ private struct PrivacyAndModelView: View {
 
     private func load() {
         guard !loaded else { return }
-        configuration = model.state.llmConfiguration
-        if configuration.provider == .localOnly {
-            configuration.applyDefaults(for: .openAICompatible)
-        }
+        let savedConfiguration = model.state.llmConfiguration
+        draftProvider = savedConfiguration.provider == .anthropicCompatible ? .anthropicCompatible : .openAICompatible
+        draftBaseURL = savedConfiguration.baseURLString
+        draftModel = savedConfiguration.model
         excludedApps = model.state.privacy.excludedBundleIdentifiers.sorted().joined(separator: ", ")
-        savedKeyExists = (try? KeychainStore.shared.load(account: configuration.keychainAccount)) != nil
+        savedKeyExists = (try? KeychainStore.shared.load(account: savedConfiguration.keychainAccount)) != nil
         loaded = true
     }
 
     private func saveModelConnection() {
-        configuration.baseURLString = configuration.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        configuration.model = configuration.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let configuration = LLMConfiguration(
+            provider: draftProvider,
+            baseURLString: draftBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
+            model: draftModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
         let excluded = Set(excludedApps.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
         model.saveModelConnection(configuration: configuration, apiKey: apiKey, excludedBundleIdentifiers: excluded)
         if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -946,54 +980,49 @@ private struct PrivacyAndModelView: View {
     }
 }
 
-private struct ConnectionField: View {
-    let title: String
+private struct NativeEditableTextField: NSViewRepresentable {
     let placeholder: String
     @Binding var text: String
-    let contentType: NSTextContentType?
+    var isSecure = false
 
-    init(title: String, placeholder: String, text: Binding<String>, contentType: NSTextContentType? = nil) {
-        self.title = title
-        self.placeholder = placeholder
-        _text = text
-        self.contentType = contentType
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(title).font(.subheadline.weight(.medium))
-            if let contentType {
-                TextField(placeholder, text: $text)
-                    .textContentType(contentType)
-                    .textFieldStyle(.roundedBorder)
-            } else {
-                TextField(placeholder, text: $text)
-                    .textFieldStyle(.roundedBorder)
-            }
+    func makeNSView(context: Context) -> NSTextField {
+        let field: NSTextField = isSecure ? NSSecureTextField() : NSTextField()
+        field.delegate = context.coordinator
+        field.placeholderString = placeholder
+        field.stringValue = text
+        field.isEditable = true
+        field.isSelectable = true
+        field.isEnabled = true
+        field.allowsEditingTextAttributes = false
+        field.focusRingType = .default
+        field.drawsBackground = true
+        field.isBezeled = true
+        field.bezelStyle = .roundedBezel
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        field.placeholderString = placeholder
+        // 正在编辑时不能覆盖原生编辑器中的内容，否则会造成“光标存在但无法输入”的体验。
+        if field.window?.firstResponder !== field.currentEditor(), field.stringValue != text {
+            field.stringValue = text
         }
     }
-}
 
-private struct ConnectionSecretField: View {
-    let title: String
-    @Binding var text: String
-    let savedKeyExists: Bool
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        private var text: Binding<String>
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Text(title).font(.subheadline.weight(.medium))
-                if savedKeyExists {
-                    Label("已保存", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                }
-            }
-            SecureField(savedKeyExists ? "输入新 Key 以替换已保存凭据" : "粘贴 API Key", text: $text)
-                .textFieldStyle(.roundedBorder)
-            Text(savedKeyExists ? "为保护凭据，已保存的 Key 不会回显；输入新值并保存即可替换。" : "输入后点击“保存并用于问一问”。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        init(text: Binding<String>) {
+            self.text = text
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            text.wrappedValue = field.stringValue
         }
     }
 }
