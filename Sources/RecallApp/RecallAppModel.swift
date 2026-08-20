@@ -16,6 +16,7 @@ final class RecallAppModel: ObservableObject {
     private let assistant: MemoryAssistant
     private let reminderExtractor = ReminderExtractor()
     private let notificationScheduler = LocalNotificationScheduler()
+    private let enterKeyRecorder = GlobalEnterKeyRecorder()
 
     init() {
         do {
@@ -32,6 +33,20 @@ final class RecallAppModel: ObservableObject {
 
     func refresh() async {
         state = await store.snapshot()
+        updateEnterKeyRecorder()
+    }
+
+    private func updateEnterKeyRecorder() {
+        guard let rule = state.rules.first(where: { $0.template == .enterKeyTrigger }) else {
+            enterKeyRecorder.stop()
+            return
+        }
+        let shouldMonitor = rule.isEnabled && !state.privacy.screenCapturePaused
+        enterKeyRecorder.update(isEnabled: shouldMonitor) { [weak self] in
+            guard let self else { return }
+            guard let currentRule = self.state.rules.first(where: { $0.template == .enterKeyTrigger }), currentRule.isEnabled else { return }
+            self.record(rule: currentRule)
+        }
     }
 
     func updateRule(_ updatedRule: EventRule) {
@@ -39,6 +54,9 @@ final class RecallAppModel: ObservableObject {
         guard let index = rules.firstIndex(where: { $0.id == updatedRule.id }) else { return }
         rules[index] = updatedRule
         persistRules(rules)
+        if updatedRule.template == .enterKeyTrigger && updatedRule.isEnabled {
+            noticeMessage = "Enter 键记录已启用。只在 Recall 不在前台时触发；如未生效，请在系统设置中允许 Recall 监控键盘输入。"
+        }
         if updatedRule.template == .dailyReview {
             Task {
                 do {

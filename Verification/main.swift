@@ -6,6 +6,7 @@ struct RecallVerifier {
     static func main() async {
         do {
             try verifyDefaultEventTemplates()
+            try await verifyEventRuleMigration()
             try verifyPrivacy()
             try verifySearch()
             try verifyReminders()
@@ -20,9 +21,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 14 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 15 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 13 integration checks.")
+                print("PASS: RecallVerifier completed 14 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -32,9 +33,25 @@ struct RecallVerifier {
 
     private static func verifyDefaultEventTemplates() throws {
         let rules = EventRule.defaults()
-        try expect(rules.count == 8, "应提供 8 个事件模板")
+        try expect(rules.count == 9, "应提供 9 个事件模板")
         try expect(Set(rules.map(\.template)) == Set(CaptureEventTemplate.allCases), "事件模板集合不完整")
         try expect(rules.contains(where: { $0.template == .manualMoment && $0.isEnabled }), "手动记录此刻应默认启用")
+        try expect(rules.contains(where: { $0.template == .enterKeyTrigger && !$0.isEnabled }), "Enter 键触发记录必须默认关闭")
+    }
+
+    private static func verifyEventRuleMigration() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let legacyRules = EventRule.defaults().filter { $0.template != .enterKeyTrigger }
+        let legacyState = RecallState(rules: legacyRules)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(legacyState).write(to: storage.stateURL, options: .atomic)
+
+        let store = try FileMemoryStore(storage: storage)
+        let migratedState = await store.snapshot()
+        try expect(migratedState.rules.contains(where: { $0.template == .enterKeyTrigger && !$0.isEnabled }), "旧状态没有补入默认关闭的 Enter 键规则")
     }
 
     private static func verifyPrivacy() throws {

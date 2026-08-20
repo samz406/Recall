@@ -9,6 +9,7 @@ public enum CaptureEventTemplate: String, CaseIterable, Codable, Identifiable, S
     case documentMilestone
     case taskTransition
     case dailyReview
+    case enterKeyTrigger
 
     public var id: String { rawValue }
 
@@ -22,6 +23,7 @@ public enum CaptureEventTemplate: String, CaseIterable, Codable, Identifiable, S
         case .documentMilestone: "文件或文档里程碑"
         case .taskTransition: "任务切换复盘"
         case .dailyReview: "定时个人回顾"
+        case .enterKeyTrigger: "Enter 键触发记录"
         }
     }
 
@@ -35,6 +37,7 @@ public enum CaptureEventTemplate: String, CaseIterable, Codable, Identifiable, S
         case .documentMilestone: "记录文档、设计稿或代码工作中的阶段性版本。"
         case .taskTransition: "在切换任务时形成简短的工作复盘。"
         case .dailyReview: "定时汇总已有的显式记录，不额外截取屏幕。"
+        case .enterKeyTrigger: "由你明确启用后，在其他应用按 Enter 时记录当前窗口；默认关闭。"
         }
     }
 
@@ -42,13 +45,14 @@ public enum CaptureEventTemplate: String, CaseIterable, Codable, Identifiable, S
         switch self {
         case .manualMoment: "⌥↩"
         case .workCheckpoint: "⌃⌥↩"
+        case .enterKeyTrigger: "↩"
         default: nil
         }
     }
 
     public var requiresScreenCapture: Bool {
         switch self {
-        case .manualMoment, .workCheckpoint, .webResearchClip, .meetingSession, .documentMilestone, .taskTransition:
+        case .manualMoment, .workCheckpoint, .webResearchClip, .meetingSession, .documentMilestone, .taskTransition, .enterKeyTrigger:
             true
         case .taskCommitment, .dailyReview:
             false

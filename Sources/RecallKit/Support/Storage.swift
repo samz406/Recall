@@ -101,7 +101,14 @@ public actor FileMemoryStore {
 
         if FileManager.default.fileExists(atPath: storage.stateURL.path) {
             let data = try Data(contentsOf: storage.stateURL)
-            state = try decoder.decode(RecallState.self, from: data)
+            var restoredState = try decoder.decode(RecallState.self, from: data)
+            let existingTemplates = Set(restoredState.rules.map(\.template))
+            let missingRules = EventRule.defaults().filter { !existingTemplates.contains($0.template) }
+            if !missingRules.isEmpty {
+                restoredState.rules.append(contentsOf: missingRules)
+                try Self.write(restoredState, encoder: encoder, to: storage.stateURL)
+            }
+            state = restoredState
         } else {
             state = RecallState()
             try Self.write(state, encoder: encoder, to: storage.stateURL)

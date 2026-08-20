@@ -6,6 +6,7 @@ struct RecallRootView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var section: SidebarSection? = .timeline
     @State private var showingRecordSheet = false
+    @State private var noticeDismissal: Task<Void, Never>?
 
     var body: some View {
         NavigationSplitView {
@@ -63,7 +64,21 @@ struct RecallRootView: View {
                     model.noticeMessage = nil
                 }
                 .padding()
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+        }
+        .animation(.easeInOut(duration: 0.22), value: model.noticeMessage)
+        .onChange(of: model.noticeMessage) { _, notice in
+            noticeDismissal?.cancel()
+            guard notice != nil else { return }
+            noticeDismissal = Task {
+                try? await Task.sleep(nanoseconds: 3_800_000_000)
+                guard !Task.isCancelled else { return }
+                model.noticeMessage = nil
+            }
+        }
+        .onDisappear {
+            noticeDismissal?.cancel()
         }
         .alert("Recall 出现问题", isPresented: Binding(
             get: { model.errorMessage != nil },
