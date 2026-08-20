@@ -9,6 +9,7 @@ final class RecallAppModel: ObservableObject {
     @Published var isThinking = false
     @Published var errorMessage: String?
     @Published var noticeMessage: String?
+    @Published private(set) var enterKeyMonitorStatus: GlobalEnterKeyRecorderStatus = .disabled
 
     let storage: RecallStorage
     private let store: FileMemoryStore
@@ -39,10 +40,11 @@ final class RecallAppModel: ObservableObject {
     private func updateEnterKeyRecorder() {
         guard let rule = state.rules.first(where: { $0.template == .enterKeyTrigger }) else {
             enterKeyRecorder.stop()
+            enterKeyMonitorStatus = .disabled
             return
         }
         let shouldMonitor = rule.isEnabled && !state.privacy.screenCapturePaused
-        enterKeyRecorder.update(isEnabled: shouldMonitor) { [weak self] in
+        enterKeyMonitorStatus = enterKeyRecorder.update(isEnabled: shouldMonitor) { [weak self] in
             guard let self else { return }
             guard let currentRule = self.state.rules.first(where: { $0.template == .enterKeyTrigger }), currentRule.isEnabled else { return }
             self.record(rule: currentRule)
@@ -53,9 +55,18 @@ final class RecallAppModel: ObservableObject {
         var rules = state.rules
         guard let index = rules.firstIndex(where: { $0.id == updatedRule.id }) else { return }
         rules[index] = updatedRule
+        state.rules = rules
+        updateEnterKeyRecorder()
         persistRules(rules)
         if updatedRule.template == .enterKeyTrigger && updatedRule.isEnabled {
-            noticeMessage = "Enter 键记录已启用。只在 Recall 不在前台时触发；如未生效，请在系统设置中允许 Recall 监控键盘输入。"
+            switch enterKeyMonitorStatus {
+            case .monitoring:
+                noticeMessage = "Enter 键记录已启用，正在监听 Recall 以外应用中的 Enter 键。"
+            case .inputMonitoringPermissionRequired:
+                noticeMessage = "Enter 键记录已启用，但需要在系统设置中允许 Recall 监控键盘输入。"
+            case .disabled:
+                break
+            }
         }
         if updatedRule.template == .dailyReview {
             Task {
@@ -73,6 +84,18 @@ final class RecallAppModel: ObservableObject {
                     errorMessage = error.localizedDescription
                 }
             }
+        }
+    }
+
+    func checkEnterKeyMonitor() {
+        updateEnterKeyRecorder()
+        switch enterKeyMonitorStatus {
+        case .monitoring:
+            noticeMessage = "键盘输入监控已可用：Recall 正在监听其他应用中的 Enter 键。"
+        case .inputMonitoringPermissionRequired:
+            noticeMessage = "尚未获得键盘输入监控权限。请在系统设置 → 隐私与安全性 → 输入监控中允许 Recall，然后回到此处再次检查。"
+        case .disabled:
+            noticeMessage = "请先启用“Enter 键触发记录”规则。"
         }
     }
 
@@ -206,6 +229,8 @@ final class RecallAppModel: ObservableObject {
     }
 
     func updatePrivacy(_ privacy: PrivacySettings) {
+        state.privacy = privacy
+        updateEnterKeyRecorder()
         Task {
             do {
                 try await store.updatePrivacy(privacy)

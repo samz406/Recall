@@ -1,5 +1,28 @@
 import AppKit
+import ApplicationServices
 import Foundation
+
+enum GlobalEnterKeyRecorderStatus: Equatable {
+    case disabled
+    case inputMonitoringPermissionRequired
+    case monitoring
+
+    var title: String {
+        switch self {
+        case .disabled: "未启用"
+        case .inputMonitoringPermissionRequired: "需要允许键盘输入监控"
+        case .monitoring: "正在监听其他应用中的 Enter 键"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .disabled: "keyboard"
+        case .inputMonitoringPermissionRequired: "keyboard.badge.ellipsis"
+        case .monitoring: "keyboard.badge.eye"
+        }
+    }
+}
 
 /// Observes Return/Enter presses outside Recall after the user explicitly enables
 /// the `enterKeyTrigger` event rule. The monitor never consumes keystrokes.
@@ -10,13 +33,17 @@ final class GlobalEnterKeyRecorder {
     private var lastTriggerAt: Date?
     private let cooldown: TimeInterval = 2
 
-    func update(isEnabled: Bool, onEnter: @escaping () -> Void) {
+    func update(isEnabled: Bool, onEnter: @escaping () -> Void) -> GlobalEnterKeyRecorderStatus {
         self.onEnter = onEnter
         guard isEnabled else {
             stop()
-            return
+            return .disabled
         }
-        guard monitor == nil else { return }
+        guard CGPreflightListenEventAccess() else {
+            stop()
+            return .inputMonitoringPermissionRequired
+        }
+        guard monitor == nil else { return .monitoring }
 
         monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.keyCode == 36 || event.keyCode == 76 else { return }
@@ -24,6 +51,7 @@ final class GlobalEnterKeyRecorder {
                 self?.handleEnterPress()
             }
         }
+        return monitor == nil ? .inputMonitoringPermissionRequired : .monitoring
     }
 
     func stop() {
