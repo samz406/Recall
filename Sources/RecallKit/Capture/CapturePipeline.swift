@@ -45,10 +45,10 @@ public final class ScreenCaptureService: ScreenCapturing {
         guard scope != .textOnly else {
             return CapturePayload(imageData: nil, sourceAppName: appName, sourceBundleIdentifier: bundleIdentifier, windowTitle: nil)
         }
-        guard CGPreflightScreenCaptureAccess() else {
-            throw CapturePipelineError.screenRecordingPermissionRequired
-        }
-
+        // CGPreflightScreenCaptureAccess can report a stale false result for a
+        // newly re-signed development bundle even when TCC has granted access.
+        // The user has explicitly requested this capture, so ScreenCaptureKit is
+        // the authoritative permission check and will reject genuine denials.
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let configuration = SCStreamConfiguration()
         configuration.showsCursor = false
