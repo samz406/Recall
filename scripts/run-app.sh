@@ -60,10 +60,12 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 PLIST
 
 /usr/bin/plutil -lint "$CONTENTS/Info.plist" >/dev/null
-# UserNotifications validates the app's signed identifier, not only Info.plist.
-# Give both the executable and enclosing Bundle the stable identifier used by Recall.
-/usr/bin/codesign --force --sign - --identifier im.recall.app "$CONTENTS/MacOS/RecallApp"
-/usr/bin/codesign --force --sign - --identifier im.recall.app "$APP_BUNDLE"
+# ScreenCaptureKit, TCC and UserNotifications associate consent with the app's
+# designated requirement. A default ad hoc signature uses a changing code hash,
+# so make the requirement depend only on Recall's stable Bundle identifier.
+STABLE_REQUIREMENT='=designated => identifier "im.recall.app"'
+/usr/bin/codesign --force --sign - --identifier im.recall.app --requirements="$STABLE_REQUIREMENT" "$CONTENTS/MacOS/RecallApp"
+/usr/bin/codesign --force --sign - --identifier im.recall.app --requirements="$STABLE_REQUIREMENT" "$APP_BUNDLE"
 /usr/bin/codesign --verify --deep --strict "$APP_BUNDLE"
 open "$APP_BUNDLE"
 
