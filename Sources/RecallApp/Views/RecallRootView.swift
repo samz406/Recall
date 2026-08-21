@@ -977,13 +977,13 @@ private struct EventRuleRow: View {
                         .font(.caption)
                         .foregroundStyle(model.enterKeyMonitorStatus == .monitoring ? Color.green : Color.orange)
                     Spacer()
-                    Button("检查键盘权限") {
+                    Button("检查跨应用权限") {
                         model.checkEnterKeyMonitor()
                     }
                     .buttonStyle(.borderless)
                     .font(.caption)
                 }
-                Text("启用后需同时获得键盘输入监控和屏幕录制权限；监听不拦截按键，且仅在 Recall 不在前台时触发。")
+                Text("跨应用触发需同时获得“输入监控”和“辅助功能”授权；实际截图仍需屏幕录制权限。监听不拦截按键，且仅在 Recall 不在前台时触发。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

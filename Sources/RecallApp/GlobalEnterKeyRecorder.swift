@@ -10,7 +10,7 @@ enum GlobalEnterKeyRecorderStatus: Equatable {
     var title: String {
         switch self {
         case .disabled: "未启用"
-        case .inputMonitoringPermissionRequired: "需要允许键盘输入监控"
+        case .inputMonitoringPermissionRequired: "需要允许输入监控与辅助功能"
         case .monitoring: "正在监听其他应用中的 Enter 键"
         }
     }
@@ -25,10 +25,11 @@ enum GlobalEnterKeyRecorderStatus: Equatable {
 }
 
 /// Observes Return/Enter presses outside Recall after the user explicitly enables
-/// the `enterKeyTrigger` event rule. The monitor never consumes keystrokes.
+/// the `enterKeyTrigger` rule. The event tap is listen-only and never consumes keystrokes.
 @MainActor
 final class GlobalEnterKeyRecorder {
-    private var monitor: Any?
+    private var eventTap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
     private var onEnter: (() -> Void)?
     private var lastTriggerAt: Date?
     private let cooldown: TimeInterval = 2
@@ -39,28 +40,56 @@ final class GlobalEnterKeyRecorder {
             stop()
             return .disabled
         }
-        guard CGPreflightListenEventAccess() else {
+        guard hasRequiredPermissions() else {
             stop()
             return .inputMonitoringPermissionRequired
         }
-        guard monitor == nil else { return .monitoring }
+        guard eventTap == nil else { return .monitoring }
 
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 36 || event.keyCode == 76 else { return }
-            Task { @MainActor [weak self] in
-                self?.handleEnterPress()
-            }
+        let keyDownMask = CGEventMask(1) << CGEventType.keyDown.rawValue
+        let userInfo = Unmanaged.passUnretained(self).toOpaque()
+        guard let eventTap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .tailAppendEventTap,
+            options: .listenOnly,
+            eventsOfInterest: keyDownMask,
+            callback: globalEnterEventTapCallback,
+            userInfo: userInfo
+        ) else {
+            stop()
+            return .inputMonitoringPermissionRequired
         }
-        return monitor == nil ? .inputMonitoringPermissionRequired : .monitoring
+
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: eventTap, enable: true)
+        self.eventTap = eventTap
+        runLoopSource = source
+        return .monitoring
+    }
+
+    /// This is only called from the explicit “检查键盘权限” user action.
+    func requestRequiredPermissions() {
+        _ = CGRequestListenEventAccess()
+        let promptOptions = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(promptOptions)
     }
 
     func stop() {
-        if let monitor {
-            NSEvent.removeMonitor(monitor)
+        if let eventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: false)
         }
-        monitor = nil
+        if let runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        }
+        eventTap = nil
+        runLoopSource = nil
         onEnter = nil
         lastTriggerAt = nil
+    }
+
+    private func hasRequiredPermissions() -> Bool {
+        CGPreflightListenEventAccess() && AXIsProcessTrusted()
     }
 
     private func handleEnterPress() {
@@ -68,5 +97,36 @@ final class GlobalEnterKeyRecorder {
         guard lastTriggerAt.map({ Date.now.timeIntervalSince($0) >= cooldown }) ?? true else { return }
         lastTriggerAt = .now
         onEnter?()
+    }
+}
+
+private let globalEnterEventTapCallback: CGEventTapCallBack = { _, type, event, userInfo in
+    guard let userInfo else { return Unmanaged.passUnretained(event) }
+    let recorder = Unmanaged<GlobalEnterKeyRecorder>.fromOpaque(userInfo).takeUnretainedValue()
+
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        Task { @MainActor in
+            recorder.reenableEventTapIfNeeded()
+        }
+        return Unmanaged.passUnretained(event)
+    }
+
+    guard type == .keyDown else { return Unmanaged.passUnretained(event) }
+    let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+    guard keyCode == 36 || keyCode == 76 else { return Unmanaged.passUnretained(event) }
+    Task { @MainActor in
+        recorder.handleEnterPressFromEventTap()
+    }
+    return Unmanaged.passUnretained(event)
+}
+
+private extension GlobalEnterKeyRecorder {
+    func handleEnterPressFromEventTap() {
+        handleEnterPress()
+    }
+
+    func reenableEventTapIfNeeded() {
+        guard let eventTap else { return }
+        CGEvent.tapEnable(tap: eventTap, enable: true)
     }
 }

@@ -64,7 +64,7 @@ final class RecallAppModel: ObservableObject {
             case .monitoring:
                 noticeMessage = "Enter 键记录已启用，正在监听 Recall 以外应用中的 Enter 键。"
             case .inputMonitoringPermissionRequired:
-                noticeMessage = "Enter 键记录已启用，但需要在系统设置中允许 Recall 监控键盘输入。"
+                noticeMessage = "Enter 键记录已启用，但需要在系统设置中允许 Recall 的输入监控和辅助功能权限。"
             case .disabled:
                 break
             }
@@ -89,12 +89,13 @@ final class RecallAppModel: ObservableObject {
     }
 
     func checkEnterKeyMonitor() {
+        enterKeyRecorder.requestRequiredPermissions()
         updateEnterKeyRecorder()
         switch enterKeyMonitorStatus {
         case .monitoring:
             noticeMessage = "键盘输入监控已可用：Recall 正在监听其他应用中的 Enter 键。"
         case .inputMonitoringPermissionRequired:
-            noticeMessage = "尚未获得键盘输入监控权限。请在系统设置 → 隐私与安全性 → 输入监控中允许 Recall，然后回到此处再次检查。"
+            noticeMessage = "尚未获得跨应用键盘监听权限。请在系统设置 → 隐私与安全性中允许 Recall 的“输入监控”和“辅助功能”，然后回到此处再次检查。"
         case .disabled:
             noticeMessage = "请先启用“Enter 键触发记录”规则。"
         }
