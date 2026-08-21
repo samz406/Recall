@@ -11,6 +11,7 @@ final class RecallAppModel: ObservableObject {
     @Published var noticeMessage: String?
     @Published private(set) var enterKeyMonitorStatus: GlobalEnterKeyRecorderStatus = .disabled
     @Published private(set) var assistantMessageNeedingAnimationID: UUID?
+    @Published private(set) var diagnosticEntries: [RecallDiagnosticEntry]
 
     let storage: RecallStorage
     private let store: FileMemoryStore
@@ -19,14 +20,18 @@ final class RecallAppModel: ObservableObject {
     private let reminderExtractor = ReminderExtractor()
     private let notificationScheduler = LocalNotificationScheduler()
     private let enterKeyRecorder = GlobalEnterKeyRecorder()
+    private let diagnosticLog: RecallDiagnosticLogStore
 
     init() {
         do {
             let storage = try RecallStorage()
             self.storage = storage
+            self.diagnosticLog = RecallDiagnosticLogStore(storage: storage)
+            self.diagnosticEntries = diagnosticLog.entries
             self.store = try FileMemoryStore(storage: storage)
             self.pipeline = CapturePipeline(store: store, storage: storage)
             self.assistant = MemoryAssistant(store: store)
+            recordDiagnostic(.info, source: "App", message: "应用已启动")
             Task { await refresh() }
         } catch {
             fatalError("无法初始化本地记忆库：\(error.localizedDescription)")
@@ -38,6 +43,21 @@ final class RecallAppModel: ObservableObject {
         updateEnterKeyRecorder()
     }
 
+    func clearDiagnosticLog() {
+        diagnosticLog.clear()
+        diagnosticEntries = diagnosticLog.entries
+    }
+
+    private func recordDiagnostic(
+        _ level: RecallDiagnosticLevel,
+        source: String,
+        message: String,
+        metadata: [String: String] = [:]
+    ) {
+        diagnosticLog.record(level, source: source, message: message, metadata: metadata)
+        diagnosticEntries = diagnosticLog.entries
+    }
+
     private func updateEnterKeyRecorder() {
         guard let rule = state.rules.first(where: { $0.template == .enterKeyTrigger }) else {
             enterKeyRecorder.stop()
@@ -45,11 +65,21 @@ final class RecallAppModel: ObservableObject {
             return
         }
         let shouldMonitor = rule.isEnabled && !state.privacy.screenCapturePaused
-        enterKeyMonitorStatus = enterKeyRecorder.update(isEnabled: shouldMonitor) { [weak self] in
+        let nextStatus = enterKeyRecorder.update(isEnabled: shouldMonitor) { [weak self] in
             guard let self else { return }
             guard let currentRule = self.state.rules.first(where: { $0.template == .enterKeyTrigger }), currentRule.isEnabled else { return }
-            self.record(rule: currentRule)
+            self.recordDiagnostic(.info, source: "GlobalEnter", message: "收到其他应用的 Enter 事件", metadata: ["scope": currentRule.scope.rawValue])
+            self.record(rule: currentRule, diagnosticSource: "GlobalEnter")
         }
+        if enterKeyMonitorStatus != nextStatus {
+            recordDiagnostic(
+                nextStatus == .inputMonitoringPermissionRequired ? .warning : .info,
+                source: "GlobalEnter",
+                message: "跨应用 Enter 监听状态更新：\(nextStatus.title)",
+                metadata: ["ruleEnabled": rule.isEnabled ? "true" : "false", "capturePaused": state.privacy.screenCapturePaused ? "true" : "false"]
+            )
+        }
+        enterKeyMonitorStatus = nextStatus
     }
 
     func updateRule(_ updatedRule: EventRule) {
@@ -89,6 +119,7 @@ final class RecallAppModel: ObservableObject {
     }
 
     func checkEnterKeyMonitor() {
+        recordDiagnostic(.info, source: "GlobalEnter", message: "用户请求检查跨应用权限")
         enterKeyRecorder.requestRequiredPermissions()
         updateEnterKeyRecorder()
         switch enterKeyMonitorStatus {
@@ -120,25 +151,40 @@ final class RecallAppModel: ObservableObject {
 
     func requestScreenRecordingAccess() {
         let granted = ScreenCaptureService().requestScreenRecordingAccess()
+        recordDiagnostic(granted ? .info : .warning, source: "ScreenCapture", message: granted ? "屏幕权限检查通过" : "屏幕权限检查未通过")
         noticeMessage = granted ? "屏幕记录权限已可用。" : "请在“系统设置 → 隐私与安全性 → 屏幕与系统音频录制”中允许 Recall。"
     }
 
-    func record(rule: EventRule, userText: String? = nil) {
+    func record(rule: EventRule, userText: String? = nil, diagnosticSource: String = "Capture") {
         isRecording = true
+        recordDiagnostic(
+            .info,
+            source: diagnosticSource,
+            message: "开始记录",
+            metadata: ["eventTemplate": rule.template.rawValue, "scope": rule.scope.rawValue]
+        )
         Task {
             defer { isRecording = false }
             do {
                 let resolvedText = rule.template == .dailyReview ? makeDailyReviewText() : userText
                 let record = try await pipeline.record(using: rule, userText: resolvedText)
                 await refresh()
+                recordDiagnostic(
+                    .info,
+                    source: diagnosticSource,
+                    message: "记录已写入时间线",
+                    metadata: ["eventTemplate": record.eventTemplate.rawValue, "hasScreenshot": record.imageRelativePath == nil ? "false" : "true"]
+                )
                 noticeMessage = "已记录：\(record.summary ?? "无可提取文本")"
                 if rule.participatesInReminders {
                     proposeReminders()
                 }
             } catch CapturePipelineError.screenRecordingPermissionRequired {
+                recordDiagnostic(.warning, source: diagnosticSource, message: "屏幕权限不可用", metadata: ["eventTemplate": rule.template.rawValue])
                 // 记录失败不应阻塞其他本地功能；提醒发现只读取已有记录，无需此权限。
                 noticeMessage = "未能截图记录：如需保存屏幕内容，请在系统设置中允许屏幕与系统音频录制。"
             } catch {
+                recordDiagnostic(.error, source: diagnosticSource, message: "记录失败", metadata: ["eventTemplate": rule.template.rawValue, "error": recallSafeErrorCode(error)])
                 errorMessage = error.localizedDescription
             }
         }
@@ -157,12 +203,23 @@ final class RecallAppModel: ObservableObject {
     }
 
     func recordEnterTriggeredChatSend(_ text: String) {
-        guard let rule = state.rules.first(where: { $0.template == .enterKeyTrigger }), rule.isEnabled else { return }
-        guard !state.privacy.screenCapturePaused else { return }
+        guard let rule = state.rules.first(where: { $0.template == .enterKeyTrigger }) else {
+            recordDiagnostic(.error, source: "ChatEnter", message: "未找到 Enter 事件规则")
+            return
+        }
+        guard rule.isEnabled else {
+            recordDiagnostic(.warning, source: "ChatEnter", message: "Enter 发送未记录：规则未启用")
+            return
+        }
+        guard !state.privacy.screenCapturePaused else {
+            recordDiagnostic(.warning, source: "ChatEnter", message: "Enter 发送未记录：采集已暂停")
+            return
+        }
+        recordDiagnostic(.info, source: "ChatEnter", message: "收到问一问 Enter 发送", metadata: ["scope": CaptureScope.textOnly.rawValue])
         var textOnlyRule = rule
         textOnlyRule.scope = .textOnly
         textOnlyRule.retainImageDays = 0
-        record(rule: textOnlyRule, userText: text)
+        record(rule: textOnlyRule, userText: text, diagnosticSource: "ChatEnter")
     }
 
     func ask(_ question: String) {

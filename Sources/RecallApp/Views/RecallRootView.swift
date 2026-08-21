@@ -587,7 +587,12 @@ private struct ChatComposer: View {
                     .textFieldStyle(.plain)
                     .lineLimit(1...6)
                     .font(.body)
-                    .onSubmit(onEnterSend)
+                    .submitLabel(.send)
+                    .onKeyPress(.return) {
+                        submitFromEnter()
+                        return .handled
+                    }
+                    .onSubmit(submitFromEnter)
                 Button(action: onSend) {
                     Image(systemName: isSending ? "ellipsis" : "arrow.up")
                         .font(.system(size: 14, weight: .bold))
@@ -605,7 +610,7 @@ private struct ChatComposer: View {
                     Label("最新", systemImage: "arrow.down.to.line.compact")
                 }
                 .buttonStyle(.plain)
-                Text("Enter 发送 · ⇧Enter 换行")
+                Text("Enter 发送并记录 · 点击箭头仅发送")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -617,6 +622,11 @@ private struct ChatComposer: View {
         .frame(maxWidth: 640)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 18)
+    }
+
+    private func submitFromEnter() {
+        guard !isSending, !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        onEnterSend()
     }
 }
 
@@ -1053,6 +1063,91 @@ private struct EventRuleEditor: View {
     }
 }
 
+private struct RecallDiagnosticsLogSheet: View {
+    @EnvironmentObject private var model: RecallAppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("本地诊断日志")
+                        .font(.title2.weight(.semibold))
+                    Text("仅包含 Recall 的操作状态与错误代码，不包含 API Key、聊天正文、OCR 文本或截图。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("关闭") { dismiss() }
+            }
+            .padding(20)
+
+            Divider()
+
+            if model.diagnosticEntries.isEmpty {
+                ContentUnavailableView("暂无诊断记录", systemImage: "stethoscope", description: Text("执行记录、Enter 监听或权限检查后，相关状态会显示在这里。"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(model.diagnosticEntries) { entry in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 7) {
+                            Image(systemName: symbol(for: entry.level))
+                                .foregroundStyle(color(for: entry.level))
+                            Text(entry.level.title)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(color(for: entry.level))
+                            Text(entry.source)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(entry.createdAt.formatted(date: .abbreviated, time: .standard))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        Text(entry.message)
+                            .font(.subheadline)
+                        if !entry.metadata.isEmpty {
+                            Text(entry.metadata.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: " · "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .listStyle(.inset)
+            }
+
+            Divider()
+            HStack {
+                Text("最多保留 200 条；仅保存在此 Mac。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("清空日志", role: .destructive) { model.clearDiagnosticLog() }
+            }
+            .padding(16)
+        }
+        .frame(width: 720, height: 560)
+    }
+
+    private func color(for level: RecallDiagnosticLevel) -> Color {
+        switch level {
+        case .info: .secondary
+        case .warning: .orange
+        case .error: .red
+        }
+    }
+
+    private func symbol(for level: RecallDiagnosticLevel) -> String {
+        switch level {
+        case .info: "info.circle"
+        case .warning: "exclamationmark.triangle"
+        case .error: "xmark.octagon"
+        }
+    }
+}
+
 struct RecallSettingsView: View {
     var body: some View {
         PrivacyAndModelView()
@@ -1067,6 +1162,7 @@ private struct PrivacyAndModelView: View {
     @State private var savedKeyExists = false
     @State private var activeConfiguration = LLMConfiguration()
     @State private var isEditingModelConnection = false
+    @State private var isShowingDiagnostics = false
 
     var body: some View {
         ScrollView {
@@ -1131,6 +1227,20 @@ private struct PrivacyAndModelView: View {
                     }
                 }
 
+                settingsCard(title: "本地诊断", icon: "stethoscope", tint: .orange) {
+                    Text("仅记录 Recall 自身的权限状态、事件模板、操作结果和错误代码，最多保留 200 条。不记录 API Key、聊天正文、OCR 文本或截图。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Label("当前 \(model.diagnosticEntries.count) 条", systemImage: "list.bullet.rectangle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("查看异常与状态日志") { isShowingDiagnostics = true }
+                            .buttonStyle(.bordered)
+                    }
+                }
+
                 settingsCard(title: "危险操作", icon: "exclamationmark.triangle", tint: .red) {
                     Text("删除会同时移除本地记录、关联截图、会话和提醒；此操作无法撤销。")
                         .font(.caption)
@@ -1145,6 +1255,10 @@ private struct PrivacyAndModelView: View {
         }
         .navigationTitle("隐私与模型")
         .onAppear(perform: load)
+        .sheet(isPresented: $isShowingDiagnostics) {
+            RecallDiagnosticsLogSheet()
+                .environmentObject(model)
+        }
         .sheet(isPresented: $isEditingModelConnection) {
             ModelConnectionEditorSheet(
                 configuration: activeConfiguration,
