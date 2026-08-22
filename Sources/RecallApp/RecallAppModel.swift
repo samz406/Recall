@@ -12,6 +12,7 @@ final class RecallAppModel: ObservableObject {
     @Published private(set) var enterKeyMonitorStatus: GlobalEnterKeyRecorderStatus = .disabled
     @Published private(set) var assistantMessageNeedingAnimationID: UUID?
     @Published private(set) var diagnosticEntries: [RecallDiagnosticEntry]
+    @Published private(set) var reminderDeliveryStates: [UUID: ReminderDeliveryState] = [:]
 
     let storage: RecallStorage
     private let store: FileMemoryStore
@@ -41,6 +42,45 @@ final class RecallAppModel: ObservableObject {
     func refresh() async {
         state = await store.snapshot()
         updateEnterKeyRecorder()
+        await refreshReminderDeliveryStates()
+    }
+
+    func verifyReminderDelivery() {
+        Task {
+            await refreshReminderDeliveryStates()
+            let scheduled = state.reminders.filter { $0.status == .scheduled }
+            let counts = scheduled.reduce(into: (pending: 0, delivered: 0, notFound: 0)) { result, reminder in
+                switch reminderDeliveryStates[reminder.id] {
+                case .pending: result.pending += 1
+                case .delivered: result.delivered += 1
+                case .notFound, .none: result.notFound += 1
+                }
+            }
+            if scheduled.isEmpty {
+                noticeMessage = "当前没有已安排的提醒。"
+            } else {
+                noticeMessage = "已核验系统通知：待投递 \(counts.pending) 项，已推送 \(counts.delivered) 项，未在系统队列中找到 \(counts.notFound) 项。"
+            }
+        }
+    }
+
+    private func refreshReminderDeliveryStates() async {
+        let scheduled = state.reminders.filter { $0.status == .scheduled }
+        guard !scheduled.isEmpty else {
+            reminderDeliveryStates = [:]
+            return
+        }
+        do {
+            let nextStates = try await notificationScheduler.deliveryStates(for: scheduled)
+            let missingIDs = nextStates.compactMap { $0.value == .notFound ? $0.key.uuidString : nil }.sorted()
+            if !missingIDs.isEmpty, missingIDs != reminderDeliveryStates.compactMap({ $0.value == .notFound ? $0.key.uuidString : nil }).sorted() {
+                recordDiagnostic(.warning, source: "Reminders", message: "已安排提醒未出现在系统通知队列", metadata: ["count": "\(missingIDs.count)"])
+            }
+            reminderDeliveryStates = nextStates
+        } catch {
+            reminderDeliveryStates = [:]
+            recordDiagnostic(.warning, source: "Reminders", message: "无法核验系统通知队列", metadata: ["error": String(describing: type(of: error))])
+        }
     }
 
     func clearDiagnosticLog() {
@@ -279,7 +319,10 @@ final class RecallAppModel: ObservableObject {
                 updated.status = .scheduled
                 try await store.updateReminder(updated)
                 await refresh()
-                noticeMessage = "提醒已安排在 \(dueAt.formatted(date: .abbreviated, time: .shortened))。"
+                guard reminderDeliveryStates[updated.id] == .pending else {
+                    throw ReminderNotificationError.notificationSchedulingFailed
+                }
+                noticeMessage = "提醒已写入 macOS 通知队列，将在 \(dueAt.formatted(date: .abbreviated, time: .shortened)) 推送。"
             } catch {
                 errorMessage = error.localizedDescription
             }

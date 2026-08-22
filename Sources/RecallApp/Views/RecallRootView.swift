@@ -675,12 +675,18 @@ private struct RemindersView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button {
-                model.proposeReminders()
-            } label: {
-                Label("从记忆中发现", systemImage: "magnifyingglass")
+            HStack(spacing: 10) {
+                Button(action: model.verifyReminderDelivery) {
+                    Label("核验推送状态", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                Button {
+                    model.proposeReminders()
+                } label: {
+                    Label("从记忆中发现", systemImage: "magnifyingglass")
+                }
+                .buttonStyle(.borderedProminent)
             }
-            .buttonStyle(.borderedProminent)
         }
     }
 
@@ -720,7 +726,7 @@ private struct RemindersView: View {
                             .background(Color.accentColor.opacity(0.12), in: Capsule())
                     }
                     ForEach(proposed) { reminder in
-                        ReminderCandidateCard(reminder: reminder, isScheduled: false, approve: {
+                        ReminderCandidateCard(reminder: reminder, isScheduled: false, deliveryState: nil, approve: {
                             reminderBeingScheduled = reminder
                         }, dismiss: {
                             model.dismissReminder(reminder)
@@ -730,12 +736,25 @@ private struct RemindersView: View {
             }
             if !scheduled.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("已安排")
-                        .font(.title3.weight(.semibold))
+                    HStack {
+                        Text("已安排")
+                            .font(.title3.weight(.semibold))
+                        Text("已由 macOS 核验")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("“已推送”仅表示通知中心已接收，不代表已阅读")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                     ForEach(scheduled) { reminder in
-                        ReminderCandidateCard(reminder: reminder, isScheduled: true, approve: {}, dismiss: {
-                            model.dismissReminder(reminder)
-                        })
+                        ReminderCandidateCard(
+                            reminder: reminder,
+                            isScheduled: true,
+                            deliveryState: model.reminderDeliveryStates[reminder.id],
+                            approve: {},
+                            dismiss: { model.dismissReminder(reminder) }
+                        )
                     }
                 }
             }
@@ -884,6 +903,7 @@ private struct ReminderScheduleSheet: View {
 private struct ReminderCandidateCard: View {
     let reminder: ReminderCandidate
     let isScheduled: Bool
+    let deliveryState: ReminderDeliveryState?
     let approve: () -> Void
     let dismiss: () -> Void
 
@@ -912,16 +932,19 @@ private struct ReminderCandidateCard: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+                if isScheduled {
+                    ReminderDeliveryBadge(state: deliveryState)
+                }
             }
             Spacer()
             if isScheduled {
                 VStack(alignment: .trailing, spacing: 8) {
-                    Text("已安排")
+                    Text(deliveryState == .delivered ? "已推送" : "已安排")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.green)
+                        .foregroundStyle(deliveryState == .notFound ? .orange : .green)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 6)
-                        .background(Color.green.opacity(0.10), in: Capsule())
+                        .background((deliveryState == .notFound ? Color.orange : Color.green).opacity(0.10), in: Capsule())
                     Button("取消提醒", role: .destructive, action: dismiss)
                         .buttonStyle(.borderless)
                         .font(.caption)
@@ -939,6 +962,29 @@ private struct ReminderCandidateCard: View {
         .padding(18)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(.quaternary, lineWidth: 1))
+    }
+}
+
+private struct ReminderDeliveryBadge: View {
+    let state: ReminderDeliveryState?
+
+    private var presentation: (text: String, symbol: String, color: Color) {
+        switch state {
+        case .pending:
+            return ("已写入系统通知队列，等待投递", "clock.badge.checkmark", .blue)
+        case .delivered:
+            return ("已推送到 macOS 通知中心", "checkmark.bubble", .green)
+        case .notFound:
+            return ("未在 macOS 通知队列中找到", "exclamationmark.triangle", .orange)
+        case .none:
+            return ("正在核验 macOS 通知状态", "arrow.triangle.2.circlepath", .secondary)
+        }
+    }
+
+    var body: some View {
+        Label(presentation.text, systemImage: presentation.symbol)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(presentation.color)
     }
 }
 

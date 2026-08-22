@@ -88,6 +88,34 @@ public final class LocalNotificationScheduler {
         } catch {
             throw notificationError(from: error)
         }
+
+        guard try await deliveryStates(for: [reminder])[reminder.id] == .pending else {
+            center.removePendingNotificationRequests(withIdentifiers: [reminder.id.uuidString])
+            throw ReminderNotificationError.notificationSchedulingFailed
+        }
+    }
+
+    /// 仅核验由 Recall 创建的通知标识；不读取或暴露其他应用的通知内容。
+    public func deliveryStates(for reminders: [ReminderCandidate]) async throws -> [UUID: ReminderDeliveryState] {
+        let remindersWithDates = reminders.filter { $0.dueAt != nil }
+        guard !remindersWithDates.isEmpty else { return [:] }
+
+        let center = try notificationCenter()
+        let pendingIdentifiers = Set(await center.pendingNotificationRequests().map(\.identifier))
+        let deliveredIdentifiers = Set(await center.deliveredNotifications().map { $0.request.identifier })
+
+        return Dictionary(uniqueKeysWithValues: remindersWithDates.map { reminder in
+            let identifier = reminder.id.uuidString
+            let status: ReminderDeliveryState
+            if deliveredIdentifiers.contains(identifier) {
+                status = .delivered
+            } else if pendingIdentifiers.contains(identifier) {
+                status = .pending
+            } else {
+                status = .notFound
+            }
+            return (reminder.id, status)
+        })
     }
 
     public func scheduleDailyReview(hour: Int = 18, minute: Int = 0) async throws {
@@ -122,7 +150,10 @@ public final class LocalNotificationScheduler {
 
     public func cancel(_ reminder: ReminderCandidate) {
         guard isNotificationHostAvailable else { return }
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [reminder.id.uuidString])
+        let identifiers = [reminder.id.uuidString]
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
     }
 
     private var isNotificationHostAvailable: Bool {
@@ -145,6 +176,15 @@ public final class LocalNotificationScheduler {
         }
         return .notificationSchedulingFailed
     }
+}
+
+public enum ReminderDeliveryState: String, Sendable, Hashable {
+    /// 通知请求已被 macOS 接受，等待达到用户确认的时间。
+    case pending
+    /// macOS 已将通知交付给通知中心；用户是否已阅读由系统负责。
+    case delivered
+    /// 本地记录显示已安排，但系统队列中没有对应请求或已投递通知。
+    case notFound
 }
 
 public enum ReminderNotificationError: LocalizedError {
