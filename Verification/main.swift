@@ -9,6 +9,7 @@ struct RecallVerifier {
             try await verifyEventRuleMigration()
             try verifyPrivacy()
             try verifySearch()
+            try verifyTimelineDayGrouping()
             try verifyReminders()
             try await verifyReminderSchedulePersistence()
             try await verifyNotificationHostGuard()
@@ -21,9 +22,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 15 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 16 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 14 integration checks.")
+                print("PASS: RecallVerifier completed 15 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -71,6 +72,24 @@ struct RecallVerifier {
         let results = MemorySearchEngine().search(MemorySearchQuery(text: "OCR 会议摘要"), in: [unrelated, matching])
         try expect(results.first?.capture.id == matching.id, "搜索没有优先返回相关记录")
         try expect(results.first?.matchedTerms.contains("ocr") == true, "搜索未报告匹配关键词")
+    }
+
+    private static func verifyTimelineDayGrouping() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+
+        let previousNight = calendar.date(from: DateComponents(year: 2026, month: 8, day: 21, hour: 23, minute: 58))!
+        let earlyMorning = calendar.date(from: DateComponents(year: 2026, month: 8, day: 22, hour: 0, minute: 2))!
+        let laterMorning = calendar.date(from: DateComponents(year: 2026, month: 8, day: 22, hour: 10, minute: 15))!
+        let older = makeCapture(text: "前一天晚间记录", app: "Notes", createdAt: previousNight)
+        let early = makeCapture(text: "午夜后记录", app: "Notes", createdAt: earlyMorning)
+        let later = makeCapture(text: "当天上午记录", app: "Notes", createdAt: laterMorning)
+
+        let groups = TimelineGrouping.dayGroups(for: [early, older, later], calendar: calendar)
+        try expect(groups.count == 2, "时间线没有按本地自然日分组")
+        try expect(calendar.isDate(groups[0].day, inSameDayAs: laterMorning), "最新日期组排序错误")
+        try expect(groups[0].captures.map(\.id) == [later.id, early.id], "同一天内的记录没有按从新到旧排序")
+        try expect(calendar.isDate(groups[1].day, inSameDayAs: previousNight), "午夜前记录被归入了错误日期")
     }
 
     private static func verifyReminders() throws {
@@ -263,9 +282,10 @@ struct RecallVerifier {
         try expect(answer.content.contains("周五提交设计方案"), "本地回答未包含检索记录")
     }
 
-    private static func makeCapture(text: String, app: String) -> CaptureRecord {
+    private static func makeCapture(text: String, app: String, createdAt: Date = .now) -> CaptureRecord {
         CaptureRecord(
             eventTemplate: .manualMoment,
+            createdAt: createdAt,
             sourceAppName: app,
             sourceBundleIdentifier: "com.example.\(app.lowercased())",
             windowTitle: "验证窗口",

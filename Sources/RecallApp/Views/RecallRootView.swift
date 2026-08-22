@@ -159,48 +159,202 @@ private struct RecordSheet: View {
 private struct TimelineView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var searchText = ""
+    @State private var expandedDayIDs: Set<Date> = []
 
     private var captures: [CaptureRecord] {
         guard !searchText.isEmpty else { return model.state.captures }
         return MemorySearchEngine().search(MemorySearchQuery(text: searchText), in: model.state.captures).map(\.capture)
     }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("记忆时间线")
-                        .font(.title2.weight(.semibold))
-                    Text("每条记录均可追溯、删除，并默认仅存在本机。")
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("检查屏幕权限") { model.requestScreenRecordingAccess() }
-            }
-            .padding()
-            TextField("搜索本地记忆", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .padding(.horizontal)
-                .padding(.bottom, 10)
+    private var dayGroups: [TimelineDayGroup] {
+        TimelineGrouping.dayGroups(for: captures)
+    }
 
-            if captures.isEmpty {
-                ContentUnavailableView("还没有记忆记录", systemImage: "tray", description: Text("使用右上角“记录此刻”保存第一个工作节点。"))
-            } else {
-                List(captures) { capture in
-                    CaptureRow(capture: capture)
-                        .contextMenu {
-                            Button("删除记录", role: .destructive) { model.deleteCapture(capture) }
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                timelineHeader
+                TextField("搜索本地记忆", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal)
+                    .padding(.bottom, 12)
+
+                if captures.isEmpty {
+                    ContentUnavailableView(
+                        isSearching ? "没有匹配的本地记录" : "还没有记忆记录",
+                        systemImage: isSearching ? "magnifyingglass" : "tray",
+                        description: Text(isSearching ? "可尝试日期、应用名称或其他关键词。" : "使用右上角“记录此刻”保存第一个工作节点。")
+                    )
+                } else {
+                    dayNavigator(proxy: proxy)
+                    Divider()
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                            ForEach(dayGroups) { group in
+                                TimelineDaySection(
+                                    group: group,
+                                    title: dayTitle(for: group.day),
+                                    isSearchResult: isSearching,
+                                    isExpanded: expandedDayIDs.contains(group.id),
+                                    onToggle: { toggle(group.id) },
+                                    onDelete: model.deleteCapture
+                                )
+                                .id(group.id)
+                            }
                         }
+                        .padding(.horizontal)
+                        .padding(.bottom, 24)
+                    }
                 }
-                .listStyle(.inset)
+            }
+            .onAppear { initializeExpandedDays() }
+            .onChange(of: searchText) { _, _ in
+                if isSearching {
+                    expandedDayIDs = Set(dayGroups.map(\.id))
+                } else {
+                    initializeExpandedDays()
+                }
+            }
+            .onChange(of: dayGroups.map(\.id)) { _, _ in
+                initializeExpandedDays()
             }
         }
+    }
+
+    private var timelineHeader: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("记忆时间线")
+                    .font(.title2.weight(.semibold))
+                Text("按天回看你的本地记录；每条内容仍可追溯和删除。")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("检查屏幕权限") { model.requestScreenRecordingAccess() }
+        }
+        .padding()
+    }
+
+    private func dayNavigator(proxy: ScrollViewProxy) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(dayGroups.prefix(10)) { group in
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            expandedDayIDs.insert(group.id)
+                            proxy.scrollTo(group.id, anchor: .top)
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(navigationTitle(for: group.day))
+                            Text("\(group.captures.count)")
+                                .font(.caption.weight(.bold))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(.quaternary, in: Capsule())
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 12)
+        }
+    }
+
+    private func initializeExpandedDays() {
+        let availableDays = Set(dayGroups.map(\.id))
+        if isSearching {
+            expandedDayIDs = availableDays
+        } else if expandedDayIDs.isEmpty {
+            expandedDayIDs = Set(dayGroups.filter { isRecentDay($0.day) }.map(\.id))
+        } else {
+            expandedDayIDs.formIntersection(availableDays)
+        }
+    }
+
+    private func toggle(_ day: Date) {
+        if expandedDayIDs.contains(day) {
+            expandedDayIDs.remove(day)
+        } else {
+            expandedDayIDs.insert(day)
+        }
+    }
+
+    private func isRecentDay(_ day: Date) -> Bool {
+        let calendar = Calendar.current
+        let sevenDaysAgo = calendar.date(byAdding: .day, value: -6, to: Date.now) ?? Date.now
+        return day >= calendar.startOfDay(for: sevenDaysAgo)
+    }
+
+    private func navigationTitle(for day: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(day) { return "今天" }
+        if calendar.isDateInYesterday(day) { return "昨天" }
+        return day.formatted(.dateTime.month().day())
+    }
+
+    private func dayTitle(for day: Date) -> String {
+        let calendar = Calendar.current
+        let date = day.formatted(.dateTime.month().day().weekday(.wide))
+        if calendar.isDateInToday(day) { return "今天 · \(date)" }
+        if calendar.isDateInYesterday(day) { return "昨天 · \(date)" }
+        return date
+    }
+}
+
+private struct TimelineDaySection: View {
+    let group: TimelineDayGroup
+    let title: String
+    let isSearchResult: Bool
+    let isExpanded: Bool
+    let onToggle: () -> Void
+    let onDelete: (CaptureRecord) -> Void
+
+    var body: some View {
+        Section {
+            if isExpanded {
+                ForEach(group.captures) { capture in
+                    CaptureRow(capture: capture, onDelete: onDelete)
+                        .contextMenu {
+                            Button("删除记录", role: .destructive) { onDelete(capture) }
+                        }
+                    Divider()
+                }
+            }
+        } header: {
+            Button(action: onToggle) {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(.headline)
+                        Text(isSearchResult ? "命中 \(group.captures.count) 条" : "\(group.captures.count) 条记录")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Color(nsColor: .windowBackgroundColor))
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+        }
+        .padding(.bottom, 8)
     }
 }
 
 private struct CaptureRow: View {
-    @EnvironmentObject private var model: RecallAppModel
     let capture: CaptureRecord
+    let onDelete: (CaptureRecord) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -221,7 +375,7 @@ private struct CaptureRow: View {
                     .lineLimit(2)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
-                    Text(capture.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    Text(capture.createdAt.formatted(date: .omitted, time: .shortened))
                     if let source = capture.sourceAppName { Text(source) }
                     ForEach(capture.tags.prefix(3), id: \.self) { tag in
                         Text(tag).padding(.horizontal, 6).padding(.vertical, 2).background(.quaternary, in: Capsule())
@@ -231,12 +385,12 @@ private struct CaptureRow: View {
                 .foregroundStyle(.tertiary)
             }
             Spacer()
-            Button(role: .destructive) { model.deleteCapture(capture) } label: {
+            Button(role: .destructive) { onDelete(capture) } label: {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 8)
     }
 }
 
