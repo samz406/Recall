@@ -2,6 +2,12 @@ import Foundation
 import RecallKit
 import SwiftUI
 
+enum ReminderDiscoveryStatus: Equatable {
+    case idle
+    case searching(scannedRecordCount: Int)
+    case completed(scannedRecordCount: Int, discoveredCount: Int, completedAt: Date)
+}
+
 @MainActor
 final class RecallAppModel: ObservableObject {
     @Published var state = RecallState()
@@ -13,6 +19,7 @@ final class RecallAppModel: ObservableObject {
     @Published private(set) var assistantMessageNeedingAnimationID: UUID?
     @Published private(set) var diagnosticEntries: [RecallDiagnosticEntry]
     @Published private(set) var reminderDeliveryStates: [UUID: ReminderDeliveryState] = [:]
+    @Published private(set) var reminderDiscoveryStatus: ReminderDiscoveryStatus = .idle
 
     let storage: RecallStorage
     private let store: FileMemoryStore
@@ -277,20 +284,40 @@ final class RecallAppModel: ObservableObject {
     }
 
     func proposeReminders() {
-        // 此操作只读取已经持久化在 state 中的 OCR 记录；不调用截图管线，也不需要屏幕录制权限。
-        // 同时清除先前一次记录操作留下的非致命采集错误，避免其误显示在提醒流程中。
+        // 仅检索已经持久化在 state 中的 OCR 文本；不会调用截图管线，也不需要屏幕录制权限。
+        if case .searching = reminderDiscoveryStatus { return }
         errorMessage = nil
-        let newCandidates = reminderExtractor.candidates(from: state.captures, existing: state.reminders)
-        guard !newCandidates.isEmpty else {
-            noticeMessage = "已检查现有记忆，暂未发现新的待确认提醒。"
-            return
-        }
+        let captures = state.captures
+        let existingReminders = state.reminders
+        reminderDiscoveryStatus = .searching(scannedRecordCount: captures.count)
+
         Task {
+            // 让“正在检索”状态先渲染，再对所有本地记录执行候选提取与去重。
+            await Task.yield()
+            let newCandidates = reminderExtractor.candidates(from: captures, existing: existingReminders)
+            let completedAt = Date.now
+            guard !newCandidates.isEmpty else {
+                reminderDiscoveryStatus = .completed(
+                    scannedRecordCount: captures.count,
+                    discoveredCount: 0,
+                    completedAt: completedAt
+                )
+                noticeMessage = captures.isEmpty
+                    ? "当前还没有可检索的本地记忆。"
+                    : "已检索 \(captures.count) 条本地记录，暂未发现新的待确认提醒。"
+                return
+            }
             do {
-                try await store.replaceReminders(newCandidates + state.reminders)
+                try await store.replaceReminders(newCandidates + existingReminders)
                 await refresh()
-                noticeMessage = "发现 \(newCandidates.count) 项待确认提醒。"
+                reminderDiscoveryStatus = .completed(
+                    scannedRecordCount: captures.count,
+                    discoveredCount: newCandidates.count,
+                    completedAt: completedAt
+                )
+                noticeMessage = "已检索 \(captures.count) 条本地记录，发现 \(newCandidates.count) 项待确认提醒。"
             } catch {
+                reminderDiscoveryStatus = .idle
                 errorMessage = error.localizedDescription
             }
         }

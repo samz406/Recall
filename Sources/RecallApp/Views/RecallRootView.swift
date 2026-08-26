@@ -183,39 +183,44 @@ private struct TimelineView: View {
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
                 timelineHeader
-                TextField("搜索本地记忆", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(.horizontal)
-                    .padding(.bottom, 12)
-
-                if captures.isEmpty {
-                    ContentUnavailableView(
-                        isSearching ? "没有匹配的本地记录" : "还没有记忆记录",
-                        systemImage: isSearching ? "magnifyingglass" : "tray",
-                        description: Text(isSearching ? "可尝试日期、应用名称或其他关键词。" : "使用右上角“记录此刻”保存第一个工作节点。")
-                    )
+                if captures.isEmpty && !isSearching {
+                    timelineEmptyState
                 } else {
-                    dayNavigator(proxy: proxy)
-                    Divider()
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                            ForEach(dayGroups) { group in
-                                TimelineDaySection(
-                                    group: group,
-                                    title: dayTitle(for: group.day),
-                                    isSearchResult: isSearching,
-                                    isExpanded: expandedDayIDs.contains(group.id),
-                                    onToggle: { toggle(group.id) },
-                                    onDelete: model.deleteCapture
-                                )
-                                .id(group.id)
+                    TextField("搜索本地记忆", text: $searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .padding(.horizontal, 32)
+                        .padding(.bottom, 14)
+
+                    if captures.isEmpty {
+                        ContentUnavailableView(
+                            "没有匹配的本地记录",
+                            systemImage: "magnifyingglass",
+                            description: Text("可尝试日期、应用名称或其他关键词。")
+                        )
+                    } else {
+                        dayNavigator(proxy: proxy)
+                        Divider()
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                                ForEach(dayGroups) { group in
+                                    TimelineDaySection(
+                                        group: group,
+                                        title: dayTitle(for: group.day),
+                                        isSearchResult: isSearching,
+                                        isExpanded: expandedDayIDs.contains(group.id),
+                                        onToggle: { toggle(group.id) },
+                                        onDelete: model.deleteCapture
+                                    )
+                                    .id(group.id)
+                                }
                             }
+                            .padding(.horizontal, 32)
+                            .padding(.bottom, 24)
                         }
-                        .padding(.horizontal)
-                        .padding(.bottom, 24)
                     }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .onAppear { initializeExpandedDays() }
             .onChange(of: searchText) { _, _ in
                 if isSearching {
@@ -231,17 +236,100 @@ private struct TimelineView: View {
     }
 
     private var timelineHeader: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center, spacing: 18) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 46, height: 46)
+                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14))
+            VStack(alignment: .leading, spacing: 5) {
                 Text("记忆时间线")
                     .font(.title2.weight(.semibold))
-                Text("按天回看你的本地记录；每条内容仍可追溯和删除。")
+                Text("按天回看本地记录；每条内容都可以追溯和删除。")
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
-            Spacer()
-            Button("检查屏幕权限") { model.requestScreenRecordingAccess() }
+            Spacer(minLength: 20)
+            Label("本地优先", systemImage: "lock.fill")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.quaternary, in: Capsule())
+            Button {
+                model.requestScreenRecordingAccess()
+            } label: {
+                Label("检查屏幕权限", systemImage: "checkmark.shield")
+            }
+            .buttonStyle(.bordered)
         }
-        .padding()
+        .padding(.horizontal, 32)
+        .padding(.top, 28)
+        .padding(.bottom, 20)
+    }
+
+    private var timelineEmptyState: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            HStack(alignment: .top, spacing: 18) {
+                Image(systemName: "tray.and.arrow.down.fill")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 58, height: 58)
+                    .background(Color.accentColor.opacity(0.11), in: RoundedRectangle(cornerRadius: 18))
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("从第一条本地记录开始")
+                        .font(.title3.weight(.semibold))
+                    Text("完成屏幕录制授权后，启用的记录事件产生的内容会显示在这里。所有截图、OCR 和索引默认保存在这台 Mac 上。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Divider()
+
+            HStack(alignment: .top, spacing: 22) {
+                TimelineEmptyStateStep(
+                    number: "1",
+                    icon: "checkmark.shield",
+                    title: "确认屏幕权限",
+                    detail: "只在你主动确认或启用的事件触发时采集。"
+                )
+                Divider().frame(height: 48)
+                TimelineEmptyStateStep(
+                    number: "2",
+                    icon: "slider.horizontal.3",
+                    title: "设置记录事件",
+                    detail: "在左侧“记录事件”中选择需要的触发方式。"
+                )
+                Divider().frame(height: 48)
+                TimelineEmptyStateStep(
+                    number: "3",
+                    icon: "calendar.badge.clock",
+                    title: "回看与总结",
+                    detail: "记录会按天整理，并可生成每日总结。"
+                )
+            }
+
+            HStack(spacing: 12) {
+                Button {
+                    model.requestScreenRecordingAccess()
+                } label: {
+                    Label("检查屏幕权限", systemImage: "checkmark.shield")
+                }
+                .buttonStyle(.borderedProminent)
+                Text("你随时可以在“隐私与模型”中暂停采集或删除本地数据。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(28)
+        .frame(maxWidth: 820, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22))
+        .overlay(RoundedRectangle(cornerRadius: 22).stroke(.quaternary, lineWidth: 1))
+        .padding(.horizontal, 32)
+        .padding(.top, 20)
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 
     private func dayNavigator(proxy: ScrollViewProxy) -> some View {
@@ -309,6 +397,32 @@ private struct TimelineView: View {
         if calendar.isDateInToday(day) { return "今天 · \(date)" }
         if calendar.isDateInYesterday(day) { return "昨天 · \(date)" }
         return date
+    }
+}
+
+private struct TimelineEmptyStateStep: View {
+    let number: String
+    let icon: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Text(number)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(Color.accentColor, in: Circle())
+            VStack(alignment: .leading, spacing: 4) {
+                Label(title, systemImage: icon)
+                    .font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -1101,20 +1215,26 @@ private struct RemindersView: View {
         model.state.reminders.filter { $0.status == .scheduled }
     }
 
+    private var isDiscovering: Bool {
+        if case .searching = model.reminderDiscoveryStatus { return true }
+        return false
+    }
+
     var body: some View {
         ScrollView {
-            VStack(spacing: 28) {
+            VStack(spacing: 20) {
                 reminderHeader
                 workflow
+                reminderDiscoveryFeedback
                 if proposed.isEmpty && scheduled.isEmpty {
-                    ReminderEmptyState(onDiscover: model.proposeReminders)
+                    ReminderEmptyState(isDiscovering: isDiscovering, onDiscover: model.proposeReminders)
                 } else {
                     reminderLists
                 }
             }
-            .frame(maxWidth: 980)
+            .frame(maxWidth: 1_100)
             .padding(.horizontal, 40)
-            .padding(.vertical, 34)
+            .padding(.vertical, 30)
             .frame(maxWidth: .infinity)
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -1138,47 +1258,95 @@ private struct RemindersView: View {
     }
 
     private var reminderHeader: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 7) {
-                Label("提醒", systemImage: "bell.badge")
-                    .font(.system(size: 22, weight: .semibold))
-                Text("Recall 只从已有记忆中提出候选；是否提醒、何时提醒，始终由你决定。")
+        HStack(alignment: .center, spacing: 16) {
+            Image(systemName: "bell.badge.fill")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 50, height: 50)
+                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 15))
+            VStack(alignment: .leading, spacing: 5) {
+                Text("提醒")
+                    .font(.system(size: 26, weight: .semibold))
+                Text("从已有记忆中发现线索；是否提醒、何时提醒，始终由你确认。")
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
-            Spacer()
+            Spacer(minLength: 20)
             HStack(spacing: 10) {
                 Button(action: model.verifyReminderDelivery) {
-                    Label("核验推送状态", systemImage: "arrow.clockwise")
+                    Label("核验状态", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.bordered)
                 Button {
                     model.proposeReminders()
                 } label: {
-                    Label("从记忆中发现", systemImage: "magnifyingglass")
+                    if isDiscovering {
+                        HStack(spacing: 7) {
+                            ProgressView().controlSize(.small)
+                            Text("正在检索")
+                        }
+                    } else {
+                        Label("从记忆中发现", systemImage: "magnifyingglass")
+                    }
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(isDiscovering)
             }
         }
-    }
-
-    private var workflow: some View {
-        HStack(spacing: 0) {
-            ReminderWorkflowStep(number: "1", title: "发现线索", detail: "从待办、承诺与截止记录中识别")
-            workflowConnector
-            ReminderWorkflowStep(number: "2", title: "由你确认", detail: "检查来源后再创建提醒")
-            workflowConnector
-            ReminderWorkflowStep(number: "3", title: "按时通知", detail: "只投递你明确同意的事项")
-        }
-        .padding(18)
+        .padding(20)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary, lineWidth: 1))
     }
 
-    private var workflowConnector: some View {
-        Image(systemName: "arrow.right")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.tertiary)
-            .frame(width: 42)
+    private var workflow: some View {
+        HStack(spacing: 14) {
+            Label("提醒不会自动创建", systemImage: "hand.raised.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+                .padding(.trailing, 10)
+            Divider().frame(height: 26)
+            ReminderWorkflowStep(number: "1", title: "识别线索", detail: "待办、承诺与截止")
+            ReminderWorkflowStep(number: "2", title: "查看来源", detail: "核对对应记忆")
+            ReminderWorkflowStep(number: "3", title: "由你安排", detail: "确认后才通知")
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 13)
+        .background(Color.accentColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.accentColor.opacity(0.16), lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private var reminderDiscoveryFeedback: some View {
+        switch model.reminderDiscoveryStatus {
+        case .idle:
+            EmptyView()
+        case let .searching(scannedRecordCount):
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("正在检索 \(scannedRecordCount) 条本地记录中的待办、承诺和截止线索…")
+                    .font(.subheadline)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color.accentColor.opacity(0.075), in: RoundedRectangle(cornerRadius: 14))
+        case let .completed(scannedRecordCount, discoveredCount, _):
+            HStack(spacing: 10) {
+                Image(systemName: discoveredCount > 0 ? "checkmark.circle.fill" : "magnifyingglass")
+                    .foregroundStyle(discoveredCount > 0 ? .green : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(discoveredCount > 0 ? "已从 \(scannedRecordCount) 条本地记录中发现 \(discoveredCount) 项候选" : "已检索 \(scannedRecordCount) 条本地记录，暂未发现新的候选")
+                        .font(.subheadline.weight(.medium))
+                    Text(discoveredCount > 0 ? "候选已加入“待你确认”，请先查看来源再安排提醒。" : "以后新增记录后，可以再次运行本地检索。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background((discoveredCount > 0 ? Color.green : Color.secondary).opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+        }
     }
 
     @ViewBuilder
@@ -1260,38 +1428,53 @@ private struct ReminderWorkflowStep: View {
 }
 
 private struct ReminderEmptyState: View {
+    let isDiscovering: Bool
     let onDiscover: () -> Void
 
     var body: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "bell.and.waves.left.and.right")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 72, height: 72)
-                .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 22))
-            VStack(spacing: 7) {
+        HStack(alignment: .top, spacing: 30) {
+            VStack(alignment: .leading, spacing: 14) {
+                Image(systemName: "bell.and.waves.left.and.right")
+                    .font(.system(size: 27, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 58, height: 58)
+                    .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 18))
                 Text("还没有待确认的提醒")
-                    .font(.title2.weight(.semibold))
-                Text("你可以让 Recall 检查已有记忆中的待办、承诺和截止事项；它只会提出候选，不会自动打扰你。")
-                    .multilineTextAlignment(.center)
+                    .font(.title3.weight(.semibold))
+                Text("检查已有记忆中的待办、承诺和截止事项。Recall 只会提出候选，不会自行打扰你。")
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: 460)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(action: onDiscover) {
+                    if isDiscovering {
+                        HStack(spacing: 7) {
+                            ProgressView().controlSize(.small)
+                            Text("正在检索本地记忆")
+                        }
+                    } else {
+                        Label("从记忆中发现提醒", systemImage: "sparkle.magnifyingglass")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isDiscovering)
             }
-            Button(action: onDiscover) {
-                Label("从记忆中发现提醒", systemImage: "sparkle.magnifyingglass")
+            .frame(maxWidth: 340, alignment: .leading)
+
+            Divider().frame(height: 210)
+
+            VStack(alignment: .leading, spacing: 18) {
+                Text("发现后，你始终拥有决定权")
+                    .font(.subheadline.weight(.semibold))
+                ReminderFeature(icon: "checkmark.circle", title: "识别待办", detail: "从已有记忆中找出值得跟进的事项")
+                ReminderFeature(icon: "person.crop.circle.badge.clock", title: "关联来源", detail: "可回看每项候选来自哪条本地记录")
+                ReminderFeature(icon: "hand.tap", title: "由你决定", detail: "只有确认并设置时间后才安排通知")
             }
-            .buttonStyle(.borderedProminent)
-            Divider().padding(.vertical, 4)
-            HStack(spacing: 22) {
-                ReminderFeature(icon: "checkmark.circle", title: "识别待办", detail: "例如“明天回复客户”")
-                ReminderFeature(icon: "person.crop.circle.badge.clock", title: "关联来源", detail: "查看它来自哪条记忆")
-                ReminderFeature(icon: "hand.tap", title: "由你决定", detail: "确认后才安排通知")
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(38)
-        .frame(maxWidth: 760)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 24))
-        .overlay(RoundedRectangle(cornerRadius: 24).stroke(.quaternary, lineWidth: 1))
+        .padding(30)
+        .frame(maxWidth: 880, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22))
+        .overlay(RoundedRectangle(cornerRadius: 22).stroke(.quaternary, lineWidth: 1))
     }
 }
 
@@ -1688,107 +1871,130 @@ private struct PrivacyAndModelView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 26) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("隐私与模型")
-                        .font(.system(size: 26, weight: .semibold))
-                    Text("管理本地数据边界，并配置“问一问”实际调用的模型连接。")
-                        .foregroundStyle(.secondary)
-                }
+            VStack(alignment: .leading, spacing: 22) {
+                settingsHeader
 
-                settingsCard(title: "屏幕与数据", icon: "lock.shield") {
-                    Toggle("暂停全部屏幕采集", isOn: privacyBinding(\.screenCapturePaused))
-                    Toggle("保留原始截图", isOn: privacyBinding(\.retainScreenshots))
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("排除的 Bundle ID")
-                            .font(.subheadline.weight(.medium))
-                        TextField("例如：com.apple.MobileSMS, com.apple.Passwords", text: $excludedApps)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    Button("请求/检查屏幕录制权限") { model.requestScreenRecordingAccess() }
-                        .buttonStyle(.bordered)
-                }
-
-                settingsCard(title: "模型连接", icon: "cpu") {
-                    HStack(alignment: .top, spacing: 14) {
-                        Image(systemName: activeConfiguration.provider == .anthropicCompatible ? "a.circle.fill" : "o.circle.fill")
-                            .font(.system(size: 28))
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 42, height: 42)
-                            .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(activeConfiguration.provider.title)
-                                .font(.headline)
-                            Text(activeConfiguration.model)
+                LazyVGrid(
+                    columns: [GridItem(.flexible(minimum: 360), spacing: 18), GridItem(.flexible(minimum: 360), spacing: 18)],
+                    alignment: .leading,
+                    spacing: 18
+                ) {
+                    settingsCard(title: "屏幕与数据", icon: "lock.shield") {
+                        Toggle("暂停全部屏幕采集", isOn: privacyBinding(\.screenCapturePaused))
+                        Toggle("保留原始截图", isOn: privacyBinding(\.retainScreenshots))
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text("排除的应用")
                                 .font(.subheadline.weight(.medium))
-                            Text(activeConfiguration.baseURLString)
+                            TextField("输入 Bundle ID，以逗号分隔", text: $excludedApps)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        HStack {
+                            Label(model.state.privacy.screenCapturePaused ? "采集已暂停" : "采集由你控制", systemImage: model.state.privacy.screenCapturePaused ? "pause.circle" : "hand.raised.fill")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
-                        Spacer()
-                        if savedKeyExists {
-                            Label("Key 已保存", systemImage: "checkmark.circle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.green)
-                        } else {
-                            Label("尚未配置 Key", systemImage: "exclamationmark.circle")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
+                            Spacer()
+                            Button("检查屏幕权限") { model.requestScreenRecordingAccess() }
+                                .buttonStyle(.bordered)
                         }
                     }
 
-                    Text("点击下方按钮会打开独立的原生编辑窗口。地址、模型和 API Key 都可以直接输入；保存后立即用于“问一问”。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    HStack {
-                        Toggle("允许问一问发送已检索的脱敏文本", isOn: privacyBinding(\.cloudUseEnabled))
-                        Spacer()
-                        Button("编辑模型连接") { isEditingModelConnection = true }
-                            .buttonStyle(.borderedProminent)
+                    settingsCard(title: "模型连接", icon: "cpu") {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: activeConfiguration.provider == .anthropicCompatible ? "a.circle.fill" : "o.circle.fill")
+                                .font(.system(size: 25))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 42, height: 42)
+                                .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(activeConfiguration.provider.title)
+                                    .font(.headline)
+                                Text(activeConfiguration.model)
+                                    .font(.subheadline.weight(.medium))
+                                Text(activeConfiguration.baseURLString)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .textSelection(.enabled)
+                            }
+                            Spacer()
+                            Image(systemName: savedKeyExists ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                                .foregroundStyle(savedKeyExists ? .green : .orange)
+                        }
+                        Toggle("允许发送已检索的脱敏文本", isOn: privacyBinding(\.cloudUseEnabled))
+                        HStack {
+                            Text(savedKeyExists ? "连接凭据已保存在本机" : "配置 Key 后才会使用云端模型")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("编辑连接") { isEditingModelConnection = true }
+                                .buttonStyle(.borderedProminent)
+                        }
                     }
-                }
 
-                settingsCard(title: "每日总结", icon: "calendar.badge.clock", tint: .indigo) {
-                    Toggle("每天自动总结前一天的记录", isOn: dailySummaryEnabledBinding)
-                    DatePicker(
-                        "执行时间",
-                        selection: dailySummaryTimeBinding,
-                        displayedComponents: .hourAndMinute
-                    )
-                    .datePickerStyle(.field)
-                    .disabled(!model.state.dailySummarySettings.isEnabled)
-                    Text("到达设定时间后，Recall 会汇总前一天已有的显式记录并保存到“每日总结”。若已允许云端文本使用且配置 API Key，会发送经过脱敏和长度裁剪的相关文本；否则保存本地回退摘要。应用未运行期间不会在后台发起模型请求，下次打开且已过设定时间时会补生成一次。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                settingsCard(title: "本地诊断", icon: "stethoscope", tint: .orange) {
-                    Text("仅记录 Recall 自身的权限状态、事件模板、操作结果和错误代码，最多保留 200 条。不记录 API Key、聊天正文、OCR 文本或截图。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    HStack {
-                        Label("当前 \(model.diagnosticEntries.count) 条", systemImage: "list.bullet.rectangle")
+                    settingsCard(title: "每日总结", icon: "calendar.badge.clock", tint: .indigo) {
+                        Toggle("每天自动汇总前一天", isOn: dailySummaryEnabledBinding)
+                        HStack {
+                            Label(model.state.dailySummarySettings.isEnabled ? "已启用" : "当前关闭", systemImage: model.state.dailySummarySettings.isEnabled ? "checkmark.circle.fill" : "pause.circle")
+                                .font(.caption)
+                                .foregroundStyle(model.state.dailySummarySettings.isEnabled ? .green : .secondary)
+                            Spacer()
+                            DatePicker(
+                                "执行时间",
+                                selection: dailySummaryTimeBinding,
+                                displayedComponents: .hourAndMinute
+                            )
+                            .labelsHidden()
+                            .datePickerStyle(.field)
+                            .disabled(!model.state.dailySummarySettings.isEnabled)
+                        }
+                        Text("仅汇总前一天已保存的显式记录；云端模型未启用时会保存本地回退摘要。应用下次打开时可补生成错过的总结。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("查看异常与状态日志") { isShowingDiagnostics = true }
-                            .buttonStyle(.bordered)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    settingsCard(title: "本地诊断", icon: "stethoscope", tint: .orange) {
+                        Text("仅保留权限状态、事件模板、操作结果和错误代码；不包含 API Key、聊天正文、OCR 或截图。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack {
+                            Label("当前 \(model.diagnosticEntries.count) 条", systemImage: "list.bullet.rectangle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("查看日志") { isShowingDiagnostics = true }
+                                .buttonStyle(.bordered)
+                        }
                     }
                 }
 
-                settingsCard(title: "危险操作", icon: "exclamationmark.triangle", tint: .red) {
-                    Text("删除会同时移除本地记录、关联截图、会话和提醒；此操作无法撤销。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack(alignment: .center, spacing: 14) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .frame(width: 34, height: 34)
+                        .background(Color.red.opacity(0.11), in: RoundedRectangle(cornerRadius: 10))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("危险操作")
+                            .font(.subheadline.weight(.semibold))
+                        Text("删除会同时移除本地记录、关联截图、会话和提醒，且无法撤销。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
                     Button("删除全部本地记忆", role: .destructive) { model.clearAllData() }
+                        .buttonStyle(.bordered)
                 }
+                .padding(16)
+                .background(Color.red.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.red.opacity(0.2), lineWidth: 1))
             }
-            .frame(maxWidth: 900, alignment: .leading)
-            .padding(.horizontal, 38)
+            .frame(maxWidth: 1_100, alignment: .leading)
+            .padding(.horizontal, 40)
             .padding(.vertical, 30)
             .frame(maxWidth: .infinity, alignment: .center)
         }
+        .background(Color(nsColor: .windowBackgroundColor))
         .navigationTitle("隐私与模型")
         .onAppear(perform: load)
         .sheet(isPresented: $isShowingDiagnostics) {
@@ -1808,6 +2014,33 @@ private struct PrivacyAndModelView: View {
                 }
             }
         }
+    }
+
+    private var settingsHeader: some View {
+        HStack(alignment: .center, spacing: 16) {
+            Image(systemName: "lock.shield.fill")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 50, height: 50)
+                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 15))
+            VStack(alignment: .leading, spacing: 5) {
+                Text("隐私与模型")
+                    .font(.system(size: 26, weight: .semibold))
+                Text("统一管理本地数据边界、模型使用和每日总结。")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 5) {
+                Label(model.state.privacy.screenCapturePaused ? "采集已暂停" : "本地数据保护中", systemImage: model.state.privacy.screenCapturePaused ? "pause.circle.fill" : "lock.fill")
+                Label(model.state.privacy.cloudUseEnabled ? "已允许脱敏文本" : "仅本地模式", systemImage: model.state.privacy.cloudUseEnabled ? "cloud.fill" : "desktopcomputer")
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+        }
+        .padding(20)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary, lineWidth: 1))
     }
 
     private func settingsCard<Content: View>(title: String, icon: String, tint: Color = .accentColor, @ViewBuilder content: () -> Content) -> some View {
