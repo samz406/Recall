@@ -81,17 +81,21 @@ public struct LLMRequest: Sendable {
     public var question: String
     public var context: [CaptureRecord]
     public var conversationSummary: String?
+    /// 用户已保存的、经过长度裁剪的补充摘要语境；不包含截图或新增原始记录。
+    public var supplementaryContext: String?
     public var recentMessages: [ConversationMessage]
 
     public init(
         question: String,
         context: [CaptureRecord],
         conversationSummary: String? = nil,
+        supplementaryContext: String? = nil,
         recentMessages: [ConversationMessage] = []
     ) {
         self.question = question
         self.context = context
         self.conversationSummary = conversationSummary
+        self.supplementaryContext = supplementaryContext
         self.recentMessages = recentMessages
     }
 }
@@ -362,6 +366,9 @@ public struct CompatibleLLM: LLMResponding {
         }
         if let summary = request.conversationSummary, !summary.isEmpty {
             sections.append("会话摘要（仅作语境，不是新的事实证据，且不得与本轮记忆证据冲突）：\n\(summary)")
+        }
+        if let supplementary = request.supplementaryContext, !supplementary.isEmpty {
+            sections.append("补充摘要语境（由用户此前保存的总结构成，仅用于识别跨日期的待办趋势与提出建议；不得将其中未明确的信息写成新的事实，也不得替代本轮记忆证据）：\n\(supplementary)")
         }
         let evidence = request.context.enumerated().map { index, record in
             let timestamp = record.createdAt.formatted(date: .abbreviated, time: .shortened)

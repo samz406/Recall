@@ -12,6 +12,8 @@ struct RecallVerifier {
             try verifyTimelineDayGrouping()
             try verifyReminders()
             try await verifyReminderSchedulePersistence()
+            try await verifyDailySummaryGeneration()
+            try await verifyDailySummaryPersistenceAndDeletion()
             try await verifyNotificationHostGuard()
             try await verifyCapturePipeline()
             try verifyConversationContextCompression()
@@ -22,9 +24,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 16 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 18 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 15 integration checks.")
+                print("PASS: RecallVerifier completed 17 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -119,6 +121,87 @@ struct RecallVerifier {
         let restored = await reloaded.snapshot().reminders.first
         try expect(restored?.status.rawValue == ReminderStatus.scheduled.rawValue, "用户确认的提醒状态没有保存")
         try expect(abs((restored?.dueAt?.timeIntervalSince1970 ?? 0) - selectedDate.timeIntervalSince1970) < 0.01, "用户选择的提醒时间没有保存")
+
+        let proposed = ReminderCandidate(title: "待批量忽略", detail: "验证批量忽略只影响候选提醒。", confidence: 0.7)
+        try await reloaded.updateReminder(proposed)
+        let dismissedCount = try await reloaded.dismissAllProposedReminders()
+        let afterDismissal = await reloaded.snapshot().reminders
+        try expect(dismissedCount == 1, "批量忽略应返回实际更新的待确认提醒数量")
+        try expect(afterDismissal.first(where: { $0.id == proposed.id })?.status == .dismissed, "待确认提醒没有被批量忽略")
+        try expect(afterDismissal.first(where: { $0.id == scheduled.id })?.status == .scheduled, "批量忽略不应影响已安排提醒")
+    }
+
+    private static func verifyDailySummaryGeneration() async throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+        let targetDay = calendar.date(from: DateComponents(year: 2026, month: 8, day: 23, hour: 12))!
+        let source = makeCapture(
+            text: "待办：明天回复客户关于报价的邮件。今天完成了每日总结原型。",
+            app: "Notes",
+            createdAt: targetDay
+        )
+        var unrelated = makeCapture(text: "前一天记录", app: "Notes", createdAt: targetDay.addingTimeInterval(-86_400))
+        unrelated.eventTemplate = .dailyReview
+
+        let recentSummary = DailySummary(
+            day: targetDay.addingTimeInterval(-6 * 86_400),
+            content: "近期待跟进客户报价",
+            sourceCaptureIDs: [],
+            todos: [DailySummaryTodo(title: "跟进客户报价", detail: "历史总结中的待办", priority: .high)],
+            generationKind: .localFallback
+        )
+        let expiredSummary = DailySummary(
+            day: targetDay.addingTimeInterval(-15 * 86_400),
+            content: "不应纳入十四天窗口",
+            sourceCaptureIDs: [],
+            todos: [DailySummaryTodo(title: "过期历史待办", detail: "窗口外", priority: .normal)],
+            generationKind: .localFallback
+        )
+        let generator = DailySummaryGenerator()
+        let selectedRecent = generator.recentSummaries(for: targetDay, from: [recentSummary, expiredSummary], calendar: calendar)
+        try expect(selectedRecent.map(\.id) == [recentSummary.id], "跨周期总结应只选取目标日前十四天内的已保存总结")
+
+        let generation = try await generator.generate(
+            day: targetDay,
+            from: [source, unrelated],
+            previousSummaries: [recentSummary, expiredSummary],
+            responder: nil,
+            calendar: calendar
+        )
+        try expect(generation.generationKind == .localFallback, "未配置模型时应生成本地回退摘要")
+        try expect(generation.sourceCaptureIDs == [source.id], "每日总结混入了非目标日期或旧回顾记录")
+        try expect(generation.todos.count == 1, "每日总结没有提取待办事项")
+        try expect(generation.todos.first?.priority == .high, "带有建议时间的待办应被标为优先处理")
+        try expect(generation.content.contains("每日回忆"), "本地每日总结缺少可读摘要正文")
+        try expect(generation.content.contains("近 14 天提醒与建议"), "每日总结缺少跨周期提醒区块")
+        try expect(generation.content.contains("跟进客户报价"), "近十四天已保存总结中的待办没有被聚合")
+        try expect(!generation.content.contains("过期历史待办"), "十四天窗口外的历史总结不应参与聚合")
+    }
+
+    private static func verifyDailySummaryPersistenceAndDeletion() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        let settings = DailySummarySettings(isEnabled: true, hour: 0, minute: 8)
+        let capture = makeCapture(text: "待办：测试每日总结删除联动", app: "Verifier")
+        let summary = DailySummary(
+            day: capture.createdAt,
+            content: "测试每日总结",
+            sourceCaptureIDs: [capture.id],
+            todos: [DailySummaryTodo(title: "测试待办", detail: "测试来源删除", sourceCaptureIDs: [capture.id], priority: .high)],
+            generationKind: .localFallback
+        )
+        try await store.updateDailySummarySettings(settings)
+        try await store.addCapture(capture)
+        try await store.upsertDailySummary(summary)
+
+        let restored = await store.snapshot()
+        try expect(restored.dailySummarySettings == settings, "每日总结开关或执行时间没有保存")
+        try expect(restored.dailySummaries.count == 1, "每日总结没有保存")
+        _ = try await store.deleteCapture(id: capture.id)
+        let afterDeletion = await store.snapshot()
+        try expect(afterDeletion.dailySummaries.isEmpty, "删除来源记录后应清除包含该内容的每日总结")
     }
 
     @MainActor

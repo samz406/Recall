@@ -19,8 +19,11 @@ final class RecallAppModel: ObservableObject {
     private let pipeline: CapturePipeline
     private let assistant: MemoryAssistant
     private let reminderExtractor = ReminderExtractor()
+    private let dailySummaryGenerator = DailySummaryGenerator()
     private let notificationScheduler = LocalNotificationScheduler()
     private let enterKeyRecorder = GlobalEnterKeyRecorder()
+    private var dailySummaryTimer: Timer?
+    private var isGeneratingDailySummary = false
     private let diagnosticLog: RecallDiagnosticLogStore
 
     init() {
@@ -39,10 +42,13 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
+
     func refresh() async {
         state = await store.snapshot()
         updateEnterKeyRecorder()
         await refreshReminderDeliveryStates()
+        armDailySummaryTimer()
+        generateMissedDailySummaryIfNeeded()
     }
 
     func verifyReminderDelivery() {
@@ -140,21 +146,9 @@ final class RecallAppModel: ObservableObject {
             }
         }
         if updatedRule.template == .dailyReview {
-            Task {
-                do {
-                    if updatedRule.isEnabled {
-                        let granted = try await notificationScheduler.requestAuthorization()
-                        if granted {
-                            try await notificationScheduler.scheduleDailyReview()
-                            noticeMessage = "每日回顾会在每天 18:00 提醒；回顾只汇总已有记录。"
-                        }
-                    } else {
-                        notificationScheduler.cancelDailyReview()
-                    }
-                } catch {
-                    errorMessage = error.localizedDescription
-                }
-            }
+            noticeMessage = updatedRule.isEnabled
+                ? "“定时个人回顾”事件可手动记录；自动每日总结请在“隐私与模型”中单独开启。"
+                : "已关闭手动定时个人回顾事件。"
         }
     }
 
@@ -345,6 +339,20 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
+    func dismissAllProposedReminders() {
+        Task {
+            do {
+                let dismissedCount = try await store.dismissAllProposedReminders()
+                await refresh()
+                noticeMessage = dismissedCount > 0
+                    ? "已忽略 \(dismissedCount) 项待确认提醒。"
+                    : "当前没有待确认提醒。"
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     func updatePrivacy(_ privacy: PrivacySettings) {
         state.privacy = privacy
         updateEnterKeyRecorder()
@@ -352,6 +360,40 @@ final class RecallAppModel: ObservableObject {
             do {
                 try await store.updatePrivacy(privacy)
                 await refresh()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func updateDailySummarySettings(_ settings: DailySummarySettings) {
+        state.dailySummarySettings = settings
+        Task {
+            do {
+                try await store.updateDailySummarySettings(settings)
+                await refresh()
+                if settings.isEnabled {
+                    noticeMessage = "每日总结已开启：将在每天 \(dailySummaryTimeText(settings)) 汇总前一天记录。"
+                } else {
+                    noticeMessage = "每日总结已关闭；已有总结会继续保留，直到你手动删除。"
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func generatePreviousDaySummaryNow() {
+        let previousDay = Calendar.current.date(byAdding: .day, value: -1, to: .now) ?? .now
+        generateDailySummary(for: previousDay, reason: .manual)
+    }
+
+    func deleteDailySummary(_ summary: DailySummary) {
+        Task {
+            do {
+                try await store.deleteDailySummary(id: summary.id)
+                await refresh()
+                noticeMessage = "已删除该每日总结。"
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -396,6 +438,105 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
+    private enum DailySummaryReason {
+        case scheduled
+        case manual
+    }
+
+    private func generateDailySummary(for day: Date, reason: DailySummaryReason) {
+        guard !isGeneratingDailySummary else { return }
+        isGeneratingDailySummary = true
+        isThinking = true
+        let captures = state.captures
+        let previousSummaries = state.dailySummaries
+        let responder = dailySummaryResponder()
+        Task {
+            defer {
+                isGeneratingDailySummary = false
+                isThinking = false
+            }
+            do {
+                let generation = try await dailySummaryGenerator.generate(
+                    day: day,
+                    from: captures,
+                    previousSummaries: previousSummaries,
+                    responder: responder
+                )
+                let summary = DailySummary(
+                    day: day,
+                    content: generation.content,
+                    sourceCaptureIDs: generation.sourceCaptureIDs,
+                    todos: generation.todos,
+                    generationKind: generation.generationKind
+                )
+                try await store.upsertDailySummary(summary)
+                await refresh()
+                if !summary.todos.isEmpty {
+                    proposeReminders()
+                }
+                let mode = summary.generationKind == .cloud ? "模型总结" : "本地回退摘要"
+                noticeMessage = "已生成 \(day.formatted(date: .abbreviated, time: .omitted)) 的\(mode)。"
+                recordDiagnostic(.info, source: "DailySummary", message: "每日总结已生成", metadata: [
+                    "reason": reason == .scheduled ? "scheduled" : "manual",
+                    "generation": summary.generationKind.rawValue,
+                    "sourceCount": "\(summary.sourceCaptureIDs.count)",
+                    "todoCount": "\(summary.todos.count)"
+                ])
+            } catch {
+                recordDiagnostic(.error, source: "DailySummary", message: "每日总结生成失败", metadata: ["error": recallSafeErrorCode(error)])
+                errorMessage = "每日总结未能生成：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func dailySummaryResponder() -> (any LLMResponding)? {
+        let configuration = state.llmConfiguration
+        let apiKey = configuration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard state.privacy.cloudUseEnabled,
+              configuration.provider != .localOnly,
+              !apiKey.isEmpty else {
+            return nil
+        }
+        return CompatibleLLM(configuration: configuration, apiKey: apiKey)
+    }
+
+    private func armDailySummaryTimer() {
+        dailySummaryTimer?.invalidate()
+        dailySummaryTimer = nil
+        let settings = state.dailySummarySettings
+        guard settings.isEnabled else { return }
+
+        let calendar = Calendar.current
+        let now = Date.now
+        var nextTrigger = settings.triggerDate(on: now, calendar: calendar)
+        if nextTrigger <= now {
+            let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) ?? now.addingTimeInterval(86_400)
+            nextTrigger = settings.triggerDate(on: tomorrow, calendar: calendar)
+        }
+        let interval = max(nextTrigger.timeIntervalSince(now), 1)
+        dailySummaryTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                let previousDay = Calendar.current.date(byAdding: .day, value: -1, to: .now) ?? .now
+                self.generateDailySummary(for: previousDay, reason: .scheduled)
+            }
+        }
+    }
+
+    private func generateMissedDailySummaryIfNeeded() {
+        let settings = state.dailySummarySettings
+        guard settings.isEnabled, !isGeneratingDailySummary else { return }
+        let now = Date.now
+        guard now >= settings.triggerDate(on: now) else { return }
+        let previousDay = Calendar.current.date(byAdding: .day, value: -1, to: now) ?? now
+        guard !state.dailySummaries.contains(where: { Calendar.current.isDate($0.day, inSameDayAs: previousDay) }) else { return }
+        generateDailySummary(for: previousDay, reason: .scheduled)
+    }
+
+    private func dailySummaryTimeText(_ settings: DailySummarySettings) -> String {
+        String(format: "%02d:%02d", settings.hour, settings.minute)
+    }
+
     private func makeDailyReviewText() -> String {
         let start = Calendar.current.startOfDay(for: .now)
         let todaysCaptures = state.captures.filter { $0.createdAt >= start && $0.eventTemplate != .dailyReview }
@@ -416,6 +557,7 @@ final class RecallAppModel: ObservableObject {
                 for capture in captures {
                     try await pipeline.removeCapture(capture)
                 }
+                try await store.clearDailySummaries()
                 await refresh()
                 noticeMessage = "已删除全部本地记忆记录。"
             } catch {

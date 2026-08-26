@@ -1,0 +1,361 @@
+import Foundation
+
+public enum DailySummaryGenerationKind: String, Codable, Sendable {
+    case cloud
+    case localFallback
+}
+
+public enum DailySummaryTodoPriority: String, Codable, Sendable {
+    case high
+    case normal
+
+    public var title: String {
+        switch self {
+        case .high: "优先处理"
+        case .normal: "待办"
+        }
+    }
+}
+
+public struct DailySummaryTodo: Identifiable, Codable, Hashable, Sendable {
+    public var id: UUID
+    public var title: String
+    public var detail: String
+    public var dueAt: Date?
+    public var sourceCaptureIDs: [UUID]
+    public var priority: DailySummaryTodoPriority
+
+    public init(
+        id: UUID = UUID(),
+        title: String,
+        detail: String,
+        dueAt: Date? = nil,
+        sourceCaptureIDs: [UUID] = [],
+        priority: DailySummaryTodoPriority
+    ) {
+        self.id = id
+        self.title = title
+        self.detail = detail
+        self.dueAt = dueAt
+        self.sourceCaptureIDs = sourceCaptureIDs
+        self.priority = priority
+    }
+}
+
+public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
+    public var id: UUID
+    /// 总结所对应的本地自然日，始终归一化为当天零点。
+    public var day: Date
+    public var createdAt: Date
+    public var content: String
+    public var sourceCaptureIDs: [UUID]
+    public var todos: [DailySummaryTodo]
+    public var generationKind: DailySummaryGenerationKind
+
+    public init(
+        id: UUID = UUID(),
+        day: Date,
+        createdAt: Date = .now,
+        content: String,
+        sourceCaptureIDs: [UUID],
+        todos: [DailySummaryTodo],
+        generationKind: DailySummaryGenerationKind
+    ) {
+        self.id = id
+        self.day = Calendar.current.startOfDay(for: day)
+        self.createdAt = createdAt
+        self.content = content
+        self.sourceCaptureIDs = sourceCaptureIDs
+        self.todos = todos
+        self.generationKind = generationKind
+    }
+}
+
+public struct DailySummarySettings: Codable, Hashable, Sendable {
+    public var isEnabled: Bool
+    public var hour: Int
+    public var minute: Int
+
+    public init(isEnabled: Bool = false, hour: Int = 0, minute: Int = 5) {
+        self.isEnabled = isEnabled
+        self.hour = min(max(hour, 0), 23)
+        self.minute = min(max(minute, 0), 59)
+    }
+
+    public func triggerDate(on day: Date, calendar: Calendar = .current) -> Date {
+        calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day) ?? day
+    }
+}
+
+public struct DailySummaryGeneration: Sendable {
+    public var content: String
+    public var sourceCaptureIDs: [UUID]
+    public var todos: [DailySummaryTodo]
+    public var generationKind: DailySummaryGenerationKind
+
+    public init(
+        content: String,
+        sourceCaptureIDs: [UUID],
+        todos: [DailySummaryTodo],
+        generationKind: DailySummaryGenerationKind
+    ) {
+        self.content = content
+        self.sourceCaptureIDs = sourceCaptureIDs
+        self.todos = todos
+        self.generationKind = generationKind
+    }
+}
+
+/// 为每日总结准备最小化的本地证据，并在云端模型不可用时提供可追溯的本地摘要。
+/// 调用方必须自行确认用户已启用云端文本使用；本类型不会读取截图或写入持久化存储。
+public struct DailySummaryGenerator: Sendable {
+    public let maxRecords: Int
+    public let maxCharactersPerRecord: Int
+    public let maxRecentSummaries: Int
+    public let maxCharactersPerRecentSummary: Int
+
+    public init(
+        maxRecords: Int = 24,
+        maxCharactersPerRecord: Int = 900,
+        maxRecentSummaries: Int = 14,
+        maxCharactersPerRecentSummary: Int = 1_000
+    ) {
+        self.maxRecords = max(maxRecords, 1)
+        self.maxCharactersPerRecord = max(maxCharactersPerRecord, 120)
+        self.maxRecentSummaries = min(max(maxRecentSummaries, 1), 14)
+        self.maxCharactersPerRecentSummary = max(maxCharactersPerRecentSummary, 240)
+    }
+
+    public func sourceRecords(for day: Date, from captures: [CaptureRecord], calendar: Calendar = .current) -> [CaptureRecord] {
+        let selected = captures
+            .filter { $0.eventTemplate != .dailyReview && calendar.isDate($0.createdAt, inSameDayAs: day) }
+            .sorted { $0.createdAt < $1.createdAt }
+            .prefix(maxRecords)
+
+        return selected.map { record in
+            var minimized = record
+            minimized.imageRelativePath = nil
+            minimized.windowTitle = nil
+            minimized.ocrText = String(record.ocrText.prefix(maxCharactersPerRecord))
+            minimized.summary = record.summary.map { String($0.prefix(260)) }
+            return minimized
+        }
+    }
+
+    /// 仅选择目标日前的十四个自然日中已保存的总结；当天和更早数据均不参与。
+    public func recentSummaries(for day: Date, from summaries: [DailySummary], calendar: Calendar = .current) -> [DailySummary] {
+        let targetDay = calendar.startOfDay(for: day)
+        let earliestDay = calendar.date(byAdding: .day, value: -14, to: targetDay) ?? targetDay
+        return summaries
+            .filter { $0.day >= earliestDay && $0.day < targetDay }
+            .sorted { $0.day > $1.day }
+            .prefix(maxRecentSummaries)
+            .map { summary in
+                var minimized = summary
+                minimized.content = String(summary.content.prefix(maxCharactersPerRecentSummary))
+                return minimized
+            }
+    }
+
+    public func todos(from records: [CaptureRecord]) -> [DailySummaryTodo] {
+        let candidates = ReminderExtractor().candidates(from: records, existing: [])
+        return candidates.map { candidate in
+            let priority: DailySummaryTodoPriority = candidate.dueAt != nil || candidate.confidence >= 0.8 ? .high : .normal
+            return DailySummaryTodo(
+                id: candidate.id,
+                title: candidate.title,
+                detail: candidate.detail,
+                dueAt: candidate.dueAt,
+                sourceCaptureIDs: candidate.sourceCaptureIDs,
+                priority: priority
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.priority != rhs.priority { return lhs.priority == .high }
+            switch (lhs.dueAt, rhs.dueAt) {
+            case let (left?, right?): return left < right
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return lhs.title < rhs.title
+            }
+        }
+    }
+
+    public func generate(
+        day: Date,
+        from captures: [CaptureRecord],
+        previousSummaries: [DailySummary] = [],
+        responder: (any LLMResponding)? = nil,
+        calendar: Calendar = .current
+    ) async throws -> DailySummaryGeneration {
+        let records = sourceRecords(for: day, from: captures, calendar: calendar)
+        let priorityTodos = todos(from: records)
+        let recentSummaries = recentSummaries(for: day, from: previousSummaries, calendar: calendar)
+        guard !records.isEmpty else {
+            return DailySummaryGeneration(
+                content: emptyDaySummary(for: day, recentSummaries: recentSummaries),
+                sourceCaptureIDs: [],
+                todos: [],
+                generationKind: .localFallback
+            )
+        }
+
+        guard let responder else {
+            return DailySummaryGeneration(
+                content: localSummary(for: day, records: records, todos: priorityTodos, recentSummaries: recentSummaries),
+                sourceCaptureIDs: records.map(\.id),
+                todos: priorityTodos,
+                generationKind: .localFallback
+            )
+        }
+
+        let answer = try await responder.answer(to: LLMRequest(
+            question: cloudPrompt(for: day, todos: priorityTodos, hasRecentSummaries: !recentSummaries.isEmpty),
+            context: records,
+            supplementaryContext: recentSummaryContext(recentSummaries)
+        ))
+        return DailySummaryGeneration(
+            content: answer.content,
+            sourceCaptureIDs: answer.citedCaptureIDs,
+            todos: priorityTodos,
+            generationKind: .cloud
+        )
+    }
+
+    public func localSummary(
+        for day: Date,
+        records: [CaptureRecord],
+        todos: [DailySummaryTodo],
+        recentSummaries: [DailySummary]
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_Hans_CN")
+        formatter.dateFormat = "M 月 d 日"
+        let highlights = records.prefix(6).enumerated().map { index, record in
+            let excerpt = record.summary ?? String(record.ocrText.prefix(160))
+            let source = record.sourceAppName ?? "记录"
+            return "- [\(index + 1)] \(source)：\(excerpt)"
+        }
+        let todoLines: [String]
+        if todos.isEmpty {
+            todoLines = ["- 未从当天记录中识别出待办或截止事项。"]
+        } else {
+            todoLines = todos.map { todo in
+                let due = todo.dueAt.map { "；建议时间：\($0.formatted(date: .abbreviated, time: .shortened))" } ?? ""
+                return "- 【\(todo.priority.title)】\(todo.title)\(due)"
+            }
+        }
+        return [
+            "## \(formatter.string(from: day)) 每日回忆",
+            "",
+            "### 重点记录",
+            highlights.joined(separator: "\n"),
+            "",
+            "### 待办与提醒",
+            todoLines.joined(separator: "\n"),
+            "",
+            "### 明日建议",
+            "- 打开“提醒”确认需要设置系统通知的事项，并继续记录关键工作节点。",
+            "",
+            recentSummaryReview(recentSummaries)
+        ].joined(separator: "\n")
+    }
+
+    private func emptyDaySummary(for day: Date, recentSummaries: [DailySummary]) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_Hans_CN")
+        formatter.dateFormat = "M 月 d 日"
+        return [
+            "## \(formatter.string(from: day)) 每日回忆",
+            "",
+            "当天没有可汇总的显式记录。",
+            "",
+            recentSummaryReview(recentSummaries)
+        ].joined(separator: "\n")
+    }
+
+    private func recentSummaryReview(_ recentSummaries: [DailySummary]) -> String {
+        guard !recentSummaries.isEmpty else {
+            return "## 近 14 天提醒与建议\n\n- 近 14 天内尚无已保存的每日总结，暂不能形成跨周期提醒。"
+        }
+        var seenTitles: Set<String> = []
+        let todos = recentSummaries
+            .flatMap(\.todos)
+            .filter { seenTitles.insert($0.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)).inserted }
+            .sorted { lhs, rhs in
+                if lhs.priority != rhs.priority { return lhs.priority == .high }
+                switch (lhs.dueAt, rhs.dueAt) {
+                case let (left?, right?): return left < right
+                case (_?, nil): return true
+                case (nil, _?): return false
+                case (nil, nil): return lhs.title < rhs.title
+                }
+            }
+        let focusLines: [String]
+        if todos.isEmpty {
+            focusLines = ["- 已回顾 \(recentSummaries.count) 份已保存总结，未提取到重复出现的明确待办。"]
+        } else {
+            focusLines = todos.prefix(6).map { todo in
+                let due = todo.dueAt.map { "；建议时间：\($0.formatted(date: .abbreviated, time: .shortened))" } ?? ""
+                return "- 【\(todo.priority.title)】\(todo.title)\(due)"
+            }
+        }
+        return [
+            "## 近 14 天提醒与建议",
+            "",
+            "### 值得关注",
+            focusLines.joined(separator: "\n"),
+            "",
+            "### 行动建议",
+            "- 优先确认带有明确截止时间或重复出现的事项，并在“提醒”中由你确认后创建系统通知。",
+            "- 若某项连续多日仍未推进，将它拆成下一步可完成的小动作，并在下次记录中更新结果。"
+        ].joined(separator: "\n")
+    }
+
+    private func recentSummaryContext(_ summaries: [DailySummary]) -> String? {
+        guard !summaries.isEmpty else { return nil }
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "zh_Hans_CN")
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        let entries = summaries.map { summary in
+            """
+            日期：\(dateFormatter.string(from: summary.day))
+            已保存总结：
+            \(summary.content)
+            """
+        }
+        return "近 14 天内已保存的每日总结（仅用于识别跨日期的待办趋势、提醒风险和建议，不是新的原始记录）：\n\n" + entries.joined(separator: "\n\n")
+    }
+
+    private func cloudPrompt(for day: Date, todos: [DailySummaryTodo], hasRecentSummaries: Bool) -> String {
+        let date = day.formatted(.dateTime.year().month().day())
+        let knownTodos: String
+        if todos.isEmpty {
+            knownTodos = "未从规则中识别出明确待办；请仅在证据确有待办、承诺、截止或回复事项时列出。"
+        } else {
+            knownTodos = todos.map { todo in
+                let due = todo.dueAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "未推断时间"
+                return "- \(todo.priority.title)：\(todo.title)（\(due)）"
+            }.joined(separator: "\n")
+        }
+        return """
+        请基于已提供的、仅属于 \(date) 的记忆证据，生成一份简体中文“每日回忆”。不能补充证据之外的事实；不确定时明确说明。
+
+        请严格使用以下 Markdown 小节：
+        ## 今日重点
+        ## 关键进展
+        ## 待办与提醒
+        ## 近14天提醒与建议
+        ## 明日建议
+
+        “待办与提醒”必须最醒目：将有明确截止、回复、承诺或行动要求的内容放在最前，使用“【优先处理】”或“【待办】”前缀；若没有明确待办，写“未发现明确待办”。每项基于当天原始记忆证据的事实性结论都保留对应的 [数字] 来源标记。
+
+        “近14天提醒与建议”需要参考附带的已保存总结，集中识别仍未收束、重复出现、临近截止或需要跟进的事项；只保留最重要的 3–5 项，给出可执行的下一步。不得把历史总结中没有明确说明的推断写成事实。\(hasRecentSummaries ? "" : "当前没有可用的近14天历史总结，应明确说明这一点。")
+
+        总长度控制在 1,200 个汉字以内。
+
+        规则识别到的待办线索（仍需以证据为准）：
+        \(knownTodos)
+        """
+    }
+}

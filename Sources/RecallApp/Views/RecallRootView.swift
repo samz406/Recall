@@ -1,4 +1,5 @@
 import RecallKit
+import Foundation
 import SwiftUI
 import AppKit
 
@@ -12,11 +13,15 @@ struct RecallRootView: View {
         NavigationSplitView {
             List(selection: $section) {
                 Section("记忆") {
-                    Label("时间线", systemImage: "clock.arrow.circlepath")
-                        .tag(SidebarSection.timeline)
+                    Label("每日总结", systemImage: "calendar.badge.clock")
+                        .badge(highPrioritySummaryTodoCount)
+                        .tag(SidebarSection.dailySummaries)
                     Label("问一问", systemImage: "bubble.left.and.bubble.right")
                         .tag(SidebarSection.chat)
+                    Label("时间线", systemImage: "clock.arrow.circlepath")
+                        .tag(SidebarSection.timeline)
                     Label("提醒", systemImage: "bell.badge")
+                        .badge(proposedReminderCount)
                         .tag(SidebarSection.reminders)
                 }
                 Section("控制") {
@@ -27,21 +32,13 @@ struct RecallRootView: View {
                 }
             }
             .navigationTitle("Recall")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showingRecordSheet = true
-                    } label: {
-                        Label("记录此刻", systemImage: "plus.rectangle.on.rectangle")
-                    }
-                    .disabled(model.isRecording || model.state.privacy.screenCapturePaused)
-                }
-            }
+
         } detail: {
             Group {
                 switch section ?? .timeline {
                 case .timeline: TimelineView()
                 case .chat: ChatView()
+                case .dailySummaries: DailySummariesView()
                 case .reminders: RemindersView()
                 case .rules: EventRulesView()
                 case .privacy: PrivacyAndModelView()
@@ -89,10 +86,18 @@ struct RecallRootView: View {
             Text(model.errorMessage ?? "")
         }
     }
+
+    private var highPrioritySummaryTodoCount: Int {
+        model.state.dailySummaries.first?.todos.filter { $0.priority == .high }.count ?? 0
+    }
+
+    private var proposedReminderCount: Int {
+        model.state.reminders.filter { $0.status == .proposed }.count
+    }
 }
 
 private enum SidebarSection: Hashable {
-    case timeline, chat, reminders, rules, privacy
+    case timeline, chat, dailySummaries, reminders, rules, privacy
 }
 
 private struct NoticeBanner: View {
@@ -606,10 +611,10 @@ private struct RecallMessageCard: View {
         Group {
             if message.role == .user {
                 HStack(alignment: .top) {
-                    Spacer(minLength: 180)
-                    messageBody
                     Spacer(minLength: 24)
+                    messageBody
                 }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "sparkle")
@@ -784,9 +789,309 @@ private struct ChatComposer: View {
     }
 }
 
+private struct DailySummariesView: View {
+    @EnvironmentObject private var model: RecallAppModel
+    @State private var expandedSummaryID: UUID?
+    @State private var visibleSummaryCount = 12
+
+    private let pageSize = 12
+
+    private var summaries: [DailySummary] {
+        model.state.dailySummaries.sorted { $0.day > $1.day }
+    }
+
+    private var visibleSummaries: [DailySummary] {
+        Array(summaries.prefix(visibleSummaryCount))
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                header
+                if summaries.isEmpty {
+                    emptyState
+                } else {
+                    history
+                }
+            }
+            .frame(maxWidth: 920, alignment: .leading)
+            .padding(.horizontal, 40)
+            .padding(.vertical, 34)
+            .frame(maxWidth: .infinity)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .navigationTitle("每日总结")
+        .onAppear {
+            if expandedSummaryID == nil {
+                expandedSummaryID = summaries.first?.id
+            }
+        }
+        .onChange(of: summaries.first?.id) { _, latestID in
+            expandedSummaryID = latestID
+        }
+    }
+
+    private var history: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("每日总结历史")
+                        .font(.title3.weight(.semibold))
+                    Text("默认展开最新一条；其余以紧凑预览显示，点击即可查看全文。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("共 \(summaries.count) 条")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(visibleSummaries) { summary in
+                DailySummaryCard(
+                    summary: summary,
+                    isExpanded: expandedSummaryID == summary.id,
+                    onToggle: { toggle(summary) },
+                    onDelete: { model.deleteDailySummary(summary) }
+                )
+            }
+            if visibleSummaries.count < summaries.count {
+                Button {
+                    visibleSummaryCount += pageSize
+                } label: {
+                    Label("显示更多（还剩 \(summaries.count - visibleSummaries.count) 条）", systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(.bordered)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 4)
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("每日总结", systemImage: "calendar.badge.clock")
+                    .font(.system(size: 24, weight: .semibold))
+                Text("在指定时间汇总前一天的显式记录；仅在你已允许云端文本使用且配置 API Key 时发送最小化、已脱敏的文本片段。")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if model.state.dailySummarySettings.isEnabled {
+                    Label("已开启：每天 \(dailySummaryTimeText) 自动汇总前一天", systemImage: "checkmark.circle.fill")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.green)
+                } else {
+                    Label("自动总结当前关闭，可在“隐私与模型”中设置时间并开启", systemImage: "pause.circle")
+                        .font(.subheadline)
+                        .foregroundStyle(.orange)
+                }
+            }
+            Spacer(minLength: 20)
+            Button {
+                model.generatePreviousDaySummaryNow()
+            } label: {
+                Label("立即总结昨天", systemImage: "sparkles")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(model.isThinking)
+        }
+        .padding(22)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 20))
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(.quaternary, lineWidth: 1))
+    }
+
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Image(systemName: "text.badge.plus")
+                .font(.system(size: 28))
+                .foregroundStyle(Color.accentColor)
+            Text("还没有每日总结")
+                .font(.title2.weight(.semibold))
+            Text("先记录一些工作节点；你可以点击“立即总结昨天”，也可以在“隐私与模型”中设置每天自动执行的时间。")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(28)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 20))
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(.quaternary, lineWidth: 1))
+    }
+
+    private var dailySummaryTimeText: String {
+        let settings = model.state.dailySummarySettings
+        return String(format: "%02d:%02d", settings.hour, settings.minute)
+    }
+
+    private func toggle(_ summary: DailySummary) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            expandedSummaryID = expandedSummaryID == summary.id ? nil : summary.id
+        }
+    }
+}
+
+private struct DailySummaryCard: View {
+    let summary: DailySummary
+    let isExpanded: Bool
+    let onToggle: () -> Void
+    let onDelete: () -> Void
+
+    private var preview: String {
+        let text = summary.content
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+            .prefix(3)
+            .joined(separator: " ")
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+        return text.isEmpty ? "这条总结暂无可预览内容。" : text
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: isExpanded ? 15 : 9) {
+            HStack(alignment: .top, spacing: 12) {
+                Button(action: onToggle) {
+                    HStack(alignment: .top, spacing: 11) {
+                        Image(systemName: isExpanded ? "chevron.down.circle.fill" : "chevron.right.circle")
+                            .foregroundStyle(Color.accentColor)
+                            .font(.title3)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(summary.day.formatted(.dateTime.year().month().day().weekday()))
+                                .font(.headline)
+                            HStack(spacing: 8) {
+                                Label(summary.generationKind == .cloud ? "模型生成" : "本地摘要", systemImage: summary.generationKind == .cloud ? "cpu" : "text.document")
+                                if !summary.todos.isEmpty {
+                                    Label("\(summary.todos.count) 项待办", systemImage: "checklist")
+                                }
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Button("删除", role: .destructive, action: onDelete)
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+            }
+            if isExpanded {
+                Divider()
+                MarkdownDocumentView(markdown: summary.content)
+                    .textSelection(.enabled)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            } else {
+                Text(preview)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .padding(.leading, 34)
+            }
+        }
+        .padding(isExpanded ? 19 : 15)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(isExpanded ? Color.accentColor.opacity(0.28) : Color.gray.opacity(0.22), lineWidth: 1))
+    }
+}
+
+private struct MarkdownDocumentView: View {
+    private enum Block {
+        case heading(level: Int, text: String)
+        case unorderedList(text: String)
+        case orderedList(marker: String, text: String)
+        case divider
+        case paragraph(text: String)
+        case spacer
+    }
+
+    let markdown: String
+
+    private var blocks: [Block] {
+        markdown
+            .components(separatedBy: .newlines)
+            .map { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty { return .spacer }
+                if trimmed == "---" || trimmed == "***" || trimmed == "___" { return .divider }
+                if trimmed.hasPrefix("### ") { return .heading(level: 3, text: String(trimmed.dropFirst(4))) }
+                if trimmed.hasPrefix("## ") { return .heading(level: 2, text: String(trimmed.dropFirst(3))) }
+                if trimmed.hasPrefix("# ") { return .heading(level: 1, text: String(trimmed.dropFirst(2))) }
+                if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") || trimmed.hasPrefix("+ ") {
+                    return .unorderedList(text: String(trimmed.dropFirst(2)))
+                }
+                if let ordered = orderedListParts(from: trimmed) {
+                    return .orderedList(marker: ordered.marker, text: ordered.text)
+                }
+                return .paragraph(text: trimmed)
+            }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                switch block {
+                case let .heading(level, text):
+                    inlineText(text)
+                        .font(headingFont(for: level))
+                        .padding(.top, level == 1 ? 8 : 4)
+                case let .unorderedList(text):
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("•").font(.body.weight(.bold))
+                        inlineText(text).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.leading, 4)
+                case let .orderedList(marker, text):
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(marker).font(.body.weight(.semibold)).foregroundStyle(.secondary)
+                        inlineText(text).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.leading, 4)
+                case .divider:
+                    Divider().padding(.vertical, 4)
+                case let .paragraph(text):
+                    inlineText(text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                case .spacer:
+                    Spacer().frame(height: 4)
+                }
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func inlineText(_ text: String) -> Text {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+        guard let attributed = try? AttributedString(markdown: text, options: options) else {
+            return Text(text)
+        }
+        return Text(attributed)
+    }
+
+    private func headingFont(for level: Int) -> Font {
+        switch level {
+        case 1: .title2.weight(.bold)
+        case 2: .title3.weight(.bold)
+        default: .headline
+        }
+    }
+
+    private func orderedListParts(from line: String) -> (marker: String, text: String)? {
+        guard let dot = line.firstIndex(of: ".") else { return nil }
+        let markerDigits = line[..<dot]
+        guard !markerDigits.isEmpty, markerDigits.allSatisfy(\.isNumber) else { return nil }
+        let contentStart = line.index(after: dot)
+        guard contentStart < line.endIndex, line[contentStart] == " " else { return nil }
+        let textStart = line.index(after: contentStart)
+        return (marker: "\(markerDigits).", text: String(line[textStart...]))
+    }
+}
+
 private struct RemindersView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var reminderBeingScheduled: ReminderCandidate?
+    @State private var isConfirmingDismissAll = false
 
     private var proposed: [ReminderCandidate] {
         model.state.reminders.filter { $0.status == .proposed }
@@ -817,6 +1122,18 @@ private struct RemindersView: View {
             ReminderScheduleSheet(reminder: reminder) { dueAt in
                 model.approveReminder(reminder, dueAt: dueAt)
             }
+        }
+        .confirmationDialog(
+            "忽略全部待确认提醒？",
+            isPresented: $isConfirmingDismissAll,
+            titleVisibility: .visible
+        ) {
+            Button("忽略 \(proposed.count) 项提醒", role: .destructive) {
+                model.dismissAllProposedReminders()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("这些候选会标记为已忽略，不会创建或取消已安排的 macOS 通知。")
         }
     }
 
@@ -878,6 +1195,11 @@ private struct RemindersView: View {
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
                             .background(Color.accentColor.opacity(0.12), in: Capsule())
+                        Spacer()
+                        Button("全部忽略", role: .destructive) {
+                            isConfirmingDismissAll = true
+                        }
+                        .buttonStyle(.bordered)
                     }
                     ForEach(proposed) { reminder in
                         ReminderCandidateCard(reminder: reminder, isScheduled: false, deliveryState: nil, approve: {
@@ -1427,6 +1749,20 @@ private struct PrivacyAndModelView: View {
                     }
                 }
 
+                settingsCard(title: "每日总结", icon: "calendar.badge.clock", tint: .indigo) {
+                    Toggle("每天自动总结前一天的记录", isOn: dailySummaryEnabledBinding)
+                    DatePicker(
+                        "执行时间",
+                        selection: dailySummaryTimeBinding,
+                        displayedComponents: .hourAndMinute
+                    )
+                    .datePickerStyle(.field)
+                    .disabled(!model.state.dailySummarySettings.isEnabled)
+                    Text("到达设定时间后，Recall 会汇总前一天已有的显式记录并保存到“每日总结”。若已允许云端文本使用且配置 API Key，会发送经过脱敏和长度裁剪的相关文本；否则保存本地回退摘要。应用未运行期间不会在后台发起模型请求，下次打开且已过设定时间时会补生成一次。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 settingsCard(title: "本地诊断", icon: "stethoscope", tint: .orange) {
                     Text("仅记录 Recall 自身的权限状态、事件模板、操作结果和错误代码，最多保留 200 条。不记录 API Key、聊天正文、OCR 文本或截图。")
                         .font(.caption)
@@ -1495,6 +1831,33 @@ private struct PrivacyAndModelView: View {
         loaded = true
     }
 
+
+    private var dailySummaryEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { model.state.dailySummarySettings.isEnabled },
+            set: { value in
+                var settings = model.state.dailySummarySettings
+                settings.isEnabled = value
+                model.updateDailySummarySettings(settings)
+            }
+        )
+    }
+
+    private var dailySummaryTimeBinding: Binding<Date> {
+        Binding(
+            get: {
+                let settings = model.state.dailySummarySettings
+                return Calendar.current.date(bySettingHour: settings.hour, minute: settings.minute, second: 0, of: .now) ?? .now
+            },
+            set: { date in
+                let components = Calendar.current.dateComponents([.hour, .minute], from: date)
+                var settings = model.state.dailySummarySettings
+                settings.hour = components.hour ?? settings.hour
+                settings.minute = components.minute ?? settings.minute
+                model.updateDailySummarySettings(settings)
+            }
+        )
+    }
 
     private func privacyBinding(_ keyPath: WritableKeyPath<PrivacySettings, Bool>) -> Binding<Bool> {
         Binding(

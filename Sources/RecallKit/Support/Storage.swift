@@ -55,6 +55,8 @@ public struct RecallState: Codable, Sendable {
     public var captures: [CaptureRecord]
     public var messages: [ConversationMessage]
     public var reminders: [ReminderCandidate]
+    public var dailySummaries: [DailySummary]
+    public var dailySummarySettings: DailySummarySettings
     public var privacy: PrivacySettings
     public var llmConfiguration: LLMConfiguration
     public var conversationSummary: String?
@@ -65,6 +67,8 @@ public struct RecallState: Codable, Sendable {
         captures: [CaptureRecord] = [],
         messages: [ConversationMessage] = [],
         reminders: [ReminderCandidate] = [],
+        dailySummaries: [DailySummary] = [],
+        dailySummarySettings: DailySummarySettings = DailySummarySettings(),
         privacy: PrivacySettings = PrivacySettings(),
         llmConfiguration: LLMConfiguration = LLMConfiguration(),
         conversationSummary: String? = nil,
@@ -74,10 +78,31 @@ public struct RecallState: Codable, Sendable {
         self.captures = captures
         self.messages = messages
         self.reminders = reminders
+        self.dailySummaries = dailySummaries
+        self.dailySummarySettings = dailySummarySettings
         self.privacy = privacy
         self.llmConfiguration = llmConfiguration
         self.conversationSummary = conversationSummary
         self.conversationSummaryCoveredMessageCount = conversationSummaryCoveredMessageCount
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case rules, captures, messages, reminders, dailySummaries, dailySummarySettings
+        case privacy, llmConfiguration, conversationSummary, conversationSummaryCoveredMessageCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        rules = try container.decodeIfPresent([EventRule].self, forKey: .rules) ?? EventRule.defaults()
+        captures = try container.decodeIfPresent([CaptureRecord].self, forKey: .captures) ?? []
+        messages = try container.decodeIfPresent([ConversationMessage].self, forKey: .messages) ?? []
+        reminders = try container.decodeIfPresent([ReminderCandidate].self, forKey: .reminders) ?? []
+        dailySummaries = try container.decodeIfPresent([DailySummary].self, forKey: .dailySummaries) ?? []
+        dailySummarySettings = try container.decodeIfPresent(DailySummarySettings.self, forKey: .dailySummarySettings) ?? DailySummarySettings()
+        privacy = try container.decodeIfPresent(PrivacySettings.self, forKey: .privacy) ?? PrivacySettings()
+        llmConfiguration = try container.decodeIfPresent(LLMConfiguration.self, forKey: .llmConfiguration) ?? LLMConfiguration()
+        conversationSummary = try container.decodeIfPresent(String.self, forKey: .conversationSummary)
+        conversationSummaryCoveredMessageCount = try container.decodeIfPresent(Int.self, forKey: .conversationSummaryCoveredMessageCount) ?? 0
     }
 }
 
@@ -132,6 +157,28 @@ public actor FileMemoryStore {
         try persist()
     }
 
+    public func updateDailySummarySettings(_ settings: DailySummarySettings) throws {
+        state.dailySummarySettings = settings
+        try persist()
+    }
+
+    public func upsertDailySummary(_ summary: DailySummary) throws {
+        state.dailySummaries.removeAll { Calendar.current.isDate($0.day, inSameDayAs: summary.day) }
+        state.dailySummaries.append(summary)
+        state.dailySummaries.sort { $0.day > $1.day }
+        try persist()
+    }
+
+    public func deleteDailySummary(id: UUID) throws {
+        state.dailySummaries.removeAll { $0.id == id }
+        try persist()
+    }
+
+    public func clearDailySummaries() throws {
+        state.dailySummaries = []
+        try persist()
+    }
+
     public func updateConversationSummary(_ summary: String?, coveredMessageCount: Int) throws {
         state.conversationSummary = summary
         state.conversationSummaryCoveredMessageCount = coveredMessageCount
@@ -146,6 +193,8 @@ public actor FileMemoryStore {
     public func deleteCapture(id: UUID) throws -> CaptureRecord? {
         guard let index = state.captures.firstIndex(where: { $0.id == id }) else { return nil }
         let removed = state.captures.remove(at: index)
+        // 总结正文可能包含这条记录的内容；删除来源时一并删除受影响总结，避免残留可识别文本。
+        state.dailySummaries.removeAll { $0.sourceCaptureIDs.contains(id) }
         try persist()
         return removed
     }
@@ -168,6 +217,22 @@ public actor FileMemoryStore {
         }
         state.reminders[index] = reminder
         try persist()
+    }
+
+    /// 批量忽略尚未被用户确认的候选提醒；已安排的系统通知不会受到影响。
+    @discardableResult
+    public func dismissAllProposedReminders() throws -> Int {
+        var dismissedCount = 0
+        state.reminders = state.reminders.map { reminder in
+            guard reminder.status == .proposed else { return reminder }
+            var updated = reminder
+            updated.status = .dismissed
+            dismissedCount += 1
+            return updated
+        }
+        guard dismissedCount > 0 else { return 0 }
+        try persist()
+        return dismissedCount
     }
 
     public func hasRecentHash(_ hash: String, within seconds: TimeInterval = 12, now: Date = .now) -> Bool {
