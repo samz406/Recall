@@ -32,7 +32,20 @@ final class GlobalEnterKeyRecorder {
     private var runLoopSource: CFRunLoopSource?
     private var onEnter: (() -> Void)?
     private var lastTriggerAt: Date?
+    private var wakeObserver: NSObjectProtocol?
     private let cooldown: TimeInterval = 2
+
+    init() {
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.restartAfterWake()
+            }
+        }
+    }
 
     func update(isEnabled: Bool, onEnter: @escaping () -> Void) -> GlobalEnterKeyRecorderStatus {
         self.onEnter = onEnter
@@ -44,7 +57,14 @@ final class GlobalEnterKeyRecorder {
             stop()
             return .inputMonitoringPermissionRequired
         }
-        guard eventTap == nil else { return .monitoring }
+        guard eventTap == nil else {
+            // 事件 tap 可能在系统睡眠、权限切换或系统重置后仍保留句柄但不再工作。
+            // 只要仍有句柄，普通刷新也确保它处于启用状态；唤醒通知会强制重建它。
+            if let eventTap {
+                CGEvent.tapEnable(tap: eventTap, enable: true)
+            }
+            return .monitoring
+        }
 
         let keyDownMask = CGEventMask(1) << CGEventType.keyDown.rawValue
         let userInfo = Unmanaged.passUnretained(self).toOpaque()
@@ -86,6 +106,14 @@ final class GlobalEnterKeyRecorder {
         runLoopSource = nil
         onEnter = nil
         lastTriggerAt = nil
+    }
+
+    private func restartAfterWake() {
+        guard eventTap != nil || onEnter != nil else { return }
+        let callback = onEnter
+        stop()
+        guard let callback else { return }
+        _ = update(isEnabled: true, onEnter: callback)
     }
 
     private func hasRequiredPermissions() -> Bool {
