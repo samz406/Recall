@@ -14,6 +14,10 @@ struct RecallVerifier {
             try await verifyReminderSchedulePersistence()
             try await verifyDailySummaryGeneration()
             try await verifyDailySummaryPersistenceAndDeletion()
+            try verifyPersonalIntelligenceConsolidation()
+            try verifyInsightFeedbackLearning()
+            try await verifyIntelligencePersistenceAndFTS()
+            try verifyBackwardCompatibleIntelligenceState()
             try await verifyNotificationHostGuard()
             try await verifyCapturePipeline()
             try verifyConversationContextCompression()
@@ -24,9 +28,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 18 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 22 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 17 integration checks.")
+                print("PASS: RecallVerifier completed 21 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -172,7 +176,8 @@ struct RecallVerifier {
         try expect(generation.sourceCaptureIDs == [source.id], "每日总结混入了非目标日期或旧回顾记录")
         try expect(generation.todos.count == 1, "每日总结没有提取待办事项")
         try expect(generation.todos.first?.priority == .high, "带有建议时间的待办应被标为优先处理")
-        try expect(generation.content.contains("每日回忆"), "本地每日总结缺少可读摘要正文")
+        try expect(generation.content.contains("个人简报"), "本地每日总结缺少可读摘要正文")
+        try expect(!generation.briefing.headline.isEmpty && !generation.briefing.progress.isEmpty, "每日总结没有形成结构化工作主线")
         try expect(generation.content.contains("近 14 天提醒与建议"), "每日总结缺少跨周期提醒区块")
         try expect(generation.content.contains("跟进客户报价"), "近十四天已保存总结中的待办没有被聚合")
         try expect(!generation.content.contains("过期历史待办"), "十四天窗口外的历史总结不应参与聚合")
@@ -202,6 +207,108 @@ struct RecallVerifier {
         _ = try await store.deleteCapture(id: capture.id)
         let afterDeletion = await store.snapshot()
         try expect(afterDeletion.dailySummaries.isEmpty, "删除来源记录后应清除包含该内容的每日总结")
+    }
+
+    private static func verifyPersonalIntelligenceConsolidation() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+        let day = calendar.date(from: DateComponents(year: 2026, month: 9, day: 1, hour: 9))!
+        var first = makeCapture(text: "项目：Recall 正在重构每日简报。", app: "Xcode", createdAt: day)
+        first.windowTitle = "Recall - Xcode"
+        var second = makeCapture(text: "项目：Recall 已完成 Episode 聚类，测试通过。下一步：接入反馈。", app: "Xcode", createdAt: day.addingTimeInterval(20 * 60))
+        second.windowTitle = "Recall - Xcode"
+        var preference = makeCapture(text: "我喜欢高密度、少打扰的个人建议。", app: "Notes", createdAt: day.addingTimeInterval(90 * 60))
+        preference.windowTitle = "个人工作约定 - Notes"
+
+        let engine = PersonalIntelligenceEngine()
+        let result = engine.consolidate(day: day, records: [first, second, preference], calendar: calendar)
+        try expect(result.episodes.count == 2, "相邻的同项目记录没有合并为工作片段")
+        try expect(result.episodes.first(where: { $0.projectName == "Recall" })?.status == .completed, "工作片段没有识别已完成结果")
+        try expect(result.projectStates.contains(where: { $0.projectKey.contains("recall") }), "工作片段没有更新项目状态")
+        try expect(result.memories.contains(where: { $0.kind == .preference && $0.status == .proposed }), "明确偏好没有形成待确认用户记忆")
+        try expect(result.briefing.progress.contains(where: { $0.detail.contains("测试通过") }), "结构化简报没有保留可验证进展")
+
+        let manyRecords = (0..<10).map { index in
+            makeCapture(text: index == 9 ? "项目：Recall 当天最后完成发布检查。" : "项目：Recall 记录 \(index)", app: "Xcode", createdAt: day.addingTimeInterval(Double(index) * 60))
+        }
+        let selected = DailySummaryGenerator(maxRecords: 6).sourceRecords(for: day, from: manyRecords, calendar: calendar)
+        try expect(selected.contains(where: { $0.ocrText.contains("最后完成发布检查") }), "重要性采样仍然丢失当天后半段记录")
+    }
+
+    private static func verifyInsightFeedbackLearning() throws {
+        let day = Date(timeIntervalSince1970: 1_800_000_000)
+        let records = (0..<4).map { index in
+            makeCapture(
+                text: "项目：Project\(index) 正在处理不同任务。",
+                app: "Editor",
+                createdAt: day.addingTimeInterval(Double(index) * 70 * 60)
+            )
+        }
+        let engine = PersonalIntelligenceEngine()
+        let initial = engine.consolidate(day: day, records: records)
+        try expect(initial.insights.contains(where: { $0.kind == .contextSwitching }), "多项目切换没有形成行为洞察")
+        let rejected = [
+            InsightFeedback(insightID: UUID(), insightKind: .contextSwitching, rating: .inaccurate),
+            InsightFeedback(insightID: UUID(), insightKind: .contextSwitching, rating: .dismissed)
+        ]
+        let learned = engine.consolidate(day: day, records: records, feedback: rejected)
+        try expect(!learned.insights.contains(where: { $0.kind == .contextSwitching }), "连续否定后仍然推送相同类型洞察")
+
+        var historicalEpisodes: [WorkEpisode] = []
+        for offset in 1...3 {
+            let historicalDay = day.addingTimeInterval(Double(-offset) * 86_400)
+            historicalEpisodes += engine.buildEpisodes(
+                day: historicalDay,
+                records: [makeCapture(text: "项目：Recall 推进例行工作", app: "Xcode", createdAt: historicalDay)]
+            )
+        }
+        let routineResult = engine.consolidate(day: day, records: [makeCapture(text: "项目：Recall 继续推进", app: "Xcode", createdAt: day)], existingEpisodes: historicalEpisodes)
+        try expect(routineResult.routines.contains(where: { $0.status == .proposed && $0.evidenceCount >= 3 }), "重复工作没有形成待确认个人规则")
+    }
+
+    private static func verifyIntelligencePersistenceAndFTS() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        let indexAvailable = await store.isIntelligenceIndexAvailable()
+        try expect(indexAvailable, "SQLite/FTS5 本地智能索引没有启用")
+        let capture = makeCapture(text: "RecallUniqueFTSTerm 完成智能索引迁移", app: "Verifier")
+        try await store.addCapture(capture)
+        let indexed = await store.indexedCaptureIDs(matching: "RecallUniqueFTSTerm")
+        try expect(indexed == [capture.id], "FTS5 没有检索到已持久化的记录")
+
+        let consolidation = PersonalIntelligenceEngine().consolidate(day: capture.createdAt, records: [capture])
+        let summary = DailySummary(
+            day: capture.createdAt,
+            content: "结构化持久化测试",
+            sourceCaptureIDs: [capture.id],
+            todos: [],
+            generationKind: .localFallback,
+            briefing: consolidation.briefing
+        )
+        try await store.commitDailySummary(summary, consolidation: consolidation)
+        guard let insight = consolidation.insights.first else { throw VerificationError.failed("智能整理没有生成可反馈洞察") }
+        try await store.reviewInsight(id: insight.id, rating: .accurate)
+        if let memory = consolidation.memories.first {
+            try await store.reviewUserMemory(id: memory.id, status: .confirmed)
+        }
+        let reloaded = try FileMemoryStore(storage: storage)
+        let restored = await reloaded.snapshot()
+        try expect(!restored.episodes.isEmpty && !restored.projects.isEmpty, "工作片段或项目状态重新加载后丢失")
+        try expect(restored.dailySummaries.first?.briefing != nil, "结构化简报重新加载后丢失")
+        try expect(restored.insightFeedback.first?.rating == .accurate, "洞察反馈重新加载后丢失")
+    }
+
+    private static func verifyBackwardCompatibleIntelligenceState() throws {
+        let legacy = """
+        {"rules":[],"captures":[],"messages":[],"reminders":[],"dailySummaries":[],"dailySummarySettings":{"isEnabled":false,"hour":0,"minute":5},"privacy":{"excludedBundleIdentifiers":[],"cloudUseEnabled":false,"retainScreenshots":true,"screenCapturePaused":false},"llmConfiguration":{"provider":"localOnly","baseURLString":"","model":"","apiKey":"","anthropicVersion":"2023-06-01","maxOutputTokens":1000},"conversationSummaryCoveredMessageCount":0}
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let state = try decoder.decode(RecallState.self, from: Data(legacy.utf8))
+        try expect(state.episodes.isEmpty && state.userMemories.isEmpty && state.learnedRoutines.isEmpty, "旧状态迁移没有为智能数据提供安全默认值")
+        try expect(state.dailySummarySettings.notifyWhenReady == nil, "旧状态不应自动开启总结通知")
     }
 
     @MainActor

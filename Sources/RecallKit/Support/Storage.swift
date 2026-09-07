@@ -14,6 +14,7 @@ public struct RecallStorage: Sendable {
     public let rootURL: URL
     public let screenshotsURL: URL
     public let stateURL: URL
+    public let intelligenceDatabaseURL: URL
 
     public init(fileManager: FileManager = .default) throws {
         guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
@@ -22,6 +23,7 @@ public struct RecallStorage: Sendable {
         rootURL = appSupport.appendingPathComponent("Recall", isDirectory: true)
         screenshotsURL = rootURL.appendingPathComponent("Screenshots", isDirectory: true)
         stateURL = rootURL.appendingPathComponent("recall-state.json")
+        intelligenceDatabaseURL = rootURL.appendingPathComponent("recall-intelligence.sqlite")
         try fileManager.createDirectory(at: screenshotsURL, withIntermediateDirectories: true)
     }
 
@@ -29,6 +31,7 @@ public struct RecallStorage: Sendable {
         self.rootURL = rootURL
         screenshotsURL = rootURL.appendingPathComponent("Screenshots", isDirectory: true)
         stateURL = rootURL.appendingPathComponent("recall-state.json")
+        intelligenceDatabaseURL = rootURL.appendingPathComponent("recall-intelligence.sqlite")
         try fileManager.createDirectory(at: screenshotsURL, withIntermediateDirectories: true)
     }
 
@@ -61,6 +64,12 @@ public struct RecallState: Codable, Sendable {
     public var llmConfiguration: LLMConfiguration
     public var conversationSummary: String?
     public var conversationSummaryCoveredMessageCount: Int?
+    public var episodes: [WorkEpisode]
+    public var projects: [ProjectState]
+    public var userMemories: [UserMemory]
+    public var insights: [PersonalInsight]
+    public var insightFeedback: [InsightFeedback]
+    public var learnedRoutines: [LearnedRoutine]
 
     public init(
         rules: [EventRule] = EventRule.defaults(),
@@ -72,7 +81,13 @@ public struct RecallState: Codable, Sendable {
         privacy: PrivacySettings = PrivacySettings(),
         llmConfiguration: LLMConfiguration = LLMConfiguration(),
         conversationSummary: String? = nil,
-        conversationSummaryCoveredMessageCount: Int? = 0
+        conversationSummaryCoveredMessageCount: Int? = 0,
+        episodes: [WorkEpisode] = [],
+        projects: [ProjectState] = [],
+        userMemories: [UserMemory] = [],
+        insights: [PersonalInsight] = [],
+        insightFeedback: [InsightFeedback] = [],
+        learnedRoutines: [LearnedRoutine] = []
     ) {
         self.rules = rules
         self.captures = captures
@@ -84,11 +99,18 @@ public struct RecallState: Codable, Sendable {
         self.llmConfiguration = llmConfiguration
         self.conversationSummary = conversationSummary
         self.conversationSummaryCoveredMessageCount = conversationSummaryCoveredMessageCount
+        self.episodes = episodes
+        self.projects = projects
+        self.userMemories = userMemories
+        self.insights = insights
+        self.insightFeedback = insightFeedback
+        self.learnedRoutines = learnedRoutines
     }
 
     private enum CodingKeys: String, CodingKey {
         case rules, captures, messages, reminders, dailySummaries, dailySummarySettings
         case privacy, llmConfiguration, conversationSummary, conversationSummaryCoveredMessageCount
+        case episodes, projects, userMemories, insights, insightFeedback, learnedRoutines
     }
 
     public init(from decoder: Decoder) throws {
@@ -103,6 +125,12 @@ public struct RecallState: Codable, Sendable {
         llmConfiguration = try container.decodeIfPresent(LLMConfiguration.self, forKey: .llmConfiguration) ?? LLMConfiguration()
         conversationSummary = try container.decodeIfPresent(String.self, forKey: .conversationSummary)
         conversationSummaryCoveredMessageCount = try container.decodeIfPresent(Int.self, forKey: .conversationSummaryCoveredMessageCount) ?? 0
+        episodes = try container.decodeIfPresent([WorkEpisode].self, forKey: .episodes) ?? []
+        projects = try container.decodeIfPresent([ProjectState].self, forKey: .projects) ?? []
+        userMemories = try container.decodeIfPresent([UserMemory].self, forKey: .userMemories) ?? []
+        insights = try container.decodeIfPresent([PersonalInsight].self, forKey: .insights) ?? []
+        insightFeedback = try container.decodeIfPresent([InsightFeedback].self, forKey: .insightFeedback) ?? []
+        learnedRoutines = try container.decodeIfPresent([LearnedRoutine].self, forKey: .learnedRoutines) ?? []
     }
 }
 
@@ -111,6 +139,7 @@ public actor FileMemoryStore {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private var state: RecallState
+    private let intelligenceIndex: SQLiteIntelligenceIndex?
 
     public init() throws {
         try self.init(storage: RecallStorage())
@@ -118,6 +147,7 @@ public actor FileMemoryStore {
 
     public init(storage: RecallStorage) throws {
         self.storage = storage
+        intelligenceIndex = try? SQLiteIntelligenceIndex(databaseURL: storage.intelligenceDatabaseURL)
         encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -138,9 +168,16 @@ public actor FileMemoryStore {
             state = RecallState()
             try Self.write(state, encoder: encoder, to: storage.stateURL)
         }
+        try? intelligenceIndex?.replace(with: state)
     }
 
     public func snapshot() -> RecallState { state }
+
+    public func isIntelligenceIndexAvailable() -> Bool { intelligenceIndex != nil }
+
+    public func indexedCaptureIDs(matching query: String, limit: Int = 12) -> [UUID] {
+        (try? intelligenceIndex?.searchCaptureIDs(matching: query, limit: limit)) ?? []
+    }
 
     public func updateRules(_ rules: [EventRule]) throws {
         state.rules = rules
@@ -169,6 +206,53 @@ public actor FileMemoryStore {
         try persist()
     }
 
+    public func applyIntelligence(_ consolidation: IntelligenceConsolidation, for day: Date) throws {
+        applyIntelligenceState(consolidation, for: day)
+        try persist()
+    }
+
+    public func commitDailySummary(_ summary: DailySummary, consolidation: IntelligenceConsolidation) throws {
+        state.dailySummaries.removeAll { Calendar.current.isDate($0.day, inSameDayAs: summary.day) }
+        state.dailySummaries.append(summary)
+        state.dailySummaries.sort { $0.day > $1.day }
+        applyIntelligenceState(consolidation, for: summary.day)
+        try persist()
+    }
+
+    private func applyIntelligenceState(_ consolidation: IntelligenceConsolidation, for day: Date) {
+        let calendar = Calendar.current
+        state.episodes.removeAll { calendar.isDate($0.day, inSameDayAs: day) }
+        state.episodes.append(contentsOf: consolidation.episodes)
+        state.episodes.sort { $0.startedAt > $1.startedAt }
+        state.projects = consolidation.projectStates
+        state.userMemories = consolidation.memories
+        state.insights.removeAll { calendar.isDate($0.day, inSameDayAs: day) }
+        state.insights.append(contentsOf: consolidation.insights)
+        state.insights.sort { $0.createdAt > $1.createdAt }
+        state.learnedRoutines = consolidation.routines
+    }
+
+    public func reviewInsight(id: UUID, rating: InsightFeedbackRating) throws {
+        guard let insight = state.insights.first(where: { $0.id == id }) else { return }
+        state.insightFeedback.removeAll { $0.insightID == id }
+        state.insightFeedback.append(InsightFeedback(insightID: id, insightKind: insight.kind, rating: rating))
+        try persist()
+    }
+
+    public func reviewUserMemory(id: UUID, status: MemoryReviewStatus) throws {
+        guard let index = state.userMemories.firstIndex(where: { $0.id == id }) else { return }
+        state.userMemories[index].status = status
+        state.userMemories[index].updatedAt = .now
+        try persist()
+    }
+
+    public func updateRoutine(id: UUID, status: LearnedRoutineStatus) throws {
+        guard let index = state.learnedRoutines.firstIndex(where: { $0.id == id }) else { return }
+        state.learnedRoutines[index].status = status
+        state.learnedRoutines[index].updatedAt = .now
+        try persist()
+    }
+
     public func deleteDailySummary(id: UUID) throws {
         state.dailySummaries.removeAll { $0.id == id }
         try persist()
@@ -176,6 +260,16 @@ public actor FileMemoryStore {
 
     public func clearDailySummaries() throws {
         state.dailySummaries = []
+        try persist()
+    }
+
+    public func clearPersonalIntelligence() throws {
+        state.episodes = []
+        state.projects = []
+        state.userMemories = []
+        state.insights = []
+        state.insightFeedback = []
+        state.learnedRoutines = []
         try persist()
     }
 
@@ -195,6 +289,15 @@ public actor FileMemoryStore {
         let removed = state.captures.remove(at: index)
         // 总结正文可能包含这条记录的内容；删除来源时一并删除受影响总结，避免残留可识别文本。
         state.dailySummaries.removeAll { $0.sourceCaptureIDs.contains(id) }
+        state.episodes.removeAll { $0.evidenceIDs.contains(id) }
+        state.insights.removeAll { $0.evidenceIDs.contains(id) }
+        state.userMemories.removeAll { $0.evidenceIDs.contains(id) }
+        state.learnedRoutines.removeAll { $0.evidenceIDs.contains(id) }
+        state.projects = state.projects.compactMap { project in
+            var updated = project
+            updated.evidenceIDs.removeAll { $0 == id }
+            return updated.evidenceIDs.isEmpty ? nil : updated
+        }
         try persist()
         return removed
     }
@@ -258,6 +361,7 @@ public actor FileMemoryStore {
 
     private func persist() throws {
         try Self.write(state, encoder: encoder, to: storage.stateURL)
+        try intelligenceIndex?.replace(with: state)
     }
 
     private static func write(_ state: RecallState, encoder: JSONEncoder, to url: URL) throws {

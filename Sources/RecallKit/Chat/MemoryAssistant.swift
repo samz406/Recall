@@ -25,8 +25,12 @@ public final class MemoryAssistant {
         let recordsAllowedInChat = state.captures.filter { capture in
             state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
         }
-        let results = searchEngine.search(searchQuery(for: question), in: recordsAllowedInChat)
-        let retrieved = results.map(\.capture)
+        let query = searchQuery(for: question)
+        let results = searchEngine.search(query, in: recordsAllowedInChat)
+        let indexedIDs = isTemporalOverviewQuestion(question) ? [] : await store.indexedCaptureIDs(matching: question, limit: 8)
+        let indexed = indexedIDs.compactMap { id in recordsAllowedInChat.first(where: { $0.id == id }) }
+        var seen: Set<UUID> = []
+        let retrieved = (indexed + results.map(\.capture)).filter { seen.insert($0.id).inserted }.prefix(8).map { $0 }
         let plan = contextManager.plan(
             history: state.messages,
             existingSummary: state.conversationSummary,
