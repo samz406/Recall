@@ -51,6 +51,8 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
     public var sourceCaptureIDs: [UUID]
     public var todos: [DailySummaryTodo]
     public var generationKind: DailySummaryGenerationKind
+    /// 结构化简报是主要产品数据；`content` 仅保留 Markdown 兼容展示与导出。
+    public var briefing: DailyBriefing?
 
     public init(
         id: UUID = UUID(),
@@ -59,7 +61,8 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
         content: String,
         sourceCaptureIDs: [UUID],
         todos: [DailySummaryTodo],
-        generationKind: DailySummaryGenerationKind
+        generationKind: DailySummaryGenerationKind,
+        briefing: DailyBriefing? = nil
     ) {
         self.id = id
         self.day = Calendar.current.startOfDay(for: day)
@@ -68,6 +71,7 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
         self.sourceCaptureIDs = sourceCaptureIDs
         self.todos = todos
         self.generationKind = generationKind
+        self.briefing = briefing
     }
 }
 
@@ -75,11 +79,14 @@ public struct DailySummarySettings: Codable, Hashable, Sendable {
     public var isEnabled: Bool
     public var hour: Int
     public var minute: Int
+    /// 默认关闭；只有用户在设置中明确打开后才请求通知权限。
+    public var notifyWhenReady: Bool?
 
-    public init(isEnabled: Bool = false, hour: Int = 0, minute: Int = 5) {
+    public init(isEnabled: Bool = false, hour: Int = 0, minute: Int = 5, notifyWhenReady: Bool = false) {
         self.isEnabled = isEnabled
         self.hour = min(max(hour, 0), 23)
         self.minute = min(max(minute, 0), 59)
+        self.notifyWhenReady = notifyWhenReady
     }
 
     public func triggerDate(on day: Date, calendar: Calendar = .current) -> Date {
@@ -92,17 +99,23 @@ public struct DailySummaryGeneration: Sendable {
     public var sourceCaptureIDs: [UUID]
     public var todos: [DailySummaryTodo]
     public var generationKind: DailySummaryGenerationKind
+    public var briefing: DailyBriefing
+    public var consolidation: IntelligenceConsolidation
 
     public init(
         content: String,
         sourceCaptureIDs: [UUID],
         todos: [DailySummaryTodo],
-        generationKind: DailySummaryGenerationKind
+        generationKind: DailySummaryGenerationKind,
+        briefing: DailyBriefing,
+        consolidation: IntelligenceConsolidation
     ) {
         self.content = content
         self.sourceCaptureIDs = sourceCaptureIDs
         self.todos = todos
         self.generationKind = generationKind
+        self.briefing = briefing
+        self.consolidation = consolidation
     }
 }
 
@@ -113,24 +126,39 @@ public struct DailySummaryGenerator: Sendable {
     public let maxCharactersPerRecord: Int
     public let maxRecentSummaries: Int
     public let maxCharactersPerRecentSummary: Int
+    private let intelligenceEngine: PersonalIntelligenceEngine
 
     public init(
         maxRecords: Int = 24,
         maxCharactersPerRecord: Int = 900,
         maxRecentSummaries: Int = 14,
-        maxCharactersPerRecentSummary: Int = 1_000
+        maxCharactersPerRecentSummary: Int = 1_000,
+        intelligenceEngine: PersonalIntelligenceEngine = PersonalIntelligenceEngine()
     ) {
         self.maxRecords = max(maxRecords, 1)
         self.maxCharactersPerRecord = max(maxCharactersPerRecord, 120)
         self.maxRecentSummaries = min(max(maxRecentSummaries, 1), 14)
         self.maxCharactersPerRecentSummary = max(maxCharactersPerRecentSummary, 240)
+        self.intelligenceEngine = intelligenceEngine
     }
 
     public func sourceRecords(for day: Date, from captures: [CaptureRecord], calendar: Calendar = .current) -> [CaptureRecord] {
-        let selected = captures
+        let candidates = captures
             .filter { $0.eventTemplate != .dailyReview && calendar.isDate($0.createdAt, inSameDayAs: day) }
             .sorted { $0.createdAt < $1.createdAt }
-            .prefix(maxRecords)
+        let selected: [CaptureRecord]
+        if candidates.count <= maxRecords {
+            selected = candidates
+        } else {
+            // 时间覆盖 + 重要性采样，避免旧实现只取上午前 24 条而丢失当天后半段。
+            let anchorCount = min(6, maxRecords / 3)
+            let anchors = Array(candidates.prefix(anchorCount)) + Array(candidates.suffix(anchorCount))
+            let remaining = candidates
+                .filter { candidate in !anchors.contains(where: { $0.id == candidate.id }) }
+                .sorted { recordImportance($0) > recordImportance($1) }
+                .prefix(maxRecords - anchors.count)
+            selected = (anchors + remaining).sorted { $0.createdAt < $1.createdAt }
+        }
 
         return selected.map { record in
             var minimized = record
@@ -185,57 +213,90 @@ public struct DailySummaryGenerator: Sendable {
         day: Date,
         from captures: [CaptureRecord],
         previousSummaries: [DailySummary] = [],
+        existingEpisodes: [WorkEpisode] = [],
+        previousProjects: [ProjectState] = [],
+        existingMemories: [UserMemory] = [],
+        previousInsights: [PersonalInsight] = [],
+        feedback: [InsightFeedback] = [],
+        existingRoutines: [LearnedRoutine] = [],
         responder: (any LLMResponding)? = nil,
         calendar: Calendar = .current
     ) async throws -> DailySummaryGeneration {
         let records = sourceRecords(for: day, from: captures, calendar: calendar)
         let priorityTodos = todos(from: records)
         let recentSummaries = recentSummaries(for: day, from: previousSummaries, calendar: calendar)
+        let consolidation = intelligenceEngine.consolidate(
+            day: day,
+            records: captures,
+            existingEpisodes: existingEpisodes,
+            previousProjects: previousProjects,
+            existingMemories: existingMemories,
+            previousInsights: previousInsights,
+            feedback: feedback,
+            existingRoutines: existingRoutines,
+            calendar: calendar
+        )
         guard !records.isEmpty else {
             return DailySummaryGeneration(
                 content: emptyDaySummary(for: day, recentSummaries: recentSummaries),
                 sourceCaptureIDs: [],
                 todos: [],
-                generationKind: .localFallback
+                generationKind: .localFallback,
+                briefing: consolidation.briefing,
+                consolidation: consolidation
             )
         }
 
         guard let responder else {
             return DailySummaryGeneration(
-                content: localSummary(for: day, records: records, todos: priorityTodos, recentSummaries: recentSummaries),
+                content: localSummary(for: day, briefing: consolidation.briefing, todos: priorityTodos, recentSummaries: recentSummaries),
                 sourceCaptureIDs: records.map(\.id),
                 todos: priorityTodos,
-                generationKind: .localFallback
+                generationKind: .localFallback,
+                briefing: consolidation.briefing,
+                consolidation: consolidation
             )
         }
 
         let answer = try await responder.answer(to: LLMRequest(
             question: cloudPrompt(for: day, todos: priorityTodos, hasRecentSummaries: !recentSummaries.isEmpty),
             context: records,
-            supplementaryContext: recentSummaryContext(recentSummaries)
+            supplementaryContext: structuredContext(consolidation: consolidation, recentSummaries: recentSummaries)
         ))
         return DailySummaryGeneration(
             content: answer.content,
             sourceCaptureIDs: answer.citedCaptureIDs,
             todos: priorityTodos,
-            generationKind: .cloud
+            generationKind: .cloud,
+            briefing: consolidation.briefing,
+            consolidation: consolidation
         )
     }
 
     public func localSummary(
         for day: Date,
-        records: [CaptureRecord],
+        briefing: DailyBriefing,
         todos: [DailySummaryTodo],
         recentSummaries: [DailySummary]
     ) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_Hans_CN")
         formatter.dateFormat = "M 月 d 日"
-        let highlights = records.prefix(6).enumerated().map { index, record in
-            let excerpt = record.summary ?? String(record.ocrText.prefix(160))
-            let source = record.sourceAppName ?? "记录"
-            return "- [\(index + 1)] \(source)：\(excerpt)"
-        }
+        let progress = briefing.progress.isEmpty
+            ? ["- 暂未识别出形成结果的关键进展。"]
+            : briefing.progress.map { "- \($0.title)：\($0.detail)" }
+        let loops = briefing.openLoops.isEmpty
+            ? ["- 未发现有明确证据的未闭环事项。"]
+            : briefing.openLoops.map { "- \($0.title)：\($0.detail)" }
+        let insightLines = briefing.insights.isEmpty
+            ? ["- 当前证据不足以形成有价值的跨记录判断。"]
+            : briefing.insights.map { insight in
+                let advice = insight.recommendation.map { "；建议：\($0)" } ?? ""
+                return "- \(insight.title)：\(insight.detail)\(advice)（置信度 \(Int(insight.confidence * 100))%）"
+            }
+        let nextActions = briefing.nextActions.isEmpty
+            ? ["- 暂无需要主动打断你的建议。"]
+            : briefing.nextActions.map { "- \($0.title)：\($0.detail)" }
         let todoLines: [String]
         if todos.isEmpty {
             todoLines = ["- 未从当天记录中识别出待办或截止事项。"]
@@ -246,16 +307,25 @@ public struct DailySummaryGenerator: Sendable {
             }
         }
         return [
-            "## \(formatter.string(from: day)) 每日回忆",
+            "## \(formatter.string(from: day)) 个人简报",
             "",
-            "### 重点记录",
-            highlights.joined(separator: "\n"),
+            "### 今天的主线",
+            briefing.headline,
+            "",
+            "### 真正完成的进展",
+            progress.joined(separator: "\n"),
+            "",
+            "### 尚未闭环",
+            loops.joined(separator: "\n"),
+            "",
+            "### Recall 的发现",
+            insightLines.joined(separator: "\n"),
             "",
             "### 待办与提醒",
             todoLines.joined(separator: "\n"),
             "",
-            "### 明日建议",
-            "- 打开“提醒”确认需要设置系统通知的事项，并继续记录关键工作节点。",
+            "### 下一步",
+            nextActions.joined(separator: "\n"),
             "",
             recentSummaryReview(recentSummaries)
         ].joined(separator: "\n")
@@ -266,7 +336,7 @@ public struct DailySummaryGenerator: Sendable {
         formatter.locale = Locale(identifier: "zh_Hans_CN")
         formatter.dateFormat = "M 月 d 日"
         return [
-            "## \(formatter.string(from: day)) 每日回忆",
+            "## \(formatter.string(from: day)) 个人简报",
             "",
             "当天没有可汇总的显式记录。",
             "",
@@ -312,19 +382,26 @@ public struct DailySummaryGenerator: Sendable {
         ].joined(separator: "\n")
     }
 
-    private func recentSummaryContext(_ summaries: [DailySummary]) -> String? {
-        guard !summaries.isEmpty else { return nil }
+    private func structuredContext(consolidation: IntelligenceConsolidation, recentSummaries: [DailySummary]) -> String? {
+        guard !consolidation.projectStates.isEmpty || !consolidation.memories.isEmpty || !recentSummaries.isEmpty else { return nil }
         let dateFormatter = DateFormatter()
         dateFormatter.locale = Locale(identifier: "zh_Hans_CN")
         dateFormatter.dateFormat = "yyyy-MM-dd"
-        let entries = summaries.map { summary in
-            """
-            日期：\(dateFormatter.string(from: summary.day))
-            已保存总结：
-            \(summary.content)
-            """
+        let projects = consolidation.projectStates.prefix(8).map { project in
+            "- \(project.displayName)：\(project.currentState)；下一步：\(project.nextAction ?? "未确认")"
         }
-        return "近 14 天内已保存的每日总结（仅用于识别跨日期的待办趋势、提醒风险和建议，不是新的原始记录）：\n\n" + entries.joined(separator: "\n\n")
+        let memories = consolidation.memories
+            .filter { $0.status == .confirmed }
+            .prefix(8)
+            .map { "- \($0.kind.title)：\($0.content)" }
+        let historicalTodos = recentSummaries.flatMap(\.todos).prefix(8).map { todo in
+            "- \(todo.title)（\(todo.dueAt.map { dateFormatter.string(from: $0) } ?? "未指定时间")）"
+        }
+        return [
+            "结构化项目状态（可用于比较变化，不能替代当天证据）：\n\(projects.isEmpty ? "无" : projects.joined(separator: "\n"))",
+            "用户已确认的长期记忆：\n\(memories.isEmpty ? "无" : memories.joined(separator: "\n"))",
+            "近 14 天未清理的待办线索：\n\(historicalTodos.isEmpty ? "无" : historicalTodos.joined(separator: "\n"))"
+        ].joined(separator: "\n\n")
     }
 
     private func cloudPrompt(for day: Date, todos: [DailySummaryTodo], hasRecentSummaries: Bool) -> String {
@@ -339,23 +416,34 @@ public struct DailySummaryGenerator: Sendable {
             }.joined(separator: "\n")
         }
         return """
-        请基于已提供的、仅属于 \(date) 的记忆证据，生成一份简体中文“每日回忆”。不能补充证据之外的事实；不确定时明确说明。
+        请基于已提供的、仅属于 \(date) 的记忆证据，生成一份高密度的简体中文“个人简报”。不要按时间逐条复述操作，不能补充证据之外的事实；行为模式必须标为推断并说明置信度。
 
         请严格使用以下 Markdown 小节：
-        ## 今日重点
-        ## 关键进展
+        ## 今天的主线
+        ## 真正完成的进展
+        ## 尚未闭环
+        ## Recall 的发现
         ## 待办与提醒
         ## 近14天提醒与建议
-        ## 明日建议
+        ## 下一步
 
         “待办与提醒”必须最醒目：将有明确截止、回复、承诺或行动要求的内容放在最前，使用“【优先处理】”或“【待办】”前缀；若没有明确待办，写“未发现明确待办”。每项基于当天原始记忆证据的事实性结论都保留对应的 [数字] 来源标记。
 
-        “近14天提醒与建议”需要参考附带的已保存总结，集中识别仍未收束、重复出现、临近截止或需要跟进的事项；只保留最重要的 3–5 项，给出可执行的下一步。不得把历史总结中没有明确说明的推断写成事实。\(hasRecentSummaries ? "" : "当前没有可用的近14天历史总结，应明确说明这一点。")
+        “Recall 的发现”最多 3 项，只写跨记录比较后才成立且对用户有决策价值的判断；网页标签、导航文字和模型回复不得直接当作用户事实。“近14天提醒与建议”只参考附带的结构化项目状态、已确认用户记忆和待办，不对历史 Markdown 总结再次摘要。\(hasRecentSummaries ? "" : "当前没有可用的近14天历史待办，应明确说明这一点。")
 
         总长度控制在 1,200 个汉字以内。
 
         规则识别到的待办线索（仍需以证据为准）：
         \(knownTodos)
         """
+    }
+
+    private func recordImportance(_ record: CaptureRecord) -> Double {
+        let text = record.ocrText.lowercased()
+        let cues = ["完成", "通过", "决定", "结论", "待办", "下一步", "阻塞", "失败", "merged", "passed"]
+        var score = record.eventTemplate == .taskCommitment || record.eventTemplate == .documentMilestone ? 0.7 : 0.35
+        if cues.contains(where: text.contains) { score += 0.25 }
+        if record.windowTitle != nil { score += 0.05 }
+        return min(score, 1)
     }
 }

@@ -12,8 +12,18 @@ let package = Package(
         .executable(name: "RecallApp", targets: ["RecallApp"])
     ],
     targets: [
+        .systemLibrary(
+            name: "CSQLite",
+            path: "Sources/CSQLite",
+            pkgConfig: "sqlite3",
+            providers: [
+                .brew(["sqlite3"]),
+                .apt(["libsqlite3-dev"])
+            ]
+        ),
         .target(
             name: "RecallKit",
+            dependencies: ["CSQLite"],
             path: "Sources/RecallKit"
         ),
         .executableTarget(

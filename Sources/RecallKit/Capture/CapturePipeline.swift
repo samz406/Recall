@@ -207,16 +207,47 @@ public final class CapturePipeline {
 
 public enum LocalSummary {
     public static func make(from text: String) -> String? {
-        let clean = text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty else { return nil }
-        return String(clean.prefix(180))
+        let sentences = text
+            .components(separatedBy: CharacterSet(charactersIn: "。！？!?\n"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !sentences.isEmpty else { return nil }
+        let cues = ["完成", "通过", "决定", "结论", "待办", "下一步", "阻塞", "失败", "目标", "需要", "implemented", "passed", "decision", "todo"]
+        let ranked = sentences.enumerated().sorted { lhs, rhs in
+            let left = sentenceScore(lhs.element, position: lhs.offset, cues: cues)
+            let right = sentenceScore(rhs.element, position: rhs.offset, cues: cues)
+            return left == right ? lhs.offset < rhs.offset : left > right
+        }
+        let selected = ranked.prefix(2).sorted { $0.offset < $1.offset }.map(\.element)
+        return String(selected.joined(separator: "；").prefix(240))
     }
 
     public static func tags(from text: String) -> [String] {
-        let tokens = text.split { $0.isWhitespace || $0.isPunctuation }.map(String.init)
-        let candidates = tokens.filter { $0.count >= 3 }
+        let stopWords: Set<String> = ["今天", "当前", "这个", "那个", "可以", "需要", "已经", "然后", "页面", "用户", "window", "chrome", "safari", "chatgpt"]
+        let tokens = text
+            .split { $0.isWhitespace || $0.isPunctuation }
+            .map(String.init)
+            .filter { (2...32).contains($0.count) && !stopWords.contains($0.lowercased()) }
+        let counts = Dictionary(grouping: tokens, by: { $0.lowercased() }).mapValues { $0.count }
         var seen: Set<String> = []
-        return candidates.filter { seen.insert($0.lowercased()).inserted }.prefix(5).map { $0 }
+        return tokens
+            .filter { seen.insert($0.lowercased()).inserted }
+            .sorted { lhs, rhs in
+                let left = counts[lhs.lowercased(), default: 0]
+                let right = counts[rhs.lowercased(), default: 0]
+                return left == right ? lhs.count < rhs.count : left > right
+            }
+            .prefix(8)
+            .map { $0 }
+    }
+
+    private static func sentenceScore(_ sentence: String, position: Int, cues: [String]) -> Double {
+        let normalized = sentence.lowercased()
+        var score = max(0, 0.2 - Double(position) * 0.01)
+        score += Double(cues.filter { normalized.contains($0) }.count) * 0.45
+        if (18...180).contains(sentence.count) { score += 0.18 }
+        if sentence.contains("://") || sentence.count > 300 { score -= 0.25 }
+        return score
     }
 }
 

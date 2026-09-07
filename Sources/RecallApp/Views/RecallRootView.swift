@@ -965,7 +965,10 @@ private struct DailySummariesView: View {
                     summary: summary,
                     isExpanded: expandedSummaryID == summary.id,
                     onToggle: { toggle(summary) },
-                    onDelete: { model.deleteDailySummary(summary) }
+                    onDelete: { model.deleteDailySummary(summary) },
+                    onReviewInsight: { insight, rating in model.reviewInsight(insight, rating: rating) },
+                    onReviewMemory: { memory, status in model.reviewUserMemory(memory, status: status) },
+                    onUpdateRoutine: { routine, status in model.updateLearnedRoutine(routine, status: status) }
                 )
             }
             if visibleSummaries.count < summaries.count {
@@ -1046,8 +1049,12 @@ private struct DailySummaryCard: View {
     let isExpanded: Bool
     let onToggle: () -> Void
     let onDelete: () -> Void
+    let onReviewInsight: (PersonalInsight, InsightFeedbackRating) -> Void
+    let onReviewMemory: (UserMemory, MemoryReviewStatus) -> Void
+    let onUpdateRoutine: (LearnedRoutine, LearnedRoutineStatus) -> Void
 
     private var preview: String {
+        if let briefing = summary.briefing { return briefing.headline }
         let text = summary.content
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -1090,9 +1097,20 @@ private struct DailySummaryCard: View {
             }
             if isExpanded {
                 Divider()
-                MarkdownDocumentView(markdown: summary.content)
-                    .textSelection(.enabled)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                if let briefing = summary.briefing {
+                    DailyBriefingView(
+                        briefing: briefing,
+                        feedback: summaryFeedback,
+                        memoryStates: memoryStates,
+                        routineStates: routineStates,
+                        onReviewInsight: onReviewInsight,
+                        onReviewMemory: onReviewMemory,
+                        onUpdateRoutine: onUpdateRoutine
+                    )
+                } else {
+                    MarkdownDocumentView(markdown: summary.content)
+                        .textSelection(.enabled)
+                }
             } else {
                 Text(preview)
                     .font(.subheadline)
@@ -1104,6 +1122,186 @@ private struct DailySummaryCard: View {
         .padding(isExpanded ? 19 : 15)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(isExpanded ? Color.accentColor.opacity(0.28) : Color.gray.opacity(0.22), lineWidth: 1))
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    @EnvironmentObject private var model: RecallAppModel
+
+    private var summaryFeedback: [UUID: InsightFeedbackRating] {
+        Dictionary(uniqueKeysWithValues: model.state.insightFeedback.map { ($0.insightID, $0.rating) })
+    }
+
+    private var memoryStates: [UUID: MemoryReviewStatus] {
+        Dictionary(uniqueKeysWithValues: model.state.userMemories.map { ($0.id, $0.status) })
+    }
+
+    private var routineStates: [UUID: LearnedRoutineStatus] {
+        Dictionary(uniqueKeysWithValues: model.state.learnedRoutines.map { ($0.id, $0.status) })
+    }
+}
+
+private struct DailyBriefingView: View {
+    let briefing: DailyBriefing
+    let feedback: [UUID: InsightFeedbackRating]
+    let memoryStates: [UUID: MemoryReviewStatus]
+    let routineStates: [UUID: LearnedRoutineStatus]
+    let onReviewInsight: (PersonalInsight, InsightFeedbackRating) -> Void
+    let onReviewMemory: (UserMemory, MemoryReviewStatus) -> Void
+    let onUpdateRoutine: (LearnedRoutine, LearnedRoutineStatus) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "scope")
+                    .font(.title2)
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("今天的主线").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(briefing.headline).font(.headline)
+                }
+            }
+            briefingSection("真正完成的进展", icon: "checkmark.seal.fill", color: .green, items: briefing.progress, empty: "暂未识别出形成结果的关键进展。")
+            briefingSection("尚未闭环", icon: "circle.dashed", color: .orange, items: briefing.openLoops, empty: "未发现有明确证据的未闭环事项。")
+
+            if !briefing.insights.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    sectionTitle("Recall 的发现", icon: "sparkles", color: .purple)
+                    ForEach(briefing.insights) { insight in
+                        VStack(alignment: .leading, spacing: 7) {
+                            HStack {
+                                Text(insight.title).font(.subheadline.weight(.semibold))
+                                Spacer()
+                                Text("置信度 \(Int(insight.confidence * 100))%")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Text(insight.detail).font(.subheadline).foregroundStyle(.secondary)
+                            if let recommendation = insight.recommendation {
+                                Label(recommendation, systemImage: "arrow.right.circle.fill")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                            insightFeedbackControls(insight)
+                        }
+                        .padding(12)
+                        .background(Color.purple.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+            }
+
+            briefingSection("下一步", icon: "arrow.up.right.circle.fill", color: .blue, items: briefing.nextActions, empty: "暂无需要主动打断你的建议。")
+            memoryReview
+            routineReview
+        }
+        .textSelection(.enabled)
+    }
+
+    @ViewBuilder
+    private func briefingSection(_ title: String, icon: String, color: Color, items: [BriefingItem], empty: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle(title, icon: icon, color: color)
+            if items.isEmpty {
+                Text(empty).font(.subheadline).foregroundStyle(.secondary)
+            } else {
+                ForEach(items) { item in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(item.title).font(.subheadline.weight(.semibold))
+                        Text(item.detail).font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    .padding(.leading, 2)
+                }
+            }
+        }
+    }
+
+    private func sectionTitle(_ title: String, icon: String, color: Color) -> some View {
+        Label(title, systemImage: icon)
+            .font(.headline)
+            .foregroundStyle(color)
+    }
+
+    @ViewBuilder
+    private func insightFeedbackControls(_ insight: PersonalInsight) -> some View {
+        if let rating = feedback[insight.id] {
+            Label(feedbackTitle(rating), systemImage: "checkmark.circle.fill")
+                .font(.caption).foregroundStyle(.secondary)
+        } else {
+            HStack(spacing: 14) {
+                Text("这个判断准确吗？").font(.caption).foregroundStyle(.secondary)
+                Button("准确") { onReviewInsight(insight, .accurate) }
+                Button("部分准确") { onReviewInsight(insight, .partiallyAccurate) }
+                Button("不准确") { onReviewInsight(insight, .inaccurate) }
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+        }
+    }
+
+    @ViewBuilder
+    private var memoryReview: some View {
+        if !briefing.memoryCandidates.isEmpty {
+            VStack(alignment: .leading, spacing: 9) {
+                sectionTitle("我对你的新认识", icon: "person.text.rectangle", color: .indigo)
+                Text("只有你确认后，它才会进入长期用户档案。")
+                    .font(.caption).foregroundStyle(.secondary)
+                ForEach(briefing.memoryCandidates) { memory in
+                    HStack(alignment: .top, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(memory.kind.title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            Text(memory.content).font(.subheadline)
+                        }
+                        Spacer()
+                        let status = memoryStates[memory.id] ?? memory.status
+                        if status == .proposed {
+                            Button("准确") { onReviewMemory(memory, .confirmed) }
+                            Button("不准确") { onReviewMemory(memory, .rejected) }
+                        } else {
+                            Text(status == .confirmed ? "已确认" : "已否定").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            .padding(12)
+            .background(Color.indigo.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    @ViewBuilder
+    private var routineReview: some View {
+        if !briefing.routineCandidates.isEmpty {
+            VStack(alignment: .leading, spacing: 9) {
+                sectionTitle("可学习的个人规则", icon: "wand.and.stars", color: .teal)
+                ForEach(briefing.routineCandidates) { routine in
+                    HStack(alignment: .top, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(routine.title).font(.subheadline.weight(.semibold))
+                            Text("\(routine.trigger)，\(routine.suggestedAction)").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        let status = routineStates[routine.id] ?? routine.status
+                        if status == .proposed {
+                            Button("启用") { onUpdateRoutine(routine, .enabled) }
+                            Button("忽略") { onUpdateRoutine(routine, .dismissed) }
+                        } else {
+                            Text(status == .enabled ? "已启用" : "已忽略").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            .padding(12)
+            .background(Color.teal.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private func feedbackTitle(_ rating: InsightFeedbackRating) -> String {
+        switch rating {
+        case .accurate: "已反馈：准确"
+        case .partiallyAccurate: "已反馈：部分准确"
+        case .inaccurate: "已反馈：不准确"
+        case .acted: "已反馈：已采取行动"
+        case .dismissed: "已忽略"
+        }
     }
 }
 
@@ -1933,6 +2131,8 @@ private struct PrivacyAndModelView: View {
 
                     settingsCard(title: "每日总结", icon: "calendar.badge.clock", tint: .indigo) {
                         Toggle("每天自动汇总前一天", isOn: dailySummaryEnabledBinding)
+                        Toggle("总结完成后发送系统通知", isOn: dailySummaryNotificationBinding)
+                            .disabled(!model.state.dailySummarySettings.isEnabled)
                         HStack {
                             Label(model.state.dailySummarySettings.isEnabled ? "已启用" : "当前关闭", systemImage: model.state.dailySummarySettings.isEnabled ? "checkmark.circle.fill" : "pause.circle")
                                 .font(.caption)
@@ -1947,7 +2147,7 @@ private struct PrivacyAndModelView: View {
                             .datePickerStyle(.field)
                             .disabled(!model.state.dailySummarySettings.isEnabled)
                         }
-                        Text("仅汇总前一天已保存的显式记录；云端模型未启用时会保存本地回退摘要。应用下次打开时可补生成错过的总结。")
+                        Text("仅汇总前一天已保存的显式记录；通知默认关闭，只有你主动开启后才会请求系统权限。云端模型未启用时会保存本地智能简报。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -2087,6 +2287,17 @@ private struct PrivacyAndModelView: View {
                 var settings = model.state.dailySummarySettings
                 settings.hour = components.hour ?? settings.hour
                 settings.minute = components.minute ?? settings.minute
+                model.updateDailySummarySettings(settings)
+            }
+        )
+    }
+
+    private var dailySummaryNotificationBinding: Binding<Bool> {
+        Binding(
+            get: { model.state.dailySummarySettings.notifyWhenReady ?? false },
+            set: { value in
+                var settings = model.state.dailySummarySettings
+                settings.notifyWhenReady = value
                 model.updateDailySummarySettings(settings)
             }
         )

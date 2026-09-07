@@ -8,7 +8,7 @@ struct RecallApp: App {
     @StateObject private var model = RecallAppModel()
 
     var body: some Scene {
-        WindowGroup("Recall · 个人记忆") {
+        Window("Recall · 个人记忆", id: "main") {
             RecallRootView()
                 .environmentObject(model)
                 .background(MainWindowActivationBridge())
@@ -46,13 +46,17 @@ final class RecallAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         let runningApp = NSRunningApplication.current
         runningApp.activate(options: [.activateAllWindows])
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         // WindowGroup 会在启动后的一个 run loop 内创建窗口，因此再次前置以避免窗口可见但不接收键盘事件。
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             runningApp.activate(options: [.activateAllWindows])
             let mainWindow = NSApp.windows.first { window in
-                window.isVisible && !window.styleMask.contains(.utilityWindow)
-            } ?? NSApp.windows.first
+                window.canBecomeKey && window.styleMask.contains(.titled) && window.title.contains("Recall") && !(window is NSPanel)
+            } ?? NSApp.windows.first { $0.canBecomeKey && $0.styleMask.contains(.titled) && !($0 is NSPanel) }
+            if mainWindow?.isMiniaturized == true {
+                mainWindow?.deminiaturize(nil)
+            }
+            mainWindow?.orderFrontRegardless()
             mainWindow?.makeKeyAndOrderFront(nil)
         }
     }
@@ -69,6 +73,7 @@ private struct MainWindowActivationBridge: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard window != nil else { return }
+            window?.isReleasedWhenClosed = false
             DispatchQueue.main.async {
                 RecallAppDelegate.activateMainWindow()
             }
@@ -78,6 +83,7 @@ private struct MainWindowActivationBridge: NSViewRepresentable {
 
 private struct MenuBarPanel: View {
     @EnvironmentObject private var model: RecallAppModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -99,7 +105,10 @@ private struct MenuBarPanel: View {
                 model.updatePrivacy(privacy)
             }
             Button("打开 Recall") {
-                RecallAppDelegate.activateMainWindow()
+                openWindow(id: "main")
+                DispatchQueue.main.async {
+                    RecallAppDelegate.activateMainWindow()
+                }
             }
             Divider()
             Button("退出 Recall") { NSApplication.shared.terminate(nil) }

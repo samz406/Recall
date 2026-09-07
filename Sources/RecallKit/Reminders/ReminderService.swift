@@ -143,6 +143,31 @@ public final class LocalNotificationScheduler {
         }
     }
 
+    public func deliverDailyBriefing(_ summary: DailySummary) async throws {
+        let center = try notificationCenter()
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+            throw ReminderNotificationError.authorizationRequired
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "Recall 已生成个人简报"
+        content.body = summary.briefing?.headline ?? "昨天的关键进展、未闭环事项和个性化建议已整理完成。"
+        content.sound = .default
+        content.userInfo = ["dailySummaryID": summary.id.uuidString]
+        let identifier = "im.recall.app.daily-summary.\(Int(summary.day.timeIntervalSince1970))"
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
+        let request = UNNotificationRequest(
+            identifier: identifier,
+            content: content,
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        )
+        do {
+            try await center.add(request)
+        } catch {
+            throw notificationError(from: error)
+        }
+    }
+
     public func cancelDailyReview() {
         guard isNotificationHostAvailable else { return }
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["im.recall.app.daily-review"])
