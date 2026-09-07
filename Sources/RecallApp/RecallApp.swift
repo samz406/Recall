@@ -45,15 +45,17 @@ final class RecallAppDelegate: NSObject, NSApplicationDelegate {
     static func activateMainWindow() {
         NSApp.setActivationPolicy(.regular)
         let runningApp = NSRunningApplication.current
-        runningApp.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
-        NSApp.activate(ignoringOtherApps: true)
+        runningApp.activate(options: [.activateAllWindows])
+        NSApp.activate()
         // WindowGroup 会在启动后的一个 run loop 内创建窗口，因此再次前置以避免窗口可见但不接收键盘事件。
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            runningApp.activate(options: [.activateIgnoringOtherApps, .activateAllWindows])
+            runningApp.activate(options: [.activateAllWindows])
             let mainWindow = NSApp.windows.first { window in
                 window.canBecomeKey && window.styleMask.contains(.titled) && window.title.contains("Recall") && !(window is NSPanel)
             } ?? NSApp.windows.first { $0.canBecomeKey && $0.styleMask.contains(.titled) && !($0 is NSPanel) }
-            mainWindow?.isMiniaturized = false
+            if mainWindow?.isMiniaturized == true {
+                mainWindow?.deminiaturize(nil)
+            }
             mainWindow?.orderFrontRegardless()
             mainWindow?.makeKeyAndOrderFront(nil)
         }

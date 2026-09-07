@@ -187,7 +187,7 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
     private func bind(_ value: SQLiteValue, to statement: OpaquePointer, at index: Int32) {
         switch value {
         case .text(let text):
-            text.withCString { pointer in
+            _ = text.withCString { pointer in
                 sqlite3_bind_text(statement, index, pointer, -1, Self.transient)
             }
         case .double(let value): sqlite3_bind_double(statement, index, value)
