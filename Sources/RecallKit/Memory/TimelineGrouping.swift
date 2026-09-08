@@ -25,7 +25,7 @@ public enum TimelineGrouping {
     ) -> [CaptureRecord] {
         guard let interval = calendar.dateInterval(of: .day, for: day) else { return [] }
         return captures
-            .filter { interval.contains($0.createdAt) }
+            .filter { $0.createdAt >= interval.start && $0.createdAt < interval.end }
             .sorted { lhs, rhs in lhs.createdAt > rhs.createdAt }
     }
 
