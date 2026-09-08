@@ -375,7 +375,7 @@ struct RecallVerifier {
         )
         try expect(secondPlan.rollingSummary == plan.rollingSummary, "没有新历史时不应重复压缩相同消息")
 
-        let unformatted = "总结如下。一、新人讨论了积分消耗与开发阻塞，需要先降低首次体验成本。二、团队讨论了代码冲突和素材不足，需要拆分模块逐步推进。三、当前仍缺少明确结论，下一步应确认负责人和完成时间。"
+        let unformatted = "讨论主要集中在以下方面： 一、新人讨论了积分消耗与开发阻塞，需要先降低首次体验成本。二、团队讨论了代码冲突和素材不足，需要拆分模块逐步推进。三、当前仍缺少明确结论，下一步应确认负责人和完成时间。"
         let formatted = ChatResponseFormatter().format(unformatted + unformatted)
         try expect(formatted.contains("\n\n一、") && formatted.contains("\n\n二、"), "长回答没有按编号主题自动分段")
     }
