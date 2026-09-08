@@ -119,17 +119,17 @@ public struct ChatResponseFormatter: Sendable {
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard normalized.count > 180 else { return normalized }
 
         let sectioned = normalized.replacingOccurrences(
             of: #"([。！？!?；;])\s*([一二三四五六七八九十]{1,3}[、．.])"#,
             with: "$1\n\n$2",
             options: .regularExpression
         )
-        if sectioned.contains("\n\n") {
+        if sectioned != normalized || sectioned.contains("\n\n") {
             return collapseBlankLines(in: sectioned)
         }
 
+        guard normalized.count > 180 else { return normalized }
         let sentences = splitSentences(sectioned)
         guard sentences.count >= 3 else { return sectioned }
         return stride(from: 0, to: sentences.count, by: 2)
