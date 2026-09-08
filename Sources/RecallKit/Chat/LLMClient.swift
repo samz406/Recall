@@ -122,8 +122,8 @@ public struct ChatResponseFormatter: Sendable {
         guard normalized.count > 180 else { return normalized }
 
         let sectioned = normalized.replacingOccurrences(
-            of: #"(?<!^)(?=[一二三四五六七八九十]{1,3}[、．.])"#,
-            with: "\n\n",
+            of: #"([。！？!?；;])\s*([一二三四五六七八九十]{1,3}[、．.])"#,
+            with: "$1\n\n$2",
             options: .regularExpression
         )
         if sectioned.contains("\n\n") {
