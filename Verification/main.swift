@@ -10,6 +10,7 @@ struct RecallVerifier {
             try verifyPrivacy()
             try verifySearch()
             try verifyTimelineDayGrouping()
+            try verifyTimelineDayFiltering()
             try verifyReminders()
             try await verifyReminderSchedulePersistence()
             try await verifyDailySummaryGeneration()
@@ -28,9 +29,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 22 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 23 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 21 integration checks.")
+                print("PASS: RecallVerifier completed 22 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -96,6 +97,22 @@ struct RecallVerifier {
         try expect(calendar.isDate(groups[0].day, inSameDayAs: laterMorning), "最新日期组排序错误")
         try expect(groups[0].captures.map(\.id) == [later.id, early.id], "同一天内的记录没有按从新到旧排序")
         try expect(calendar.isDate(groups[1].day, inSameDayAs: previousNight), "午夜前记录被归入了错误日期")
+    }
+
+    private static func verifyTimelineDayFiltering() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+
+        let selectedDay = calendar.date(from: DateComponents(year: 2026, month: 9, day: 8, hour: 12))!
+        let startOfDay = calendar.startOfDay(for: selectedDay)
+        let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
+        let first = makeCapture(text: "当天第一条", app: "Notes", createdAt: startOfDay)
+        let last = makeCapture(text: "当天最后一条", app: "Xcode", createdAt: endOfDay.addingTimeInterval(-1))
+        let previous = makeCapture(text: "前一天记录", app: "Mail", createdAt: startOfDay.addingTimeInterval(-1))
+        let next = makeCapture(text: "次日记录", app: "Safari", createdAt: endOfDay)
+
+        let filtered = TimelineGrouping.captures(on: selectedDay, from: [previous, first, next, last], calendar: calendar)
+        try expect(filtered.map(\.id) == [last.id, first.id], "时间线日期筛选没有使用本地自然日边界")
     }
 
     private static func verifyReminders() throws {
