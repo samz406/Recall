@@ -13,10 +13,8 @@ final class RecallAppModel: ObservableObject {
     @Published var state = RecallState()
     @Published var isRecording = false
     @Published var isThinking = false
-    @Published var errorMessage: String?
     @Published var noticeMessage: String?
     @Published private(set) var enterKeyMonitorStatus: GlobalEnterKeyRecorderStatus = .disabled
-    @Published private(set) var assistantMessageNeedingAnimationID: UUID?
     @Published private(set) var diagnosticEntries: [RecallDiagnosticEntry]
     @Published private(set) var reminderDeliveryStates: [UUID: ReminderDeliveryState] = [:]
     @Published private(set) var reminderDiscoveryStatus: ReminderDiscoveryStatus = .idle
@@ -112,6 +110,10 @@ final class RecallAppModel: ObservableObject {
         diagnosticEntries = diagnosticLog.entries
     }
 
+    private func recordError(_ error: Error, source: String, message: String) {
+        recordDiagnostic(.error, source: source, message: message, metadata: ["error": recallSafeErrorCode(error)])
+    }
+
     private func updateEnterKeyRecorder() {
         guard let rule = state.rules.first(where: { $0.template == .enterKeyTrigger }) else {
             enterKeyRecorder.stop()
@@ -186,7 +188,7 @@ final class RecallAppModel: ObservableObject {
                 try await store.updateRules(rules)
                 await refresh()
             } catch {
-                errorMessage = error.localizedDescription
+                recordError(error, source: "Rules", message: "保存记录规则失败")
             }
         }
     }
@@ -227,7 +229,6 @@ final class RecallAppModel: ObservableObject {
                 noticeMessage = "未能截图记录：如需保存屏幕内容，请在系统设置中允许屏幕与系统音频录制。"
             } catch {
                 recordDiagnostic(.error, source: diagnosticSource, message: "记录失败", metadata: ["eventTemplate": rule.template.rawValue, "error": recallSafeErrorCode(error)])
-                errorMessage = error.localizedDescription
             }
         }
     }
@@ -239,7 +240,7 @@ final class RecallAppModel: ObservableObject {
                 await refresh()
                 noticeMessage = "已删除该记录及其关联截图。"
             } catch {
-                errorMessage = error.localizedDescription
+                recordError(error, source: "Capture", message: "删除记录失败")
             }
         }
     }
@@ -250,24 +251,17 @@ final class RecallAppModel: ObservableObject {
         Task {
             defer { isThinking = false }
             do {
-                let assistantMessage = try await assistant.ask(question)
-                assistantMessageNeedingAnimationID = assistantMessage.id
+                _ = try await assistant.ask(question)
                 await refresh()
             } catch {
-                errorMessage = error.localizedDescription
+                recordDiagnostic(.error, source: "Chat", message: "问一问请求失败", metadata: ["error": recallSafeErrorCode(error)])
             }
         }
-    }
-
-    func finishAssistantMessageAnimation(id: UUID) {
-        guard assistantMessageNeedingAnimationID == id else { return }
-        assistantMessageNeedingAnimationID = nil
     }
 
     func proposeReminders() {
         // 仅检索已经持久化在 state 中的 OCR 文本；不会调用截图管线，也不需要屏幕录制权限。
         if case .searching = reminderDiscoveryStatus { return }
-        errorMessage = nil
         let captures = state.captures
         let existingReminders = state.reminders
         reminderDiscoveryStatus = .searching(scannedRecordCount: captures.count)
@@ -299,14 +293,14 @@ final class RecallAppModel: ObservableObject {
                 noticeMessage = "已检索 \(captures.count) 条本地记录，发现 \(newCandidates.count) 项待确认提醒。"
             } catch {
                 reminderDiscoveryStatus = .idle
-                errorMessage = error.localizedDescription
+                recordError(error, source: "Reminders", message: "保存提醒候选失败")
             }
         }
     }
 
     func approveReminder(_ reminder: ReminderCandidate, dueAt: Date) {
         guard dueAt > Date.now else {
-            errorMessage = "请为提醒选择一个未来时间。"
+            recordDiagnostic(.warning, source: "Reminders", message: "提醒时间不是未来时间")
             return
         }
         Task {
@@ -326,7 +320,7 @@ final class RecallAppModel: ObservableObject {
                 }
                 noticeMessage = "提醒已写入 macOS 通知队列，将在 \(dueAt.formatted(date: .abbreviated, time: .shortened)) 推送。"
             } catch {
-                errorMessage = error.localizedDescription
+                recordError(error, source: "Reminders", message: "安排提醒失败")
             }
         }
     }
@@ -342,7 +336,7 @@ final class RecallAppModel: ObservableObject {
                 await refresh()
                 noticeMessage = wasScheduled ? "提醒已取消。" : "已忽略该提醒候选。"
             } catch {
-                errorMessage = error.localizedDescription
+                recordError(error, source: "Reminders", message: "更新提醒状态失败")
             }
         }
     }
@@ -356,7 +350,7 @@ final class RecallAppModel: ObservableObject {
                     ? "已忽略 \(dismissedCount) 项待确认提醒。"
                     : "当前没有待确认提醒。"
             } catch {
-                errorMessage = error.localizedDescription
+                recordError(error, source: "Reminders", message: "批量忽略提醒失败")
             }
         }
     }
@@ -369,7 +363,7 @@ final class RecallAppModel: ObservableObject {
                 try await store.updatePrivacy(privacy)
                 await refresh()
             } catch {
-                errorMessage = error.localizedDescription
+                recordError(error, source: "Privacy", message: "保存隐私设置失败")
             }
         }
     }
@@ -399,7 +393,7 @@ final class RecallAppModel: ObservableObject {
                     noticeMessage = "每日总结已关闭；已有总结会继续保留，直到你手动删除。"
                 }
             } catch {
-                errorMessage = error.localizedDescription
+                recordError(error, source: "DailySummary", message: "保存每日总结设置失败")
             }
         }
     }
@@ -416,7 +410,7 @@ final class RecallAppModel: ObservableObject {
                 await refresh()
                 noticeMessage = "已删除该每日总结。"
             } catch {
-                errorMessage = error.localizedDescription
+                recordError(error, source: "DailySummary", message: "删除每日总结失败")
             }
         }
     }
@@ -432,7 +426,7 @@ final class RecallAppModel: ObservableObject {
                 await refresh()
                 noticeMessage = configuration.provider == .localOnly ? "已切换为本地摘要模式。" : "云端模型配置已保存；只有检索到的文本片段会在提问时发送。"
             } catch {
-                errorMessage = error.localizedDescription
+                recordError(error, source: "Model", message: "保存模型配置失败")
             }
         }
     }
@@ -454,7 +448,7 @@ final class RecallAppModel: ObservableObject {
                 await refresh()
                 noticeMessage = "模型连接已保存；下一次“问一问”将使用 \(updatedConfiguration.model)。"
             } catch {
-                errorMessage = error.localizedDescription
+                recordError(error, source: "Model", message: "保存模型连接失败")
             }
         }
     }
@@ -525,7 +519,6 @@ final class RecallAppModel: ObservableObject {
                 ])
             } catch {
                 recordDiagnostic(.error, source: "DailySummary", message: "每日总结生成失败", metadata: ["error": recallSafeErrorCode(error)])
-                errorMessage = "每日总结未能生成：\(error.localizedDescription)"
             }
         }
     }
@@ -545,7 +538,7 @@ final class RecallAppModel: ObservableObject {
                     ? "已记住这类判断不适合你，后续会降低或停止推送。"
                     : "反馈已记录，Recall 会据此调整后续判断。"
             } catch {
-                errorMessage = error.localizedDescription
+                recordError(error, source: "Insights", message: "保存洞察反馈失败")
             }
         }
     }
@@ -557,7 +550,7 @@ final class RecallAppModel: ObservableObject {
                 await refresh()
                 noticeMessage = status == .confirmed ? "这条认识已加入长期用户档案。" : "这条认识已否定，不会用于后续个性化。"
             } catch {
-                errorMessage = error.localizedDescription
+                recordError(error, source: "Memory", message: "保存用户记忆反馈失败")
             }
         }
     }
@@ -571,7 +564,7 @@ final class RecallAppModel: ObservableObject {
                     ? "已启用该个人规则；它只会提出建议或提醒候选，不会自动执行外部动作。"
                     : "已忽略该个人规则。"
             } catch {
-                errorMessage = error.localizedDescription
+                recordError(error, source: "Routines", message: "更新个人规则失败")
             }
         }
     }
@@ -660,7 +653,7 @@ final class RecallAppModel: ObservableObject {
                 await refresh()
                 noticeMessage = "已删除全部本地记忆记录。"
             } catch {
-                errorMessage = error.localizedDescription
+                recordError(error, source: "Data", message: "清除本地数据失败")
             }
         }
     }

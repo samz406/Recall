@@ -121,7 +121,13 @@ final class GlobalEnterKeyRecorder {
     }
 
     private func handleEnterPress() {
-        guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
+        // SwiftPM 开发包中的 Bundle ID 可能与 NSWorkspace 返回值不一致，不能只靠 Bundle ID。
+        // Recall 自己处于激活状态、拥有键盘窗口或是系统前台进程时，Enter 永远只交给输入框处理。
+        guard !NSApp.isActive, NSApp.keyWindow == nil else { return }
+        let ownProcessIdentifier = ProcessInfo.processInfo.processIdentifier
+        guard let frontmostApplication = NSWorkspace.shared.frontmostApplication,
+              frontmostApplication.processIdentifier != ownProcessIdentifier,
+              frontmostApplication.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
         guard lastTriggerAt.map({ Date.now.timeIntervalSince($0) >= cooldown }) ?? true else { return }
         lastTriggerAt = .now
         onEnter?()

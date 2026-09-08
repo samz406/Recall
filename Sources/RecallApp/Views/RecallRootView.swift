@@ -77,14 +77,6 @@ struct RecallRootView: View {
         .onDisappear {
             noticeDismissal?.cancel()
         }
-        .alert("Recall 出现问题", isPresented: Binding(
-            get: { model.errorMessage != nil },
-            set: { if !$0 { model.errorMessage = nil } }
-        )) {
-            Button("好", role: .cancel) { model.errorMessage = nil }
-        } message: {
-            Text(model.errorMessage ?? "")
-        }
     }
 
     private var highPrioritySummaryTodoCount: Int {
@@ -582,12 +574,7 @@ private struct ChatView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     ForEach(model.state.messages) { message in
-                        RecallMessageCard(
-                            message: message,
-                            animateTyping: model.assistantMessageNeedingAnimationID == message.id,
-                            onTypingProgress: { scrollRequest += 1 },
-                            onTypingFinished: { model.finishAssistantMessageAnimation(id: message.id) }
-                        )
+                        RecallMessageCard(message: message)
                         .id(message.id)
                     }
                     if model.isThinking {
@@ -711,9 +698,6 @@ private struct ChatWelcomeView: View {
 
 private struct RecallMessageCard: View {
     let message: ConversationMessage
-    let animateTyping: Bool
-    let onTypingProgress: () -> Void
-    let onTypingFinished: () -> Void
 
     var body: some View {
         Group {
@@ -749,16 +733,12 @@ private struct RecallMessageCard: View {
                     .foregroundStyle(.tertiary)
             }
             if message.role == .assistant {
-                MarkdownTypewriterText(
-                    markdown: ChatResponseFormatter().format(message.content),
-                    shouldAnimate: animateTyping,
-                    onProgress: onTypingProgress,
-                    onFinished: onTypingFinished
-                )
+                MarkdownParagraphText(markdown: ChatResponseFormatter().format(message.content))
             } else {
                 Text(message.content)
+                    .font(.system(size: 17))
                     .textSelection(.enabled)
-                    .lineSpacing(4)
+                    .lineSpacing(5)
             }
             if !message.citations.isEmpty {
                 HStack(spacing: 6) {
@@ -777,21 +757,11 @@ private struct RecallMessageCard: View {
     }
 }
 
-private struct MarkdownTypewriterText: View {
+private struct MarkdownParagraphText: View {
     let markdown: String
-    let shouldAnimate: Bool
-    let onProgress: () -> Void
-    let onFinished: () -> Void
-    @State private var visibleCharacterCount = 0
-    @State private var animationTask: Task<Void, Never>?
 
-    private var visibleMarkdown: String {
-        guard shouldAnimate else { return markdown }
-        return String(markdown.prefix(visibleCharacterCount))
-    }
-
-    private var visibleParagraphs: [String] {
-        visibleMarkdown
+    private var paragraphs: [String] {
+        markdown
             .components(separatedBy: "\n\n")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -799,39 +769,15 @@ private struct MarkdownTypewriterText: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(visibleParagraphs.enumerated()), id: \.offset) { item in
+            ForEach(Array(paragraphs.enumerated()), id: \.offset) { item in
                 Text(markdownAttributedString(from: item.element))
+                    .font(.system(size: 17))
                     .textSelection(.enabled)
-                    .lineSpacing(5)
+                    .lineSpacing(6)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .task(id: shouldAnimate) {
-                animationTask?.cancel()
-                guard shouldAnimate else {
-                    visibleCharacterCount = markdown.count
-                    return
-                }
-                visibleCharacterCount = 0
-                let total = markdown.count
-                let step = max(1, min(8, total / 160))
-                var lastReportedCharacterCount = 0
-                while visibleCharacterCount < total && !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 16_000_000)
-                    guard !Task.isCancelled else { return }
-                    visibleCharacterCount = min(total, visibleCharacterCount + step)
-                    if visibleCharacterCount - lastReportedCharacterCount >= 32 || visibleCharacterCount == total {
-                        lastReportedCharacterCount = visibleCharacterCount
-                        onProgress()
-                    }
-                }
-                guard !Task.isCancelled else { return }
-                onFinished()
-            }
-            .onDisappear {
-                animationTask?.cancel()
-            }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func markdownAttributedString(from source: String) -> AttributedString {
@@ -891,7 +837,7 @@ private struct ChatComposer: View {
         .padding(.leading, 16)
         .padding(.trailing, 9)
         .padding(.vertical, 10)
-        .frame(minHeight: 64)
+        .frame(minHeight: 69)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
