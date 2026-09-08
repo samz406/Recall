@@ -262,16 +262,36 @@ final class RecallAppModel: ObservableObject {
     func proposeReminders() {
         // 仅检索已经持久化在 state 中的 OCR 文本；不会调用截图管线，也不需要屏幕录制权限。
         if case .searching = reminderDiscoveryStatus { return }
-        let captures = state.captures
-        let existingReminders = state.reminders
+        let participatingTemplates = Set(
+            state.rules
+                .filter(\.participatesInReminders)
+                .map(\.template)
+        )
+        let oldestRelevantDate = Calendar.current.date(byAdding: .day, value: -90, to: .now) ?? .distantPast
+        let captures = state.captures.filter {
+            participatingTemplates.contains($0.eventTemplate) && $0.createdAt >= oldestRelevantDate
+        }
+        // 待确认项每次都按最新规则重新生成，避免旧版误判永久残留；用户已处理过的状态继续保留并参与去重。
+        let reminderHistory = state.reminders.filter { $0.status != .proposed }
         reminderDiscoveryStatus = .searching(scannedRecordCount: captures.count)
 
         Task {
             // 让“正在检索”状态先渲染，再对所有本地记录执行候选提取与去重。
             await Task.yield()
-            let newCandidates = reminderExtractor.candidates(from: captures, existing: existingReminders)
+            let extractor = reminderExtractor
+            let newCandidates = await Task.detached(priority: .userInitiated) {
+                extractor.candidates(from: captures, existing: reminderHistory)
+            }.value
             let completedAt = Date.now
             guard !newCandidates.isEmpty else {
+                do {
+                    try await store.replaceReminders(reminderHistory)
+                    await refresh()
+                } catch {
+                    reminderDiscoveryStatus = .idle
+                    recordError(error, source: "Reminders", message: "清理旧提醒候选失败")
+                    return
+                }
                 reminderDiscoveryStatus = .completed(
                     scannedRecordCount: captures.count,
                     discoveredCount: 0,
@@ -283,7 +303,7 @@ final class RecallAppModel: ObservableObject {
                 return
             }
             do {
-                try await store.replaceReminders(newCandidates + existingReminders)
+                try await store.replaceReminders(newCandidates + reminderHistory)
                 await refresh()
                 reminderDiscoveryStatus = .completed(
                     scannedRecordCount: captures.count,
@@ -337,6 +357,21 @@ final class RecallAppModel: ObservableObject {
                 noticeMessage = wasScheduled ? "提醒已取消。" : "已忽略该提醒候选。"
             } catch {
                 recordError(error, source: "Reminders", message: "更新提醒状态失败")
+            }
+        }
+    }
+
+    func completeReminder(_ reminder: ReminderCandidate) {
+        Task {
+            do {
+                var updated = reminder
+                updated.status = .completed
+                notificationScheduler.cancel(updated)
+                try await store.updateReminder(updated)
+                await refresh()
+                noticeMessage = "提醒已完成。"
+            } catch {
+                recordError(error, source: "Reminders", message: "完成提醒失败")
             }
         }
     }

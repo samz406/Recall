@@ -12,6 +12,7 @@ struct RecallVerifier {
             try verifyTimelineDayGrouping()
             try verifyTimelineDayFiltering()
             try verifyReminders()
+            try verifyReminderPrecision()
             try await verifyReminderSchedulePersistence()
             try await verifyDailySummaryGeneration()
             try await verifyDailySummaryPersistenceAndDeletion()
@@ -29,9 +30,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 23 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 24 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 22 integration checks.")
+                print("PASS: RecallVerifier completed 23 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -122,6 +123,39 @@ struct RecallVerifier {
         try expect(candidates.count == 1, "应从待办文本创建一个提醒候选")
         try expect(candidates.first?.dueAt != nil, "未推断出明天的提醒时间")
         try expect(extractor.candidates(from: [capture], existing: candidates).isEmpty, "提醒候选去重失败")
+    }
+
+    private static func verifyReminderPrecision() throws {
+        let calendar = Calendar.current
+        let base = calendar.date(from: DateComponents(year: 2026, month: 9, day: 8, hour: 11))!
+        let first = makeCapture(text: "待办：明天下午3点提交社会心理学调研报告", app: "Notes", createdAt: base)
+        let duplicate = makeCapture(text: "任务：明天下午3点提交社会心理学调研报告", app: "Messages", createdAt: base.addingTimeInterval(60))
+        let deadlineOnly = makeCapture(text: "【服务截止】", app: "Messages", createdAt: base)
+        let uncertainQuestion = makeCapture(text: "我记得券兑换码也是券过期的时候推送过期是吧", app: "Messages", createdAt: base)
+        let codeNoise = makeCapture(text: "//todo test log", app: "IntelliJ IDEA", createdAt: base)
+        let completed = makeCapture(text: "已完成：明天提交版本发布说明", app: "Notes", createdAt: base)
+
+        let candidates = ReminderExtractor().candidates(
+            from: [first, duplicate, deadlineOnly, uncertainQuestion, codeNoise, completed],
+            existing: []
+        )
+        try expect(candidates.count == 1, "提醒精度过滤未排除疑问句、完成态、截止标签或代码噪声")
+        try expect(candidates[0].title == "明天下午3点提交社会心理学调研报告", "提醒标题没有提炼为明确行动")
+        try expect(candidates[0].sourceCaptureIDs.count == 2, "重复记录没有合并为同一提醒候选")
+        if let dueAt = candidates[0].dueAt {
+            let components = calendar.dateComponents([.day, .hour, .minute], from: dueAt)
+            try expect(components.day == 9 && components.hour == 15 && components.minute == 0, "提醒时间没有正确识别明天下午3点")
+        } else {
+            throw VerificationError.failed("明确时间线索没有生成建议提醒时间")
+        }
+
+        let report = makeCapture(
+            text: "写一篇介绍《社会心理学》的调研报告，需要包含主要内容和产品设计应用",
+            app: "Chrome",
+            createdAt: base
+        )
+        let reportCandidate = ReminderExtractor().candidates(from: [report], existing: []).first
+        try expect(reportCandidate?.title == "写一篇介绍《社会心理学》的调研报告", "长句提醒没有提炼行动主干")
     }
 
     private static func verifyReminderSchedulePersistence() async throws {
