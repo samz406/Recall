@@ -580,7 +580,7 @@ private struct ChatView: View {
     private var messageTimeline: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 22) {
+                VStack(spacing: 16) {
                     ForEach(model.state.messages) { message in
                         RecallMessageCard(
                             message: message,
@@ -624,7 +624,7 @@ private struct ChatView: View {
                 scrollToLatest(using: proxy)
             }
             .onChange(of: scrollRequest) { _, _ in
-                scrollToLatest(using: proxy)
+                scrollToLatest(using: proxy, animated: false)
             }
         }
     }
@@ -790,10 +790,23 @@ private struct MarkdownTypewriterText: View {
         return String(markdown.prefix(visibleCharacterCount))
     }
 
+    private var visibleParagraphs: [String] {
+        visibleMarkdown
+            .components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
     var body: some View {
-        Text(markdownAttributedString(from: visibleMarkdown))
-            .textSelection(.enabled)
-            .lineSpacing(4)
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(visibleParagraphs.enumerated()), id: \.offset) { item in
+                Text(markdownAttributedString(from: item.element))
+                    .textSelection(.enabled)
+                    .lineSpacing(5)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .task(id: shouldAnimate) {
                 animationTask?.cancel()
                 guard shouldAnimate else {
@@ -803,11 +816,15 @@ private struct MarkdownTypewriterText: View {
                 visibleCharacterCount = 0
                 let total = markdown.count
                 let step = max(1, min(8, total / 160))
+                var lastReportedCharacterCount = 0
                 while visibleCharacterCount < total && !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 16_000_000)
                     guard !Task.isCancelled else { return }
                     visibleCharacterCount = min(total, visibleCharacterCount + step)
-                    onProgress()
+                    if visibleCharacterCount - lastReportedCharacterCount >= 32 || visibleCharacterCount == total {
+                        lastReportedCharacterCount = visibleCharacterCount
+                        onProgress()
+                    }
                 }
                 guard !Task.isCancelled else { return }
                 onFinished()
@@ -851,10 +868,10 @@ private struct ChatComposer: View {
             TextField("向 Recall 提问…", text: $question, axis: .vertical)
                 .focused($isFocused)
                 .textFieldStyle(.plain)
-                .lineLimit(1...5)
-                .font(.system(size: 15))
+                .lineLimit(1...7)
+                .font(.system(size: 18))
                 .padding(.leading, 4)
-                .padding(.vertical, 8)
+                .padding(.vertical, 10)
                 .submitLabel(.send)
                 .onKeyPress(.return) {
                     submit()
@@ -864,7 +881,7 @@ private struct ChatComposer: View {
                 Image(systemName: isSending ? "ellipsis" : "arrow.up")
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(.white)
-                    .frame(width: 38, height: 38)
+                    .frame(width: 44, height: 44)
                     .background(sendButtonColor, in: Circle())
                     .contentShape(Circle())
             }
@@ -873,15 +890,16 @@ private struct ChatComposer: View {
         }
         .padding(.leading, 16)
         .padding(.trailing, 9)
-        .padding(.vertical, 8)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(.vertical, 10)
+        .frame(minHeight: 64)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .stroke(isFocused ? Color.accentColor.opacity(0.65) : Color(nsColor: .separatorColor).opacity(0.55), lineWidth: isFocused ? 1.5 : 1)
         }
         .shadow(color: .black.opacity(isFocused ? 0.09 : 0.055), radius: isFocused ? 20 : 14, y: 6)
         .animation(.easeOut(duration: 0.16), value: isFocused)
-        .frame(maxWidth: 700)
+        .frame(maxWidth: 780)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 32)
         .padding(.vertical, 16)

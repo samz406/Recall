@@ -121,7 +121,7 @@ public struct ChatResponseFormatter: Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         let sectioned = normalized.replacingOccurrences(
-            of: #"([。！？!?；;])\s*([一二三四五六七八九十]{1,3}[、．.])"#,
+            of: #"([。！？!?；;：:])\s*([一二三四五六七八九十]{1,3}[、．.])"#,
             with: "$1\n\n$2",
             options: .regularExpression
         )
