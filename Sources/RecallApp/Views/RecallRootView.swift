@@ -153,14 +153,36 @@ private struct RecordSheet: View {
     }
 }
 
+private struct TimelineDayOption: Identifiable {
+    let day: Date
+    let count: Int
+    var id: Date { day }
+}
+
 private struct TimelineView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var searchText = ""
     @State private var expandedDayIDs: Set<Date> = []
+    @State private var selectedDay = Calendar.current.startOfDay(for: .now)
+
+    private var availableDayOptions: [TimelineDayOption] {
+        let calendar = Calendar.current
+        let counts = model.state.captures.reduce(into: [Date: Int]()) { result, capture in
+            result[calendar.startOfDay(for: capture.createdAt), default: 0] += 1
+        }
+        return counts.keys
+            .sorted(by: >)
+            .prefix(14)
+            .map { TimelineDayOption(day: $0, count: counts[$0] ?? 0) }
+    }
+
+    private var selectedDayCaptures: [CaptureRecord] {
+        TimelineGrouping.captures(on: selectedDay, from: model.state.captures)
+    }
 
     private var captures: [CaptureRecord] {
-        guard !searchText.isEmpty else { return model.state.captures }
-        return MemorySearchEngine().search(MemorySearchQuery(text: searchText), in: model.state.captures).map(\.capture)
+        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return selectedDayCaptures }
+        return MemorySearchEngine().search(MemorySearchQuery(text: searchText), in: selectedDayCaptures).map(\.capture)
     }
 
     private var dayGroups: [TimelineDayGroup] {
@@ -172,59 +194,47 @@ private struct TimelineView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            VStack(spacing: 0) {
-                timelineHeader
-                if captures.isEmpty && !isSearching {
-                    timelineEmptyState
-                } else {
-                    TextField("搜索本地记忆", text: $searchText)
-                        .textFieldStyle(.roundedBorder)
-                        .padding(.horizontal, 32)
-                        .padding(.bottom, 14)
+        VStack(spacing: 0) {
+            timelineHeader
+            if model.state.captures.isEmpty {
+                timelineEmptyState
+            } else {
+                TextField("搜索所选日期的本地记忆", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal, 32)
+                    .padding(.bottom, 14)
 
-                    if captures.isEmpty {
-                        ContentUnavailableView(
-                            "没有匹配的本地记录",
-                            systemImage: "magnifyingglass",
-                            description: Text("可尝试日期、应用名称或其他关键词。")
-                        )
-                    } else {
-                        dayNavigator(proxy: proxy)
-                        Divider()
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                                ForEach(dayGroups) { group in
-                                    TimelineDaySection(
-                                        group: group,
-                                        title: dayTitle(for: group.day),
-                                        isSearchResult: isSearching,
-                                        isExpanded: expandedDayIDs.contains(group.id),
-                                        onToggle: { toggle(group.id) },
-                                        onDelete: model.deleteCapture
-                                    )
-                                    .id(group.id)
-                                }
+                dayNavigator
+                Divider()
+
+                if captures.isEmpty {
+                    selectedDayEmptyState
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                            ForEach(dayGroups) { group in
+                                TimelineDaySection(
+                                    group: group,
+                                    title: dayTitle(for: group.day),
+                                    isSearchResult: isSearching,
+                                    isExpanded: expandedDayIDs.contains(group.id),
+                                    onToggle: { toggle(group.id) },
+                                    onDelete: model.deleteCapture
+                                )
+                                .id(group.id)
                             }
-                            .padding(.horizontal, 32)
-                            .padding(.bottom, 24)
                         }
+                        .padding(.horizontal, 32)
+                        .padding(.bottom, 24)
                     }
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .onAppear { initializeExpandedDays() }
-            .onChange(of: searchText) { _, _ in
-                if isSearching {
-                    expandedDayIDs = Set(dayGroups.map(\.id))
-                } else {
-                    initializeExpandedDays()
-                }
-            }
-            .onChange(of: dayGroups.map(\.id)) { _, _ in
-                initializeExpandedDays()
-            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear { initializeExpandedDays() }
+        .onChange(of: searchText) { _, _ in initializeExpandedDays() }
+        .onChange(of: selectedDay) { _, _ in initializeExpandedDays() }
+        .onChange(of: dayGroups.map(\.id)) { _, _ in initializeExpandedDays() }
     }
 
     private var timelineHeader: some View {
@@ -324,42 +334,114 @@ private struct TimelineView: View {
         .frame(maxWidth: .infinity, alignment: .top)
     }
 
-    private func dayNavigator(proxy: ScrollViewProxy) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(dayGroups.prefix(10)) { group in
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            expandedDayIDs.insert(group.id)
-                            proxy.scrollTo(group.id, anchor: .top)
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text(navigationTitle(for: group.day))
-                            Text("\(group.captures.count)")
-                                .font(.caption.weight(.bold))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(.quaternary, in: Capsule())
+    private var selectedDayEmptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: isSearching ? "magnifyingglass" : "calendar.badge.clock")
+                .font(.system(size: 28, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+            Text(isSearching ? "当天没有匹配的记录" : "当天没有记录")
+                .font(.headline)
+            Text(isSearching
+                 ? "搜索只作用于当前选择的日期，可更换关键词或切换日期。"
+                 : "\(dayTitle(for: selectedDay)) 暂无本地记录，可通过上方日期栏查看其他日期。")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            if !Calendar.current.isDateInToday(selectedDay) {
+                Button("回到今天") { selectDay(.now) }
+                    .buttonStyle(.bordered)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(32)
+    }
+
+    private var dayNavigator: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Button { moveSelectedDay(by: -1) } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .buttonStyle(.bordered)
+                .help("前一天")
+
+                DatePicker(
+                    "选择日期",
+                    selection: Binding(
+                        get: { selectedDay },
+                        set: { selectDay($0) }
+                    ),
+                    in: ...Date.now,
+                    displayedComponents: .date
+                )
+                .labelsHidden()
+                .datePickerStyle(.compact)
+
+                Button { moveSelectedDay(by: 1) } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .buttonStyle(.bordered)
+                .disabled(Calendar.current.isDateInToday(selectedDay))
+                .help("后一天")
+
+                if !Calendar.current.isDateInToday(selectedDay) {
+                    Button("今天") { selectDay(.now) }
+                        .buttonStyle(.borderedProminent)
+                }
+
+                Spacer()
+
+                Label("\(selectedDayCaptures.count) 条记录", systemImage: "doc.text")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            if !availableDayOptions.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(availableDayOptions) { option in
+                            dayButton(for: option)
                         }
                     }
-                    .buttonStyle(.bordered)
                 }
             }
-            .padding(.horizontal)
-            .padding(.bottom, 12)
         }
+        .padding(.horizontal, 32)
+        .padding(.bottom, 14)
+    }
+
+    private func dayButton(for option: TimelineDayOption) -> some View {
+        let isSelected = Calendar.current.isDate(option.day, inSameDayAs: selectedDay)
+        return Button {
+            selectDay(option.day)
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(navigationTitle(for: option.day))
+                    .font(.subheadline.weight(.semibold))
+                HStack(spacing: 4) {
+                    Text(option.day.formatted(.dateTime.weekday(.abbreviated)))
+                    Text("·")
+                    Text("\(option.count) 条")
+                }
+                .font(.caption)
+                .foregroundStyle(isSelected ? Color.white.opacity(0.82) : Color.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .background(
+                isSelected ? Color.accentColor : Color(nsColor: .controlBackgroundColor),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(isSelected ? Color.clear : Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     private func initializeExpandedDays() {
-        let availableDays = Set(dayGroups.map(\.id))
-        if isSearching {
-            expandedDayIDs = availableDays
-        } else if expandedDayIDs.isEmpty {
-            expandedDayIDs = Set(dayGroups.filter { isRecentDay($0.day) }.map(\.id))
-        } else {
-            expandedDayIDs.formIntersection(availableDays)
-        }
+        expandedDayIDs = Set(dayGroups.map(\.id))
     }
 
     private func toggle(_ day: Date) {
@@ -370,10 +452,17 @@ private struct TimelineView: View {
         }
     }
 
-    private func isRecentDay(_ day: Date) -> Bool {
+    private func selectDay(_ day: Date) {
         let calendar = Calendar.current
-        let sevenDaysAgo = calendar.date(byAdding: .day, value: -6, to: Date.now) ?? Date.now
-        return day >= calendar.startOfDay(for: sevenDaysAgo)
+        let today = calendar.startOfDay(for: .now)
+        let normalizedDay = min(calendar.startOfDay(for: day), today)
+        selectedDay = normalizedDay
+        expandedDayIDs = [normalizedDay]
+    }
+
+    private func moveSelectedDay(by dayOffset: Int) {
+        guard let day = Calendar.current.date(byAdding: .day, value: dayOffset, to: selectedDay) else { return }
+        selectDay(day)
     }
 
     private func navigationTitle(for day: Date) -> String {

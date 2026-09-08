@@ -17,6 +17,18 @@ public struct TimelineDayGroup: Identifiable, Hashable, Sendable {
 }
 
 public enum TimelineGrouping {
+    /// 仅返回指定本地自然日内的记录，供时间线按天增量展示。
+    public static func captures(
+        on day: Date,
+        from captures: [CaptureRecord],
+        calendar: Calendar = .current
+    ) -> [CaptureRecord] {
+        guard let interval = calendar.dateInterval(of: .day, for: day) else { return [] }
+        return captures
+            .filter { interval.contains($0.createdAt) }
+            .sorted { lhs, rhs in lhs.createdAt > rhs.createdAt }
+    }
+
     /// 使用指定日历的自然日边界分组；日期组和组内记录均按从新到旧排序。
     public static func dayGroups(
         for captures: [CaptureRecord],
