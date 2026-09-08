@@ -58,7 +58,7 @@ public struct ReminderExtractor: Sendable {
         guard compact.count >= 5, compact.count <= 300 else { return nil }
         guard !looksLikeNoise(lower), !looksLikeQuestion(compact), !looksCompleted(lower) else { return nil }
 
-        let explicitMarkers = ["待办", "todo", "action item", "记得", "别忘", "务必", "提醒我"]
+        let explicitMarkers = ["待办", "任务", "todo", "action item", "记得", "别忘", "务必", "提醒我"]
         let directiveMarkers = ["需要", "应该", "应当", "必须", "请", "计划", "准备", "要在", "需在", "下一步"]
         let actionVerbs = [
             "回复", "提交", "完成", "跟进", "处理", "联系", "确认", "预约", "支付", "续费",
