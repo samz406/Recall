@@ -926,7 +926,7 @@ private struct ChatComposer: View {
         .padding(.leading, 16)
         .padding(.trailing, 9)
         .padding(.vertical, 10)
-        .frame(minHeight: 69)
+        .frame(minHeight: 89)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
@@ -1454,14 +1454,32 @@ private struct MarkdownDocumentView: View {
 private struct RemindersView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var reminderBeingScheduled: ReminderCandidate?
+    @State private var reminderShowingSources: ReminderCandidate?
     @State private var isConfirmingDismissAll = false
+    @State private var proposedPage = 1
+    @State private var scheduledPage = 1
+    @State private var completedPage = 1
+    private let pageSize = 6
 
     private var proposed: [ReminderCandidate] {
-        model.state.reminders.filter { $0.status == .proposed }
+        model.state.reminders
+            .filter { $0.status == .proposed }
+            .sorted {
+                if $0.confidence != $1.confidence { return $0.confidence > $1.confidence }
+                return ($0.dueAt ?? .distantFuture) < ($1.dueAt ?? .distantFuture)
+            }
     }
 
     private var scheduled: [ReminderCandidate] {
-        model.state.reminders.filter { $0.status == .scheduled }
+        model.state.reminders
+            .filter { $0.status == .scheduled }
+            .sorted { ($0.dueAt ?? .distantFuture) < ($1.dueAt ?? .distantFuture) }
+    }
+
+    private var completed: [ReminderCandidate] {
+        model.state.reminders
+            .filter { $0.status == .completed }
+            .sorted { $0.createdAt > $1.createdAt }
     }
 
     private var isDiscovering: Bool {
@@ -1475,7 +1493,7 @@ private struct RemindersView: View {
                 reminderHeader
                 workflow
                 reminderDiscoveryFeedback
-                if proposed.isEmpty && scheduled.isEmpty {
+                if proposed.isEmpty && scheduled.isEmpty && completed.isEmpty {
                     ReminderEmptyState(isDiscovering: isDiscovering, onDiscover: model.proposeReminders)
                 } else {
                     reminderLists
@@ -1490,6 +1508,20 @@ private struct RemindersView: View {
         .sheet(item: $reminderBeingScheduled) { reminder in
             ReminderScheduleSheet(reminder: reminder) { dueAt in
                 model.approveReminder(reminder, dueAt: dueAt)
+            }
+        }
+        .sheet(item: $reminderShowingSources) { reminder in
+            ReminderSourceSheet(
+                reminder: reminder,
+                captures: model.state.captures.filter { reminder.sourceCaptureIDs.contains($0.id) }
+            )
+        }
+        .onChange(of: proposed.count) { _, count in proposedPage = clampedPage(proposedPage, itemCount: count) }
+        .onChange(of: scheduled.count) { _, count in scheduledPage = clampedPage(scheduledPage, itemCount: count) }
+        .onChange(of: completed.count) { _, count in completedPage = clampedPage(completedPage, itemCount: count) }
+        .task(id: proposed.count) {
+            if !proposed.isEmpty, case .idle = model.reminderDiscoveryStatus {
+                model.proposeReminders()
             }
         }
         .confirmationDialog(
@@ -1516,7 +1548,7 @@ private struct RemindersView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text("提醒")
                     .font(.system(size: 26, weight: .semibold))
-                Text("从已有记忆中发现线索；是否提醒、何时提醒，始终由你确认。")
+                Text("把容易遗忘的未闭环行动变成可确认、可追溯、可完成的提醒。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -1549,14 +1581,15 @@ private struct RemindersView: View {
 
     private var workflow: some View {
         HStack(spacing: 14) {
-            Label("提醒不会自动创建", systemImage: "hand.raised.fill")
+            Label("候选不等于任务", systemImage: "scope")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color.accentColor)
                 .padding(.trailing, 10)
             Divider().frame(height: 26)
-            ReminderWorkflowStep(number: "1", title: "识别线索", detail: "待办、承诺与截止")
+            ReminderWorkflowStep(number: "1", title: "识别行动", detail: "过滤疑问、完成态与噪声")
             ReminderWorkflowStep(number: "2", title: "查看来源", detail: "核对对应记忆")
             ReminderWorkflowStep(number: "3", title: "由你安排", detail: "确认后才通知")
+            ReminderWorkflowStep(number: "4", title: "完成闭环", detail: "完成、改期或取消")
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 13)
@@ -1572,7 +1605,7 @@ private struct RemindersView: View {
         case let .searching(scannedRecordCount):
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
-                Text("正在检索 \(scannedRecordCount) 条本地记录中的待办、承诺和截止线索…")
+                Text("正在分析 \(scannedRecordCount) 条可用于提醒的近期记录…")
                     .font(.subheadline)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1586,7 +1619,7 @@ private struct RemindersView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(discoveredCount > 0 ? "已从 \(scannedRecordCount) 条本地记录中发现 \(discoveredCount) 项候选" : "已检索 \(scannedRecordCount) 条本地记录，暂未发现新的候选")
                         .font(.subheadline.weight(.medium))
-                    Text(discoveredCount > 0 ? "候选已加入“待你确认”，请先查看来源再安排提醒。" : "以后新增记录后，可以再次运行本地检索。")
+                    Text(discoveredCount > 0 ? "已过滤疑问、完成态、代码噪声与重复内容，请核对来源后再安排。" : "以后新增可执行事项后，可以再次运行本地检索。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1618,13 +1651,10 @@ private struct RemindersView: View {
                         }
                         .buttonStyle(.bordered)
                     }
-                    ForEach(proposed) { reminder in
-                        ReminderCandidateCard(reminder: reminder, isScheduled: false, deliveryState: nil, approve: {
-                            reminderBeingScheduled = reminder
-                        }, dismiss: {
-                            model.dismissReminder(reminder)
-                        })
+                    ForEach(paged(proposed, page: proposedPage)) { reminder in
+                        reminderCard(reminder, deliveryState: nil)
                     }
+                    ReminderPagination(page: $proposedPage, itemCount: proposed.count, pageSize: pageSize)
                 }
             }
             if !scheduled.isEmpty {
@@ -1632,6 +1662,12 @@ private struct RemindersView: View {
                     HStack {
                         Text("已安排")
                             .font(.title3.weight(.semibold))
+                        Text("\(scheduled.count)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.accentColor.opacity(0.12), in: Capsule())
                         Text("已由 macOS 核验")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -1640,17 +1676,78 @@ private struct RemindersView: View {
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
-                    ForEach(scheduled) { reminder in
-                        ReminderCandidateCard(
-                            reminder: reminder,
-                            isScheduled: true,
-                            deliveryState: model.reminderDeliveryStates[reminder.id],
-                            approve: {},
-                            dismiss: { model.dismissReminder(reminder) }
-                        )
+                    ForEach(paged(scheduled, page: scheduledPage)) { reminder in
+                        reminderCard(reminder, deliveryState: model.reminderDeliveryStates[reminder.id])
                     }
+                    ReminderPagination(page: $scheduledPage, itemCount: scheduled.count, pageSize: pageSize)
                 }
             }
+            if !completed.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("已完成")
+                            .font(.title3.weight(.semibold))
+                        Text("\(completed.count)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(.quaternary, in: Capsule())
+                        Spacer()
+                    }
+                    ForEach(paged(completed, page: completedPage)) { reminder in
+                        reminderCard(reminder, deliveryState: nil)
+                    }
+                    ReminderPagination(page: $completedPage, itemCount: completed.count, pageSize: pageSize)
+                }
+            }
+        }
+    }
+
+    private func reminderCard(_ reminder: ReminderCandidate, deliveryState: ReminderDeliveryState?) -> some View {
+        ReminderCandidateCard(
+            reminder: reminder,
+            deliveryState: deliveryState,
+            schedule: { reminderBeingScheduled = reminder },
+            complete: { model.completeReminder(reminder) },
+            dismiss: { model.dismissReminder(reminder) },
+            viewSources: { reminderShowingSources = reminder }
+        )
+    }
+
+    private func paged<T>(_ items: [T], page: Int) -> [T] {
+        let start = min(max(page - 1, 0) * pageSize, items.count)
+        let end = min(start + pageSize, items.count)
+        return Array(items[start..<end])
+    }
+
+    private func clampedPage(_ page: Int, itemCount: Int) -> Int {
+        min(max(page, 1), max(1, Int(ceil(Double(itemCount) / Double(pageSize)))))
+    }
+}
+
+private struct ReminderPagination: View {
+    @Binding var page: Int
+    let itemCount: Int
+    let pageSize: Int
+
+    private var pageCount: Int {
+        max(1, Int(ceil(Double(itemCount) / Double(pageSize))))
+    }
+
+    var body: some View {
+        if pageCount > 1 {
+            HStack(spacing: 10) {
+                Spacer()
+                Button("上一页") { page = max(1, page - 1) }
+                    .disabled(page <= 1)
+                Text("\(page) / \(pageCount)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Button("下一页") { page = min(pageCount, page + 1) }
+                    .disabled(page >= pageCount)
+            }
+            .buttonStyle(.bordered)
         }
     }
 }
@@ -1761,13 +1858,17 @@ private struct ReminderScheduleSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("设置提醒时间")
+                Text(reminder.status == .scheduled ? "修改提醒时间" : "设置提醒时间")
                     .font(.title2.weight(.semibold))
                 Text(reminder.title)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                if let suggestedDate = reminder.dueAt {
+                if reminder.status == .scheduled, let currentDate = reminder.dueAt {
+                    Text("当前安排：\(currentDate.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.accentColor)
+                } else if let suggestedDate = reminder.dueAt {
                     Text("已根据记录中的时间线索预填建议时间，你可以直接修改。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1795,7 +1896,7 @@ private struct ReminderScheduleSheet: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("取消") { dismiss() }
-                Button("确认并创建") {
+                Button(reminder.status == .scheduled ? "保存修改" : "确认并创建") {
                     onConfirm(selectedDate)
                     dismiss()
                 }
@@ -1808,44 +1909,124 @@ private struct ReminderScheduleSheet: View {
     }
 }
 
+private struct ReminderSourceSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let reminder: ReminderCandidate
+    let captures: [CaptureRecord]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("提醒来源")
+                        .font(.title2.weight(.semibold))
+                    Text(reminder.title)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer()
+                Button("关闭") { dismiss() }
+                    .buttonStyle(.bordered)
+            }
+
+            if captures.isEmpty {
+                ContentUnavailableView(
+                    "来源记录已不存在",
+                    systemImage: "doc.questionmark",
+                    description: Text("对应记录可能已被删除或超过了保留期限。")
+                )
+            } else {
+                List(captures.sorted(by: { $0.createdAt > $1.createdAt })) { capture in
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack {
+                            Text(capture.sourceAppName ?? capture.eventTemplate.title)
+                                .font(.headline)
+                            Spacer()
+                            Text(capture.createdAt.formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(capture.summary ?? capture.ocrText)
+                            .font(.subheadline)
+                            .textSelection(.enabled)
+                            .lineLimit(8)
+                    }
+                    .padding(.vertical, 6)
+                }
+                .listStyle(.inset)
+            }
+        }
+        .padding(24)
+        .frame(width: 680, height: 480)
+    }
+}
+
 private struct ReminderCandidateCard: View {
     let reminder: ReminderCandidate
-    let isScheduled: Bool
     let deliveryState: ReminderDeliveryState?
-    let approve: () -> Void
+    let schedule: () -> Void
+    let complete: () -> Void
     let dismiss: () -> Void
+    let viewSources: () -> Void
+
+    private var statusColor: Color {
+        switch reminder.status {
+        case .proposed: .accentColor
+        case .scheduled: .green
+        case .completed: .secondary
+        case .dismissed: .secondary
+        }
+    }
+
+    private var statusIcon: String {
+        switch reminder.status {
+        case .proposed: "bell.badge"
+        case .scheduled: "bell.fill"
+        case .completed: "checkmark.circle.fill"
+        case .dismissed: "bell.slash"
+        }
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            Image(systemName: isScheduled ? "bell.fill" : "bell.badge")
-                .foregroundStyle(isScheduled ? Color.green : Color.accentColor)
+            Image(systemName: statusIcon)
+                .foregroundStyle(statusColor)
                 .frame(width: 36, height: 36)
-                .background((isScheduled ? Color.green : Color.accentColor).opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+                .background(statusColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 6) {
                 Text(reminder.title).font(.headline)
                 Text(reminder.detail).font(.subheadline).foregroundStyle(.secondary)
                 HStack(spacing: 10) {
-                    Label("来源 \(reminder.sourceCaptureIDs.count) 条记忆", systemImage: "link")
+                    Button(action: viewSources) {
+                        Label("查看 \(reminder.sourceCaptureIDs.count) 条来源", systemImage: "link")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
                     if let dueAt = reminder.dueAt {
                         Label(
-                            isScheduled ? dueAt.formatted(date: .abbreviated, time: .shortened) : "建议：\(dueAt.formatted(date: .abbreviated, time: .shortened))",
+                            reminder.status == .proposed ? "建议：\(dueAt.formatted(date: .abbreviated, time: .shortened))" : dueAt.formatted(date: .abbreviated, time: .shortened),
                             systemImage: "calendar"
                         )
-                    } else {
+                    } else if reminder.status == .proposed {
                         Label("创建前选择时间", systemImage: "calendar.badge.clock")
                     }
-                    if !isScheduled {
+                    if reminder.status == .proposed {
                         Text("可信度 \(Int(reminder.confidence * 100))%")
                     }
                 }
                 .font(.caption)
                 .foregroundStyle(.tertiary)
-                if isScheduled {
+                if reminder.status == .scheduled {
                     ReminderDeliveryBadge(state: deliveryState)
+                } else if reminder.status == .completed {
+                    Label("已由你标记完成", systemImage: "checkmark.circle")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
                 }
             }
             Spacer()
-            if isScheduled {
+            if reminder.status == .scheduled {
                 VStack(alignment: .trailing, spacing: 8) {
                     Text(deliveryState == .delivered ? "已推送" : "已安排")
                         .font(.caption.weight(.semibold))
@@ -1853,15 +2034,30 @@ private struct ReminderCandidateCard: View {
                         .padding(.horizontal, 9)
                         .padding(.vertical, 6)
                         .background((deliveryState == .notFound ? Color.orange : Color.green).opacity(0.10), in: Capsule())
+                    Button("修改时间", action: schedule)
+                        .buttonStyle(.bordered)
+                        .font(.caption)
+                    Button("标记完成", action: complete)
+                        .buttonStyle(.borderedProminent)
+                        .font(.caption)
                     Button("取消提醒", role: .destructive, action: dismiss)
                         .buttonStyle(.borderless)
                         .font(.caption)
                 }
-            } else {
+            } else if reminder.status == .proposed {
                 VStack(alignment: .trailing, spacing: 8) {
-                    Button("选择时间并创建", action: approve)
+                    Button("选择时间并创建", action: schedule)
                         .buttonStyle(.borderedProminent)
                     Button("忽略", role: .destructive, action: dismiss)
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                }
+            } else if reminder.status == .completed {
+                VStack(alignment: .trailing, spacing: 8) {
+                    Text("已完成")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Button("从列表移除", action: dismiss)
                         .buttonStyle(.borderless)
                         .font(.caption)
                 }
