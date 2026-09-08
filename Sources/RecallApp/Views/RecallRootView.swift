@@ -750,7 +750,7 @@ private struct RecallMessageCard: View {
             }
             if message.role == .assistant {
                 MarkdownTypewriterText(
-                    markdown: message.content,
+                    markdown: ChatResponseFormatter().format(message.content),
                     shouldAnimate: animateTyping,
                     onProgress: onTypingProgress,
                     onFinished: onTypingFinished
