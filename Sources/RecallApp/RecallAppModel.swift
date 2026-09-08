@@ -244,26 +244,6 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
-    func recordEnterTriggeredChatSend(_ text: String) {
-        guard let rule = state.rules.first(where: { $0.template == .enterKeyTrigger }) else {
-            recordDiagnostic(.error, source: "ChatEnter", message: "未找到 Enter 事件规则")
-            return
-        }
-        guard rule.isEnabled else {
-            recordDiagnostic(.warning, source: "ChatEnter", message: "Enter 发送未记录：规则未启用")
-            return
-        }
-        guard !state.privacy.screenCapturePaused else {
-            recordDiagnostic(.warning, source: "ChatEnter", message: "Enter 发送未记录：采集已暂停")
-            return
-        }
-        recordDiagnostic(.info, source: "ChatEnter", message: "收到问一问 Enter 发送", metadata: ["scope": CaptureScope.textOnly.rawValue])
-        var textOnlyRule = rule
-        textOnlyRule.scope = .textOnly
-        textOnlyRule.retainImageDays = 0
-        record(rule: textOnlyRule, userText: text, diagnosticSource: "ChatEnter")
-    }
-
     func ask(_ question: String) {
         guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         isThinking = true

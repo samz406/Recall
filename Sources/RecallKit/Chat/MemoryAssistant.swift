@@ -83,7 +83,8 @@ public final class MemoryAssistant {
         }
 
         let userMessage = ConversationMessage(role: .user, content: question)
-        let assistantMessage = ConversationMessage(role: .assistant, content: response.content, citations: response.citedCaptureIDs)
+        let formattedContent = ChatResponseFormatter().format(response.content)
+        let assistantMessage = ConversationMessage(role: .assistant, content: formattedContent, citations: response.citedCaptureIDs)
         try await store.addMessage(userMessage)
         try await store.addMessage(assistantMessage)
         return assistantMessage

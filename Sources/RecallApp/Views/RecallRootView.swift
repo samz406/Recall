@@ -537,11 +537,8 @@ private struct ChatView: View {
                 ChatComposer(
                     question: $question,
                     isSending: model.isThinking,
-                    onSend: { send(recordingEnterEvent: false) },
-                    onEnterSend: { send(recordingEnterEvent: true) }
-                ) {
-                    scrollRequest += 1
-                }
+                    onSend: send
+                )
             }
         }
     }
@@ -644,14 +641,11 @@ private struct ChatView: View {
         }
     }
 
-    private func send(recordingEnterEvent: Bool) {
+    private func send() {
         let text = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         question = ""
         scrollRequest += 1
-        if recordingEnterEvent {
-            model.recordEnterTriggeredChatSend(text)
-        }
         model.ask(text)
     }
 }
@@ -850,56 +844,60 @@ private struct ChatComposer: View {
     @Binding var question: String
     let isSending: Bool
     let onSend: () -> Void
-    let onEnterSend: () -> Void
-    let onJumpToLatest: () -> Void
+    @FocusState private var isFocused: Bool
 
     var body: some View {
-        VStack(spacing: 10) {
-            HStack(alignment: .bottom, spacing: 12) {
-                TextField("向 Recall 提问", text: $question, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...6)
-                    .font(.body)
-                    .submitLabel(.send)
-                    .onKeyPress(.return) {
-                        submitFromEnter()
-                        return .handled
-                    }
-                    .onSubmit(submitFromEnter)
-                Button(action: onSend) {
-                    Image(systemName: isSending ? "ellipsis" : "arrow.up")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 32, height: 32)
-                        .background(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending ? Color.secondary : Color.accentColor, in: Circle())
+        HStack(alignment: .bottom, spacing: 12) {
+            TextField("向 Recall 提问…", text: $question, axis: .vertical)
+                .focused($isFocused)
+                .textFieldStyle(.plain)
+                .lineLimit(1...5)
+                .font(.system(size: 15))
+                .padding(.leading, 4)
+                .padding(.vertical, 8)
+                .submitLabel(.send)
+                .onKeyPress(.return) {
+                    submit()
+                    return .handled
                 }
-                .buttonStyle(.plain)
-                .disabled(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
+            Button(action: submit) {
+                Image(systemName: isSending ? "ellipsis" : "arrow.up")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 38, height: 38)
+                    .background(sendButtonColor, in: Circle())
+                    .contentShape(Circle())
             }
-            HStack {
-                Label("回答附带记忆来源", systemImage: "checkmark.shield")
-                Spacer()
-                Button(action: onJumpToLatest) {
-                    Label("最新", systemImage: "arrow.down.to.line.compact")
-                }
-                .buttonStyle(.plain)
-                Text("Enter 发送并记录 · 点击箭头仅发送")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .buttonStyle(.plain)
+            .disabled(!canSend)
         }
-        .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary, lineWidth: 1))
-        .shadow(color: .black.opacity(0.06), radius: 18, y: 6)
-        .frame(maxWidth: 640)
+        .padding(.leading, 16)
+        .padding(.trailing, 9)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(isFocused ? Color.accentColor.opacity(0.65) : Color(nsColor: .separatorColor).opacity(0.55), lineWidth: isFocused ? 1.5 : 1)
+        }
+        .shadow(color: .black.opacity(isFocused ? 0.09 : 0.055), radius: isFocused ? 20 : 14, y: 6)
+        .animation(.easeOut(duration: 0.16), value: isFocused)
+        .frame(maxWidth: 700)
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 18)
+        .padding(.horizontal, 32)
+        .padding(.vertical, 16)
     }
 
-    private func submitFromEnter() {
-        guard !isSending, !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        onEnterSend()
+    private var canSend: Bool {
+        !isSending && !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var sendButtonColor: Color {
+        canSend ? Color.accentColor : Color.secondary.opacity(0.45)
+    }
+
+    private func submit() {
+        guard canSend else { return }
+        onSend()
     }
 }
 
