@@ -55,13 +55,16 @@ struct RecallRootView: View {
             RecordSheet()
                 .environmentObject(model)
         }
-        .overlay(alignment: .bottom) {
+        .overlay(alignment: .topTrailing) {
             if let notice = model.noticeMessage {
                 NoticeBanner(text: notice) {
                     model.noticeMessage = nil
                 }
-                .padding()
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .frame(width: 380)
+                .padding(.top, 54)
+                .padding(.trailing, 22)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .zIndex(100)
             }
         }
         .animation(.easeInOut(duration: 0.22), value: model.noticeMessage)
@@ -97,19 +100,27 @@ private struct NoticeBanner: View {
     let dismiss: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .top, spacing: 10) {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
             Text(text)
-                .lineLimit(2)
+                .font(.subheadline)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Button(action: dismiss) {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.plain)
         }
-        .padding(12)
-        .background(.regularMaterial, in: Capsule())
-        .shadow(radius: 8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.14), radius: 12, y: 5)
     }
 }
 
@@ -2573,6 +2584,7 @@ private struct ModelConnectionEditorSheet: View {
     @State private var baseURL: String
     @State private var modelName: String
     @State private var apiKey = ""
+    @State private var revealsAPIKey = false
     @State private var isTestingConnection = false
     @State private var connectionStatus: ConnectionStatus?
     @FocusState private var focusedField: Field?
@@ -2593,74 +2605,143 @@ private struct ModelConnectionEditorSheet: View {
         _provider = State(initialValue: configuration.provider == .anthropicCompatible ? .anthropicCompatible : .openAICompatible)
         _baseURL = State(initialValue: configuration.baseURLString)
         _modelName = State(initialValue: configuration.model)
-        _apiKey = State(initialValue: configuration.apiKey)
+        // 已保存的 Key 不回填到可见输入框，避免录屏或截图暴露完整凭据。
+        _apiKey = State(initialValue: "")
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 14) {
+                Image(systemName: "cpu.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 VStack(alignment: .leading, spacing: 4) {
                     Text("编辑模型连接").font(.title2.weight(.semibold))
-                    Text("直接输入服务地址、模型名称和 API Key。保存后将在下一次“问一问”中使用。")
-                        .font(.caption)
+                    Text("配置与 OpenAI 或 Anthropic 协议兼容的模型服务")
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Label(savedKeyExists ? "凭据已配置" : "等待配置", systemImage: savedKeyExists ? "checkmark.shield.fill" : "key.horizontal")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(savedKeyExists ? .green : .orange)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background((savedKeyExists ? Color.green : Color.orange).opacity(0.10), in: Capsule())
             }
             .padding(.horizontal, 24)
-            .padding(.vertical, 20)
+            .padding(.vertical, 18)
 
-            Form {
-                Section("模型类型") {
-                    Picker("模型类型", selection: $provider) {
-                        Text("兼容 OpenAI API").tag(LLMProviderKind.openAICompatible)
-                        Text("兼容 Anthropic API").tag(LLMProviderKind.anthropicCompatible)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                }
-                Section("连接信息") {
-                    TextField("API 地址", text: $baseURL)
-                        .focused($focusedField, equals: .baseURL)
-                    TextField("模型名称", text: $modelName)
-                        .focused($focusedField, equals: .model)
-                    TextField("API Key", text: $apiKey)
-                        .focused($focusedField, equals: .apiKey)
-                }
-                Section("连接验证") {
-                    Button(isTestingConnection ? "正在测试…" : "测试当前 Key") { testConnection() }
-                        .disabled(isTestingConnection || normalizedAPIKey.isEmpty)
-                    if let connectionStatus {
-                        switch connectionStatus {
-                        case .success(let message):
-                            Label(message, systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                                .font(.caption)
-                        case .failure(let message):
-                            Text(message)
-                                .foregroundStyle(.red)
-                                .font(.caption)
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        sectionTitle("接口协议", detail: "选择服务端兼容的请求格式")
+                        Picker("模型类型", selection: $provider) {
+                            Text("兼容 OpenAI API").tag(LLMProviderKind.openAICompatible)
+                            Text("兼容 Anthropic API").tag(LLMProviderKind.anthropicCompatible)
                         }
-                    } else {
-                        Text("请先粘贴 Key 并测试连接。测试成功后再保存，避免无效 Key 覆盖当前可用连接。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
                     }
+                    .padding(16)
+                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.quaternary, lineWidth: 1))
+
+                    VStack(alignment: .leading, spacing: 15) {
+                        sectionTitle("连接信息", detail: "Key 只保存在本机，不会在重新打开时显示")
+
+                        connectionField(title: "API 地址", icon: "link") {
+                            TextField(provider.defaultBaseURL, text: $baseURL)
+                                .textFieldStyle(.plain)
+                                .focused($focusedField, equals: .baseURL)
+                        }
+
+                        connectionField(title: "模型名称", icon: "cube") {
+                            TextField(provider.defaultModel, text: $modelName)
+                                .textFieldStyle(.plain)
+                                .focused($focusedField, equals: .model)
+                        }
+
+                        connectionField(title: "API Key", icon: "key.horizontal") {
+                            HStack(spacing: 8) {
+                                Group {
+                                    if revealsAPIKey {
+                                        TextField(savedKeyExists ? "留空则继续使用已保存的 Key" : "输入 API Key", text: $apiKey)
+                                    } else {
+                                        SecureField(savedKeyExists ? "留空则继续使用已保存的 Key" : "输入 API Key", text: $apiKey)
+                                    }
+                                }
+                                .textFieldStyle(.plain)
+                                .focused($focusedField, equals: .apiKey)
+                                Button {
+                                    revealsAPIKey.toggle()
+                                } label: {
+                                    Image(systemName: revealsAPIKey ? "eye.slash" : "eye")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .help(revealsAPIKey ? "隐藏 API Key" : "显示 API Key")
+                            }
+                        }
+                    }
+                    .padding(16)
+                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.quaternary, lineWidth: 1))
+
+                    HStack(alignment: .center, spacing: 14) {
+                        Image(systemName: connectionStatusSymbol)
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(connectionStatusColor)
+                            .frame(width: 38, height: 38)
+                            .background(connectionStatusColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(connectionStatusTitle)
+                                .font(.subheadline.weight(.semibold))
+                            Text(connectionStatusDetail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                        Spacer(minLength: 16)
+                        Button(action: testConnection) {
+                            if isTestingConnection {
+                                HStack(spacing: 7) {
+                                    ProgressView().controlSize(.small)
+                                    Text("正在测试")
+                                }
+                            } else {
+                                Label("测试连接", systemImage: "bolt.horizontal.circle")
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isTestingConnection || effectiveAPIKey.isEmpty || !hasValidEndpoint)
+                    }
+                    .padding(16)
+                    .background(connectionStatusColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(connectionStatusColor.opacity(0.18), lineWidth: 1))
                 }
+                .padding(24)
             }
-            .formStyle(.grouped)
 
             Divider()
             HStack {
+                Label("保存后，下一次提问立即使用新连接", systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Button("取消") { dismiss() }
                 Button("保存并用于问一问", action: save)
                     .buttonStyle(.borderedProminent)
-                    .disabled(baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !maySaveConnection)
+                    .disabled(!hasValidEndpoint || !maySaveConnection)
             }
-            .padding(16)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
         }
-        .frame(width: 620, height: 440)
+        .frame(width: 700, height: 600)
         .onAppear {
             DispatchQueue.main.async { focusedField = .baseURL }
         }
@@ -2672,16 +2753,105 @@ private struct ModelConnectionEditorSheet: View {
         .onChange(of: apiKey) { _, _ in
             connectionStatus = nil
         }
+        .onChange(of: baseURL) { _, _ in
+            connectionStatus = nil
+        }
+        .onChange(of: modelName) { _, _ in
+            connectionStatus = nil
+        }
+    }
+
+    private func sectionTitle(_ title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.headline)
+            Text(detail).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func connectionField<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(title, systemImage: icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            content()
+                .padding(.horizontal, 12)
+                .frame(height: 40)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 1))
+        }
     }
 
     private var normalizedAPIKey: String {
         apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var effectiveAPIKey: String {
+        normalizedAPIKey.isEmpty
+            ? initialConfiguration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            : normalizedAPIKey
+    }
+
+    private var hasValidEndpoint: Bool {
+        guard !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let url = URL(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return false
+        }
+        return url.scheme == "https" || url.scheme == "http"
+    }
+
+    private var connectionChanged: Bool {
+        provider != initialConfiguration.provider
+            || baseURL.trimmingCharacters(in: .whitespacesAndNewlines) != initialConfiguration.baseURLString
+            || modelName.trimmingCharacters(in: .whitespacesAndNewlines) != initialConfiguration.model
+            || !normalizedAPIKey.isEmpty
+    }
+
     private var maySaveConnection: Bool {
-        if normalizedAPIKey.isEmpty { return savedKeyExists }
+        guard !effectiveAPIKey.isEmpty else { return false }
+        if !connectionChanged { return savedKeyExists }
         if case .success = connectionStatus { return true }
         return false
+    }
+
+    private var connectionStatusTitle: String {
+        if isTestingConnection { return "正在验证连接" }
+        switch connectionStatus {
+        case .success: return "连接可用"
+        case .failure: return "连接验证失败"
+        case .none: return connectionChanged ? "需要验证连接" : "当前连接已保存"
+        }
+    }
+
+    private var connectionStatusDetail: String {
+        if isTestingConnection { return "正在向模型服务发送最小测试请求…" }
+        switch connectionStatus {
+        case .success(let message): return message
+        case .failure(let message): return message
+        case .none:
+            return connectionChanged
+                ? "修改协议、地址、模型或 Key 后，请先测试再保存。"
+                : "未修改连接信息；测试不会发送本地记忆。"
+        }
+    }
+
+    private var connectionStatusSymbol: String {
+        if isTestingConnection { return "arrow.triangle.2.circlepath" }
+        switch connectionStatus {
+        case .success: return "checkmark.circle.fill"
+        case .failure: return "xmark.octagon.fill"
+        case .none: return connectionChanged ? "bolt.horizontal.circle" : "checkmark.shield.fill"
+        }
+    }
+
+    private var connectionStatusColor: Color {
+        if isTestingConnection { return .accentColor }
+        switch connectionStatus {
+        case .success: return .green
+        case .failure: return .red
+        case .none: return connectionChanged ? .orange : .green
+        }
     }
 
     private func makeConfiguration() -> LLMConfiguration {
@@ -2689,18 +2859,18 @@ private struct ModelConnectionEditorSheet: View {
             provider: provider,
             baseURLString: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
             model: modelName.trimmingCharacters(in: .whitespacesAndNewlines),
-            apiKey: normalizedAPIKey,
+            apiKey: effectiveAPIKey,
             anthropicVersion: initialConfiguration.anthropicVersion,
             maxOutputTokens: initialConfiguration.maxOutputTokens
         )
     }
 
     private func testConnection() {
-        guard !normalizedAPIKey.isEmpty else { return }
+        guard !effectiveAPIKey.isEmpty, hasValidEndpoint else { return }
         isTestingConnection = true
         connectionStatus = nil
         let configuration = makeConfiguration()
-        let key = normalizedAPIKey
+        let key = effectiveAPIKey
         Task {
             do {
                 let answer = try await CompatibleLLM(configuration: configuration, apiKey: key).answer(
