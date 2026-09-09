@@ -32,24 +32,28 @@ public struct PersonalIntelligenceEngine: Sendable {
             .filter { $0.eventTemplate != .dailyReview && calendar.isDate($0.createdAt, inSameDayAs: day) }
             .sorted { $0.createdAt < $1.createdAt }
         let episodes = buildEpisodes(day: day, records: targetRecords, calendar: calendar)
-        let projects = mergeProjectStates(previousProjects, with: episodes)
+        let concreteEpisodes = episodes.filter(isConcreteWork)
+        let projects = mergeProjectStates(
+            previousProjects.filter { isConcreteProject(key: $0.projectKey, name: $0.displayName) },
+            with: concreteEpisodes
+        )
         let memories = mergeMemories(existingMemories, with: memoryCandidates(from: targetRecords))
         let insights = makeInsights(
             day: day,
-            episodes: episodes,
+            episodes: concreteEpisodes,
             projects: projects,
             previousInsights: previousInsights,
             feedback: feedback,
             calendar: calendar
         )
         let routines = makeRoutines(
-            episodes: existingEpisodes.filter { !calendar.isDate($0.day, inSameDayAs: day) } + episodes,
+            episodes: existingEpisodes.filter { !calendar.isDate($0.day, inSameDayAs: day) && isConcreteWork($0) } + concreteEpisodes,
             existing: existingRoutines,
             calendar: calendar
         )
         let newMemoryKeys = Set(memoryCandidates(from: targetRecords).map(\.key))
         let briefing = makeBriefing(
-            episodes: episodes,
+            episodes: concreteEpisodes,
             projects: projects,
             insights: insights,
             memoryCandidates: memories.filter { newMemoryKeys.contains($0.key) && $0.status == .proposed },
@@ -103,7 +107,7 @@ public struct PersonalIntelligenceEngine: Sendable {
         let nextAction = extractNextAction(from: bucket.records)
         let sourceApps = Array(Set(bucket.records.compactMap(\.sourceAppName))).sorted()
         let importance = min(1, bucket.records.map(recordSignal).max()! + min(Double(bucket.records.count - 1) * 0.05, 0.2))
-        let confidence = min(0.92, 0.58 + (bucket.records.count > 1 ? 0.12 : 0) + (bucket.projectKey.hasPrefix("app:") ? 0 : 0.1))
+        let confidence = min(0.92, 0.58 + (bucket.records.count > 1 ? 0.12 : 0) + (bucket.projectKey.hasPrefix("unresolved:") ? 0 : 0.1))
         let statusText: String
         switch status {
         case .completed: statusText = "完成"
@@ -177,13 +181,14 @@ public struct PersonalIntelligenceEngine: Sendable {
             .sorted { $0.score > $1.score }
         var candidates: [PersonalInsight] = []
 
-        if let first = topProjects.first {
+        if let first = topProjects.first,
+           episodes.filter({ $0.projectKey == first.key }).flatMap(\.evidenceIDs).uniqued().count >= 2 {
             let secondary = topProjects.dropFirst().first.map { "，其次是 \($0.name)" } ?? ""
             candidates.append(PersonalInsight(
                 day: day,
                 kind: .focus,
-                title: "今天的主要精力在 \(first.name)",
-                detail: "按记录密度与重要性判断，\(first.name) 是今天的工作主线\(secondary)。",
+                title: "今天反复推进：\(first.name)",
+                detail: "多条记录都指向 \(first.name)\(secondary)，这是基于记录密度的判断，不代表精确工时。",
                 recommendation: nil,
                 confidence: min(0.92, 0.65 + Double(episodes.filter { $0.projectKey == first.key }.count) * 0.06),
                 impact: 0.62,
@@ -352,20 +357,35 @@ public struct PersonalIntelligenceEngine: Sendable {
                 memoryCandidates: [], routineCandidates: [], episodeIDs: []
             )
         }
-        let ranked = episodes.sorted { $0.importance > $1.importance }
+        let ranked = episodes.filter(isConcreteWork).sorted { $0.importance > $1.importance }
+        guard !ranked.isEmpty else {
+            return DailyBriefing(
+                headline: "当天记录尚不足以识别具体事项；应用与网站仅作为证据来源。",
+                progress: [], openLoops: [], insights: [], nextActions: [],
+                memoryCandidates: Array(memoryCandidates.prefix(4)),
+                routineCandidates: [], episodeIDs: episodes.map(\.id)
+            )
+        }
         let projectNames = ranked.map(\.projectName).uniqued()
         let headline: String
         if projectNames.count == 1 {
-            headline = "今天主要围绕 \(projectNames[0]) 推进。"
+            headline = "今天主要推进：\(projectNames[0])。"
         } else {
-            headline = "今天的主线是 \(projectNames[0])，同时处理了 \(projectNames.dropFirst().prefix(2).joined(separator: "、"))。"
+            headline = "今天主要推进：\(projectNames[0])；同时处理：\(projectNames.dropFirst().prefix(2).joined(separator: "、"))。"
         }
+        var seenProgress: Set<String> = []
         let progress = ranked
             .filter { [.completed, .progressed].contains($0.status) }
+            .filter { seenProgress.insert($0.projectKey).inserted }
             .prefix(4)
             .map { BriefingItem(title: $0.title, detail: $0.outcome ?? $0.action, confidence: $0.confidence, evidenceIDs: $0.evidenceIDs) }
+        var seenOpenLoops: Set<String> = []
         let openLoops = ranked
             .filter { [.pending, .blocked].contains($0.status) || $0.nextAction != nil }
+            .filter { episode in
+                let key = normalizedKey(episode.nextAction ?? episode.projectName)
+                return seenOpenLoops.insert(key).inserted
+            }
             .prefix(4)
             .map { episode in
                 BriefingItem(
@@ -393,7 +413,7 @@ public struct PersonalIntelligenceEngine: Sendable {
                 evidenceIDs: first.evidenceIDs
             )]
         }
-        let activeProjectKeys = Set(episodes.map(\.projectKey))
+        let activeProjectKeys = Set(ranked.map(\.projectKey))
         for routine in routines where routine.status == .enabled && nextActions.count < 3 {
             let projectKey = routine.key.replacingOccurrences(of: "project-close:", with: "")
             guard activeProjectKeys.contains(projectKey) else { continue }
@@ -412,7 +432,7 @@ public struct PersonalIntelligenceEngine: Sendable {
             nextActions: nextActions,
             memoryCandidates: Array(memoryCandidates.prefix(4)),
             routineCandidates: Array(routines.filter { $0.status == .proposed }.prefix(2)),
-            episodeIDs: episodes.map(\.id)
+            episodeIDs: ranked.map(\.id)
         )
     }
 
@@ -426,15 +446,78 @@ public struct PersonalIntelligenceEngine: Sendable {
             let cleaned = explicit.trimmingCharacters(in: CharacterSet(charactersIn: "/.,，。"))
             return ("project:\(cleaned.lowercased())", cleaned)
         }
+        if let subject = concreteWorkSubject(for: record) {
+            return ("topic:\(normalizedKey(subject))", subject)
+        }
         if let title = record.windowTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
             let candidate = title.components(separatedBy: " - ").first?.components(separatedBy: " · ").first ?? title
-            let generic = ["chatgpt", "chrome", "safari", "new tab", "新标签页", "recall"]
-            if candidate.count >= 2 && !generic.contains(where: { candidate.lowercased() == $0 }) {
+            let sourceApp = record.sourceAppName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if candidate.count >= 2,
+               candidate.lowercased() != sourceApp,
+               !["new tab", "新标签页", "recall"].contains(candidate.lowercased()),
+               !isToolOrContainerName(candidate) {
                 return ("window:\(candidate.lowercased())", String(candidate.prefix(56)))
             }
         }
-        let app = record.sourceAppName?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? "未分类工作"
-        return ("app:\(app.lowercased())", app)
+        return ("unresolved:\(record.id.uuidString.lowercased())", "具体事项证据不足")
+    }
+
+    private func concreteWorkSubject(for record: CaptureRecord) -> String? {
+        let text = record.summary?.nonEmpty ?? record.ocrText
+        let patterns = [
+            #"(?:今天|昨日|昨天|上午|下午|晚上)?\s*(?:已经|已|正在|继续|计划|准备|需要)?\s*(?:完成|推进|修复|优化|重构|开发|实现|排查|分析|设计|验证|测试|提交|发布|处理|讨论|调研|编写|接入|迁移|解决)[了\s:：·-]*([^，。；！？!?\n]{3,56})"#,
+            #"(?:待办|下一步|后续)[\s:：·-]+([^，。；！？!?\n]{3,56})"#
+        ]
+        for pattern in patterns {
+            guard let match = firstMatch(in: text, pattern: pattern, group: 1),
+                  let subject = cleanedSubject(match, record: record) else { continue }
+            return subject
+        }
+        return nil
+    }
+
+    private func cleanedSubject(_ value: String, record: CaptureRecord) -> String? {
+        var subject = value
+            .replacingOccurrences(of: #"^[\s\"“”'‘’]*(?:今天|明天|昨日|昨天|本周|下周)\s*"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n:：·-—,，.。;；!?！？\"“”'‘’"))
+        subject = String(subject.prefix(56))
+        guard subject.count >= 3 else { return nil }
+        let normalized = normalizedKey(subject)
+        let sourceApp = normalizedKey(record.sourceAppName ?? "")
+        let windowTitle = normalizedKey(record.windowTitle ?? "")
+        guard normalized != sourceApp, normalized != windowTitle else { return nil }
+        let generic = ["待办", "工作", "任务", "测试", "验证窗口", "聊天", "新标签页"]
+        guard !generic.contains(where: { normalized == normalizedKey($0) }) else { return nil }
+        return subject
+    }
+
+    private func isConcreteWork(_ episode: WorkEpisode) -> Bool {
+        isConcreteProject(key: episode.projectKey, name: episode.projectName)
+    }
+
+    private func isConcreteProject(key: String, name: String) -> Bool {
+        !key.hasPrefix("app:") &&
+        !key.hasPrefix("unresolved:") &&
+        name != "未分类工作" &&
+        name != "具体事项证据不足" &&
+        !isToolOrContainerName(name)
+    }
+
+    private func isToolOrContainerName(_ value: String) -> Bool {
+        let normalized = normalizedKey(value)
+        let tools = [
+            "微信", "企业微信", "wechat", "wecom", "chrome", "googlechrome", "safari", "edge", "firefox",
+            "xcode", "intellijidea", "vscode", "visualstudiocode", "terminal", "终端", "iterm", "zsh",
+            "chatgpt", "claude", "codex", "gemini", "perplexity", "localmcp"
+        ]
+        return tools.contains(normalized)
+    }
+
+    private func normalizedKey(_ value: String) -> String {
+        value
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .replacingOccurrences(of: #"[\s\p{P}\p{S}]+"#, with: "", options: .regularExpression)
+            .lowercased()
     }
 
     private func inferredIntent(from record: CaptureRecord, projectName: String) -> String {
