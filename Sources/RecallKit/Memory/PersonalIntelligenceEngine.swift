@@ -534,8 +534,10 @@ public struct PersonalIntelligenceEngine: Sendable {
     private func episodeStatus(from text: String) -> WorkEpisodeStatus {
         let normalized = text.lowercased()
         if containsAny(normalized, ["失败", "报错", "阻塞", "卡住", "无法", "error", "failed"]) { return .blocked }
-        if containsAny(normalized, ["已完成", "完成了", "测试通过", "构建通过", "已合并", "上线", "done", "passed", "merged"]) { return .completed }
-        if containsAny(normalized, ["待办", "下一步", "需要处理", "明天", "后续", "todo", "follow up"]) { return .pending }
+        let containsCompletedAction = normalized.contains("完成") &&
+            !containsAny(normalized, ["未完成", "待完成", "需要完成", "计划完成", "尚未完成"])
+        if containsCompletedAction || containsAny(normalized, ["测试通过", "构建通过", "已合并", "上线", "done", "passed", "merged"]) { return .completed }
+        if containsAny(normalized, ["待办", "待完成", "未完成", "下一步", "需要处理", "明天", "后续", "todo", "follow up"]) { return .pending }
         if containsAny(normalized, ["实现", "修改", "重构", "推进", "新增", "修复", "优化", "develop", "fix", "refactor"]) { return .progressed }
         return .explored
     }

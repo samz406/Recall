@@ -305,6 +305,9 @@ struct RecallVerifier {
         try expect(!conclusionText.contains("企业微信") && !conclusionText.contains("localmcp"), "应用或工具名仍被当成总结事项")
         try expect(!result.projectStates.contains(where: { ["企业微信", "localmcp"].contains($0.displayName) }), "应用或工具名仍被沉淀为长期项目")
         try expect(!result.briefing.openLoops.contains(where: { $0.title == "未闭环 · 企业微信" }), "未闭环标题仍在复用来源应用")
+
+        let unfinished = makeCapture(text: "待完成账单导出测试。", app: "Xcode", createdAt: day)
+        try expect(PersonalIntelligenceEngine().buildEpisodes(day: day, records: [unfinished]).first?.status != .completed, "带否定语义的‘待完成’被误判为已完成")
     }
 
     private static func verifyInsightFeedbackLearning() throws {
