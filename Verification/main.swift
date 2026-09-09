@@ -17,6 +17,7 @@ struct RecallVerifier {
             try await verifyDailySummaryGeneration()
             try await verifyDailySummaryPersistenceAndDeletion()
             try verifyPersonalIntelligenceConsolidation()
+            try verifyConcreteDailySummarySubjects()
             try verifyInsightFeedbackLearning()
             try await verifyIntelligencePersistenceAndFTS()
             try verifyBackwardCompatibleIntelligenceState()
@@ -30,9 +31,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 24 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 25 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 23 integration checks.")
+                print("PASS: RecallVerifier completed 24 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -284,6 +285,29 @@ struct RecallVerifier {
         }
         let selected = DailySummaryGenerator(maxRecords: 6).sourceRecords(for: day, from: manyRecords, calendar: calendar)
         try expect(selected.contains(where: { $0.ocrText.contains("最后完成发布检查") }), "重要性采样仍然丢失当天后半段记录")
+    }
+
+    private static func verifyConcreteDailySummarySubjects() throws {
+        let day = Date(timeIntervalSince1970: 1_788_854_400)
+        var first = makeCapture(text: "今天推进退款订单接口修复，已定位重复退款校验缺失。", app: "企业微信", createdAt: day)
+        first.windowTitle = "企业微信"
+        var second = makeCapture(text: "待办：明天补充退款幂等测试并提交 PR。", app: "企业微信", createdAt: day.addingTimeInterval(70 * 60))
+        second.windowTitle = "企业微信"
+        var noise = makeCapture(text: "待办", app: "localmcp", createdAt: day.addingTimeInterval(140 * 60))
+        noise.windowTitle = "localmcp"
+
+        let result = PersonalIntelligenceEngine().consolidate(day: day, records: [first, second, noise])
+        let conclusionText = ([result.briefing.headline] +
+            result.briefing.progress.map(\.title) +
+            result.briefing.openLoops.map(\.title) +
+            result.insights.map(\.title)).joined(separator: "\n")
+        try expect(conclusionText.contains("退款订单接口修复"), "每日简报没有提取到具体事项")
+        try expect(!conclusionText.contains("企业微信") && !conclusionText.contains("localmcp"), "应用或工具名仍被当成总结事项")
+        try expect(!result.projectStates.contains(where: { ["企业微信", "localmcp"].contains($0.displayName) }), "应用或工具名仍被沉淀为长期项目")
+        try expect(!result.briefing.openLoops.contains(where: { $0.title == "未闭环 · 企业微信" }), "未闭环标题仍在复用来源应用")
+
+        let unfinished = makeCapture(text: "待完成账单导出测试。", app: "Xcode", createdAt: day)
+        try expect(PersonalIntelligenceEngine().buildEpisodes(day: day, records: [unfinished]).first?.status != .completed, "带否定语义的‘待完成’被误判为已完成")
     }
 
     private static func verifyInsightFeedbackLearning() throws {
