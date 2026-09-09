@@ -228,7 +228,10 @@ public struct DailySummaryGenerator: Sendable {
         calendar: Calendar = .current
     ) async throws -> DailySummaryGeneration {
         let records = sourceRecords(for: day, from: captures, calendar: calendar)
-        let priorityTodos = todos(from: records)
+        let originalDayRecords = captures.filter {
+            $0.eventTemplate != .dailyReview && calendar.isDate($0.createdAt, inSameDayAs: day)
+        }
+        let priorityTodos = todos(from: originalDayRecords)
         let recentSummaries = recentSummaries(for: day, from: previousSummaries, calendar: calendar)
         let consolidation = intelligenceEngine.consolidate(
             day: day,

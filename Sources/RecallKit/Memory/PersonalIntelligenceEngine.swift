@@ -479,7 +479,7 @@ public struct PersonalIntelligenceEngine: Sendable {
     }
 
     private func cleanedSubject(_ value: String, record: CaptureRecord) -> String? {
-        var subject = value
+        let subject = value
             .replacingOccurrences(of: #"^[\s\"“”'‘’]*(?:今天|明天|昨日|昨天|本周|下周)\s*"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n:：·-—,，.。;；!?！？\"“”'‘’"))
         guard (3...56).contains(subject.count), isHighQualitySubject(subject) else { return nil }
