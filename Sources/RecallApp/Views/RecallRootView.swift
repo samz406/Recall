@@ -1029,7 +1029,6 @@ private struct DailySummariesView: View {
                     onToggle: { toggle(summary) },
                     onDelete: { model.deleteDailySummary(summary) },
                     onReviewInsight: { insight, rating in model.reviewInsight(insight, rating: rating) },
-                    onReviewMemory: { memory, status in model.reviewUserMemory(memory, status: status) },
                     onUpdateRoutine: { routine, status in model.updateLearnedRoutine(routine, status: status) }
                 )
             }
@@ -1112,11 +1111,10 @@ private struct DailySummaryCard: View {
     let onToggle: () -> Void
     let onDelete: () -> Void
     let onReviewInsight: (PersonalInsight, InsightFeedbackRating) -> Void
-    let onReviewMemory: (UserMemory, MemoryReviewStatus) -> Void
     let onUpdateRoutine: (LearnedRoutine, LearnedRoutineStatus) -> Void
 
     private var preview: String {
-        if let briefing = summary.briefing { return briefing.headline }
+        if summary.generationKind == .localFallback, let briefing = summary.briefing { return briefing.headline }
         let text = summary.content
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -1159,14 +1157,15 @@ private struct DailySummaryCard: View {
             }
             if isExpanded {
                 Divider()
-                if let briefing = summary.briefing {
+                if summary.generationKind == .cloud {
+                    MarkdownDocumentView(markdown: summary.content)
+                        .textSelection(.enabled)
+                } else if let briefing = summary.briefing {
                     DailyBriefingView(
                         briefing: briefing,
                         feedback: summaryFeedback,
-                        memoryStates: memoryStates,
                         routineStates: routineStates,
                         onReviewInsight: onReviewInsight,
-                        onReviewMemory: onReviewMemory,
                         onUpdateRoutine: onUpdateRoutine
                     )
                 } else {
@@ -1193,10 +1192,6 @@ private struct DailySummaryCard: View {
         Dictionary(uniqueKeysWithValues: model.state.insightFeedback.map { ($0.insightID, $0.rating) })
     }
 
-    private var memoryStates: [UUID: MemoryReviewStatus] {
-        Dictionary(uniqueKeysWithValues: model.state.userMemories.map { ($0.id, $0.status) })
-    }
-
     private var routineStates: [UUID: LearnedRoutineStatus] {
         Dictionary(uniqueKeysWithValues: model.state.learnedRoutines.map { ($0.id, $0.status) })
     }
@@ -1205,10 +1200,8 @@ private struct DailySummaryCard: View {
 private struct DailyBriefingView: View {
     let briefing: DailyBriefing
     let feedback: [UUID: InsightFeedbackRating]
-    let memoryStates: [UUID: MemoryReviewStatus]
     let routineStates: [UUID: LearnedRoutineStatus]
     let onReviewInsight: (PersonalInsight, InsightFeedbackRating) -> Void
-    let onReviewMemory: (UserMemory, MemoryReviewStatus) -> Void
     let onUpdateRoutine: (LearnedRoutine, LearnedRoutineStatus) -> Void
 
     var body: some View {
@@ -1251,7 +1244,6 @@ private struct DailyBriefingView: View {
             }
 
             briefingSection("下一步", icon: "arrow.up.right.circle.fill", color: .blue, items: briefing.nextActions, empty: "暂无需要主动打断你的建议。")
-            memoryReview
             routineReview
         }
         .textSelection(.enabled)
@@ -1295,36 +1287,6 @@ private struct DailyBriefingView: View {
             }
             .buttonStyle(.borderless)
             .font(.caption)
-        }
-    }
-
-    @ViewBuilder
-    private var memoryReview: some View {
-        if !briefing.memoryCandidates.isEmpty {
-            VStack(alignment: .leading, spacing: 9) {
-                sectionTitle("我对你的新认识", icon: "person.text.rectangle", color: .indigo)
-                Text("只有你确认后，它才会进入长期用户档案。")
-                    .font(.caption).foregroundStyle(.secondary)
-                ForEach(briefing.memoryCandidates) { memory in
-                    HStack(alignment: .top, spacing: 10) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(memory.kind.title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            Text(memory.content).font(.subheadline)
-                        }
-                        Spacer()
-                        let status = memoryStates[memory.id] ?? memory.status
-                        if status == .proposed {
-                            Button("准确") { onReviewMemory(memory, .confirmed) }
-                            Button("不准确") { onReviewMemory(memory, .rejected) }
-                        } else {
-                            Text(status == .confirmed ? "已确认" : "已否定").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    .buttonStyle(.borderless)
-                }
-            }
-            .padding(12)
-            .background(Color.indigo.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
         }
     }
 

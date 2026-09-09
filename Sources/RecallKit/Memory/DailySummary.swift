@@ -51,7 +51,7 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
     public var sourceCaptureIDs: [UUID]
     public var todos: [DailySummaryTodo]
     public var generationKind: DailySummaryGenerationKind
-    /// 结构化简报是主要产品数据；`content` 仅保留 Markdown 兼容展示与导出。
+    /// 模型可用时 `content` 是主要展示；结构化简报用于本地兜底与后台状态整理。
     public var briefing: DailyBriefing?
 
     public init(
@@ -129,8 +129,8 @@ public struct DailySummaryGenerator: Sendable {
     private let intelligenceEngine: PersonalIntelligenceEngine
 
     public init(
-        maxRecords: Int = 24,
-        maxCharactersPerRecord: Int = 900,
+        maxRecords: Int = 36,
+        maxCharactersPerRecord: Int = 720,
         maxRecentSummaries: Int = 14,
         maxCharactersPerRecentSummary: Int = 1_000,
         intelligenceEngine: PersonalIntelligenceEngine = PersonalIntelligenceEngine()
@@ -164,8 +164,13 @@ public struct DailySummaryGenerator: Sendable {
             var minimized = record
             minimized.imageRelativePath = nil
             minimized.windowTitle = nil
-            minimized.ocrText = String(record.ocrText.prefix(maxCharactersPerRecord))
-            minimized.summary = record.summary.map { String($0.prefix(260)) }
+            let rawExcerpt = String(record.ocrText.prefix(maxCharactersPerRecord))
+            if let summary = record.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
+                minimized.ocrText = "本地摘要：\(String(summary.prefix(280)))\n原始摘录：\(rawExcerpt)"
+            } else {
+                minimized.ocrText = rawExcerpt
+            }
+            minimized.summary = nil
             return minimized
         }
     }
@@ -223,7 +228,10 @@ public struct DailySummaryGenerator: Sendable {
         calendar: Calendar = .current
     ) async throws -> DailySummaryGeneration {
         let records = sourceRecords(for: day, from: captures, calendar: calendar)
-        let priorityTodos = todos(from: records)
+        let originalDayRecords = captures.filter {
+            $0.eventTemplate != .dailyReview && calendar.isDate($0.createdAt, inSameDayAs: day)
+        }
+        let priorityTodos = todos(from: originalDayRecords)
         let recentSummaries = recentSummaries(for: day, from: previousSummaries, calendar: calendar)
         let consolidation = intelligenceEngine.consolidate(
             day: day,
@@ -261,7 +269,11 @@ public struct DailySummaryGenerator: Sendable {
         let answer = try await responder.answer(to: LLMRequest(
             question: cloudPrompt(for: day, todos: priorityTodos, hasRecentSummaries: !recentSummaries.isEmpty),
             context: records,
-            supplementaryContext: structuredContext(consolidation: consolidation, recentSummaries: recentSummaries)
+            supplementaryContext: structuredContext(
+                previousProjects: previousProjects,
+                memories: consolidation.memories,
+                recentSummaries: recentSummaries
+            )
         ))
         return DailySummaryGeneration(
             content: answer.content,
@@ -382,15 +394,22 @@ public struct DailySummaryGenerator: Sendable {
         ].joined(separator: "\n")
     }
 
-    private func structuredContext(consolidation: IntelligenceConsolidation, recentSummaries: [DailySummary]) -> String? {
-        guard !consolidation.projectStates.isEmpty || !consolidation.memories.isEmpty || !recentSummaries.isEmpty else { return nil }
+    private func structuredContext(
+        previousProjects: [ProjectState],
+        memories: [UserMemory],
+        recentSummaries: [DailySummary]
+    ) -> String? {
+        guard !previousProjects.isEmpty || !memories.isEmpty || !recentSummaries.isEmpty else { return nil }
         let dateFormatter = DateFormatter()
         dateFormatter.locale = Locale(identifier: "zh_Hans_CN")
         dateFormatter.dateFormat = "yyyy-MM-dd"
-        let projects = consolidation.projectStates.prefix(8).map { project in
+        let projects = previousProjects
+            .filter { isUsableHistoricalProject($0) }
+            .prefix(8)
+            .map { project in
             "- \(project.displayName)：\(project.currentState)；下一步：\(project.nextAction ?? "未确认")"
         }
-        let memories = consolidation.memories
+        let memoryLines = memories
             .filter { $0.status == .confirmed }
             .prefix(8)
             .map { "- \($0.kind.title)：\($0.content)" }
@@ -399,9 +418,25 @@ public struct DailySummaryGenerator: Sendable {
         }
         return [
             "结构化项目状态（可用于比较变化，不能替代当天证据）：\n\(projects.isEmpty ? "无" : projects.joined(separator: "\n"))",
-            "用户已确认的长期记忆：\n\(memories.isEmpty ? "无" : memories.joined(separator: "\n"))",
+            "后台逐步学习的长期记忆：\n\(memoryLines.isEmpty ? "无" : memoryLines.joined(separator: "\n"))",
             "近 14 天未清理的待办线索：\n\(historicalTodos.isEmpty ? "无" : historicalTodos.joined(separator: "\n"))"
         ].joined(separator: "\n\n")
+    }
+
+    private func isUsableHistoricalProject(_ project: ProjectState) -> Bool {
+        guard (2...42).contains(project.displayName.count),
+              !project.projectKey.hasPrefix("app:"),
+              !project.projectKey.hasPrefix("unresolved:") else { return false }
+        let normalizedName = project.displayName
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .replacingOccurrences(of: #"[\s\p{P}\p{S}]+"#, with: "", options: .regularExpression)
+            .lowercased()
+        let tools = ["微信", "企业微信", "wechat", "wecom", "chrome", "safari", "xcode", "terminal", "zsh", "chatgpt", "claude", "codex", "localmcp"]
+        if tools.contains(normalizedName) { return false }
+        if normalizedName.range(of: #"^[a-f0-9]{6,12}[a-z]?$"#, options: .regularExpression) != nil { return false }
+        let text = "\(project.displayName) \(project.currentState)"
+        let noise = ["通讯录", "微盘", "工作台", "标签页", "200keeper", "×", "|S", "Q 搜索"]
+        return noise.filter(text.contains).count < 2
     }
 
     private func cloudPrompt(for day: Date, todos: [DailySummaryTodo], hasRecentSummaries: Bool) -> String {
@@ -416,7 +451,7 @@ public struct DailySummaryGenerator: Sendable {
             }.joined(separator: "\n")
         }
         return """
-        请基于已提供的、仅属于 \(date) 的记忆证据，生成一份高密度的简体中文“个人简报”。不要按时间逐条复述操作，不能补充证据之外的事实；行为模式必须标为推断并说明置信度。
+        请基于已提供的、仅属于 \(date) 的记忆证据，生成一份高密度的简体中文“个人简报”。不要按时间逐条复述操作，不能补充证据之外的事实；行为模式必须标为推断并说明置信度。你的工作是从嘈杂 OCR 中恢复少量有价值的具体事情，而不是转录屏幕文字。
 
         请严格使用以下 Markdown 小节：
         ## 今天的主线
@@ -431,7 +466,9 @@ public struct DailySummaryGenerator: Sendable {
 
         应用名、工具名和网站名（例如微信、企业微信、Chrome、IDE、终端）只能作为证据来源，绝不能直接充当“主线”“进展”“尚未闭环”“发现”或行动建议的事项名称。每项结论必须落到可验证的具体事情，例如某个项目、功能、问题、交付物、决定或下一步动作；无法从证据中识别具体事情时，明确写“证据不足”，不要用工具名代替，也不要猜测。
 
-        “Recall 的发现”最多 3 项，只写跨记录比较后才成立且对用户有决策价值的判断；单条记录、网页标签、导航文字和模型回复不得直接当作用户事实。标题必须描述具体事情或行为模式，禁止使用“今天的主要精力在某应用”一类结论。“近14天提醒与建议”只参考附带的结构化项目状态、已确认用户记忆和待办，不对历史 Markdown 总结再次摘要。\(hasRecentSummaries ? "" : "当前没有可用的近14天历史待办，应明确说明这一点。")
+        先做证据清洗：丢弃菜单、通讯录、标签页列表、搜索词列表、终端噪声、单独的 commit 哈希、截断乱码和重复截图；证据中出现非 \(date) 的旧日期时，不得把旧内容当作当天进展。只有“完成/合并/提交”却没有说明完成了什么，也不得列为进展。最多保留 3 条主线，每条用“具体事项 + 实际变化/结果 + 下一步”表达；多条证据指向同一事项时必须合并，禁止把互不相关的 OCR 片段拼成一个标题。
+
+        “Recall 的发现”最多 3 项，只写跨记录比较后才成立且对用户有决策价值的判断；单条记录、网页标签、导航文字和模型回复不得直接当作用户事实。标题必须描述具体事情或行为模式，禁止使用“今天的主要精力在某应用”一类结论。“近14天提醒与建议”只参考附带的历史项目状态、后台学习的长期记忆和待办，不对历史 Markdown 总结再次摘要。\(hasRecentSummaries ? "" : "当前没有可用的近14天历史待办，应明确说明这一点。")
 
         总长度控制在 1,200 个汉字以内。
 

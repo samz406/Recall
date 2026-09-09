@@ -51,12 +51,10 @@ public struct PersonalIntelligenceEngine: Sendable {
             existing: existingRoutines,
             calendar: calendar
         )
-        let newMemoryKeys = Set(memoryCandidates(from: targetRecords).map(\.key))
         let briefing = makeBriefing(
             episodes: concreteEpisodes,
             projects: projects,
             insights: insights,
-            memoryCandidates: memories.filter { newMemoryKeys.contains($0.key) && $0.status == .proposed },
             routines: routines,
             calendar: calendar
         )
@@ -290,11 +288,11 @@ public struct PersonalIntelligenceEngine: Sendable {
 
     private func memoryCandidates(from records: [CaptureRecord]) -> [UserMemory] {
         let cues: [(UserMemoryKind, [String])] = [
-            (.preference, ["我喜欢", "我更喜欢", "我不喜欢", "不要", "偏好"]),
-            (.goal, ["我的目标", "目标是", "我想要", "我希望"]),
-            (.constraint, ["必须", "不能", "不要再", "限制"]),
-            (.habit, ["我通常", "我习惯", "每天", "每周"]),
-            (.workflowLesson, ["以后遇到", "下次", "流程是", "老规矩"])
+            (.preference, ["我喜欢", "我更喜欢", "我不喜欢", "我偏好"]),
+            (.goal, ["我的目标", "我想要", "我希望", "我要成为"]),
+            (.constraint, ["我不能", "我的限制", "我要求"]),
+            (.habit, ["我通常", "我习惯", "我每天", "我每周"]),
+            (.workflowLesson, ["我以后", "我下次", "老规矩"])
         ]
         var result: [UserMemory] = []
         for record in records {
@@ -310,8 +308,11 @@ public struct PersonalIntelligenceEngine: Sendable {
                     key: key,
                     kind: match.0,
                     content: sentence,
-                    confidence: record.eventTemplate == .taskCommitment ? 0.84 : 0.68,
-                    evidenceIDs: [record.id]
+                    confidence: record.eventTemplate == .manualMoment || record.eventTemplate == .taskCommitment ? 0.86 : 0.78,
+                    status: .confirmed,
+                    evidenceIDs: [record.id],
+                    createdAt: record.createdAt,
+                    updatedAt: record.createdAt
                 ))
             }
         }
@@ -333,7 +334,8 @@ public struct PersonalIntelligenceEngine: Sendable {
             guard previous.status != .rejected else { continue }
             previous.evidenceIDs = (previous.evidenceIDs + candidate.evidenceIDs).uniqued()
             previous.confidence = min(0.95, max(previous.confidence, candidate.confidence) + 0.04)
-            previous.updatedAt = .now
+            if previous.status == .proposed { previous.status = .confirmed }
+            previous.updatedAt = max(previous.updatedAt, candidate.updatedAt)
             memories[candidate.key] = previous
         }
         return memories.values.sorted { lhs, rhs in
@@ -346,7 +348,6 @@ public struct PersonalIntelligenceEngine: Sendable {
         episodes: [WorkEpisode],
         projects: [ProjectState],
         insights: [PersonalInsight],
-        memoryCandidates: [UserMemory],
         routines: [LearnedRoutine],
         calendar: Calendar
     ) -> DailyBriefing {
@@ -362,7 +363,7 @@ public struct PersonalIntelligenceEngine: Sendable {
             return DailyBriefing(
                 headline: "当天记录尚不足以识别具体事项；应用与网站仅作为证据来源。",
                 progress: [], openLoops: [], insights: [], nextActions: [],
-                memoryCandidates: Array(memoryCandidates.prefix(4)),
+                memoryCandidates: [],
                 routineCandidates: [], episodeIDs: episodes.map(\.id)
             )
         }
@@ -430,7 +431,7 @@ public struct PersonalIntelligenceEngine: Sendable {
             openLoops: Array(openLoops),
             insights: insights,
             nextActions: nextActions,
-            memoryCandidates: Array(memoryCandidates.prefix(4)),
+            memoryCandidates: [],
             routineCandidates: Array(routines.filter { $0.status == .proposed }.prefix(2)),
             episodeIDs: ranked.map(\.id)
         )
@@ -452,10 +453,11 @@ public struct PersonalIntelligenceEngine: Sendable {
         if let title = record.windowTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
             let candidate = title.components(separatedBy: " - ").first?.components(separatedBy: " · ").first ?? title
             let sourceApp = record.sourceAppName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if candidate.count >= 2,
+            if (2...42).contains(candidate.count),
                candidate.lowercased() != sourceApp,
                !["new tab", "新标签页", "recall"].contains(candidate.lowercased()),
-               !isToolOrContainerName(candidate) {
+               !isToolOrContainerName(candidate),
+               isHighQualitySubject(candidate) {
                 return ("window:\(candidate.lowercased())", String(candidate.prefix(56)))
             }
         }
@@ -465,8 +467,8 @@ public struct PersonalIntelligenceEngine: Sendable {
     private func concreteWorkSubject(for record: CaptureRecord) -> String? {
         let text = record.summary?.nonEmpty ?? record.ocrText
         let patterns = [
-            #"(?:今天|昨日|昨天|上午|下午|晚上)?\s*(?:已经|已|正在|继续|计划|准备|需要)?\s*(?:完成|推进|修复|优化|重构|开发|实现|排查|分析|设计|验证|测试|提交|发布|处理|讨论|调研|编写|接入|迁移|解决)[了\s:：·-]*([^，。；！？!?\n]{3,56})"#,
-            #"(?:待办|下一步|后续)[\s:：·-]+([^，。；！？!?\n]{3,56})"#
+            #"(?:今天|昨日|昨天|上午|下午|晚上)?\s*(?:已经|已|正在|继续|计划|准备|需要)?\s*(?:完成|推进|修复|优化|重构|开发|实现|排查|分析|设计|验证|测试|提交|发布|处理|讨论|调研|编写|接入|迁移|解决)[了\s:：·-]*([^，。；！？!?\n]{3,56})(?=[，。；！？!?\n]|$)"#,
+            #"(?:待办|下一步|后续)[\s:：·-]+([^，。；！？!?\n]{3,56})(?=[，。；！？!?\n]|$)"#
         ]
         for pattern in patterns {
             guard let match = firstMatch(in: text, pattern: pattern, group: 1),
@@ -477,11 +479,10 @@ public struct PersonalIntelligenceEngine: Sendable {
     }
 
     private func cleanedSubject(_ value: String, record: CaptureRecord) -> String? {
-        var subject = value
+        let subject = value
             .replacingOccurrences(of: #"^[\s\"“”'‘’]*(?:今天|明天|昨日|昨天|本周|下周)\s*"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n:：·-—,，.。;；!?！？\"“”'‘’"))
-        subject = String(subject.prefix(56))
-        guard subject.count >= 3 else { return nil }
+        guard (3...56).contains(subject.count), isHighQualitySubject(subject) else { return nil }
         let normalized = normalizedKey(subject)
         let sourceApp = normalizedKey(record.sourceAppName ?? "")
         let windowTitle = normalizedKey(record.windowTitle ?? "")
@@ -489,6 +490,27 @@ public struct PersonalIntelligenceEngine: Sendable {
         let generic = ["待办", "工作", "任务", "测试", "验证窗口", "聊天", "新标签页"]
         guard !generic.contains(where: { normalized == normalizedKey($0) }) else { return nil }
         return subject
+    }
+
+    private func isHighQualitySubject(_ value: String) -> Bool {
+        let subject = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !subject.isEmpty else { return false }
+        let normalized = normalizedKey(subject)
+        let processOnly = [
+            "实现了", "已实现", "完成了", "已完成", "合并到main", "并合并到main", "提交到main",
+            "推送到main", "测试通过", "构建通过", "发布成功", "登录", "搜索", "discover", "验证窗口"
+        ]
+        guard !processOnly.contains(normalized) else { return false }
+        guard firstMatch(in: normalized, pattern: #"^[a-f0-9]{6,12}[a-z]?$"#, group: 0) == nil else { return false }
+        if subject.hasPrefix("并") || subject.hasPrefix("且") || subject.hasPrefix("然后") { return false }
+
+        let navigationNoise = ["通讯录", "微盘", "工作台", "更多", "标签页", "新标签", "Q 搜索", "源码学习", "课外知识"]
+        if navigationNoise.filter(subject.contains).count >= 2 { return false }
+        let words = subject.split(whereSeparator: \.isWhitespace)
+        if words.count >= 7 { return false }
+        let suspiciousSymbols = subject.filter { "|×><=↑↓←→".contains($0) }.count
+        if suspiciousSymbols >= 2 { return false }
+        return true
     }
 
     private func isConcreteWork(_ episode: WorkEpisode) -> Bool {
