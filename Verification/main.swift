@@ -277,7 +277,8 @@ struct RecallVerifier {
         try expect(result.episodes.count == 2, "相邻的同项目记录没有合并为工作片段")
         try expect(result.episodes.first(where: { $0.projectName == "Recall" })?.status == .completed, "工作片段没有识别已完成结果")
         try expect(result.projectStates.contains(where: { $0.projectKey.contains("recall") }), "工作片段没有更新项目状态")
-        try expect(result.memories.contains(where: { $0.kind == .preference && $0.status == .proposed }), "明确偏好没有形成待确认用户记忆")
+        try expect(result.memories.contains(where: { $0.kind == .preference && $0.status == .confirmed }), "明确偏好没有在后台自动沉淀为长期记忆")
+        try expect(result.briefing.memoryCandidates.isEmpty, "长期用户认识仍然混入每日总结要求确认")
         try expect(result.briefing.progress.contains(where: { $0.detail.contains("测试通过") }), "结构化简报没有保留可验证进展")
 
         let manyRecords = (0..<10).map { index in
@@ -295,14 +296,23 @@ struct RecallVerifier {
         second.windowTitle = "企业微信"
         var noise = makeCapture(text: "待办", app: "localmcp", createdAt: day.addingTimeInterval(140 * 60))
         noise.windowTitle = "localmcp"
+        var menuNoise = makeCapture(
+            text: "今天推进：职业助手 docker java 200keeper 好文章 设计模式 学习成长 源码学习 课外知识 >产品设计 通讯录 微盘 更多 Q 搜索。",
+            app: "企业微信",
+            createdAt: day.addingTimeInterval(160 * 60)
+        )
+        menuNoise.windowTitle = "职业助手 docker java 200keeper 好文章 设计模式 学习成长 源码学习 课外知识 >产品设计"
+        let processNoise = makeCapture(text: "已完成并合并到main。最终提交：34cdc34n。", app: "Terminal", createdAt: day.addingTimeInterval(180 * 60))
+        let ocrNoise = makeCapture(text: "完成 ×|C) col x|S 集况×。", app: "Terminal", createdAt: day.addingTimeInterval(200 * 60))
 
-        let result = PersonalIntelligenceEngine().consolidate(day: day, records: [first, second, noise])
+        let result = PersonalIntelligenceEngine().consolidate(day: day, records: [first, second, noise, menuNoise, processNoise, ocrNoise])
         let conclusionText = ([result.briefing.headline] +
             result.briefing.progress.map(\.title) +
             result.briefing.openLoops.map(\.title) +
             result.insights.map(\.title)).joined(separator: "\n")
         try expect(conclusionText.contains("退款订单接口修复"), "每日简报没有提取到具体事项")
         try expect(!conclusionText.contains("企业微信") && !conclusionText.contains("localmcp"), "应用或工具名仍被当成总结事项")
+        try expect(!conclusionText.contains("200keeper") && !conclusionText.contains("34cdc34") && !conclusionText.contains("col x|S"), "菜单、哈希或 OCR 乱码仍进入总结")
         try expect(!result.projectStates.contains(where: { ["企业微信", "localmcp"].contains($0.displayName) }), "应用或工具名仍被沉淀为长期项目")
         try expect(!result.briefing.openLoops.contains(where: { $0.title == "未闭环 · 企业微信" }), "未闭环标题仍在复用来源应用")
 
