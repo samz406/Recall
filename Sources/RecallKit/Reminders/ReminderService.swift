@@ -123,6 +123,7 @@ public struct ReminderExtractor: Sendable {
         let matchedActionVerb = actionVerbs.first(where: { lower.contains($0) })
         let hasAction = matchedActionVerb != nil
         let hasTime = timeMarkers.contains(where: { lower.contains($0) }) || containsExplicitDate(lower)
+        let hasRecurrence = ["每天", "每日", "每周", "每星期", "每月"].contains(where: { lower.contains($0) })
         let title = normalizedTitle(from: compact, actionVerbs: actionVerbs)
         let startsWithAction = actionVerbs.contains { title.localizedCaseInsensitiveContains($0) && title.lowercased().hasPrefix($0.lowercased()) }
 
@@ -136,6 +137,7 @@ public struct ReminderExtractor: Sendable {
         if hasAction { confidence += 0.24 }
         if startsWithAction { confidence += 0.10 }
         if hasTime { confidence += 0.10 }
+        if hasRecurrence { confidence += 0.18 }
         if dueAt != nil { confidence += 0.06 }
         if lower.contains("截止") || lower.contains("deadline") || lower.contains("due") { confidence += 0.06 }
         if lower.contains("提醒我") || lower.contains("务必") { confidence += 0.08 }
@@ -312,7 +314,7 @@ public struct ReminderExtractor: Sendable {
             dayOffset = 2
         } else if text.contains("明天") || lower.contains("tomorrow") {
             dayOffset = 1
-        } else if text.contains("今天") || text.contains("今晚") || lower.contains("today") {
+        } else if text.contains("今天") || text.contains("今晚") || lower.contains("today") || text.contains("每天") || text.contains("每日") {
             dayOffset = 0
         } else if text.contains("月底") || text.contains("月末") {
             guard let interval = calendar.dateInterval(of: .month, for: base),
@@ -328,7 +330,13 @@ public struct ReminderExtractor: Sendable {
 
         if let dayOffset,
            let targetDay = calendar.date(byAdding: .day, value: dayOffset, to: calendar.startOfDay(for: base)) {
-            return calendar.date(bySettingHour: time.hour, minute: time.minute, second: 0, of: targetDay)
+            guard let candidate = calendar.date(bySettingHour: time.hour, minute: time.minute, second: 0, of: targetDay) else {
+                return nil
+            }
+            if (text.contains("每天") || text.contains("每日")), candidate <= base {
+                return calendar.date(byAdding: .day, value: 1, to: candidate)
+            }
+            return candidate
         }
         return nil
     }
