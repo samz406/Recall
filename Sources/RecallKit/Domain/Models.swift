@@ -138,7 +138,14 @@ public struct EventRule: Identifiable, Codable, Hashable, Sendable {
                 retainImageDays: template == .dailyReview ? 0 : 7,
                 retainTextDays: 90,
                 participatesInChat: true,
-                participatesInReminders: [.taskCommitment, .dailyReview].contains(template),
+                participatesInReminders: [
+                    .manualMoment,
+                    .workCheckpoint,
+                    .meetingSession,
+                    .taskCommitment,
+                    .documentMilestone,
+                    .taskTransition
+                ].contains(template),
                 cloudUsePolicy: .never
             )
         }
@@ -227,8 +234,147 @@ public struct ConversationMessage: Identifiable, Codable, Hashable, Sendable {
 public enum ReminderStatus: String, Codable, Sendable {
     case proposed
     case scheduled
+    case snoozed
     case completed
     case dismissed
+    case cancelled
+}
+
+public enum ReminderOrigin: String, Codable, CaseIterable, Sendable {
+    case discovered
+    case manual
+    case migrated
+
+    public var title: String {
+        switch self {
+        case .discovered: "从记忆发现"
+        case .manual: "手动创建"
+        case .migrated: "历史提醒"
+        }
+    }
+}
+
+public enum ReminderRecurrence: String, Codable, CaseIterable, Identifiable, Sendable {
+    case none
+    case daily
+    case weekly
+    case monthly
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .none: "不重复"
+        case .daily: "每天"
+        case .weekly: "每周"
+        case .monthly: "每月"
+        }
+    }
+
+    public func nextDate(after date: Date, calendar: Calendar = .current) -> Date? {
+        switch self {
+        case .none: nil
+        case .daily: calendar.date(byAdding: .day, value: 1, to: date)
+        case .weekly: calendar.date(byAdding: .weekOfYear, value: 1, to: date)
+        case .monthly: calendar.date(byAdding: .month, value: 1, to: date)
+        }
+    }
+}
+
+public struct ReminderDiscoveryCheckpoint: Codable, Hashable, Sendable {
+    public var processedCaptureHashes: [String: String]
+    public var lastRunAt: Date?
+    public var eligibleRecordCount: Int
+    public var analyzedRecordCount: Int
+    public var discoveredCount: Int
+
+    public init(
+        processedCaptureHashes: [String: String] = [:],
+        lastRunAt: Date? = nil,
+        eligibleRecordCount: Int = 0,
+        analyzedRecordCount: Int = 0,
+        discoveredCount: Int = 0
+    ) {
+        self.processedCaptureHashes = processedCaptureHashes
+        self.lastRunAt = lastRunAt
+        self.eligibleRecordCount = eligibleRecordCount
+        self.analyzedRecordCount = analyzedRecordCount
+        self.discoveredCount = discoveredCount
+    }
+}
+
+public struct ReminderFeedbackStats: Codable, Hashable, Sendable {
+    public var confirmed: Int
+    public var dismissed: Int
+    public var completed: Int
+    public var snoozed: Int
+    public var updatedAt: Date
+
+    public init(confirmed: Int = 0, dismissed: Int = 0, completed: Int = 0, snoozed: Int = 0, updatedAt: Date = .now) {
+        self.confirmed = confirmed
+        self.dismissed = dismissed
+        self.completed = completed
+        self.snoozed = snoozed
+        self.updatedAt = updatedAt
+    }
+}
+
+public enum ReminderFeedbackEvent: Sendable {
+    case confirmed(hour: Int)
+    case dismissed
+    case completed
+    case snoozed(hour: Int)
+}
+
+public struct ReminderLearningProfile: Codable, Hashable, Sendable {
+    public var semanticFeedback: [String: ReminderFeedbackStats]
+    public var preferredHourHistogram: [String: Int]
+
+    public init(
+        semanticFeedback: [String: ReminderFeedbackStats] = [:],
+        preferredHourHistogram: [String: Int] = [:]
+    ) {
+        self.semanticFeedback = semanticFeedback
+        self.preferredHourHistogram = preferredHourHistogram
+    }
+
+    public mutating func record(_ event: ReminderFeedbackEvent, semanticKey: String, now: Date = .now) {
+        guard !semanticKey.isEmpty else { return }
+        var stats = semanticFeedback[semanticKey] ?? ReminderFeedbackStats(updatedAt: now)
+        switch event {
+        case .confirmed(let hour):
+            stats.confirmed += 1
+            preferredHourHistogram[String(hour), default: 0] += 1
+        case .dismissed:
+            stats.dismissed += 1
+        case .completed:
+            stats.completed += 1
+        case .snoozed(let hour):
+            stats.snoozed += 1
+            preferredHourHistogram[String(hour), default: 0] += 1
+        }
+        stats.updatedAt = now
+        semanticFeedback[semanticKey] = stats
+    }
+
+    public func confidenceAdjustment(for semanticKey: String) -> Double {
+        guard let stats = semanticFeedback[semanticKey] else { return 0 }
+        return min(Double(stats.confirmed + stats.completed) * 0.04, 0.12)
+            - min(Double(stats.dismissed) * 0.08, 0.24)
+    }
+
+    public var preferredHour: Int {
+        var bestHour = 9
+        var bestCount = 0
+        for (key, count) in preferredHourHistogram {
+            guard let hour = Int(key), (0...23).contains(hour) else { continue }
+            if count > bestCount || (count == bestCount && hour < bestHour) {
+                bestHour = hour
+                bestCount = count
+            }
+        }
+        return bestHour
+    }
 }
 
 public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
@@ -240,6 +386,14 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
     public var confidence: Double
     public var status: ReminderStatus
     public var createdAt: Date
+    public var updatedAt: Date
+    public var origin: ReminderOrigin
+    public var recurrence: ReminderRecurrence
+    public var semanticKey: String
+    public var scheduledAt: Date?
+    public var completedAt: Date?
+    public var dismissedUntil: Date?
+    public var snoozeCount: Int
 
     public init(
         id: UUID = UUID(),
@@ -249,7 +403,15 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
         sourceCaptureIDs: [UUID] = [],
         confidence: Double,
         status: ReminderStatus = .proposed,
-        createdAt: Date = .now
+        createdAt: Date = .now,
+        updatedAt: Date? = nil,
+        origin: ReminderOrigin = .discovered,
+        recurrence: ReminderRecurrence = .none,
+        semanticKey: String = "",
+        scheduledAt: Date? = nil,
+        completedAt: Date? = nil,
+        dismissedUntil: Date? = nil,
+        snoozeCount: Int = 0
     ) {
         self.id = id
         self.title = title
@@ -259,6 +421,39 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
         self.confidence = confidence
         self.status = status
         self.createdAt = createdAt
+        self.updatedAt = updatedAt ?? createdAt
+        self.origin = origin
+        self.recurrence = recurrence
+        self.semanticKey = semanticKey
+        self.scheduledAt = scheduledAt
+        self.completedAt = completedAt
+        self.dismissedUntil = dismissedUntil
+        self.snoozeCount = snoozeCount
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, detail, dueAt, sourceCaptureIDs, confidence, status, createdAt
+        case updatedAt, origin, recurrence, semanticKey, scheduledAt, completedAt, dismissedUntil, snoozeCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        title = try container.decode(String.self, forKey: .title)
+        detail = try container.decodeIfPresent(String.self, forKey: .detail) ?? ""
+        dueAt = try container.decodeIfPresent(Date.self, forKey: .dueAt)
+        sourceCaptureIDs = try container.decodeIfPresent([UUID].self, forKey: .sourceCaptureIDs) ?? []
+        confidence = try container.decodeIfPresent(Double.self, forKey: .confidence) ?? 0.7
+        status = try container.decodeIfPresent(ReminderStatus.self, forKey: .status) ?? .proposed
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? .now
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+        origin = try container.decodeIfPresent(ReminderOrigin.self, forKey: .origin) ?? .migrated
+        recurrence = try container.decodeIfPresent(ReminderRecurrence.self, forKey: .recurrence) ?? .none
+        semanticKey = try container.decodeIfPresent(String.self, forKey: .semanticKey) ?? ""
+        scheduledAt = try container.decodeIfPresent(Date.self, forKey: .scheduledAt)
+        completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
+        dismissedUntil = try container.decodeIfPresent(Date.self, forKey: .dismissedUntil)
+        snoozeCount = try container.decodeIfPresent(Int.self, forKey: .snoozeCount) ?? 0
     }
 }
 

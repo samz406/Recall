@@ -4,16 +4,33 @@ import UserNotifications
 public struct ReminderExtractor: Sendable {
     public init() {}
 
-    public func candidates(from captures: [CaptureRecord], existing: [ReminderCandidate]) -> [ReminderCandidate] {
-        let existingTitles = existing.map(\.title)
+    public func candidates(
+        from captures: [CaptureRecord],
+        existing: [ReminderCandidate],
+        now: Date = .now
+    ) -> [ReminderCandidate] {
         var result: [ReminderCandidate] = []
 
         for capture in captures.sorted(by: { $0.createdAt > $1.createdAt }) where !capture.ocrText.isEmpty {
             for segment in segments(from: capture.ocrText) {
                 guard let analysis = analyze(segment, base: capture.createdAt) else { continue }
-                guard !existingTitles.contains(where: { isSemanticallyEquivalent($0, analysis.title) }) else { continue }
+                let semanticKey = fingerprint(analysis.title)
+                let recurrence = inferredRecurrence(in: segment)
+                let draft = ReminderCandidate(
+                    title: analysis.title,
+                    detail: detail(for: capture, segment: segment, reason: analysis.reason),
+                    dueAt: analysis.dueAt,
+                    sourceCaptureIDs: [capture.id],
+                    confidence: analysis.confidence,
+                    createdAt: capture.createdAt,
+                    updatedAt: capture.createdAt,
+                    origin: .discovered,
+                    recurrence: recurrence,
+                    semanticKey: semanticKey
+                )
+                guard !existing.contains(where: { blocks(candidate: draft, existing: $0, now: now) }) else { continue }
 
-                if let index = result.firstIndex(where: { isSemanticallyEquivalent($0.title, analysis.title) }) {
+                if let index = result.firstIndex(where: { sameOccurrence($0, draft) }) {
                     if !result[index].sourceCaptureIDs.contains(capture.id) {
                         result[index].sourceCaptureIDs.append(capture.id)
                     }
@@ -21,20 +38,10 @@ public struct ReminderExtractor: Sendable {
                     if result[index].dueAt == nil {
                         result[index].dueAt = analysis.dueAt
                     }
+                    result[index].updatedAt = max(result[index].updatedAt, capture.createdAt)
                     continue
                 }
-
-                let source = capture.sourceAppName ?? "本地记录"
-                let timeNote = analysis.dueAt == nil ? "未发现明确时间" : "已识别时间线索"
-                result.append(
-                    ReminderCandidate(
-                        title: analysis.title,
-                        detail: "来自 \(source)；\(timeNote)，请核对来源后再安排。",
-                        dueAt: analysis.dueAt,
-                        sourceCaptureIDs: [capture.id],
-                        confidence: analysis.confidence
-                    )
-                )
+                result.append(draft)
             }
         }
         return result
@@ -46,10 +53,49 @@ public struct ReminderExtractor: Sendable {
             .map { $0 }
     }
 
+    /// 将增量扫描结果合并进已有状态。忽略项只抑制 30 天；已完成事项只阻止同一次发生，
+    /// 因而同名任务在新的日期仍可再次出现。
+    public func merging(
+        _ discovered: [ReminderCandidate],
+        into existing: [ReminderCandidate],
+        now: Date = .now
+    ) -> [ReminderCandidate] {
+        var merged = existing
+        for candidate in discovered {
+            guard let index = merged.firstIndex(where: { sameOccurrence($0, candidate) }) else {
+                merged.append(candidate)
+                continue
+            }
+            var current = merged[index]
+            var seenSourceIDs: Set<UUID> = []
+            current.sourceCaptureIDs = (current.sourceCaptureIDs + candidate.sourceCaptureIDs)
+                .filter { seenSourceIDs.insert($0).inserted }
+            current.confidence = max(current.confidence, candidate.confidence)
+            current.updatedAt = max(current.updatedAt, candidate.updatedAt)
+            if current.dueAt == nil { current.dueAt = candidate.dueAt }
+            if current.semanticKey.isEmpty { current.semanticKey = candidate.semanticKey }
+            if current.status == .dismissed, (current.dismissedUntil ?? .distantPast) <= now {
+                current.status = .proposed
+                current.dismissedUntil = nil
+            }
+            merged[index] = current
+        }
+        return merged.sorted { lhs, rhs in
+            let leftActive = lhs.status == .proposed || lhs.status == .scheduled || lhs.status == .snoozed
+            let rightActive = rhs.status == .proposed || rhs.status == .scheduled || rhs.status == .snoozed
+            if leftActive != rightActive { return leftActive }
+            if leftActive {
+                return (lhs.dueAt ?? lhs.updatedAt) < (rhs.dueAt ?? rhs.updatedAt)
+            }
+            return lhs.updatedAt > rhs.updatedAt
+        }
+    }
+
     private struct Analysis {
         let title: String
         let dueAt: Date?
         let confidence: Double
+        let reason: String
     }
 
     private func analyze(_ rawText: String, base: Date) -> Analysis? {
@@ -59,7 +105,7 @@ public struct ReminderExtractor: Sendable {
         guard !looksLikeNoise(lower), !looksLikeQuestion(compact), !looksCompleted(lower) else { return nil }
 
         let explicitMarkers = ["待办", "任务", "todo", "action item", "记得", "别忘", "务必", "提醒我"]
-        let directiveMarkers = ["需要", "应该", "应当", "必须", "请", "计划", "准备", "要在", "需在", "下一步"]
+        let directiveMarkers = ["我需要", "我要", "需要", "应该", "应当", "必须", "请", "计划", "准备", "要在", "需在", "下一步"]
         let actionVerbs = [
             "回复", "提交", "完成", "跟进", "处理", "联系", "确认", "预约", "支付", "续费",
             "更新", "发送", "整理", "准备", "参加", "取消", "购买", "缴纳", "检查", "修复",
@@ -69,7 +115,7 @@ public struct ReminderExtractor: Sendable {
         let timeMarkers = [
             "今天", "明天", "后天", "本周", "这周", "下周", "周一", "周二", "周三", "周四",
             "周五", "周六", "周日", "星期", "月底", "月末", "日前", "之前", "截止", "到期",
-            "today", "tomorrow", "next week", "deadline", "due"
+            "每天", "每日", "每周", "每月", "today", "tomorrow", "next week", "deadline", "due"
         ]
 
         let hasExplicitMarker = explicitMarkers.contains(where: { lower.contains($0) })
@@ -77,6 +123,7 @@ public struct ReminderExtractor: Sendable {
         let matchedActionVerb = actionVerbs.first(where: { lower.contains($0) })
         let hasAction = matchedActionVerb != nil
         let hasTime = timeMarkers.contains(where: { lower.contains($0) }) || containsExplicitDate(lower)
+        let hasRecurrence = ["每天", "每日", "每周", "每星期", "每月"].contains(where: { lower.contains($0) })
         let title = normalizedTitle(from: compact, actionVerbs: actionVerbs)
         let startsWithAction = actionVerbs.contains { title.localizedCaseInsensitiveContains($0) && title.lowercased().hasPrefix($0.lowercased()) }
 
@@ -90,11 +137,26 @@ public struct ReminderExtractor: Sendable {
         if hasAction { confidence += 0.24 }
         if startsWithAction { confidence += 0.10 }
         if hasTime { confidence += 0.10 }
+        if hasRecurrence { confidence += 0.18 }
         if dueAt != nil { confidence += 0.06 }
         if lower.contains("截止") || lower.contains("deadline") || lower.contains("due") { confidence += 0.06 }
+        if lower.contains("提醒我") || lower.contains("务必") { confidence += 0.08 }
+        if ["例如", "比如", "示例", "假设", "页面显示", "文章提到"].contains(where: { lower.contains($0) }) {
+            confidence -= 0.24
+        }
         confidence = min(confidence, 0.96)
         guard confidence >= 0.60 else { return nil }
-        return Analysis(title: title, dueAt: dueAt, confidence: confidence)
+        let reason: String
+        if lower.contains("提醒我") || lower.contains("别忘") || lower.contains("记得") {
+            reason = "明确提醒"
+        } else if hasTime {
+            reason = "行动与时间"
+        } else if hasExplicitMarker {
+            reason = "明确待办"
+        } else {
+            reason = "未闭环行动"
+        }
+        return Analysis(title: title, dueAt: dueAt, confidence: confidence, reason: reason)
     }
 
     private func segments(from text: String) -> [String] {
@@ -109,9 +171,18 @@ public struct ReminderExtractor: Sendable {
     private func looksLikeNoise(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let noisePrefixes = ["//", "/*", "#!", "$ ", "> ", "select ", "insert ", "update ", "delete "]
-        let noisePhrases = ["test log", "debug log", "lorem ipsum", "console.log", "system.out", "测试日志"]
+        let noisePhrases = [
+            "test log", "debug log", "lorem ipsum", "console.log", "system.out", "测试日志",
+            "通讯录", "工作台 微盘", "new tab", "function ", "class ", "public static", "private func"
+        ]
+        let navigationTerms = ["工作台", "通讯录", "微盘", "更多", "搜索", "智能文档", "源码学习", "设计模式"]
+        let navigationMatches = navigationTerms.filter { trimmed.contains($0) }.count
+        let meaningfulCharacters = trimmed.filter { $0.isLetter || $0.isNumber }
+        let symbolRatio = trimmed.isEmpty ? 0 : Double(trimmed.count - meaningfulCharacters.count) / Double(trimmed.count)
         return noisePrefixes.contains(where: { trimmed.hasPrefix($0) })
             || noisePhrases.contains(where: { trimmed.contains($0) })
+            || navigationMatches >= 3
+            || (trimmed.count >= 8 && symbolRatio > 0.45)
             || trimmed.range(of: #"^[/\\]{1,2}(todo|fixme)\b"#, options: .regularExpression) != nil
     }
 
@@ -127,9 +198,11 @@ public struct ReminderExtractor: Sendable {
         if ["未完成", "尚未完成", "还没完成", "没有完成"].contains(where: { text.contains($0) }) { return false }
         let completedMarkers = [
             "已完成", "已经完成", "完成了", "已提交", "已经提交", "已回复", "已经回复",
-            "已处理", "已经处理", "已解决", "搞定了", "done", "completed", "finished"
+            "已处理", "已经处理", "已解决", "搞定了", "最终提交", "合并到main", "合并到 main",
+            "测试通过", "done", "completed", "finished"
         ]
         return completedMarkers.contains(where: { text.contains($0) })
+            || text.range(of: #"^完成[\s:：·\-]"#, options: .regularExpression) != nil
     }
 
     private func normalizedTitle(from source: String, actionVerbs: [String]) -> String {
@@ -137,6 +210,11 @@ public struct ReminderExtractor: Sendable {
             .replacingOccurrences(of: #"^[\s•·●\-*]+"#, with: "", options: .regularExpression)
             .replacingOccurrences(
                 of: #"(?i)^(待办|todo|action item|任务|下一步)\s*[:：\-]\s*"#,
+                with: "",
+                options: .regularExpression
+            )
+            .replacingOccurrences(
+                of: #"^(请)?(?:提醒我|记得|别忘|务必)\s*[:：，,]?\s*"#,
                 with: "",
                 options: .regularExpression
             )
@@ -168,6 +246,34 @@ public struct ReminderExtractor: Sendable {
         return union > 0 && Double(intersection) / Double(union) >= 0.72
     }
 
+    private func sameOccurrence(_ lhs: ReminderCandidate, _ rhs: ReminderCandidate) -> Bool {
+        guard isSemanticallyEquivalent(lhs.title, rhs.title) else { return false }
+        switch (lhs.dueAt, rhs.dueAt) {
+        case let (left?, right?):
+            return Calendar.current.isDate(left, inSameDayAs: right)
+        case (nil, nil):
+            return true
+        default:
+            return true
+        }
+    }
+
+    private func blocks(candidate: ReminderCandidate, existing: ReminderCandidate, now: Date) -> Bool {
+        guard isSemanticallyEquivalent(existing.title, candidate.title) else { return false }
+        switch existing.status {
+        case .proposed, .scheduled, .snoozed:
+            return sameOccurrence(existing, candidate)
+        case .dismissed:
+            return (existing.dismissedUntil ?? existing.updatedAt.addingTimeInterval(30 * 86_400)) > now
+                && sameOccurrence(existing, candidate)
+        case .completed, .cancelled:
+            if let oldDate = existing.dueAt, let newDate = candidate.dueAt {
+                return Calendar.current.isDate(oldDate, inSameDayAs: newDate)
+            }
+            return now.timeIntervalSince(existing.completedAt ?? existing.updatedAt) < 7 * 86_400
+        }
+    }
+
     private func fingerprint(_ source: String) -> String {
         let folded = source.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
         let taskMarkers = ["待办", "todo", "actionitem", "任务", "记得", "请", "需要", "务必"]
@@ -187,10 +293,16 @@ public struct ReminderExtractor: Sendable {
     private func containsExplicitDate(_ text: String) -> Bool {
         text.range(of: #"\d{1,4}[-/.年]\d{1,2}(?:[-/.月]\d{1,2})?"#, options: .regularExpression) != nil
             || text.range(of: #"\d{1,2}月\d{1,2}[日号]?"#, options: .regularExpression) != nil
+            || text.range(of: #"\d+\s*(?:分钟|小时|天)后"#, options: .regularExpression) != nil
     }
 
     private func inferredDueDate(in text: String, base: Date) -> Date? {
         let calendar = Calendar.current
+        if let parts = firstMatch(#"(?<!\d)(\d+)\s*(分钟|小时|天)后"#, in: text),
+           let amount = Int(parts[1]) {
+            let component: Calendar.Component = parts[2] == "分钟" ? .minute : (parts[2] == "小时" ? .hour : .day)
+            return calendar.date(byAdding: component, value: amount, to: base)
+        }
         let time = inferredTime(in: text)
         if let exactDate = inferredExplicitDate(in: text, base: base, calendar: calendar) {
             return calendar.date(bySettingHour: time.hour, minute: time.minute, second: 0, of: exactDate)
@@ -202,8 +314,12 @@ public struct ReminderExtractor: Sendable {
             dayOffset = 2
         } else if text.contains("明天") || lower.contains("tomorrow") {
             dayOffset = 1
-        } else if text.contains("今天") || lower.contains("today") {
+        } else if text.contains("今天") || text.contains("今晚") || lower.contains("today") || text.contains("每天") || text.contains("每日") {
             dayOffset = 0
+        } else if text.contains("月底") || text.contains("月末") {
+            guard let interval = calendar.dateInterval(of: .month, for: base),
+                  let lastDay = calendar.date(byAdding: .day, value: -1, to: interval.end) else { return nil }
+            return calendar.date(bySettingHour: time.hour, minute: time.minute, second: 0, of: lastDay)
         } else if let weekdayDate = inferredWeekday(in: text, base: base, calendar: calendar) {
             return calendar.date(bySettingHour: time.hour, minute: time.minute, second: 0, of: weekdayDate)
         } else if text.contains("下周") || lower.contains("next week") {
@@ -214,7 +330,13 @@ public struct ReminderExtractor: Sendable {
 
         if let dayOffset,
            let targetDay = calendar.date(byAdding: .day, value: dayOffset, to: calendar.startOfDay(for: base)) {
-            return calendar.date(bySettingHour: time.hour, minute: time.minute, second: 0, of: targetDay)
+            guard let candidate = calendar.date(bySettingHour: time.hour, minute: time.minute, second: 0, of: targetDay) else {
+                return nil
+            }
+            if (text.contains("每天") || text.contains("每日")), candidate <= base {
+                return calendar.date(byAdding: .day, value: 1, to: candidate)
+            }
+            return candidate
         }
         return nil
     }
@@ -228,11 +350,54 @@ public struct ReminderExtractor: Sendable {
             if text.contains("中午") && hour < 11 { hour += 12 }
             return (hour, minute)
         }
+        if let parts = firstMatch(#"([零〇一二两三四五六七八九十]{1,3})点(半|一刻|三刻|[零〇一二两三四五六七八九十]{1,3}分?)?"#, in: text),
+           var hour = chineseNumber(parts[1]) {
+            let minuteToken = parts.count > 2 ? parts[2] : ""
+            let minute: Int
+            switch minuteToken {
+            case "半": minute = 30
+            case "一刻": minute = 15
+            case "三刻": minute = 45
+            default: minute = chineseNumber(minuteToken.replacingOccurrences(of: "分", with: "")) ?? 0
+            }
+            if (text.contains("下午") || text.contains("晚上") || text.contains("今晚")) && hour < 12 { hour += 12 }
+            if text.contains("中午") && hour < 11 { hour += 12 }
+            return (min(max(hour, 0), 23), min(max(minute, 0), 59))
+        }
         if text.contains("早上") || text.contains("上午") { return (9, 0) }
         if text.contains("中午") { return (12, 0) }
         if text.contains("下午") { return (15, 0) }
         if text.contains("晚上") || text.contains("今晚") { return (20, 0) }
         return (9, 0)
+    }
+
+    private func chineseNumber(_ source: String) -> Int? {
+        guard !source.isEmpty else { return nil }
+        let digits: [Character: Int] = ["零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9]
+        if source == "十" { return 10 }
+        if let ten = source.firstIndex(of: "十") {
+            let left = source[..<ten].first.flatMap { digits[$0] } ?? 1
+            let rightStart = source.index(after: ten)
+            let right = rightStart < source.endIndex ? (digits[source[rightStart]] ?? 0) : 0
+            return left * 10 + right
+        }
+        return source.reduce(0) { partial, character in
+            guard let value = digits[character] else { return partial }
+            return partial * 10 + value
+        }
+    }
+
+    private func inferredRecurrence(in text: String) -> ReminderRecurrence {
+        if text.contains("每天") || text.contains("每日") { return .daily }
+        if text.contains("每周") || text.contains("每星期") { return .weekly }
+        if text.contains("每月") { return .monthly }
+        return .none
+    }
+
+    private func detail(for capture: CaptureRecord, segment: String, reason: String) -> String {
+        let source = capture.sourceAppName ?? capture.eventTemplate.title
+        let excerpt = String(segment.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        return "\(reason) · \(source)\n\(excerpt)"
     }
 
     private func inferredExplicitDate(in text: String, base: Date, calendar: Calendar) -> Date? {
@@ -300,7 +465,39 @@ public struct ReminderExtractor: Sendable {
 
 @MainActor
 public final class LocalNotificationScheduler {
+    public nonisolated static let categoryIdentifier = "RECALL_REMINDER"
+    public nonisolated static let completeActionIdentifier = "RECALL_COMPLETE"
+    public nonisolated static let snoozeHourActionIdentifier = "RECALL_SNOOZE_HOUR"
+    public nonisolated static let snoozeTomorrowActionIdentifier = "RECALL_SNOOZE_TOMORROW"
+
     public init() {}
+
+    public func configureReminderActions() throws {
+        let center = try notificationCenter()
+        let complete = UNNotificationAction(
+            identifier: Self.completeActionIdentifier,
+            title: "完成",
+            options: []
+        )
+        let snoozeHour = UNNotificationAction(
+            identifier: Self.snoozeHourActionIdentifier,
+            title: "1 小时后提醒",
+            options: []
+        )
+        let snoozeTomorrow = UNNotificationAction(
+            identifier: Self.snoozeTomorrowActionIdentifier,
+            title: "明天提醒",
+            options: []
+        )
+        center.setNotificationCategories([
+            UNNotificationCategory(
+                identifier: Self.categoryIdentifier,
+                actions: [complete, snoozeHour, snoozeTomorrow],
+                intentIdentifiers: [],
+                options: []
+            )
+        ])
+    }
 
     public func requestAuthorization() async throws -> Bool {
         let center = try notificationCenter()
@@ -330,14 +527,32 @@ public final class LocalNotificationScheduler {
         guard let dueAt = reminder.dueAt else { throw ReminderNotificationError.missingDueDate }
         let content = UNMutableNotificationContent()
         content.title = reminder.title
-        content.body = reminder.detail
+        let detailLines = reminder.detail.components(separatedBy: .newlines).filter { !$0.isEmpty }
+        content.body = detailLines.last ?? "现在适合处理这件事。"
         content.sound = .default
+        content.categoryIdentifier = Self.categoryIdentifier
         content.userInfo = ["reminderID": reminder.id.uuidString]
-        let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: dueAt)
+        let calendar = Calendar.current
+        let components: DateComponents
+        let repeats: Bool
+        switch reminder.status == .snoozed ? ReminderRecurrence.none : reminder.recurrence {
+        case .none:
+            components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: dueAt)
+            repeats = false
+        case .daily:
+            components = calendar.dateComponents([.hour, .minute], from: dueAt)
+            repeats = true
+        case .weekly:
+            components = calendar.dateComponents([.weekday, .hour, .minute], from: dueAt)
+            repeats = true
+        case .monthly:
+            components = calendar.dateComponents([.day, .hour, .minute], from: dueAt)
+            repeats = true
+        }
         let request = UNNotificationRequest(
             identifier: reminder.id.uuidString,
             content: content,
-            trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+            trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: repeats)
         )
         do {
             try await center.add(request)
@@ -432,6 +647,14 @@ public final class LocalNotificationScheduler {
     public func cancel(_ reminder: ReminderCandidate) {
         guard isNotificationHostAvailable else { return }
         let identifiers = [reminder.id.uuidString]
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+    }
+
+    public func cancelAll(_ reminders: [ReminderCandidate]) {
+        guard isNotificationHostAvailable else { return }
+        let identifiers = reminders.map { $0.id.uuidString }
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: identifiers)
         center.removeDeliveredNotifications(withIdentifiers: identifiers)

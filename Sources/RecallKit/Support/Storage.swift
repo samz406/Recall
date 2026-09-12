@@ -58,6 +58,8 @@ public struct RecallState: Codable, Sendable {
     public var captures: [CaptureRecord]
     public var messages: [ConversationMessage]
     public var reminders: [ReminderCandidate]
+    public var reminderDiscoveryCheckpoint: ReminderDiscoveryCheckpoint
+    public var reminderLearningProfile: ReminderLearningProfile
     public var dailySummaries: [DailySummary]
     public var dailySummarySettings: DailySummarySettings
     public var privacy: PrivacySettings
@@ -76,6 +78,8 @@ public struct RecallState: Codable, Sendable {
         captures: [CaptureRecord] = [],
         messages: [ConversationMessage] = [],
         reminders: [ReminderCandidate] = [],
+        reminderDiscoveryCheckpoint: ReminderDiscoveryCheckpoint = ReminderDiscoveryCheckpoint(),
+        reminderLearningProfile: ReminderLearningProfile = ReminderLearningProfile(),
         dailySummaries: [DailySummary] = [],
         dailySummarySettings: DailySummarySettings = DailySummarySettings(),
         privacy: PrivacySettings = PrivacySettings(),
@@ -93,6 +97,8 @@ public struct RecallState: Codable, Sendable {
         self.captures = captures
         self.messages = messages
         self.reminders = reminders
+        self.reminderDiscoveryCheckpoint = reminderDiscoveryCheckpoint
+        self.reminderLearningProfile = reminderLearningProfile
         self.dailySummaries = dailySummaries
         self.dailySummarySettings = dailySummarySettings
         self.privacy = privacy
@@ -108,7 +114,7 @@ public struct RecallState: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case rules, captures, messages, reminders, dailySummaries, dailySummarySettings
+        case rules, captures, messages, reminders, reminderDiscoveryCheckpoint, reminderLearningProfile, dailySummaries, dailySummarySettings
         case privacy, llmConfiguration, conversationSummary, conversationSummaryCoveredMessageCount
         case episodes, projects, userMemories, insights, insightFeedback, learnedRoutines
     }
@@ -119,6 +125,8 @@ public struct RecallState: Codable, Sendable {
         captures = try container.decodeIfPresent([CaptureRecord].self, forKey: .captures) ?? []
         messages = try container.decodeIfPresent([ConversationMessage].self, forKey: .messages) ?? []
         reminders = try container.decodeIfPresent([ReminderCandidate].self, forKey: .reminders) ?? []
+        reminderDiscoveryCheckpoint = try container.decodeIfPresent(ReminderDiscoveryCheckpoint.self, forKey: .reminderDiscoveryCheckpoint) ?? ReminderDiscoveryCheckpoint()
+        reminderLearningProfile = try container.decodeIfPresent(ReminderLearningProfile.self, forKey: .reminderLearningProfile) ?? ReminderLearningProfile()
         dailySummaries = try container.decodeIfPresent([DailySummary].self, forKey: .dailySummaries) ?? []
         dailySummarySettings = try container.decodeIfPresent(DailySummarySettings.self, forKey: .dailySummarySettings) ?? DailySummarySettings()
         privacy = try container.decodeIfPresent(PrivacySettings.self, forKey: .privacy) ?? PrivacySettings()
@@ -161,8 +169,19 @@ public actor FileMemoryStore {
             let missingRules = EventRule.defaults().filter { !existingTemplates.contains($0.template) }
             if !missingRules.isEmpty {
                 restoredState.rules.append(contentsOf: missingRules)
-                try Self.write(restoredState, encoder: encoder, to: storage.stateURL)
             }
+            // 仅迁移完全等于旧版默认值的提醒范围；用户手动调整过的规则保持不变。
+            let legacyReminderTemplates: Set<CaptureEventTemplate> = [.taskCommitment, .dailyReview]
+            let currentReminderTemplates = Set(restoredState.rules.filter(\.participatesInReminders).map(\.template))
+            if currentReminderTemplates == legacyReminderTemplates {
+                let nextDefaults = Dictionary(uniqueKeysWithValues: EventRule.defaults().map { ($0.template, $0.participatesInReminders) })
+                restoredState.rules = restoredState.rules.map { rule in
+                    var updated = rule
+                    updated.participatesInReminders = nextDefaults[rule.template] ?? rule.participatesInReminders
+                    return updated
+                }
+            }
+            try Self.write(restoredState, encoder: encoder, to: storage.stateURL)
             state = restoredState
         } else {
             state = RecallState()
@@ -293,6 +312,10 @@ public actor FileMemoryStore {
         state.insights.removeAll { $0.evidenceIDs.contains(id) }
         state.userMemories.removeAll { $0.evidenceIDs.contains(id) }
         state.learnedRoutines.removeAll { $0.evidenceIDs.contains(id) }
+        // 提醒正文同样可能包含来源记录中的可识别文本。删除来源时删除其派生提醒，
+        // 由用户手动创建且没有来源关联的提醒不受影响。
+        state.reminders.removeAll { $0.sourceCaptureIDs.contains(id) }
+        state.reminderDiscoveryCheckpoint.processedCaptureHashes.removeValue(forKey: id.uuidString)
         state.projects = state.projects.compactMap { project in
             var updated = project
             updated.evidenceIDs.removeAll { $0 == id }
@@ -312,6 +335,15 @@ public actor FileMemoryStore {
         try persist()
     }
 
+    public func commitReminderDiscovery(
+        reminders: [ReminderCandidate],
+        checkpoint: ReminderDiscoveryCheckpoint
+    ) throws {
+        state.reminders = reminders
+        state.reminderDiscoveryCheckpoint = checkpoint
+        try persist()
+    }
+
     public func updateReminder(_ reminder: ReminderCandidate) throws {
         guard let index = state.reminders.firstIndex(where: { $0.id == reminder.id }) else {
             state.reminders.insert(reminder, at: 0)
@@ -322,20 +354,55 @@ public actor FileMemoryStore {
         try persist()
     }
 
+    /// 将提醒状态与用户反馈一次写入，避免只保存了其中一部分。
+    public func updateReminder(
+        _ reminder: ReminderCandidate,
+        learningProfile: ReminderLearningProfile
+    ) throws {
+        if let index = state.reminders.firstIndex(where: { $0.id == reminder.id }) {
+            state.reminders[index] = reminder
+        } else {
+            state.reminders.insert(reminder, at: 0)
+        }
+        state.reminderLearningProfile = learningProfile
+        try persist()
+    }
+
+    public func removeReminders(ids: Set<UUID>) throws {
+        guard !ids.isEmpty else { return }
+        state.reminders.removeAll { ids.contains($0.id) }
+        try persist()
+    }
+
     /// 批量忽略尚未被用户确认的候选提醒；已安排的系统通知不会受到影响。
     @discardableResult
     public func dismissAllProposedReminders() throws -> Int {
         var dismissedCount = 0
+        var learningProfile = state.reminderLearningProfile
         state.reminders = state.reminders.map { reminder in
             guard reminder.status == .proposed else { return reminder }
             var updated = reminder
             updated.status = .dismissed
+            updated.dismissedUntil = Calendar.current.date(byAdding: .day, value: 30, to: .now)
+            updated.updatedAt = .now
+            let semanticKey = reminder.semanticKey.isEmpty
+                ? String(reminder.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).filter { $0.isLetter || $0.isNumber })
+                : reminder.semanticKey
+            learningProfile.record(.dismissed, semanticKey: semanticKey)
             dismissedCount += 1
             return updated
         }
         guard dismissedCount > 0 else { return 0 }
+        state.reminderLearningProfile = learningProfile
         try persist()
         return dismissedCount
+    }
+
+    public func clearReminderData() throws {
+        state.reminders = []
+        state.reminderDiscoveryCheckpoint = ReminderDiscoveryCheckpoint()
+        state.reminderLearningProfile = ReminderLearningProfile()
+        try persist()
     }
 
     public func hasRecentHash(_ hash: String, within seconds: TimeInterval = 12, now: Date = .now) -> Bool {

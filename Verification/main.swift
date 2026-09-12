@@ -13,7 +13,11 @@ struct RecallVerifier {
             try verifyTimelineDayFiltering()
             try verifyReminders()
             try verifyReminderPrecision()
+            try verifyReminderTimeAndRecurrence()
+            try verifyReminderOccurrenceLifecycle()
+            try verifyReminderLearning()
             try await verifyReminderSchedulePersistence()
+            try await verifyReminderDeletionAndCheckpoint()
             try await verifyDailySummaryGeneration()
             try await verifyDailySummaryPersistenceAndDeletion()
             try verifyPersonalIntelligenceConsolidation()
@@ -31,9 +35,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 25 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 29 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 24 integration checks.")
+                print("PASS: RecallVerifier completed 28 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -47,6 +51,8 @@ struct RecallVerifier {
         try expect(Set(rules.map(\.template)) == Set(CaptureEventTemplate.allCases), "事件模板集合不完整")
         try expect(rules.contains(where: { $0.template == .manualMoment && $0.isEnabled }), "手动记录此刻应默认启用")
         try expect(rules.contains(where: { $0.template == .enterKeyTrigger && !$0.isEnabled }), "Enter 键触发记录必须默认关闭")
+        try expect(rules.first(where: { $0.template == .manualMoment })?.participatesInReminders == true, "手动记录应默认参与提醒发现")
+        try expect(rules.first(where: { $0.template == .dailyReview })?.participatesInReminders == false, "每日总结不应被再次扫描并产生重复提醒")
     }
 
     private static func verifyEventRuleMigration() async throws {
@@ -134,13 +140,16 @@ struct RecallVerifier {
         let deadlineOnly = makeCapture(text: "【服务截止】", app: "Messages", createdAt: base)
         let uncertainQuestion = makeCapture(text: "我记得券兑换码也是券过期的时候推送过期是吧", app: "Messages", createdAt: base)
         let codeNoise = makeCapture(text: "//todo test log", app: "IntelliJ IDEA", createdAt: base)
+        let menuNoise = makeCapture(text: "工作台 通讯录 微盘 更多 搜索 智能文档 设计模式", app: "Browser", createdAt: base)
+        let ocrNoise = makeCapture(text: "完成 ×|C) col x|S 集况×", app: "Terminal", createdAt: base)
+        let commitNoise = makeCapture(text: "最终提交：34cdc34，main CI 构建及21项集成测试全部通过", app: "Terminal", createdAt: base)
         let completed = makeCapture(text: "已完成：明天提交版本发布说明", app: "Notes", createdAt: base)
 
         let candidates = ReminderExtractor().candidates(
-            from: [first, duplicate, deadlineOnly, uncertainQuestion, codeNoise, completed],
+            from: [first, duplicate, deadlineOnly, uncertainQuestion, codeNoise, menuNoise, ocrNoise, commitNoise, completed],
             existing: []
         )
-        try expect(candidates.count == 1, "提醒精度过滤未排除疑问句、完成态、截止标签或代码噪声")
+        try expect(candidates.count == 1, "提醒精度过滤未排除疑问句、完成态、截止标签、菜单或代码噪声")
         try expect(candidates[0].title == "明天下午3点提交社会心理学调研报告", "提醒标题没有提炼为明确行动")
         try expect(candidates[0].sourceCaptureIDs.count == 2, "重复记录没有合并为同一提醒候选")
         if let dueAt = candidates[0].dueAt {
@@ -157,6 +166,64 @@ struct RecallVerifier {
         )
         let reportCandidate = ReminderExtractor().candidates(from: [report], existing: []).first
         try expect(reportCandidate?.title == "写一篇介绍《社会心理学》的调研报告", "长句提醒没有提炼行动主干")
+    }
+
+    private static func verifyReminderTimeAndRecurrence() throws {
+        let calendar = Calendar.current
+        let base = calendar.date(from: DateComponents(year: 2026, month: 9, day: 8, hour: 11, minute: 10))!
+        let relative = makeCapture(text: "提醒我3小时后提交报价单", app: "Notes", createdAt: base)
+        let chineseTime = makeCapture(text: "待办：明天下午三点半回复客户", app: "Mail", createdAt: base)
+        let recurring = makeCapture(text: "每天上午九点检查服务告警", app: "Notes", createdAt: base)
+        let candidates = ReminderExtractor().candidates(from: [relative, chineseTime, recurring], existing: [], now: base)
+
+        let relativeDue = candidates.first(where: { $0.title.contains("提交报价单") })?.dueAt
+        try expect(abs((relativeDue?.timeIntervalSince(base) ?? 0) - 3 * 3_600) < 1, "相对小时没有转换成准确提醒时间")
+        let reply = candidates.first(where: { $0.title.contains("回复客户") })
+        let replyParts = reply?.dueAt.map { calendar.dateComponents([.day, .hour, .minute], from: $0) }
+        try expect(replyParts?.day == 9 && replyParts?.hour == 15 && replyParts?.minute == 30, "中文半点时间识别错误")
+        try expect(candidates.first(where: { $0.title.contains("检查服务告警") })?.recurrence == .daily, "每日重复线索没有形成重复提醒")
+    }
+
+    private static func verifyReminderOccurrenceLifecycle() throws {
+        let calendar = Calendar.current
+        let firstDay = calendar.date(from: DateComponents(year: 2026, month: 9, day: 8, hour: 10))!
+        let extractor = ReminderExtractor()
+        let firstCapture = makeCapture(text: "待办：明天上午9点提交周报", app: "Notes", createdAt: firstDay)
+        guard var first = extractor.candidates(from: [firstCapture], existing: [], now: firstDay).first else {
+            throw VerificationError.failed("没有生成生命周期测试候选")
+        }
+        first.status = .completed
+        first.completedAt = firstDay.addingTimeInterval(86_400)
+
+        let nextCapture = makeCapture(text: "待办：明天上午9点提交周报", app: "Notes", createdAt: firstDay.addingTimeInterval(86_400))
+        try expect(extractor.candidates(from: [nextCapture], existing: [first], now: firstDay.addingTimeInterval(86_400)).count == 1, "已完成事项错误阻止了下一次发生")
+
+        var dismissed = first
+        dismissed.status = .dismissed
+        dismissed.completedAt = nil
+        dismissed.dismissedUntil = firstDay.addingTimeInterval(30 * 86_400)
+        let suppressed = extractor.candidates(from: [firstCapture], existing: [dismissed], now: firstDay.addingTimeInterval(5 * 86_400))
+        try expect(suppressed.isEmpty, "忽略期内仍重复建议同一事项")
+        let restored = extractor.merging([first], into: [dismissed], now: firstDay.addingTimeInterval(31 * 86_400))
+        try expect(restored.first?.status == .proposed, "忽略期结束后没有恢复可建议状态")
+    }
+
+    private static func verifyReminderLearning() throws {
+        var profile = ReminderLearningProfile()
+        profile.record(.dismissed, semanticKey: "提交周报")
+        try expect(profile.confidenceAdjustment(for: "提交周报") < 0, "忽略反馈没有降低同类候选置信度")
+        profile.record(.confirmed(hour: 15), semanticKey: "提交周报")
+        profile.record(.completed, semanticKey: "提交周报")
+        profile.record(.snoozed(hour: 15), semanticKey: "客户回访")
+        try expect(profile.preferredHour == 15, "确认与稍后时间没有形成默认提醒时段")
+
+        let legacyJSON = """
+        {"id":"00000000-0000-0000-0000-000000000001","title":"旧提醒","detail":"旧数据","sourceCaptureIDs":[],"confidence":0.8,"status":"proposed","createdAt":"2026-09-08T10:00:00Z"}
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let legacy = try decoder.decode(ReminderCandidate.self, from: Data(legacyJSON.utf8))
+        try expect(legacy.origin == .migrated && legacy.recurrence == .none, "旧提醒模型没有安全迁移默认值")
     }
 
     private static func verifyReminderSchedulePersistence() async throws {
@@ -178,13 +245,41 @@ struct RecallVerifier {
         try expect(restored?.status.rawValue == ReminderStatus.scheduled.rawValue, "用户确认的提醒状态没有保存")
         try expect(abs((restored?.dueAt?.timeIntervalSince1970 ?? 0) - selectedDate.timeIntervalSince1970) < 0.01, "用户选择的提醒时间没有保存")
 
-        let proposed = ReminderCandidate(title: "待批量忽略", detail: "验证批量忽略只影响候选提醒。", confidence: 0.7)
+        let proposed = ReminderCandidate(title: "待批量忽略", detail: "验证批量忽略只影响候选提醒。", confidence: 0.7, semanticKey: "批量忽略")
         try await reloaded.updateReminder(proposed)
         let dismissedCount = try await reloaded.dismissAllProposedReminders()
         let afterDismissal = await reloaded.snapshot().reminders
         try expect(dismissedCount == 1, "批量忽略应返回实际更新的待确认提醒数量")
         try expect(afterDismissal.first(where: { $0.id == proposed.id })?.status == .dismissed, "待确认提醒没有被批量忽略")
         try expect(afterDismissal.first(where: { $0.id == scheduled.id })?.status == .scheduled, "批量忽略不应影响已安排提醒")
+        let afterLearning = await reloaded.snapshot()
+        try expect(afterLearning.reminderLearningProfile.confidenceAdjustment(for: proposed.semanticKey) < 0, "批量忽略没有写入本地反馈学习")
+    }
+
+    private static func verifyReminderDeletionAndCheckpoint() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        let capture = makeCapture(text: "待办：明天提交删除联动测试", app: "Verifier")
+        let linked = ReminderCandidate(title: "提交删除联动测试", detail: "测试", sourceCaptureIDs: [capture.id], confidence: 0.9)
+        let manual = ReminderCandidate(title: "手动提醒", detail: "保留", sourceCaptureIDs: [], confidence: 1, origin: .manual)
+        let checkpoint = ReminderDiscoveryCheckpoint(
+            processedCaptureHashes: [capture.id.uuidString: capture.contentHash],
+            lastRunAt: .now,
+            eligibleRecordCount: 1,
+            analyzedRecordCount: 1,
+            discoveredCount: 1
+        )
+        try await store.addCapture(capture)
+        try await store.commitReminderDiscovery(reminders: [linked, manual], checkpoint: checkpoint)
+        _ = try await store.deleteCapture(id: capture.id)
+        let afterDelete = await store.snapshot()
+        try expect(afterDelete.reminders.map(\.id) == [manual.id], "删除来源记录没有清理派生提醒，或误删了手动提醒")
+        try expect(afterDelete.reminderDiscoveryCheckpoint.processedCaptureHashes[capture.id.uuidString] == nil, "删除来源记录没有清理增量扫描检查点")
+        try await store.clearReminderData()
+        let cleared = await store.snapshot()
+        try expect(cleared.reminders.isEmpty && cleared.reminderDiscoveryCheckpoint.lastRunAt == nil, "清除提醒数据后仍残留提醒或扫描状态")
     }
 
     private static func verifyDailySummaryGeneration() async throws {
