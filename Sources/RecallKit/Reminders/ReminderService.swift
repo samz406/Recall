@@ -22,11 +22,11 @@ public struct ReminderExtractor: Sendable {
                     dueAt: analysis.dueAt,
                     sourceCaptureIDs: [capture.id],
                     confidence: analysis.confidence,
+                    createdAt: capture.createdAt,
+                    updatedAt: capture.createdAt,
                     origin: .discovered,
                     recurrence: recurrence,
-                    semanticKey: semanticKey,
-                    createdAt: capture.createdAt,
-                    updatedAt: capture.createdAt
+                    semanticKey: semanticKey
                 )
                 guard !existing.contains(where: { blocks(candidate: draft, existing: $0, now: now) }) else { continue }
 

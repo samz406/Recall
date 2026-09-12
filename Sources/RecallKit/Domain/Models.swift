@@ -364,9 +364,16 @@ public struct ReminderLearningProfile: Codable, Hashable, Sendable {
     }
 
     public var preferredHour: Int {
-        preferredHourHistogram
-            .compactMap { key, value in Int(key).map { ($0, value) } }
-            .max { lhs, rhs in lhs.1 == rhs.1 ? lhs.0 > rhs.0 : lhs.1 < rhs.1 }?.0 ?? 9
+        var bestHour = 9
+        var bestCount = 0
+        for (key, count) in preferredHourHistogram {
+            guard let hour = Int(key), (0...23).contains(hour) else { continue }
+            if count > bestCount || (count == bestCount && hour < bestHour) {
+                bestHour = hour
+                bestCount = count
+            }
+        }
+        return bestHour
     }
 }
 
