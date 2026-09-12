@@ -50,6 +50,9 @@ struct RecallRootView: View {
                         .controlSize(.small)
                 }
             }
+            // macOS 26 会把工具栏的毛玻璃背衬（NSTitlebarBackgroundView/NSScrollPocket）错误地定位到
+            // 详情栏中部，表现为一条横贯的白色半透明条。本应用工具栏本身没有需要背衬的内容，直接隐藏。
+            .toolbarBackground(.hidden, for: .windowToolbar)
         }
         .sheet(isPresented: $showingRecordSheet) {
             RecordSheet()
@@ -644,7 +647,7 @@ private struct ChatView: View {
                 .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 2) {
                 Text("问一问")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                 Text("基于你的本地记忆与可追溯来源")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -761,7 +764,7 @@ private struct ChatWelcomeView: View {
                 .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 24))
             VStack(spacing: 8) {
                 Text("今天想回忆什么？")
-                    .font(.system(size: 30, weight: .semibold))
+                    .font(.system(size: 28, weight: .semibold))
                 Text("Recall 会先检索相关记忆，再给出带来源的回答。")
                     .foregroundStyle(.secondary)
             }
@@ -836,7 +839,7 @@ private struct RecallMessageCard: View {
                 MarkdownParagraphText(markdown: ChatResponseFormatter().format(message.content))
             } else {
                 Text(message.content)
-                    .font(.system(size: 17))
+                    .font(.system(size: 15))
                     .textSelection(.enabled)
                     .lineSpacing(5)
             }
@@ -871,7 +874,7 @@ private struct MarkdownParagraphText: View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(paragraphs.enumerated()), id: \.offset) { item in
                 Text(markdownAttributedString(from: item.element))
-                    .font(.system(size: 17))
+                    .font(.system(size: 15))
                     .textSelection(.enabled)
                     .lineSpacing(6)
                     .fixedSize(horizontal: false, vertical: true)
@@ -915,7 +918,7 @@ private struct ChatComposer: View {
                 .focused($isFocused)
                 .textFieldStyle(.plain)
                 .lineLimit(1...7)
-                .font(.system(size: 18))
+                .font(.system(size: 16))
                 .padding(.leading, 4)
                 .padding(.vertical, 10)
                 .submitLabel(.send)
@@ -1049,7 +1052,7 @@ private struct DailySummariesView: View {
         HStack(alignment: .top, spacing: 18) {
             VStack(alignment: .leading, spacing: 8) {
                 Label("每日总结", systemImage: "calendar.badge.clock")
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(.system(size: 22, weight: .semibold))
                 Text("在指定时间汇总前一天的显式记录；仅在你已允许云端文本使用且配置 API Key 时发送最小化、已脱敏的文本片段。")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1180,7 +1183,7 @@ private struct DailySummaryCard: View {
                 }
             } else {
                 Text(preview)
-                    .font(.system(size: 17))
+                    .font(.system(size: 15))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .padding(.leading, 34)
@@ -1218,7 +1221,7 @@ private struct DailyBriefingView: View {
                     .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("今天的主线").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    Text(clean(briefing.headline)).font(.system(size: 17, weight: .semibold))
+                    Text(clean(briefing.headline)).font(.system(size: 15, weight: .semibold))
                 }
             }
             briefingSection("真正完成的进展", icon: "checkmark.seal.fill", color: .green, items: briefing.progress, empty: "暂未识别出形成结果的关键进展。")
@@ -1230,15 +1233,15 @@ private struct DailyBriefingView: View {
                     ForEach(briefing.insights) { insight in
                         VStack(alignment: .leading, spacing: 7) {
                             HStack {
-                                Text(clean(insight.title)).font(.system(size: 17, weight: .semibold))
+                                Text(clean(insight.title)).font(.system(size: 15, weight: .semibold))
                                 Spacer()
                                 Text("置信度 \(Int(insight.confidence * 100))%")
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
-                            Text(clean(insight.detail)).font(.system(size: 17)).foregroundStyle(.secondary)
+                            Text(clean(insight.detail)).font(.system(size: 15)).foregroundStyle(.secondary)
                             if let recommendation = insight.recommendation {
                                 Label(clean(recommendation), systemImage: "arrow.right.circle.fill")
-                                    .font(.system(size: 17, weight: .medium))
+                                    .font(.system(size: 15, weight: .medium))
                                     .foregroundStyle(Color.accentColor)
                             }
                             insightFeedbackControls(insight)
@@ -1260,12 +1263,12 @@ private struct DailyBriefingView: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle(title, icon: icon, color: color)
             if items.isEmpty {
-                Text(empty).font(.system(size: 17)).foregroundStyle(.secondary)
+                Text(empty).font(.system(size: 15)).foregroundStyle(.secondary)
             } else {
                 ForEach(items) { item in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(clean(item.title)).font(.system(size: 17, weight: .semibold))
-                        Text(clean(item.detail)).font(.system(size: 17)).foregroundStyle(.secondary)
+                        Text(clean(item.title)).font(.system(size: 15, weight: .semibold))
+                        Text(clean(item.detail)).font(.system(size: 15)).foregroundStyle(.secondary)
                     }
                     .padding(.leading, 2)
                 }
@@ -1275,7 +1278,7 @@ private struct DailyBriefingView: View {
 
     private func sectionTitle(_ title: String, icon: String, color: Color) -> some View {
         Label(title, systemImage: icon)
-            .font(.system(size: 17, weight: .semibold))
+            .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(color)
     }
 
@@ -1304,8 +1307,8 @@ private struct DailyBriefingView: View {
                 ForEach(briefing.routineCandidates) { routine in
                     HStack(alignment: .top, spacing: 10) {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(clean(routine.title)).font(.system(size: 17, weight: .semibold))
-                            Text(clean("\(routine.trigger)，\(routine.suggestedAction)")).font(.system(size: 17)).foregroundStyle(.secondary)
+                            Text(clean(routine.title)).font(.system(size: 15, weight: .semibold))
+                            Text(clean("\(routine.trigger)，\(routine.suggestedAction)")).font(.system(size: 15)).foregroundStyle(.secondary)
                         }
                         Spacer()
                         let status = routineStates[routine.id] ?? routine.status
@@ -1381,13 +1384,13 @@ private struct MarkdownDocumentView: View {
                         .padding(.top, level == 1 ? 8 : 4)
                 case let .unorderedList(text):
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("•").font(.system(size: 17, weight: .bold))
+                        Text("•").font(.system(size: 15, weight: .bold))
                         inlineText(text).frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.leading, 4)
                 case let .orderedList(marker, text):
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(marker).font(.system(size: 17, weight: .semibold)).foregroundStyle(.secondary)
+                        Text(marker).font(.system(size: 15, weight: .semibold)).foregroundStyle(.secondary)
                         inlineText(text).frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.leading, 4)
@@ -1410,16 +1413,16 @@ private struct MarkdownDocumentView: View {
             failurePolicy: .returnPartiallyParsedIfPossible
         )
         guard let attributed = try? AttributedString(markdown: text, options: options) else {
-            return Text(text).font(.system(size: 17))
+            return Text(text).font(.system(size: 15))
         }
-        return Text(attributed).font(.system(size: 17))
+        return Text(attributed).font(.system(size: 15))
     }
 
     private func headingFont(for level: Int) -> Font {
         switch level {
         case 1: .title2.weight(.bold)
         case 2: .title3.weight(.bold)
-        default: .system(size: 17, weight: .semibold)
+        default: .system(size: 15, weight: .semibold)
         }
     }
 
