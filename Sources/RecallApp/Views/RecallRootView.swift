@@ -2624,7 +2624,6 @@ private struct ModelConnectionEditorSheet: View {
                     }
                     .padding(16)
                     .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.quaternary, lineWidth: 1))
 
                     VStack(alignment: .leading, spacing: 15) {
                         sectionTitle("连接信息", detail: "Key 只保存在本机，不会在重新打开时显示")
@@ -2709,7 +2708,7 @@ private struct ModelConnectionEditorSheet: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("取消") { dismiss() }
-                Button("保存并用于问一问", action: save)
+                Button("保存", action: save)
                     .buttonStyle(.borderedProminent)
                     .disabled(!hasValidEndpoint || !maySaveConnection)
             }
