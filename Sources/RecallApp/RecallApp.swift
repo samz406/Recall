@@ -1,6 +1,7 @@
 import RecallKit
 import SwiftUI
 import AppKit
+import UserNotifications
 
 @main
 struct RecallApp: App {
@@ -30,10 +31,40 @@ struct RecallApp: App {
 }
 
 @MainActor
-final class RecallAppDelegate: NSObject, NSApplicationDelegate {
+final class RecallAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        UNUserNotificationCenter.current().delegate = self
         DispatchQueue.main.async { Self.activateMainWindow() }
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let reminderID = response.notification.request.content.userInfo["reminderID"] as? String
+        let action = response.actionIdentifier
+        DispatchQueue.main.async {
+            if let reminderID {
+                NotificationCenter.default.post(
+                    name: .recallReminderAction,
+                    object: nil,
+                    userInfo: ["reminderID": reminderID, "action": action]
+                )
+                NotificationCenter.default.post(name: .recallOpenReminders, object: nil)
+            }
+            Self.activateMainWindow()
+            completionHandler()
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
