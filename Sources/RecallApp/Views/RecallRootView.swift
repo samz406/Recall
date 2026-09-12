@@ -1113,9 +1113,15 @@ private struct DailySummaryCard: View {
     let onReviewInsight: (PersonalInsight, InsightFeedbackRating) -> Void
     let onUpdateRoutine: (LearnedRoutine, LearnedRoutineStatus) -> Void
 
+    private var displayContent: String {
+        DailySummaryContentFormatter.removingCitationMarkers(from: summary.content)
+    }
+
     private var preview: String {
-        if summary.generationKind == .localFallback, let briefing = summary.briefing { return briefing.headline }
-        let text = summary.content
+        if summary.generationKind == .localFallback, let briefing = summary.briefing {
+            return DailySummaryContentFormatter.removingCitationMarkers(from: briefing.headline)
+        }
+        let text = displayContent
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && !$0.hasPrefix("#") }
@@ -1158,7 +1164,7 @@ private struct DailySummaryCard: View {
             if isExpanded {
                 Divider()
                 if summary.generationKind == .cloud {
-                    MarkdownDocumentView(markdown: summary.content)
+                    MarkdownDocumentView(markdown: displayContent)
                         .textSelection(.enabled)
                 } else if let briefing = summary.briefing {
                     DailyBriefingView(
@@ -1169,12 +1175,12 @@ private struct DailySummaryCard: View {
                         onUpdateRoutine: onUpdateRoutine
                     )
                 } else {
-                    MarkdownDocumentView(markdown: summary.content)
+                    MarkdownDocumentView(markdown: displayContent)
                         .textSelection(.enabled)
                 }
             } else {
                 Text(preview)
-                    .font(.subheadline)
+                    .font(.system(size: 17))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .padding(.leading, 34)
@@ -1212,7 +1218,7 @@ private struct DailyBriefingView: View {
                     .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("今天的主线").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    Text(briefing.headline).font(.headline)
+                    Text(clean(briefing.headline)).font(.system(size: 17, weight: .semibold))
                 }
             }
             briefingSection("真正完成的进展", icon: "checkmark.seal.fill", color: .green, items: briefing.progress, empty: "暂未识别出形成结果的关键进展。")
@@ -1224,15 +1230,15 @@ private struct DailyBriefingView: View {
                     ForEach(briefing.insights) { insight in
                         VStack(alignment: .leading, spacing: 7) {
                             HStack {
-                                Text(insight.title).font(.subheadline.weight(.semibold))
+                                Text(clean(insight.title)).font(.system(size: 17, weight: .semibold))
                                 Spacer()
                                 Text("置信度 \(Int(insight.confidence * 100))%")
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
-                            Text(insight.detail).font(.subheadline).foregroundStyle(.secondary)
+                            Text(clean(insight.detail)).font(.system(size: 17)).foregroundStyle(.secondary)
                             if let recommendation = insight.recommendation {
-                                Label(recommendation, systemImage: "arrow.right.circle.fill")
-                                    .font(.subheadline.weight(.medium))
+                                Label(clean(recommendation), systemImage: "arrow.right.circle.fill")
+                                    .font(.system(size: 17, weight: .medium))
                                     .foregroundStyle(Color.accentColor)
                             }
                             insightFeedbackControls(insight)
@@ -1254,12 +1260,12 @@ private struct DailyBriefingView: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle(title, icon: icon, color: color)
             if items.isEmpty {
-                Text(empty).font(.subheadline).foregroundStyle(.secondary)
+                Text(empty).font(.system(size: 17)).foregroundStyle(.secondary)
             } else {
                 ForEach(items) { item in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(item.title).font(.subheadline.weight(.semibold))
-                        Text(item.detail).font(.subheadline).foregroundStyle(.secondary)
+                        Text(clean(item.title)).font(.system(size: 17, weight: .semibold))
+                        Text(clean(item.detail)).font(.system(size: 17)).foregroundStyle(.secondary)
                     }
                     .padding(.leading, 2)
                 }
@@ -1269,7 +1275,7 @@ private struct DailyBriefingView: View {
 
     private func sectionTitle(_ title: String, icon: String, color: Color) -> some View {
         Label(title, systemImage: icon)
-            .font(.headline)
+            .font(.system(size: 17, weight: .semibold))
             .foregroundStyle(color)
     }
 
@@ -1298,8 +1304,8 @@ private struct DailyBriefingView: View {
                 ForEach(briefing.routineCandidates) { routine in
                     HStack(alignment: .top, spacing: 10) {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(routine.title).font(.subheadline.weight(.semibold))
-                            Text("\(routine.trigger)，\(routine.suggestedAction)").font(.caption).foregroundStyle(.secondary)
+                            Text(clean(routine.title)).font(.system(size: 17, weight: .semibold))
+                            Text(clean("\(routine.trigger)，\(routine.suggestedAction)")).font(.system(size: 17)).foregroundStyle(.secondary)
                         }
                         Spacer()
                         let status = routineStates[routine.id] ?? routine.status
@@ -1326,6 +1332,10 @@ private struct DailyBriefingView: View {
         case .acted: "已反馈：已采取行动"
         case .dismissed: "已忽略"
         }
+    }
+
+    private func clean(_ text: String) -> String {
+        DailySummaryContentFormatter.removingCitationMarkers(from: text)
     }
 }
 
@@ -1371,13 +1381,13 @@ private struct MarkdownDocumentView: View {
                         .padding(.top, level == 1 ? 8 : 4)
                 case let .unorderedList(text):
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("•").font(.body.weight(.bold))
+                        Text("•").font(.system(size: 17, weight: .bold))
                         inlineText(text).frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.leading, 4)
                 case let .orderedList(marker, text):
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(marker).font(.body.weight(.semibold)).foregroundStyle(.secondary)
+                        Text(marker).font(.system(size: 17, weight: .semibold)).foregroundStyle(.secondary)
                         inlineText(text).frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.leading, 4)
@@ -1400,16 +1410,16 @@ private struct MarkdownDocumentView: View {
             failurePolicy: .returnPartiallyParsedIfPossible
         )
         guard let attributed = try? AttributedString(markdown: text, options: options) else {
-            return Text(text)
+            return Text(text).font(.system(size: 17))
         }
-        return Text(attributed)
+        return Text(attributed).font(.system(size: 17))
     }
 
     private func headingFont(for level: Int) -> Font {
         switch level {
         case 1: .title2.weight(.bold)
         case 2: .title3.weight(.bold)
-        default: .headline
+        default: .system(size: 17, weight: .semibold)
         }
     }
 

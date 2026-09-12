@@ -233,6 +233,8 @@ struct RecallVerifier {
         try expect(generation.content.contains("近 14 天提醒与建议"), "每日总结缺少跨周期提醒区块")
         try expect(generation.content.contains("跟进客户报价"), "近十四天已保存总结中的待办没有被聚合")
         try expect(!generation.content.contains("过期历史待办"), "十四天窗口外的历史总结不应参与聚合")
+        let cleaned = DailySummaryContentFormatter.removingCitationMarkers(from: "修复跨域配置 [16]，完成验证[1][2]，保留【优先处理】。")
+        try expect(cleaned == "修复跨域配置，完成验证，保留【优先处理】。", "每日总结没有移除数字来源标记")
     }
 
     private static func verifyDailySummaryPersistenceAndDeletion() async throws {
