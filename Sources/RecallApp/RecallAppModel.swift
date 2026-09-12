@@ -4,8 +4,13 @@ import SwiftUI
 
 enum ReminderDiscoveryStatus: Equatable {
     case idle
-    case searching(scannedRecordCount: Int)
-    case completed(scannedRecordCount: Int, discoveredCount: Int, completedAt: Date)
+    case searching(eligibleRecordCount: Int, analyzingRecordCount: Int)
+    case completed(eligibleRecordCount: Int, analyzedRecordCount: Int, discoveredCount: Int, completedAt: Date)
+}
+
+extension Notification.Name {
+    static let recallReminderAction = Notification.Name("im.recall.app.reminder-action")
+    static let recallOpenReminders = Notification.Name("im.recall.app.open-reminders")
 }
 
 @MainActor
@@ -28,9 +33,11 @@ final class RecallAppModel: ObservableObject {
     private let notificationScheduler = LocalNotificationScheduler()
     private let enterKeyRecorder = GlobalEnterKeyRecorder()
     private var dailySummaryTimer: Timer?
+    private var reminderDiscoveryTimer: Timer?
     private var isGeneratingDailySummary = false
     private var pendingDailySummaries: [(day: Date, reason: DailySummaryReason)] = []
     private let diagnosticLog: RecallDiagnosticLogStore
+    private var reminderActionObserver: NSObjectProtocol?
 
     init() {
         do {
@@ -42,7 +49,22 @@ final class RecallAppModel: ObservableObject {
             self.pipeline = CapturePipeline(store: store, storage: storage)
             self.assistant = MemoryAssistant(store: store)
             recordDiagnostic(.info, source: "App", message: "应用已启动")
-            Task { await refresh() }
+            reminderActionObserver = NotificationCenter.default.addObserver(
+                forName: .recallReminderAction,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let idText = notification.userInfo?["reminderID"] as? String,
+                      let id = UUID(uuidString: idText),
+                      let action = notification.userInfo?["action"] as? String else { return }
+                Task { @MainActor [weak self] in self?.handleReminderNotificationAction(id: id, action: action) }
+            }
+            Task {
+                await refresh()
+                try? notificationScheduler.configureReminderActions()
+                discoverReminders(force: false, announce: false)
+                armReminderDiscoveryTimer()
+            }
         } catch {
             fatalError("无法初始化本地记忆库：\(error.localizedDescription)")
         }
@@ -57,10 +79,20 @@ final class RecallAppModel: ObservableObject {
         generateMissedDailySummaryIfNeeded()
     }
 
+    /// 前台运行期间周期性处理新增记录；内容哈希检查点保证未变化的记录不会被重复分析。
+    private func armReminderDiscoveryTimer() {
+        reminderDiscoveryTimer?.invalidate()
+        reminderDiscoveryTimer = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.discoverReminders(force: false, announce: false)
+            }
+        }
+    }
+
     func verifyReminderDelivery() {
         Task {
             await refreshReminderDeliveryStates()
-            let scheduled = state.reminders.filter { $0.status == .scheduled }
+            let scheduled = state.reminders.filter { $0.status == .scheduled || $0.status == .snoozed }
             let counts = scheduled.reduce(into: (pending: 0, delivered: 0, notFound: 0)) { result, reminder in
                 switch reminderDeliveryStates[reminder.id] {
                 case .pending: result.pending += 1
@@ -77,14 +109,19 @@ final class RecallAppModel: ObservableObject {
     }
 
     private func refreshReminderDeliveryStates() async {
-        let scheduled = state.reminders.filter { $0.status == .scheduled }
+        let scheduled = state.reminders.filter { $0.status == .scheduled || $0.status == .snoozed }
         guard !scheduled.isEmpty else {
             reminderDeliveryStates = [:]
             return
         }
         do {
             let nextStates = try await notificationScheduler.deliveryStates(for: scheduled)
-            let missingIDs = nextStates.compactMap { $0.value == .notFound ? $0.key.uuidString : nil }.sorted()
+            let missingIDs = nextStates.compactMap { id, value -> String? in
+                guard value == .notFound,
+                      let reminder = scheduled.first(where: { $0.id == id }),
+                      (reminder.dueAt ?? .distantPast) > .now else { return nil }
+                return id.uuidString
+            }.sorted()
             if !missingIDs.isEmpty, missingIDs != reminderDeliveryStates.compactMap({ $0.value == .notFound ? $0.key.uuidString : nil }).sorted() {
                 recordDiagnostic(.warning, source: "Reminders", message: "已安排提醒未出现在系统通知队列", metadata: ["count": "\(missingIDs.count)"])
             }
@@ -187,6 +224,7 @@ final class RecallAppModel: ObservableObject {
             do {
                 try await store.updateRules(rules)
                 await refresh()
+                discoverReminders(force: false, announce: false)
             } catch {
                 recordError(error, source: "Rules", message: "保存记录规则失败")
             }
@@ -221,7 +259,7 @@ final class RecallAppModel: ObservableObject {
                 )
                 noticeMessage = "已记录：\(record.summary ?? "无可提取文本")"
                 if rule.participatesInReminders {
-                    proposeReminders()
+                    discoverReminders(force: false, announce: false)
                 }
             } catch CapturePipelineError.screenRecordingPermissionRequired {
                 recordDiagnostic(.warning, source: diagnosticSource, message: "屏幕权限不可用", metadata: ["eventTemplate": rule.template.rawValue])
@@ -234,8 +272,10 @@ final class RecallAppModel: ObservableObject {
     }
 
     func deleteCapture(_ capture: CaptureRecord) {
+        let derivedReminders = state.reminders.filter { $0.sourceCaptureIDs.contains(capture.id) }
         Task {
             do {
+                notificationScheduler.cancelAll(derivedReminders)
                 try await pipeline.removeCapture(capture)
                 await refresh()
                 noticeMessage = "已删除该记录及其关联截图。"
@@ -260,7 +300,11 @@ final class RecallAppModel: ObservableObject {
     }
 
     func proposeReminders() {
-        // 仅检索已经持久化在 state 中的 OCR 文本；不会调用截图管线，也不需要屏幕录制权限。
+        discoverReminders(force: true, announce: true)
+    }
+
+    /// 后台仅分析已经持久化且用户允许参与提醒的文本，不截图、不读取其他应用，也不调用云端模型。
+    func discoverReminders(force: Bool, announce: Bool = true) {
         if case .searching = reminderDiscoveryStatus { return }
         let participatingTemplates = Set(
             state.rules
@@ -268,57 +312,75 @@ final class RecallAppModel: ObservableObject {
                 .map(\.template)
         )
         let oldestRelevantDate = Calendar.current.date(byAdding: .day, value: -90, to: .now) ?? .distantPast
-        let captures = state.captures.filter {
+        let eligibleCaptures = state.captures.filter {
             participatingTemplates.contains($0.eventTemplate) && $0.createdAt >= oldestRelevantDate
         }
-        // 待确认项每次都按最新规则重新生成，避免旧版误判永久残留；用户已处理过的状态继续保留并参与去重。
-        let reminderHistory = state.reminders.filter { $0.status != .proposed }
-        reminderDiscoveryStatus = .searching(scannedRecordCount: captures.count)
+        let checkpoint = state.reminderDiscoveryCheckpoint
+        let captures = force ? eligibleCaptures : eligibleCaptures.filter {
+            checkpoint.processedCaptureHashes[$0.id.uuidString] != $0.contentHash
+        }
+        reminderDiscoveryStatus = .searching(
+            eligibleRecordCount: eligibleCaptures.count,
+            analyzingRecordCount: captures.count
+        )
 
         Task {
-            // 让“正在检索”状态先渲染，再对所有本地记录执行候选提取与去重。
             await Task.yield()
             let extractor = reminderExtractor
-            let newCandidates = await Task.detached(priority: .userInitiated) {
-                extractor.candidates(from: captures, existing: reminderHistory)
+            let blockingHistory = state.reminders.filter { $0.status != .proposed }
+            let extractedCandidates = await Task.detached(priority: .userInitiated) {
+                extractor.candidates(from: captures, existing: blockingHistory)
             }.value
             let completedAt = Date.now
-            guard !newCandidates.isEmpty else {
-                do {
-                    try await store.replaceReminders(reminderHistory)
-                    await refresh()
-                } catch {
-                    reminderDiscoveryStatus = .idle
-                    recordError(error, source: "Reminders", message: "清理旧提醒候选失败")
-                    return
-                }
-                reminderDiscoveryStatus = .completed(
-                    scannedRecordCount: captures.count,
-                    discoveredCount: 0,
-                    completedAt: completedAt
-                )
-                noticeMessage = captures.isEmpty
-                    ? "当前还没有可检索的本地记忆。"
-                    : "已检索 \(captures.count) 条本地记录，暂未发现新的待确认提醒。"
-                return
-            }
             do {
-                try await store.replaceReminders(newCandidates + reminderHistory)
+                let learningProfile = state.reminderLearningProfile
+                let newCandidates = extractedCandidates.compactMap { candidate -> ReminderCandidate? in
+                    var adjusted = candidate
+                    adjusted.confidence = min(
+                        max(candidate.confidence + learningProfile.confidenceAdjustment(for: reminderSemanticKey(candidate)), 0),
+                        0.99
+                    )
+                    let isExplicit = candidate.detail.hasPrefix("明确提醒") || candidate.detail.hasPrefix("明确待办")
+                    return adjusted.confidence >= 0.62 || isExplicit ? adjusted : nil
+                }
+                let merged = extractor.merging(newCandidates, into: state.reminders, now: completedAt)
+                let retained = merged.filter { reminder in
+                    switch reminder.status {
+                    case .dismissed:
+                        return completedAt.timeIntervalSince(reminder.dismissedUntil ?? reminder.updatedAt) < 90 * 86_400
+                    case .completed, .cancelled:
+                        return completedAt.timeIntervalSince(reminder.completedAt ?? reminder.updatedAt) < 180 * 86_400
+                    default:
+                        return true
+                    }
+                }.prefix(1_000).map { $0 }
+                var nextCheckpoint = checkpoint
+                nextCheckpoint.processedCaptureHashes = Dictionary(uniqueKeysWithValues: eligibleCaptures.map { ($0.id.uuidString, $0.contentHash) })
+                nextCheckpoint.lastRunAt = completedAt
+                nextCheckpoint.eligibleRecordCount = eligibleCaptures.count
+                nextCheckpoint.analyzedRecordCount = captures.count
+                nextCheckpoint.discoveredCount = newCandidates.count
+                try await store.commitReminderDiscovery(reminders: retained, checkpoint: nextCheckpoint)
                 await refresh()
                 reminderDiscoveryStatus = .completed(
-                    scannedRecordCount: captures.count,
+                    eligibleRecordCount: eligibleCaptures.count,
+                    analyzedRecordCount: captures.count,
                     discoveredCount: newCandidates.count,
                     completedAt: completedAt
                 )
-                noticeMessage = "已检索 \(captures.count) 条本地记录，发现 \(newCandidates.count) 项待确认提醒。"
+                if announce {
+                    noticeMessage = newCandidates.isEmpty
+                        ? "已分析 \(captures.count) 条新增记录，暂未发现新的提醒候选。"
+                        : "已分析 \(captures.count) 条记录，发现 \(newCandidates.count) 项待确认提醒。"
+                }
             } catch {
                 reminderDiscoveryStatus = .idle
-                recordError(error, source: "Reminders", message: "保存提醒候选失败")
+                recordError(error, source: "Reminders", message: "提醒发现失败")
             }
         }
     }
 
-    func approveReminder(_ reminder: ReminderCandidate, dueAt: Date) {
+    func approveReminder(_ reminder: ReminderCandidate, dueAt: Date, recurrence: ReminderRecurrence = .none) {
         guard dueAt > Date.now else {
             recordDiagnostic(.warning, source: "Reminders", message: "提醒时间不是未来时间")
             return
@@ -327,13 +389,26 @@ final class RecallAppModel: ObservableObject {
             do {
                 var updated = reminder
                 updated.dueAt = dueAt
+                updated.recurrence = recurrence
+                updated.scheduledAt = .now
+                updated.updatedAt = .now
+                updated.status = .scheduled
                 let granted = try await notificationScheduler.requestAuthorization()
                 guard granted else {
                     throw ReminderNotificationError.authorizationRequired
                 }
                 try await notificationScheduler.schedule(updated)
-                updated.status = .scheduled
-                try await store.updateReminder(updated)
+                var learningProfile = state.reminderLearningProfile
+                learningProfile.record(
+                    .confirmed(hour: Calendar.current.component(.hour, from: dueAt)),
+                    semanticKey: reminderSemanticKey(updated)
+                )
+                do {
+                    try await store.updateReminder(updated, learningProfile: learningProfile)
+                } catch {
+                    notificationScheduler.cancel(updated)
+                    throw error
+                }
                 await refresh()
                 guard reminderDeliveryStates[updated.id] == .pending else {
                     throw ReminderNotificationError.notificationSchedulingFailed
@@ -345,16 +420,46 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
+    func createReminder(title: String, detail: String, dueAt: Date, recurrence: ReminderRecurrence) {
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanTitle.isEmpty, dueAt > .now else { return }
+        let reminder = ReminderCandidate(
+            title: cleanTitle,
+            detail: detail.trimmingCharacters(in: .whitespacesAndNewlines),
+            dueAt: dueAt,
+            sourceCaptureIDs: [],
+            confidence: 1,
+            status: .proposed,
+            origin: .manual,
+            recurrence: recurrence,
+            semanticKey: String(
+                cleanTitle
+                    .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                    .filter { $0.isLetter || $0.isNumber }
+            )
+        )
+        approveReminder(reminder, dueAt: dueAt, recurrence: recurrence)
+    }
+
     func dismissReminder(_ reminder: ReminderCandidate) {
         Task {
             do {
-                let wasScheduled = reminder.status == .scheduled
                 var updated = reminder
-                updated.status = .dismissed
+                if reminder.status == .proposed {
+                    updated.status = .dismissed
+                    updated.dismissedUntil = Calendar.current.date(byAdding: .day, value: 30, to: .now)
+                } else {
+                    updated.status = .cancelled
+                }
+                updated.updatedAt = .now
+                var learningProfile = state.reminderLearningProfile
+                if reminder.status == .proposed {
+                    learningProfile.record(.dismissed, semanticKey: reminderSemanticKey(updated))
+                }
+                try await store.updateReminder(updated, learningProfile: learningProfile)
                 notificationScheduler.cancel(updated)
-                try await store.updateReminder(updated)
                 await refresh()
-                noticeMessage = wasScheduled ? "提醒已取消。" : "已忽略该提醒候选。"
+                noticeMessage = reminder.status == .proposed ? "已忽略该候选，30 天内不会重复建议。" : "提醒已取消。"
             } catch {
                 recordError(error, source: "Reminders", message: "更新提醒状态失败")
             }
@@ -365,15 +470,108 @@ final class RecallAppModel: ObservableObject {
         Task {
             do {
                 var updated = reminder
-                updated.status = .completed
-                notificationScheduler.cancel(updated)
-                try await store.updateReminder(updated)
+                var learningProfile = state.reminderLearningProfile
+                learningProfile.record(.completed, semanticKey: reminderSemanticKey(updated))
+                if let currentDueAt = reminder.dueAt,
+                   reminder.recurrence != .none,
+                   let nextDueAt = reminder.recurrence.nextDate(after: max(currentDueAt, .now)) {
+                    updated.dueAt = nextDueAt
+                    updated.status = .scheduled
+                    updated.completedAt = .now
+                    updated.updatedAt = .now
+                    try await notificationScheduler.schedule(updated)
+                    do {
+                        try await store.updateReminder(updated, learningProfile: learningProfile)
+                    } catch {
+                        notificationScheduler.cancel(updated)
+                        throw error
+                    }
+                    noticeMessage = "本次已完成，下次将在 \(nextDueAt.formatted(date: .abbreviated, time: .shortened)) 提醒。"
+                } else {
+                    updated.status = .completed
+                    updated.completedAt = .now
+                    updated.updatedAt = .now
+                    try await store.updateReminder(updated, learningProfile: learningProfile)
+                    notificationScheduler.cancel(updated)
+                    noticeMessage = "提醒已完成。"
+                }
                 await refresh()
-                noticeMessage = "提醒已完成。"
             } catch {
                 recordError(error, source: "Reminders", message: "完成提醒失败")
             }
         }
+    }
+
+    func snoozeReminder(_ reminder: ReminderCandidate, until dueAt: Date) {
+        guard dueAt > .now else { return }
+        Task {
+            do {
+                let previous = reminder
+                var updated = reminder
+                updated.dueAt = dueAt
+                updated.status = .snoozed
+                updated.snoozeCount += 1
+                updated.updatedAt = .now
+                var learningProfile = state.reminderLearningProfile
+                learningProfile.record(
+                    .snoozed(hour: Calendar.current.component(.hour, from: dueAt)),
+                    semanticKey: reminderSemanticKey(updated)
+                )
+                try await notificationScheduler.schedule(updated)
+                do {
+                    try await store.updateReminder(updated, learningProfile: learningProfile)
+                } catch {
+                    try? await notificationScheduler.schedule(previous)
+                    throw error
+                }
+                await refresh()
+                noticeMessage = "已稍后到 \(dueAt.formatted(date: .abbreviated, time: .shortened))。"
+            } catch {
+                recordError(error, source: "Reminders", message: "稍后提醒失败")
+            }
+        }
+    }
+
+    func removeReminder(_ reminder: ReminderCandidate) {
+        Task {
+            do {
+                notificationScheduler.cancel(reminder)
+                try await store.removeReminders(ids: Set([reminder.id]))
+                await refresh()
+            } catch {
+                recordError(error, source: "Reminders", message: "移除提醒失败")
+            }
+        }
+    }
+
+    private func handleReminderNotificationAction(id: UUID, action: String) {
+        guard let reminder = state.reminders.first(where: { $0.id == id }) else { return }
+        switch action {
+        case LocalNotificationScheduler.completeActionIdentifier:
+            completeReminder(reminder)
+        case LocalNotificationScheduler.snoozeHourActionIdentifier:
+            snoozeReminder(reminder, until: .now.addingTimeInterval(60 * 60))
+        case LocalNotificationScheduler.snoozeTomorrowActionIdentifier:
+            let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: .now) ?? .now.addingTimeInterval(86_400)
+            let dueAt = Calendar.current.date(
+                bySettingHour: state.reminderLearningProfile.preferredHour,
+                minute: 0,
+                second: 0,
+                of: tomorrow
+            ) ?? tomorrow
+            snoozeReminder(reminder, until: dueAt)
+        default:
+            break
+        }
+    }
+
+    private func reminderSemanticKey(_ reminder: ReminderCandidate) -> String {
+        if !reminder.semanticKey.isEmpty { return reminder.semanticKey }
+        return String(
+            reminder.title
+                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                .filter { $0.isLetter || $0.isNumber }
+        )
     }
 
     func dismissAllProposedReminders() {
@@ -542,7 +740,7 @@ final class RecallAppModel: ObservableObject {
                     }
                 }
                 if !summary.todos.isEmpty {
-                    proposeReminders()
+                    discoverReminders(force: false, announce: false)
                 }
                 let mode = summary.generationKind == .cloud ? "模型总结" : "本地回退摘要"
                 noticeMessage = "已生成 \(day.formatted(date: .abbreviated, time: .omitted)) 的\(mode)。"
@@ -678,11 +876,14 @@ final class RecallAppModel: ObservableObject {
 
     func clearAllData() {
         let captures = state.captures
+        let reminders = state.reminders
         Task {
             do {
+                notificationScheduler.cancelAll(reminders)
                 for capture in captures {
                     try await pipeline.removeCapture(capture)
                 }
+                try await store.clearReminderData()
                 try await store.clearDailySummaries()
                 try await store.clearPersonalIntelligence()
                 await refresh()
