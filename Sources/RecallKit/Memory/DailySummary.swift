@@ -5,6 +5,17 @@ public enum DailySummaryGenerationKind: String, Codable, Sendable {
     case localFallback
 }
 
+public enum DailySummaryContentFormatter {
+    /// 每日总结的证据关联保存在 `sourceCaptureIDs`，正文不再显示干扰阅读的 `[1][2]` 编号。
+    public static func removingCitationMarkers(from content: String) -> String {
+        content.replacingOccurrences(
+            of: #"[ \t]*\[(?:\d+[ \t,，、\-–—]*)+\]"#,
+            with: "",
+            options: .regularExpression
+        )
+    }
+}
+
 public enum DailySummaryTodoPriority: String, Codable, Sendable {
     case high
     case normal
@@ -276,7 +287,7 @@ public struct DailySummaryGenerator: Sendable {
             )
         ))
         return DailySummaryGeneration(
-            content: answer.content,
+            content: DailySummaryContentFormatter.removingCitationMarkers(from: answer.content),
             sourceCaptureIDs: answer.citedCaptureIDs,
             todos: priorityTodos,
             generationKind: .cloud,
@@ -318,7 +329,7 @@ public struct DailySummaryGenerator: Sendable {
                 return "- 【\(todo.priority.title)】\(todo.title)\(due)"
             }
         }
-        return [
+        let content = [
             "## \(formatter.string(from: day)) 个人简报",
             "",
             "### 今天的主线",
@@ -341,6 +352,7 @@ public struct DailySummaryGenerator: Sendable {
             "",
             recentSummaryReview(recentSummaries)
         ].joined(separator: "\n")
+        return DailySummaryContentFormatter.removingCitationMarkers(from: content)
     }
 
     private func emptyDaySummary(for day: Date, recentSummaries: [DailySummary]) -> String {
@@ -462,7 +474,7 @@ public struct DailySummaryGenerator: Sendable {
         ## 近14天提醒与建议
         ## 下一步
 
-        “待办与提醒”必须最醒目：将有明确截止、回复、承诺或行动要求的内容放在最前，使用“【优先处理】”或“【待办】”前缀；若没有明确待办，写“未发现明确待办”。每项基于当天原始记忆证据的事实性结论都保留对应的 [数字] 来源标记。
+        “待办与提醒”必须最醒目：将有明确截止、回复、承诺或行动要求的内容放在最前，使用“【优先处理】”或“【待办】”前缀；若没有明确待办，写“未发现明确待办”。证据关联由系统在后台保存，正文中不要输出 [1]、[16]、[1][2] 等来源编号。
 
         应用名、工具名和网站名（例如微信、企业微信、Chrome、IDE、终端）只能作为证据来源，绝不能直接充当“主线”“进展”“尚未闭环”“发现”或行动建议的事项名称。每项结论必须落到可验证的具体事情，例如某个项目、功能、问题、交付物、决定或下一步动作；无法从证据中识别具体事情时，明确写“证据不足”，不要用工具名代替，也不要猜测。
 
