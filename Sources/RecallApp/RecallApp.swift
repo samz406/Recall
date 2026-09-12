@@ -53,6 +53,7 @@ final class RecallAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
     ) {
         let reminderID = response.notification.request.content.userInfo["reminderID"] as? String
         let action = response.actionIdentifier
+        completionHandler()
         DispatchQueue.main.async {
             if let reminderID {
                 NotificationCenter.default.post(
@@ -63,7 +64,6 @@ final class RecallAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
                 NotificationCenter.default.post(name: .recallOpenReminders, object: nil)
             }
             Self.activateMainWindow()
-            completionHandler()
         }
     }
 
