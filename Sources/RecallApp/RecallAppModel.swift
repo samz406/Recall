@@ -18,6 +18,8 @@ final class RecallAppModel: ObservableObject {
     @Published var state = RecallState()
     @Published var isRecording = false
     @Published var isThinking = false
+    @Published private(set) var typingMessageID: UUID?
+    @Published private(set) var typingMessageContent = ""
     @Published var noticeMessage: String?
     @Published private(set) var enterKeyMonitorStatus: GlobalEnterKeyRecorderStatus = .disabled
     @Published private(set) var diagnosticEntries: [RecallDiagnosticEntry]
@@ -287,16 +289,36 @@ final class RecallAppModel: ObservableObject {
 
     func ask(_ question: String) {
         guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let userMessage = ConversationMessage(role: .user, content: question)
+        state.messages.append(userMessage)
         isThinking = true
         Task {
-            defer { isThinking = false }
             do {
-                _ = try await assistant.ask(question)
+                let answer = try await assistant.ask(question, userMessage: userMessage) { [weak self] in
+                    guard let self else { return }
+                    self.state = await self.store.snapshot()
+                }
+                isThinking = false
+                typingMessageID = answer.id
+                typingMessageContent = ""
                 await refresh()
+                await revealAssistantMessage(answer)
             } catch {
+                isThinking = false
                 recordDiagnostic(.error, source: "Chat", message: "问一问请求失败", metadata: ["error": recallSafeErrorCode(error)])
             }
         }
+    }
+
+    private func revealAssistantMessage(_ message: ConversationMessage) async {
+        for chunk in TypewriterTextSequence.chunks(for: message.content) {
+            guard !Task.isCancelled, typingMessageID == message.id else { return }
+            typingMessageContent += chunk
+            try? await Task.sleep(for: .milliseconds(16))
+        }
+        guard typingMessageID == message.id else { return }
+        typingMessageID = nil
+        typingMessageContent = ""
     }
 
     func proposeReminders() {

@@ -62,12 +62,43 @@ public struct MemorySearchEngine: Sendable {
     }
 
     private func normalizedTerms(from text: String) -> [String] {
-        let stopWords: Set<String> = ["我", "的", "了", "和", "是", "在", "有", "什么", "哪些", "一下", "帮我", "请", "the", "a", "an", "is", "are", "to", "of", "and", "for"]
-        return text
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            .split { $0.isWhitespace || $0.isPunctuation }
-            .map(String.init)
-            .filter { $0.count > 1 && !stopWords.contains($0) }
+        let stopWords: Set<String> = ["我", "的", "了", "和", "是", "在", "有", "什么", "哪些", "一下", "帮我", "请", "内容", "the", "a", "an", "is", "are", "to", "of", "and", "for"]
+        let stopPhrases = ["什么时候", "什么时间", "哪一天", "哪天", "几号", "请问", "告诉我", "帮我查", "帮我找", "看一下", "看下"]
+        var normalized = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        for phrase in stopPhrases {
+            normalized = normalized.replacingOccurrences(of: phrase, with: " ")
+        }
+
+        var terms: [String] = []
+        for token in normalized.split(whereSeparator: { $0.isWhitespace || $0.isPunctuation }).map(String.init) {
+            guard token.count > 1, !stopWords.contains(token) else { continue }
+            terms.append(token)
+            // 中文没有天然空格。为较长问句补充二字词召回，避免把
+            // “妙妙什么时候过生日”作为一个永远无法命中的完整关键词。
+            if token.contains(where: isHanCharacter), token.count > 2 {
+                let characters = Array(token)
+                for index in 0..<(characters.count - 1) {
+                    let pair = String(characters[index...index + 1])
+                    if pair.allSatisfy(isHanCharacter), !stopWords.contains(pair) {
+                        terms.append(pair)
+                    }
+                }
+            }
+        }
+
+        var seen: Set<String> = []
+        return terms.filter { seen.insert($0).inserted }
+    }
+
+    private func isHanCharacter(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { scalar in
+            switch scalar.value {
+            case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF:
+                true
+            default:
+                false
+            }
+        }
     }
 
     private func matchesFilters(_ capture: CaptureRecord, query: MemorySearchQuery) -> Bool {
