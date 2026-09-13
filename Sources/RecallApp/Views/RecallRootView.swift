@@ -931,7 +931,8 @@ private struct ChatComposer: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .fixedSize(horizontal: false, vertical: true)
                     .submitLabel(.send)
-                    .onKeyPress(.return) { keyPress in
+                    .onKeyPress { keyPress in
+                        guard keyPress.key == .return else { return .ignored }
                         if keyPress.modifiers.contains(.shift) {
                             return .ignored
                         }
