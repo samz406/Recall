@@ -20,14 +20,25 @@ public final class MemoryAssistant {
     }
 
     @discardableResult
-    public func ask(_ question: String) async throws -> ConversationMessage {
+    public func ask(
+        _ question: String,
+        userMessage: ConversationMessage? = nil,
+        onUserMessageSaved: (@MainActor @Sendable () async -> Void)? = nil
+    ) async throws -> ConversationMessage {
         let state = await store.snapshot()
+        let userMessage = userMessage ?? ConversationMessage(role: .user, content: question)
+        try await store.addMessage(userMessage)
+        await onUserMessageSaved?()
+
         let recordsAllowedInChat = state.captures.filter { capture in
             state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
         }
-        let query = searchQuery(for: question)
-        let results = searchEngine.search(query, in: recordsAllowedInChat)
-        let indexedIDs = isTemporalOverviewQuestion(question) ? [] : await store.indexedCaptureIDs(matching: question, limit: 8)
+        let summaryEvidence = state.dailySummaries.map(makeSearchableEvidence)
+        let searchableEvidence = recordsAllowedInChat + summaryEvidence
+        let retrievalText = retrievalText(for: question, history: state.messages)
+        let query = searchQuery(for: retrievalText)
+        let results = searchEngine.search(query, in: searchableEvidence)
+        let indexedIDs = isTemporalOverviewQuestion(retrievalText) ? [] : await store.indexedCaptureIDs(matching: retrievalText, limit: 8)
         let indexed = indexedIDs.compactMap { id in recordsAllowedInChat.first(where: { $0.id == id }) }
         var seen: Set<UUID> = []
         let retrieved = (indexed + results.map(\.capture)).filter { seen.insert($0.id).inserted }.prefix(8).map { $0 }
@@ -82,12 +93,35 @@ public final class MemoryAssistant {
                 : cloudAnswer
         }
 
-        let userMessage = ConversationMessage(role: .user, content: question)
         let formattedContent = ChatResponseFormatter().format(response.content)
         let assistantMessage = ConversationMessage(role: .assistant, content: formattedContent, citations: response.citedCaptureIDs)
-        try await store.addMessage(userMessage)
         try await store.addMessage(assistantMessage)
         return assistantMessage
+    }
+
+    private func retrievalText(for question: String, history: [ConversationMessage]) -> String {
+        let followUpMarkers = ["之前", "刚才", "上面", "前面", "继续", "这个", "那个", "它", "他", "她"]
+        guard followUpMarkers.contains(where: question.contains),
+              let previousQuestion = history.last(where: { $0.role == .user })?.content else {
+            return question
+        }
+        return "\(previousQuestion) \(question)"
+    }
+
+    private func makeSearchableEvidence(from summary: DailySummary) -> CaptureRecord {
+        let todoText = summary.todos.map { "\($0.title)：\($0.detail)" }.joined(separator: "\n")
+        let text = [summary.content, todoText].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        return CaptureRecord(
+            id: summary.id,
+            eventTemplate: .dailyReview,
+            createdAt: summary.day,
+            sourceAppName: "每日总结",
+            sourceBundleIdentifier: "im.recall.daily-summary",
+            contentHash: "daily-summary-\(summary.id.uuidString)",
+            ocrText: text,
+            summary: String(summary.content.prefix(300)),
+            tags: ["每日总结"]
+        )
     }
 
     private func claimsEvidenceIsEmpty(_ answer: String) -> Bool {

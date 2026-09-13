@@ -9,6 +9,7 @@ struct RecallVerifier {
             try await verifyEventRuleMigration()
             try verifyPrivacy()
             try verifySearch()
+            try verifyChineseNaturalLanguageSearch()
             try verifyTimelineDayGrouping()
             try verifyTimelineDayFiltering()
             try verifyReminders()
@@ -28,16 +29,19 @@ struct RecallVerifier {
             try await verifyNotificationHostGuard()
             try await verifyCapturePipeline()
             try verifyConversationContextCompression()
+            try verifyTypewriterSequence()
             try await verifyPersistence()
             try await verifyCustomModelConfigurationPersistence()
             try await verifyMiniMaxAuthenticationHeaders()
             try await verifyTodayQuestionUsesTimeline()
+            try await verifyDailySummaryQuestionRetrieval()
+            try await verifyQuestionPersistsBeforeModelFailure()
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 29 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 33 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 28 integration checks.")
+                print("PASS: RecallVerifier completed 32 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -87,6 +91,15 @@ struct RecallVerifier {
         let results = MemorySearchEngine().search(MemorySearchQuery(text: "OCR 会议摘要"), in: [unrelated, matching])
         try expect(results.first?.capture.id == matching.id, "搜索没有优先返回相关记录")
         try expect(results.first?.matchedTerms.contains("ocr") == true, "搜索未报告匹配关键词")
+    }
+
+    private static func verifyChineseNaturalLanguageSearch() throws {
+        let matching = makeCapture(text: "家庭事项：妙妙的 6 岁生日聚会已办，需要整理照片。", app: "Notes")
+        let unrelated = makeCapture(text: "完成 Recall 输入框布局调整", app: "Xcode")
+        let results = MemorySearchEngine().search(MemorySearchQuery(text: "妙妙什么时候过生日？"), in: [unrelated, matching])
+        try expect(results.first?.capture.id == matching.id, "中文自然语言问题没有拆出人物与生日关键词")
+        try expect(results.first?.matchedTerms.contains("妙妙") == true, "中文检索没有保留人物实体")
+        try expect(results.first?.matchedTerms.contains("生日") == true, "中文检索没有识别问题主题")
     }
 
     private static func verifyTimelineDayGrouping() throws {
@@ -562,6 +575,13 @@ struct RecallVerifier {
         try expect(formatted.contains("\n\n一、") && formatted.contains("\n\n二、"), "长回答没有按编号主题自动分段")
     }
 
+    private static func verifyTypewriterSequence() throws {
+        let content = "第一段回答。\n\n第二段回答。"
+        let chunks = TypewriterTextSequence.chunks(for: content, maximumSteps: 5)
+        try expect(chunks.count <= 5, "打字机片段超过设定的最大呈现步数")
+        try expect(chunks.joined() == content, "打字机分片没有无损还原模型回答")
+    }
+
     private static func verifyPersistence() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -651,6 +671,55 @@ struct RecallVerifier {
         try expect(answer.content.contains("时间线检索修复"), "今天的问题没有返回当天的记录内容")
     }
 
+    @MainActor
+    private static func verifyDailySummaryQuestionRetrieval() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        let summary = DailySummary(
+            day: .now,
+            content: "家庭事项：妙妙的 6 岁生日聚会已办，安安、糯米和小满到场；现有记录没有写妙妙的出生日期。",
+            sourceCaptureIDs: [],
+            todos: [],
+            generationKind: .localFallback
+        )
+        try await store.upsertDailySummary(summary)
+        try await store.updateLLMConfiguration(LLMConfiguration(provider: .localOnly))
+
+        let assistant = MemoryAssistant(store: store)
+        let first = try await assistant.ask("妙妙什么时候过生日？")
+        try expect(first.citations == [summary.id], "问一问没有把每日总结作为可追溯证据")
+        try expect(first.content.contains("妙妙的 6 岁生日聚会已办"), "问一问没有召回每日总结中的家庭事项")
+
+        let followUp = try await assistant.ask("你看下之前内容")
+        try expect(followUp.citations == [summary.id], "连续追问没有沿用上一轮检索主题")
+        try expect(followUp.content.contains("妙妙"), "连续追问丢失了上一轮人物语境")
+    }
+
+    @MainActor
+    private static func verifyQuestionPersistsBeforeModelFailure() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        try await store.updatePrivacy(PrivacySettings(cloudUseEnabled: true))
+        try await store.updateLLMConfiguration(LLMConfiguration(provider: .openAICompatible, apiKey: ""))
+        let probe = ChatPersistenceProbe()
+
+        do {
+            _ = try await MemoryAssistant(store: store).ask("这条消息应立即显示") {
+                probe.didRefreshAfterSave = true
+            }
+            throw VerificationError.failed("缺少 API Key 时问一问应失败")
+        } catch LLMError.missingAPIKey {
+            // 预期：模型请求失败，但用户消息已经持久化并触发界面刷新。
+        }
+        let snapshot = await store.snapshot()
+        try expect(probe.didRefreshAfterSave, "用户消息保存后没有立即通知界面刷新")
+        try expect(snapshot.messages.count == 1 && snapshot.messages[0].role == .user, "模型失败前用户消息没有先写入本地会话")
+    }
+
     private static func verifyLocalAnswer() async throws {
         let capture = makeCapture(text: "会议结论：周五提交设计方案", app: "Notes")
         let answer = try await ExtractiveMemoryResponder().answer(to: LLMRequest(question: "什么时候提交？", context: [capture]))
@@ -675,6 +744,11 @@ struct RecallVerifier {
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
         guard condition() else { throw VerificationError.failed(message) }
     }
+}
+
+@MainActor
+private final class ChatPersistenceProbe {
+    var didRefreshAfterSave = false
 }
 
 private final class HeaderInspectingURLProtocol: URLProtocol, @unchecked Sendable {

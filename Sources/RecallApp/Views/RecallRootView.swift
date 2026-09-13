@@ -633,7 +633,7 @@ private struct ChatView: View {
                 }
                 ChatComposer(
                     question: $question,
-                    isSending: model.isThinking,
+                    isSending: model.isThinking || model.typingMessageID != nil,
                     onSend: send
                 )
             }
@@ -679,7 +679,11 @@ private struct ChatView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     ForEach(model.state.messages) { message in
-                        RecallMessageCard(message: message)
+                        RecallMessageCard(
+                            message: message,
+                            displayedContent: message.id == model.typingMessageID ? model.typingMessageContent : message.content,
+                            isTyping: message.id == model.typingMessageID
+                        )
                         .id(message.id)
                     }
                     if model.isThinking {
@@ -714,6 +718,9 @@ private struct ChatView: View {
             }
             .onChange(of: model.isThinking) { _, _ in
                 scrollToLatest(using: proxy)
+            }
+            .onChange(of: model.typingMessageContent) { _, _ in
+                scrollToLatest(using: proxy, animated: false)
             }
             .onChange(of: scrollRequest) { _, _ in
                 scrollToLatest(using: proxy, animated: false)
@@ -803,6 +810,8 @@ private struct ChatWelcomeView: View {
 
 private struct RecallMessageCard: View {
     let message: ConversationMessage
+    let displayedContent: String
+    let isTyping: Bool
 
     var body: some View {
         Group {
@@ -838,21 +847,18 @@ private struct RecallMessageCard: View {
                     .foregroundStyle(.tertiary)
             }
             if message.role == .assistant {
-                MarkdownParagraphText(markdown: ChatResponseFormatter().format(message.content))
+                MarkdownParagraphText(markdown: isTyping ? displayedContent : ChatResponseFormatter().format(displayedContent))
+                if isTyping {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Color.accentColor)
+                        .frame(width: 2, height: 16)
+                        .opacity(displayedContent.isEmpty ? 0.65 : 1)
+                }
             } else {
-                Text(message.content)
+                Text(displayedContent)
                     .font(.system(size: 15))
                     .textSelection(.enabled)
                     .lineSpacing(5)
-            }
-            if !message.citations.isEmpty {
-                HStack(spacing: 6) {
-                    Image(systemName: "link")
-                    Text("引用了 \(message.citations.count) 条记忆来源")
-                }
-                .font(.caption)
-                .foregroundStyle(Color.accentColor)
-                .padding(.top, 2)
             }
         }
         .padding(16)
@@ -915,34 +921,39 @@ private struct ChatComposer: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             TextField("向 Recall 提问…", text: $question, axis: .vertical)
                 .focused($isFocused)
                 .textFieldStyle(.plain)
                 .lineLimit(1...7)
                 .font(.system(size: 16))
-                .padding(.leading, 4)
-                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .fixedSize(horizontal: false, vertical: true)
                 .submitLabel(.send)
                 .onKeyPress(.return) {
                     submit()
                     return .handled
                 }
-            Button(action: submit) {
-                Image(systemName: isSending ? "ellipsis" : "arrow.up")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .background(sendButtonColor, in: Circle())
-                    .contentShape(Circle())
+            Spacer(minLength: 18)
+            HStack {
+                Spacer()
+                Button(action: submit) {
+                    Image(systemName: isSending ? "ellipsis" : "arrow.up")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(sendButtonColor, in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSend)
             }
-            .buttonStyle(.plain)
-            .disabled(!canSend)
         }
-        .padding(.leading, 16)
-        .padding(.trailing, 9)
-        .padding(.vertical, 10)
-        .frame(minHeight: 89)
+        .padding(.top, 18)
+        .padding(.leading, 20)
+        .padding(.trailing, 10)
+        .padding(.bottom, 10)
+        .frame(minHeight: 124, alignment: .top)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
