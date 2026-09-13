@@ -14,6 +14,94 @@ public struct MemorySearchQuery: Sendable, Equatable {
     }
 }
 
+public struct ResolvedMemoryTimeRange: Sendable, Equatable {
+    public var startDate: Date
+    public var endDate: Date
+    public var requestedDayCount: Int
+
+    public init(startDate: Date, endDate: Date, requestedDayCount: Int) {
+        self.startDate = startDate
+        self.endDate = endDate
+        self.requestedDayCount = max(requestedDayCount, 1)
+    }
+}
+
+/// 把用户问题中的自然语言时间表达转换为确定的本地日历范围。
+public struct MemoryTimeRangeResolver: Sendable {
+    public init() {}
+
+    public func resolve(
+        _ text: String,
+        now: Date = .now,
+        calendar: Calendar = .current
+    ) -> ResolvedMemoryTimeRange? {
+        let normalized = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        let relativeDayCount: Int?
+        if ["最近一周", "近一周", "过去一周", "最近一个星期", "过去一个星期"].contains(where: normalized.contains) {
+            relativeDayCount = 7
+        } else if ["最近一个月", "近一个月", "过去一个月"].contains(where: normalized.contains) {
+            relativeDayCount = 30
+        } else {
+            relativeDayCount = explicitRecentDayCount(in: normalized)
+        }
+        if let relativeDayCount {
+            let boundedDays = min(max(relativeDayCount, 1), 90)
+            let today = calendar.startOfDay(for: now)
+            let start = calendar.date(byAdding: .day, value: -(boundedDays - 1), to: today) ?? today
+            return ResolvedMemoryTimeRange(startDate: start, endDate: now, requestedDayCount: boundedDays)
+        }
+        if normalized.contains("上周") || normalized.localizedCaseInsensitiveContains("last week") {
+            guard let thisWeek = calendar.dateInterval(of: .weekOfYear, for: now),
+                  let previousWeek = calendar.dateInterval(of: .weekOfYear, for: thisWeek.start.addingTimeInterval(-1)) else { return nil }
+            return ResolvedMemoryTimeRange(startDate: previousWeek.start, endDate: previousWeek.end, requestedDayCount: 7)
+        }
+        if normalized.contains("本周") || normalized.contains("这周") || normalized.localizedCaseInsensitiveContains("this week") {
+            guard let interval = calendar.dateInterval(of: .weekOfYear, for: now) else { return nil }
+            let days = max(calendar.dateComponents([.day], from: interval.start, to: now).day ?? 0, 0) + 1
+            return ResolvedMemoryTimeRange(startDate: interval.start, endDate: now, requestedDayCount: days)
+        }
+        if normalized.contains("今天") || normalized.contains("今日") || normalized.localizedCaseInsensitiveContains("today") {
+            guard let interval = calendar.dateInterval(of: .day, for: now) else { return nil }
+            return ResolvedMemoryTimeRange(startDate: interval.start, endDate: now, requestedDayCount: 1)
+        }
+        if normalized.contains("昨天") || normalized.contains("昨日") || normalized.localizedCaseInsensitiveContains("yesterday") {
+            guard let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+                  let interval = calendar.dateInterval(of: .day, for: yesterday) else { return nil }
+            return ResolvedMemoryTimeRange(startDate: interval.start, endDate: interval.end, requestedDayCount: 1)
+        }
+        return nil
+    }
+
+    private func explicitRecentDayCount(in text: String) -> Int? {
+        let patterns = [
+            #"(?:最近|近|过去)\s*([0-9一二三四五六七八九十两]+)\s*(?:天|日)"#,
+            #"last\s+([0-9]+)\s+days?"#
+        ]
+        for pattern in patterns {
+            guard let expression = try? NSRegularExpression(pattern: pattern),
+                  let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                  let range = Range(match.range(at: 1), in: text),
+                  let value = parseNumber(String(text[range])) else { continue }
+            return value
+        }
+        return nil
+    }
+
+    private func parseNumber(_ text: String) -> Int? {
+        if let number = Int(text) { return number }
+        let digits: [Character: Int] = ["一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9]
+        if text == "十" { return 10 }
+        if let tenIndex = text.firstIndex(of: "十") {
+            let left = text[..<tenIndex].first.flatMap { digits[$0] } ?? 1
+            let afterTen = text.index(after: tenIndex)
+            let right = afterTen < text.endIndex ? digits[text[afterTen]] ?? 0 : 0
+            return left * 10 + right
+        }
+        guard text.count == 1, let character = text.first else { return nil }
+        return digits[character]
+    }
+}
+
 public struct MemorySearchResult: Identifiable, Sendable {
     public var id: UUID { capture.id }
     public var capture: CaptureRecord
