@@ -10,6 +10,7 @@ struct RecallVerifier {
             try verifyPrivacy()
             try verifySearch()
             try verifyChineseNaturalLanguageSearch()
+            try verifyNaturalLanguageTimeRanges()
             try verifyTimelineDayGrouping()
             try verifyTimelineDayFiltering()
             try verifyReminders()
@@ -34,14 +35,15 @@ struct RecallVerifier {
             try await verifyCustomModelConfigurationPersistence()
             try await verifyMiniMaxAuthenticationHeaders()
             try await verifyTodayQuestionUsesTimeline()
+            try await verifySevenDayOverviewCoverage()
             try await verifyDailySummaryQuestionRetrieval()
             try await verifyQuestionPersistsBeforeModelFailure()
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 33 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 35 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 32 integration checks.")
+                print("PASS: RecallVerifier completed 34 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -100,6 +102,24 @@ struct RecallVerifier {
         try expect(results.first?.capture.id == matching.id, "中文自然语言问题没有拆出人物与生日关键词")
         try expect(results.first?.matchedTerms.contains("妙妙") == true, "中文检索没有保留人物实体")
         try expect(results.first?.matchedTerms.contains("生日") == true, "中文检索没有识别问题主题")
+    }
+
+    private static func verifyNaturalLanguageTimeRanges() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 13, hour: 11, minute: 20))!
+        let resolver = MemoryTimeRangeResolver()
+
+        let sevenDays = resolver.resolve("我最近七天做了哪些事情？", now: now, calendar: calendar)
+        let expectedStart = calendar.date(from: DateComponents(year: 2026, month: 9, day: 7))!
+        try expect(sevenDays?.requestedDayCount == 7, "最近七天没有解析为 7 个本地自然日")
+        try expect(sevenDays?.startDate == expectedStart && sevenDays?.endDate == now, "最近七天的起止边界不正确")
+
+        let thirtyDays = resolver.resolve("过去三十天有哪些进展？", now: now, calendar: calendar)
+        try expect(thirtyDays?.requestedDayCount == 30, "中文数字时间范围没有被识别")
+
+        let previousWeek = resolver.resolve("上周完成了什么？", now: now, calendar: calendar)
+        try expect(previousWeek?.requestedDayCount == 7 && previousWeek?.endDate <= now, "上周没有解析为独立的前一自然周")
     }
 
     private static func verifyTimelineDayGrouping() throws {
@@ -669,6 +689,39 @@ struct RecallVerifier {
         let answer = try await MemoryAssistant(store: store).ask("今天做了什么？")
         try expect(answer.citations == [capture.id], "今天的问题没有引用当天的时间线记录")
         try expect(answer.content.contains("时间线检索修复"), "今天的问题没有返回当天的记录内容")
+    }
+
+    @MainActor
+    private static func verifySevenDayOverviewCoverage() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        var summaryIDs: [UUID] = []
+
+        for offset in 0..<7 {
+            let day = calendar.date(byAdding: .day, value: -offset, to: today)!
+            let summary = DailySummary(
+                day: day,
+                content: "第 \(offset + 1) 天完成事项：推进项目阶段 \(offset + 1)。",
+                sourceCaptureIDs: [],
+                todos: [],
+                generationKind: .localFallback
+            )
+            summaryIDs.append(summary.id)
+            try await store.upsertDailySummary(summary)
+        }
+        // 模拟今天记录很多的真实场景，验证它们不会挤掉前六天。
+        for index in 0..<10 {
+            try await store.addCapture(makeCapture(text: "今天的高频工作记录 \(index)", app: "Xcode", createdAt: .now.addingTimeInterval(Double(-index))))
+        }
+        try await store.updateLLMConfiguration(LLMConfiguration(provider: .localOnly))
+
+        let answer = try await MemoryAssistant(store: store).ask("我最近七天做了哪些事情？")
+        try expect(Set(summaryIDs).isSubset(of: Set(answer.citations)), "七天概览被今天的高频记录占满，没有覆盖每天的总结")
+        try expect(answer.content.contains("第 7 天完成事项"), "七天概览没有包含时间范围最早一天的内容")
     }
 
     @MainActor

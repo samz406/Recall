@@ -6,17 +6,20 @@ public final class MemoryAssistant {
     private let searchEngine: MemorySearchEngine
     private let privacyEngine: PrivacyEngine
     private let contextManager: ConversationContextManager
+    private let timeRangeResolver: MemoryTimeRangeResolver
 
     public init(
         store: FileMemoryStore,
         searchEngine: MemorySearchEngine = MemorySearchEngine(),
         privacyEngine: PrivacyEngine = PrivacyEngine(),
-        contextManager: ConversationContextManager = ConversationContextManager()
+        contextManager: ConversationContextManager = ConversationContextManager(),
+        timeRangeResolver: MemoryTimeRangeResolver = MemoryTimeRangeResolver()
     ) {
         self.store = store
         self.searchEngine = searchEngine
         self.privacyEngine = privacyEngine
         self.contextManager = contextManager
+        self.timeRangeResolver = timeRangeResolver
     }
 
     @discardableResult
@@ -33,15 +36,37 @@ public final class MemoryAssistant {
         let recordsAllowedInChat = state.captures.filter { capture in
             state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
         }
-        let summaryEvidence = state.dailySummaries.map(makeSearchableEvidence)
-        let searchableEvidence = recordsAllowedInChat + summaryEvidence
         let retrievalText = retrievalText(for: question, history: state.messages)
-        let query = searchQuery(for: retrievalText)
-        let results = searchEngine.search(query, in: searchableEvidence)
-        let indexedIDs = isTemporalOverviewQuestion(retrievalText) ? [] : await store.indexedCaptureIDs(matching: retrievalText, limit: 8)
+        let timeRange = timeRangeResolver.resolve(retrievalText)
+        let summaryEvidence = state.dailySummaries.map(makeSearchableEvidence)
+        let episodeEvidence = state.episodes.map(makeSearchableEvidence)
+        let durableMemoryEvidence = state.userMemories
+            .filter { memory in
+                memory.status == .confirmed || (memory.status == .proposed && memory.confidence >= 0.75)
+            }
+            .map(makeSearchableEvidence)
+        let searchableEvidence = recordsAllowedInChat + summaryEvidence + episodeEvidence + (timeRange == nil ? durableMemoryEvidence : [])
+        let query = MemorySearchQuery(
+            text: retrievalText,
+            startDate: timeRange?.startDate,
+            endDate: timeRange?.endDate
+        )
+        // 多日问题必须先看到范围内的全部候选，再做按天覆盖；若提前截断，
+        // 高频的今天记录仍会把较早日期挤出候选集。
+        let searchLimit = timeRange == nil ? 8 : max(searchableEvidence.count, 1)
+        let results = searchEngine.search(query, in: searchableEvidence, limit: searchLimit)
+        let indexedIDs = timeRange == nil ? await store.indexedCaptureIDs(matching: retrievalText, limit: 8) : []
         let indexed = indexedIDs.compactMap { id in recordsAllowedInChat.first(where: { $0.id == id }) }
         var seen: Set<UUID> = []
-        let retrieved = (indexed + results.map(\.capture)).filter { seen.insert($0.id).inserted }.prefix(8).map { $0 }
+        let ranked = (indexed + results.map(\.capture)).filter { seen.insert($0.id).inserted }
+        let retrieved = if let timeRange {
+            selectTemporalEvidence(
+                from: ranked,
+                limit: min(max(timeRange.requestedDayCount * 2, 8), contextManager.maxEvidenceRecords)
+            )
+        } else {
+            Array(ranked.prefix(8))
+        }
         let plan = contextManager.plan(
             history: state.messages,
             existingSummary: state.conversationSummary,
@@ -52,9 +77,9 @@ public final class MemoryAssistant {
             try await store.updateConversationSummary(plan.rollingSummary, coveredMessageCount: plan.coveredMessageCount)
         }
 
-        // 对“今天/昨天”概览问题，当前检索到的时间线是唯一事实来源。
+        // 对时间范围概览问题，当前检索到的时间线是唯一事实来源。
         // 不带入先前助手的结论，避免旧的“没有记忆”回答被模型机械复述。
-        let requiresFreshEvidenceTurn = isTemporalOverviewQuestion(question) && !plan.evidence.isEmpty
+        let requiresFreshEvidenceTurn = timeRange != nil && !plan.evidence.isEmpty
         let request = LLMRequest(
             question: question,
             context: plan.evidence,
@@ -124,6 +149,82 @@ public final class MemoryAssistant {
         )
     }
 
+    private func makeSearchableEvidence(from episode: WorkEpisode) -> CaptureRecord {
+        let text = [
+            "项目：\(episode.projectName)",
+            "事项：\(episode.title)",
+            "目标：\(episode.intent)",
+            "行动：\(episode.action)",
+            episode.outcome.map { "结果：\($0)" },
+            episode.nextAction.map { "下一步：\($0)" }
+        ]
+        .compactMap { $0 }
+        .joined(separator: "\n")
+        return CaptureRecord(
+            id: episode.id,
+            eventTemplate: .taskTransition,
+            createdAt: episode.startedAt,
+            sourceAppName: "工作片段",
+            sourceBundleIdentifier: "im.recall.work-episode",
+            contentHash: "work-episode-\(episode.id.uuidString)",
+            ocrText: text,
+            summary: episode.title,
+            tags: [episode.projectName, episode.status.rawValue]
+        )
+    }
+
+    private func makeSearchableEvidence(from memory: UserMemory) -> CaptureRecord {
+        CaptureRecord(
+            id: memory.id,
+            eventTemplate: .manualMoment,
+            createdAt: memory.updatedAt,
+            sourceAppName: "长期记忆",
+            sourceBundleIdentifier: "im.recall.user-memory",
+            contentHash: "user-memory-\(memory.id.uuidString)",
+            ocrText: "\(memory.kind.title)：\(memory.content)\n置信度：\(Int(memory.confidence * 100))%",
+            summary: memory.content,
+            tags: [memory.kind.title]
+        )
+    }
+
+    /// 多日概览先保证日期覆盖：每个有记录的日期优先取每日总结，没有总结才取原始记录；
+    /// 剩余名额再按检索得分补充原始证据，避免最近一天独占整个上下文。
+    private func selectTemporalEvidence(
+        from ranked: [CaptureRecord],
+        limit: Int,
+        calendar: Calendar = .current
+    ) -> [CaptureRecord] {
+        guard limit > 0 else { return [] }
+        let grouped = Dictionary(grouping: ranked) { calendar.startOfDay(for: $0.createdAt) }
+        let availableDays = grouped.keys.sorted(by: >)
+        let coveredDays = evenlySpacedDays(from: availableDays, limit: limit)
+        var selected: [CaptureRecord] = []
+        var selectedIDs: Set<UUID> = []
+
+        for day in coveredDays {
+            let records = (grouped[day] ?? []).sorted { left, right in
+                if left.eventTemplate == .dailyReview, right.eventTemplate != .dailyReview { return true }
+                if left.eventTemplate != .dailyReview, right.eventTemplate == .dailyReview { return false }
+                return left.createdAt > right.createdAt
+            }
+            if let anchor = records.first, selectedIDs.insert(anchor.id).inserted {
+                selected.append(anchor)
+            }
+        }
+        for record in ranked where selected.count < limit {
+            if selectedIDs.insert(record.id).inserted { selected.append(record) }
+        }
+        return selected
+    }
+
+    private func evenlySpacedDays(from days: [Date], limit: Int) -> [Date] {
+        guard days.count > limit, limit > 1 else { return Array(days.prefix(limit)) }
+        return (0..<limit).map { index in
+            let position = Double(index) * Double(days.count - 1) / Double(limit - 1)
+            return days[Int(position.rounded())]
+        }
+    }
+
     private func claimsEvidenceIsEmpty(_ answer: String) -> Bool {
         let normalized = answer.replacingOccurrences(of: " ", with: "").lowercased()
         let emptyEvidencePhrases = [
@@ -134,36 +235,4 @@ public final class MemoryAssistant {
         return emptyEvidencePhrases.contains { normalized.contains($0) }
     }
 
-    /// 将常见的自然语言日期范围转换为确定性本地过滤条件。
-    /// 这让“今天做什么”即便未包含记录正文中的关键词，也能汇总当天记忆。
-    private func searchQuery(for question: String, now: Date = .now) -> MemorySearchQuery {
-        let normalized = question.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-        let calendar = Calendar.current
-
-        if isTodayOverviewQuestion(normalized),
-           let interval = calendar.dateInterval(of: .day, for: now) {
-            return MemorySearchQuery(text: question, startDate: interval.start, endDate: interval.end)
-        }
-
-        if isYesterdayOverviewQuestion(normalized),
-           let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
-           let interval = calendar.dateInterval(of: .day, for: yesterday) {
-            return MemorySearchQuery(text: question, startDate: interval.start, endDate: interval.end)
-        }
-
-        return MemorySearchQuery(text: question)
-    }
-
-    private func isTemporalOverviewQuestion(_ question: String) -> Bool {
-        let normalized = question.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-        return isTodayOverviewQuestion(normalized) || isYesterdayOverviewQuestion(normalized)
-    }
-
-    private func isTodayOverviewQuestion(_ normalizedQuestion: String) -> Bool {
-        normalizedQuestion.contains("今天") || normalizedQuestion.contains("今日") || normalizedQuestion.localizedCaseInsensitiveContains("today")
-    }
-
-    private func isYesterdayOverviewQuestion(_ normalizedQuestion: String) -> Bool {
-        normalizedQuestion.contains("昨天") || normalizedQuestion.contains("昨日") || normalizedQuestion.localizedCaseInsensitiveContains("yesterday")
-    }
 }

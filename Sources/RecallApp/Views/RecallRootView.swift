@@ -921,20 +921,25 @@ private struct ChatComposer: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            TextField("向 Recall 提问…", text: $question, axis: .vertical)
-                .focused($isFocused)
-                .textFieldStyle(.plain)
-                .lineLimit(1...7)
-                .font(.system(size: 16))
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .fixedSize(horizontal: false, vertical: true)
-                .submitLabel(.send)
-                .onKeyPress(.return) {
-                    submit()
-                    return .handled
-                }
-            Spacer(minLength: 18)
+        VStack(alignment: .leading, spacing: 8) {
+            ZStack(alignment: .topLeading) {
+                TextField("向 Recall 提问…", text: $question, axis: .vertical)
+                    .focused($isFocused)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...8)
+                    .font(.system(size: 16))
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .submitLabel(.send)
+                    .onKeyPress(.return) { keyPress in
+                        if keyPress.modifiers.contains(.shift) {
+                            return .ignored
+                        }
+                        submit()
+                        return .handled
+                    }
+            }
+            .frame(minHeight: 62, alignment: .topLeading)
             HStack {
                 Spacer()
                 Button(action: submit) {
@@ -953,7 +958,7 @@ private struct ChatComposer: View {
         .padding(.leading, 20)
         .padding(.trailing, 10)
         .padding(.bottom, 10)
-        .frame(minHeight: 124, alignment: .top)
+        .frame(minHeight: 132, alignment: .top)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
