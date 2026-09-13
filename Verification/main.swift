@@ -118,8 +118,10 @@ struct RecallVerifier {
         let thirtyDays = resolver.resolve("过去三十天有哪些进展？", now: now, calendar: calendar)
         try expect(thirtyDays?.requestedDayCount == 30, "中文数字时间范围没有被识别")
 
-        let previousWeek = resolver.resolve("上周完成了什么？", now: now, calendar: calendar)
-        try expect(previousWeek?.requestedDayCount == 7 && previousWeek?.endDate <= now, "上周没有解析为独立的前一自然周")
+        guard let previousWeek = resolver.resolve("上周完成了什么？", now: now, calendar: calendar) else {
+            throw VerificationError.failed("上周时间范围没有被识别")
+        }
+        try expect(previousWeek.requestedDayCount == 7 && previousWeek.endDate <= now, "上周没有解析为独立的前一自然周")
     }
 
     private static func verifyTimelineDayGrouping() throws {
