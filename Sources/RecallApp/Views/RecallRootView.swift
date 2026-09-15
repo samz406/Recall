@@ -1018,7 +1018,6 @@ private struct DailySummariesView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .navigationTitle("每日总结")
         .onAppear {
             if expandedSummaryID == nil {
                 expandedSummaryID = summaries.first?.id

@@ -21,6 +21,7 @@ struct RecallVerifier {
             try await verifyReminderSchedulePersistence()
             try await verifyReminderDeletionAndCheckpoint()
             try await verifyDailySummaryGeneration()
+            try await verifyDailySummaryActionPrecision()
             try await verifyDailySummaryPersistenceAndDeletion()
             try verifyPersonalIntelligenceConsolidation()
             try verifyConcreteDailySummarySubjects()
@@ -41,9 +42,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 35 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 36 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 34 integration checks.")
+                print("PASS: RecallVerifier completed 35 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -391,6 +392,51 @@ struct RecallVerifier {
         _ = try await store.deleteCapture(id: capture.id)
         let afterDeletion = await store.snapshot()
         try expect(afterDeletion.dailySummaries.isEmpty, "删除来源记录后应清除包含该内容的每日总结")
+    }
+
+    private static func verifyDailySummaryActionPrecision() async throws {
+        let normalized = DailySummaryContentFormatter.normalizingNextActionSection(
+            in: "## 今天的主线\n修复每日回顾。\n\n## 下一步\n\n- 今天",
+            fallbackActions: ["补充每日回顾滚动测试并提交 PR"]
+        )
+        try expect(!normalized.contains("- 今天"), "无意义的单独时间词仍被保留为下一步")
+        try expect(normalized.contains("补充每日回顾滚动测试并提交 PR"), "模型下一步无效时没有使用本地结构化动作兜底")
+
+        let withoutAction = DailySummaryContentFormatter.normalizingNextActionSection(
+            in: "## 今天的主线\n修复每日回顾。\n\n## 下一步\n\n- 继续"
+        )
+        try expect(!withoutAction.contains("## 下一步"), "没有具体动作时仍展示空洞的下一步小节")
+
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: .now)
+        let source = makeCapture(text: "今天完成 Recall 每日回顾标题滚动修复。", app: "Xcode", createdAt: day.addingTimeInterval(10 * 60 * 60))
+        let previous = DailySummary(
+            day: calendar.date(byAdding: .day, value: -1, to: day)!,
+            content: "历史摘要",
+            sourceCaptureIDs: [],
+            todos: [
+                DailySummaryTodo(
+                    title: "页面以系统流程为中心，而不是以用户为中心，属于长期产品改进方向",
+                    detail: "长期业务描述",
+                    priority: .normal
+                ),
+                DailySummaryTodo(
+                    title: "补充退款幂等测试并提交 PR",
+                    detail: "明确可执行动作",
+                    priority: .high
+                )
+            ],
+            generationKind: .localFallback
+        )
+        let generated = try await DailySummaryGenerator().generate(
+            day: day,
+            from: [source],
+            previousSummaries: [previous],
+            responder: nil,
+            calendar: calendar
+        )
+        try expect(!generated.content.contains("以系统流程为中心"), "长期产品方向仍被误报为当前跟进行动")
+        try expect(generated.content.contains("补充退款幂等测试并提交 PR"), "明确历史动作被错误过滤")
     }
 
     private static func verifyPersonalIntelligenceConsolidation() throws {
