@@ -14,6 +14,92 @@ public enum DailySummaryContentFormatter {
             options: .regularExpression
         )
     }
+
+    /// 模型输出仍需经过确定性的动作校验：像“今天”“继续”这类占位词不应成为下一步。
+    /// 当模型没有给出可执行动作时，使用本地结构化简报中的动作；两者都没有则移除整个小节。
+    public static func normalizingNextActionSection(
+        in content: String,
+        fallbackActions: [String] = []
+    ) -> String {
+        let lines = removingCitationMarkers(from: content).components(separatedBy: .newlines)
+        var body: [String] = []
+        var modelActions: [String] = []
+        var readingNextActions = false
+
+        for line in lines {
+            if let heading = markdownHeadingTitle(line) {
+                if isNextActionHeading(heading) {
+                    readingNextActions = true
+                    continue
+                }
+                readingNextActions = false
+            }
+            if readingNextActions {
+                modelActions.append(line)
+            } else {
+                body.append(line)
+            }
+        }
+
+        while body.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+            body.removeLast()
+        }
+        let actions = validatedNextActions(from: modelActions + fallbackActions)
+        guard !actions.isEmpty else { return body.joined(separator: "\n") }
+        return (body + ["", "## 下一步", ""] + actions.map { "- \($0)" }).joined(separator: "\n")
+    }
+
+    public static func validatedNextActions(from candidates: [String], limit: Int = 3) -> [String] {
+        var seen: Set<String> = []
+        return candidates.compactMap(normalizedAction)
+            .filter { action in
+                let key = action
+                    .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                    .replacingOccurrences(of: #"[\s\p{P}\p{S}]+"#, with: "", options: .regularExpression)
+                    .lowercased()
+                return seen.insert(key).inserted
+            }
+            .prefix(max(limit, 1))
+            .map { $0 }
+    }
+
+    private static func markdownHeadingTitle(_ line: String) -> String? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("#") else { return nil }
+        return trimmed
+            .replacingOccurrences(of: #"^#{1,6}\s*"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isNextActionHeading(_ heading: String) -> Bool {
+        let normalized = heading.replacingOccurrences(of: #"[\s：:]"#, with: "", options: .regularExpression)
+        return ["下一步", "下一步行动", "建议先做", "明天先做"].contains(normalized)
+    }
+
+    private static func normalizedAction(_ candidate: String) -> String? {
+        let action = candidate
+            .replacingOccurrences(of: #"^\s*(?:[-*•]+|\d+[.、)])\s*"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: "**", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n:：·-—"))
+        let compact = action.replacingOccurrences(of: #"[\s\p{P}\p{S}]+"#, with: "", options: .regularExpression)
+        guard compact.count >= 4, compact.count <= 120 else { return nil }
+        let generic = ["今天", "明天", "后天", "本周", "下周", "近期", "以后", "后续", "继续", "处理", "推进", "看看", "待办", "待确认", "暂无", "没有", "无"]
+        guard !generic.contains(compact) else { return nil }
+        let abstractDirections = ["产品方向", "改进方向", "设计理念", "愿景", "以系统流程为中心", "以用户为中心"]
+        guard !abstractDirections.contains(where: action.contains) else { return nil }
+        guard compact.range(
+            of: #"^(?:今天|明天|后天|本周|下周|近期|以后|后续)(?:再)?(?:继续|处理|推进|看看|确认)?$"#,
+            options: .regularExpression
+        ) == nil else { return nil }
+        let actionCues = [
+            "完成", "修复", "确认", "联系", "回复", "提交", "评审", "验证", "整理", "安排", "决定", "选择", "下单",
+            "输出", "拆分", "关闭", "更新", "跟进", "检查", "创建", "推进", "解决", "补充", "复盘", "记录", "归档",
+            "预约", "约", "购买", "发送", "实现", "优化", "发布", "测试", "接入", "迁移", "准备", "讨论", "调研",
+            "编写", "阅读", "学习", "练习"
+        ]
+        guard actionCues.contains(where: action.contains) else { return nil }
+        return action
+    }
 }
 
 public enum DailySummaryTodoPriority: String, Codable, Sendable {
@@ -281,13 +367,20 @@ public struct DailySummaryGenerator: Sendable {
             question: cloudPrompt(for: day, todos: priorityTodos, hasRecentSummaries: !recentSummaries.isEmpty),
             context: records,
             supplementaryContext: structuredContext(
+                targetDay: day,
+                activeProjectKeys: Set(consolidation.episodes.map(\.projectKey)),
                 previousProjects: previousProjects,
                 memories: consolidation.memories,
-                recentSummaries: recentSummaries
+                recentSummaries: recentSummaries,
+                calendar: calendar
             )
         ))
+        let fallbackNextActions = nextActionFallbacks(briefing: consolidation.briefing, todos: priorityTodos)
         return DailySummaryGeneration(
-            content: DailySummaryContentFormatter.removingCitationMarkers(from: answer.content),
+            content: DailySummaryContentFormatter.normalizingNextActionSection(
+                in: answer.content,
+                fallbackActions: fallbackNextActions
+            ),
             sourceCaptureIDs: answer.citedCaptureIDs,
             todos: priorityTodos,
             generationKind: .cloud,
@@ -317,9 +410,9 @@ public struct DailySummaryGenerator: Sendable {
                 let advice = insight.recommendation.map { "；建议：\($0)" } ?? ""
                 return "- \(insight.title)：\(insight.detail)\(advice)（置信度 \(Int(insight.confidence * 100))%）"
             }
-        let nextActions = briefing.nextActions.isEmpty
-            ? ["- 暂无需要主动打断你的建议。"]
-            : briefing.nextActions.map { "- \($0.title)：\($0.detail)" }
+        let nextActions = DailySummaryContentFormatter.validatedNextActions(
+            from: nextActionFallbacks(briefing: briefing, todos: todos)
+        )
         let todoLines: [String]
         if todos.isEmpty {
             todoLines = ["- 未从当天记录中识别出待办或截止事项。"]
@@ -329,7 +422,7 @@ public struct DailySummaryGenerator: Sendable {
                 return "- 【\(todo.priority.title)】\(todo.title)\(due)"
             }
         }
-        let content = [
+        var content = [
             "## \(formatter.string(from: day)) 个人简报",
             "",
             "### 今天的主线",
@@ -347,12 +440,12 @@ public struct DailySummaryGenerator: Sendable {
             "### 待办与提醒",
             todoLines.joined(separator: "\n"),
             "",
-            "### 下一步",
-            nextActions.joined(separator: "\n"),
-            "",
-            recentSummaryReview(recentSummaries)
-        ].joined(separator: "\n")
-        return DailySummaryContentFormatter.removingCitationMarkers(from: content)
+        ]
+        if !nextActions.isEmpty {
+            content.append(contentsOf: ["### 下一步", nextActions.map { "- \($0)" }.joined(separator: "\n"), ""])
+        }
+        content.append(recentSummaryReview(recentSummaries))
+        return DailySummaryContentFormatter.removingCitationMarkers(from: content.joined(separator: "\n"))
     }
 
     private func emptyDaySummary(for day: Date, recentSummaries: [DailySummary]) -> String {
@@ -375,6 +468,7 @@ public struct DailySummaryGenerator: Sendable {
         var seenTitles: Set<String> = []
         let todos = recentSummaries
             .flatMap(\.todos)
+            .filter(isUsableCarryOverTodo)
             .filter { seenTitles.insert($0.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)).inserted }
             .sorted { lhs, rhs in
                 if lhs.priority != rhs.priority { return lhs.priority == .high }
@@ -407,32 +501,57 @@ public struct DailySummaryGenerator: Sendable {
     }
 
     private func structuredContext(
+        targetDay: Date,
+        activeProjectKeys: Set<String>,
         previousProjects: [ProjectState],
         memories: [UserMemory],
-        recentSummaries: [DailySummary]
+        recentSummaries: [DailySummary],
+        calendar: Calendar
     ) -> String? {
         guard !previousProjects.isEmpty || !memories.isEmpty || !recentSummaries.isEmpty else { return nil }
         let dateFormatter = DateFormatter()
         dateFormatter.locale = Locale(identifier: "zh_Hans_CN")
         dateFormatter.dateFormat = "yyyy-MM-dd"
+        let earliestDay = calendar.date(byAdding: .day, value: -14, to: calendar.startOfDay(for: targetDay)) ?? targetDay
         let projects = previousProjects
+            .filter { activeProjectKeys.contains($0.projectKey) }
+            .filter { $0.lastActiveAt >= earliestDay }
             .filter { isUsableHistoricalProject($0) }
             .prefix(8)
             .map { project in
-            "- \(project.displayName)：\(project.currentState)；下一步：\(project.nextAction ?? "未确认")"
+            "- \(project.displayName)（最近活动 \(dateFormatter.string(from: project.lastActiveAt))）：\(project.currentState)；已记录动作：\(project.nextAction ?? "无")"
         }
         let memoryLines = memories
             .filter { $0.status == .confirmed }
             .prefix(8)
             .map { "- \($0.kind.title)：\($0.content)" }
-        let historicalTodos = recentSummaries.flatMap(\.todos).prefix(8).map { todo in
-            "- \(todo.title)（\(todo.dueAt.map { dateFormatter.string(from: $0) } ?? "未指定时间")）"
-        }
+        let historicalTodos = Array(recentSummaries.flatMap { summary in
+            summary.todos.filter(isUsableCarryOverTodo).map { todo in
+                "- \(todo.title)（来源日 \(dateFormatter.string(from: summary.day))；\(todo.dueAt.map { "截止 \(dateFormatter.string(from: $0))" } ?? "未指定截止时间")）"
+            }
+        }.prefix(8))
         return [
-            "结构化项目状态（可用于比较变化，不能替代当天证据）：\n\(projects.isEmpty ? "无" : projects.joined(separator: "\n"))",
-            "后台逐步学习的长期记忆：\n\(memoryLines.isEmpty ? "无" : memoryLines.joined(separator: "\n"))",
-            "近 14 天未清理的待办线索：\n\(historicalTodos.isEmpty ? "无" : historicalTodos.joined(separator: "\n"))"
+            "当天仍在推进项目的历史状态（只用于解释当天变化，不得直接当作当天事实或提醒）：\n\(projects.isEmpty ? "无" : projects.joined(separator: "\n"))",
+            "后台长期记忆（只用于理解用户，不得直接写成当天进展或待办）：\n\(memoryLines.isEmpty ? "无" : memoryLines.joined(separator: "\n"))",
+            "近 14 天可继续跟进的明确动作：\n\(historicalTodos.isEmpty ? "无" : historicalTodos.joined(separator: "\n"))"
         ].joined(separator: "\n\n")
+    }
+
+    private func nextActionFallbacks(briefing: DailyBriefing, todos: [DailySummaryTodo]) -> [String] {
+        let todoActions = todos.map { todo in
+            let due = todo.dueAt.map { "（\($0.formatted(date: .abbreviated, time: .omitted))前）" } ?? ""
+            return "\(todo.title)\(due)"
+        }
+        let briefingActions = briefing.nextActions.map { "\($0.title)：\($0.detail)" }
+        return todoActions + briefingActions
+    }
+
+    private func isUsableCarryOverTodo(_ todo: DailySummaryTodo) -> Bool {
+        let title = todo.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (4...100).contains(title.count) else { return false }
+        let abstractDirections = ["产品方向", "改进方向", "设计理念", "愿景", "以系统流程为中心", "以用户为中心"]
+        if todo.dueAt == nil, abstractDirections.contains(where: title.contains) { return false }
+        return todo.dueAt != nil || !DailySummaryContentFormatter.validatedNextActions(from: [title], limit: 1).isEmpty
     }
 
     private func isUsableHistoricalProject(_ project: ProjectState) -> Bool {
@@ -465,7 +584,7 @@ public struct DailySummaryGenerator: Sendable {
         return """
         请基于已提供的、仅属于 \(date) 的记忆证据，生成一份高密度的简体中文“个人简报”。不要按时间逐条复述操作，不能补充证据之外的事实；行为模式必须标为推断并说明置信度。你的工作是从嘈杂 OCR 中恢复少量有价值的具体事情，而不是转录屏幕文字。
 
-        请严格使用以下 Markdown 小节：
+        请使用以下 Markdown 小节；“下一步”只有存在具体可执行动作时才输出，否则整个小节省略：
         ## 今天的主线
         ## 真正完成的进展
         ## 尚未闭环
@@ -480,7 +599,9 @@ public struct DailySummaryGenerator: Sendable {
 
         先做证据清洗：丢弃菜单、通讯录、标签页列表、搜索词列表、终端噪声、单独的 commit 哈希、截断乱码和重复截图；证据中出现非 \(date) 的旧日期时，不得把旧内容当作当天进展。只有“完成/合并/提交”却没有说明完成了什么，也不得列为进展。最多保留 3 条主线，每条用“具体事项 + 实际变化/结果 + 下一步”表达；多条证据指向同一事项时必须合并，禁止把互不相关的 OCR 片段拼成一个标题。
 
-        “Recall 的发现”最多 3 项，只写跨记录比较后才成立且对用户有决策价值的判断；单条记录、网页标签、导航文字和模型回复不得直接当作用户事实。标题必须描述具体事情或行为模式，禁止使用“今天的主要精力在某应用”一类结论。“近14天提醒与建议”只参考附带的历史项目状态、后台学习的长期记忆和待办，不对历史 Markdown 总结再次摘要。\(hasRecentSummaries ? "" : "当前没有可用的近14天历史待办，应明确说明这一点。")
+        “Recall 的发现”最多 3 项，只写跨记录比较后才成立且对用户有决策价值的判断；单条记录、网页标签、导航文字和模型回复不得直接当作用户事实。标题必须描述具体事情或行为模式，禁止使用“今天的主要精力在某应用”一类结论。“近14天提醒与建议”只能展示附带的明确历史动作，不得把长期目标、产品理念、业务背景或“以某某为中心”之类方向描述包装成当前待办；没有明确动作就写“无需要继续跟进的明确事项”。
+
+        “下一步”最多 3 条，每条必须同时包含对象、动作和可判断的结果，例如“补充退款幂等测试并提交 PR”；禁止输出“今天”“明天”“继续”“推进”等单独时间词或泛化动词，也不要重复“待办与提醒”。如果证据没有给出可执行动作，省略整个“下一步”小节。\(hasRecentSummaries ? "" : "当前没有可用的近14天历史待办，应明确说明这一点。")
 
         总长度控制在 1,200 个汉字以内。
 
