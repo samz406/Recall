@@ -21,7 +21,9 @@ public enum DailySummaryContentFormatter {
         in content: String,
         fallbackActions: [String] = []
     ) -> String {
-        let lines = removingCitationMarkers(from: content).components(separatedBy: .newlines)
+        let lines = removingAbstractCarryOverItems(
+            from: removingCitationMarkers(from: content)
+        ).components(separatedBy: .newlines)
         var body: [String] = []
         var modelActions: [String] = []
         var readingNextActions = false
@@ -74,6 +76,21 @@ public enum DailySummaryContentFormatter {
     private static func isNextActionHeading(_ heading: String) -> Bool {
         let normalized = heading.replacingOccurrences(of: #"[\s：:]"#, with: "", options: .regularExpression)
         return ["下一步", "下一步行动", "建议先做", "明天先做"].contains(normalized)
+    }
+
+    private static func removingAbstractCarryOverItems(from content: String) -> String {
+        let abstractDirections = ["产品方向", "改进方向", "设计理念", "愿景", "以系统流程为中心", "以用户为中心"]
+        var readingCarryOver = false
+        return content.components(separatedBy: .newlines).filter { line in
+            if let heading = markdownHeadingTitle(line) {
+                let normalized = heading.replacingOccurrences(of: #"[\s：:]"#, with: "", options: .regularExpression)
+                readingCarryOver = ["近14天提醒与建议", "需要继续跟进"].contains(normalized)
+                return true
+            }
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard readingCarryOver, trimmed.hasPrefix("-") || trimmed.hasPrefix("*") else { return true }
+            return !abstractDirections.contains(where: line.contains)
+        }.joined(separator: "\n")
     }
 
     private static func normalizedAction(_ candidate: String) -> String? {

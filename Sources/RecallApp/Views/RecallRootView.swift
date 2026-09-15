@@ -1135,7 +1135,15 @@ private struct DailySummaryCard: View {
     let onUpdateRoutine: (LearnedRoutine, LearnedRoutineStatus) -> Void
 
     private var displayContent: String {
-        DailySummaryContentFormatter.removingCitationMarkers(from: summary.content)
+        guard summary.generationKind == .cloud else {
+            return DailySummaryContentFormatter.removingCitationMarkers(from: summary.content)
+        }
+        let todoActions = summary.todos.map(\.title)
+        let briefingActions = summary.briefing?.nextActions.map { "\($0.title)：\($0.detail)" } ?? []
+        return DailySummaryContentFormatter.normalizingNextActionSection(
+            in: summary.content,
+            fallbackActions: todoActions + briefingActions
+        )
     }
 
     private var preview: String {

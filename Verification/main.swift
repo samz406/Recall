@@ -396,10 +396,11 @@ struct RecallVerifier {
 
     private static func verifyDailySummaryActionPrecision() async throws {
         let normalized = DailySummaryContentFormatter.normalizingNextActionSection(
-            in: "## 今天的主线\n修复每日回顾。\n\n## 下一步\n\n- 今天",
+            in: "## 今天的主线\n修复每日回顾。\n\n## 近14天提醒与建议\n- 页面以系统流程为中心，属于长期产品改进方向。\n\n## 下一步\n\n- 今天",
             fallbackActions: ["补充每日回顾滚动测试并提交 PR"]
         )
         try expect(!normalized.contains("- 今天"), "无意义的单独时间词仍被保留为下一步")
+        try expect(!normalized.contains("以系统流程为中心"), "已保存总结中的抽象业务方向没有在展示时清理")
         try expect(normalized.contains("补充每日回顾滚动测试并提交 PR"), "模型下一步无效时没有使用本地结构化动作兜底")
 
         let withoutAction = DailySummaryContentFormatter.normalizingNextActionSection(
