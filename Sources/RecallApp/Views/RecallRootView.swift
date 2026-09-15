@@ -69,6 +69,14 @@ struct RecallRootView: View {
                 .zIndex(100)
             }
         }
+        .overlay(alignment: .bottom) {
+            if let deletion = model.deletionUndoNotice {
+                DeletionUndoBanner(item: deletion, undo: model.undoLastDeletion, dismiss: model.dismissDeletionUndoNotice)
+                    .padding(.bottom, 22)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(110)
+            }
+        }
         .animation(.easeInOut(duration: 0.22), value: model.noticeMessage)
         .onChange(of: model.noticeMessage) { _, notice in
             noticeDismissal?.cancel()
@@ -93,6 +101,38 @@ struct RecallRootView: View {
 
     private var proposedReminderCount: Int {
         model.state.reminders.filter { $0.status == .proposed }.count
+    }
+}
+
+private struct DeletionUndoBanner: View {
+    let item: RecentlyDeletedMemory
+    let undo: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "trash.circle.fill")
+                .font(.title3)
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("已移到最近删除")
+                    .font(.subheadline.weight(.semibold))
+                Text(item.label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Button("撤销", action: undo)
+                .buttonStyle(.borderedProminent)
+            Button(action: dismiss) { Image(systemName: "xmark") }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().stroke(.quaternary, lineWidth: 1))
+        .shadow(color: .black.opacity(0.16), radius: 14, y: 6)
     }
 }
 
@@ -180,6 +220,10 @@ private struct TimelineView: View {
     @State private var searchText = ""
     @State private var expandedDayIDs: Set<Date> = []
     @State private var selectedDay = Calendar.current.startOfDay(for: .now)
+    @State private var isManaging = false
+    @State private var selectedCaptureIDs: Set<UUID> = []
+    @State private var capturesPendingDeletion: [CaptureRecord] = []
+    @State private var isShowingDeletionSheet = false
 
     private var availableDayOptions: [TimelineDayOption] {
         let calendar = Calendar.current
@@ -235,7 +279,10 @@ private struct TimelineView: View {
                                     isSearchResult: isSearching,
                                     isExpanded: expandedDayIDs.contains(group.id),
                                     onToggle: { toggle(group.id) },
-                                    onDelete: model.deleteCapture
+                                    isManaging: isManaging,
+                                    selectedCaptureIDs: selectedCaptureIDs,
+                                    onToggleSelection: toggleSelection,
+                                    onDelete: requestDeletion
                                 )
                                 .id(group.id)
                             }
@@ -251,6 +298,20 @@ private struct TimelineView: View {
         .onChange(of: searchText) { _, _ in initializeExpandedDays() }
         .onChange(of: selectedDay) { _, _ in initializeExpandedDays() }
         .onChange(of: dayGroups.map(\.id)) { _, _ in initializeExpandedDays() }
+        .safeAreaInset(edge: .bottom) {
+            if isManaging { selectionBar }
+        }
+        .sheet(isPresented: $isShowingDeletionSheet) {
+            CaptureDeletionSheet(
+                captures: capturesPendingDeletion,
+                impact: model.deletionImpact(for: capturesPendingDeletion)
+            ) { reason, suppressSimilar in
+                model.deleteCaptures(capturesPendingDeletion, reason: reason, suppressSimilar: suppressSimilar)
+                selectedCaptureIDs.subtract(capturesPendingDeletion.map(\.id))
+                capturesPendingDeletion = []
+                if selectedCaptureIDs.isEmpty { isManaging = false }
+            }
+        }
     }
 
     private var timelineHeader: some View {
@@ -274,6 +335,15 @@ private struct TimelineView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
                 .background(.quaternary, in: Capsule())
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isManaging.toggle()
+                    if !isManaging { selectedCaptureIDs.removeAll() }
+                }
+            } label: {
+                Label(isManaging ? "完成" : "管理", systemImage: isManaging ? "checkmark" : "checklist")
+            }
+            .buttonStyle(.bordered)
             Button {
                 model.requestScreenRecordingAccess()
             } label: {
@@ -473,6 +543,7 @@ private struct TimelineView: View {
         let today = calendar.startOfDay(for: .now)
         let normalizedDay = min(calendar.startOfDay(for: day), today)
         selectedDay = normalizedDay
+        selectedCaptureIDs.removeAll()
         expandedDayIDs = [normalizedDay]
     }
 
@@ -494,6 +565,46 @@ private struct TimelineView: View {
         if calendar.isDateInToday(day) { return "今天 · \(date)" }
         if calendar.isDateInYesterday(day) { return "昨天 · \(date)" }
         return date
+    }
+
+    private func toggleSelection(_ capture: CaptureRecord) {
+        if selectedCaptureIDs.contains(capture.id) {
+            selectedCaptureIDs.remove(capture.id)
+        } else {
+            selectedCaptureIDs.insert(capture.id)
+        }
+    }
+
+    private func requestDeletion(_ capture: CaptureRecord) {
+        capturesPendingDeletion = [capture]
+        isShowingDeletionSheet = true
+    }
+
+    private var selectionBar: some View {
+        HStack(spacing: 14) {
+            Button(selectedCaptureIDs.count == captures.count ? "取消全选" : "全选当天") {
+                let visibleIDs = Set(captures.map(\.id))
+                if visibleIDs.isSubset(of: selectedCaptureIDs) {
+                    selectedCaptureIDs.subtract(visibleIDs)
+                } else {
+                    selectedCaptureIDs.formUnion(visibleIDs)
+                }
+            }
+            .buttonStyle(.bordered)
+            Text("已选择 \(selectedCaptureIDs.count) 条")
+                .font(.subheadline.weight(.medium))
+            Spacer()
+            Button("移到最近删除", role: .destructive) {
+                capturesPendingDeletion = model.state.captures.filter { selectedCaptureIDs.contains($0.id) }
+                isShowingDeletionSheet = true
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(selectedCaptureIDs.isEmpty)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
     }
 }
 
@@ -529,13 +640,22 @@ private struct TimelineDaySection: View {
     let isSearchResult: Bool
     let isExpanded: Bool
     let onToggle: () -> Void
+    let isManaging: Bool
+    let selectedCaptureIDs: Set<UUID>
+    let onToggleSelection: (CaptureRecord) -> Void
     let onDelete: (CaptureRecord) -> Void
 
     var body: some View {
         Section {
             if isExpanded {
                 ForEach(group.captures) { capture in
-                    CaptureRow(capture: capture, onDelete: onDelete)
+                    CaptureRow(
+                        capture: capture,
+                        isManaging: isManaging,
+                        isSelected: selectedCaptureIDs.contains(capture.id),
+                        onToggleSelection: onToggleSelection,
+                        onDelete: onDelete
+                    )
                         .contextMenu {
                             Button("删除记录", role: .destructive) { onDelete(capture) }
                         }
@@ -570,10 +690,21 @@ private struct TimelineDaySection: View {
 
 private struct CaptureRow: View {
     let capture: CaptureRecord
+    let isManaging: Bool
+    let isSelected: Bool
+    let onToggleSelection: (CaptureRecord) -> Void
     let onDelete: (CaptureRecord) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
+            if isManaging {
+                Button { onToggleSelection(capture) } label: {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                }
+                .buttonStyle(.plain)
+            }
             Image(systemName: capture.imageRelativePath == nil ? "doc.text" : "rectangle.on.rectangle")
                 .frame(width: 34, height: 34)
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
@@ -601,12 +732,88 @@ private struct CaptureRow: View {
                 .foregroundStyle(.tertiary)
             }
             Spacer()
-            Button(role: .destructive) { onDelete(capture) } label: {
-                Image(systemName: "trash")
+            if !isManaging {
+                Button(role: .destructive) { onDelete(capture) } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
             }
-            .buttonStyle(.borderless)
         }
+        .contentShape(Rectangle())
+        .onTapGesture { if isManaging { onToggleSelection(capture) } }
         .padding(.vertical, 8)
+    }
+}
+
+private struct CaptureDeletionSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let captures: [CaptureRecord]
+    let impact: MemoryDeletionImpact
+    let onConfirm: (MemoryDeletionReason, Bool) -> Void
+    @State private var reason: MemoryDeletionReason = .noLongerNeeded
+    @State private var suppressSimilar = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(spacing: 14) {
+                Image(systemName: "trash.slash.fill")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                    .frame(width: 48, height: 48)
+                    .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(captures.count == 1 ? "删除这条记忆？" : "删除 \(captures.count) 条记忆？")
+                        .font(.title2.weight(.semibold))
+                    Text("内容会立即退出搜索与问一问，并在最近删除中保留 7 天。")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            impactCard
+
+            Picker("删除原因", selection: $reason) {
+                ForEach(MemoryDeletionReason.allCases) { Text($0.title).tag($0) }
+            }
+            Toggle("以后也忽略相似内容", isOn: $suppressSimilar)
+            Text("开启后会在本机保存内容特征和来源应用，用于拦截相似采集；可在“隐私与模型”中删除规则。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("移到最近删除", role: .destructive) {
+                    onConfirm(reason, suppressSimilar)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(26)
+        .frame(width: 580)
+    }
+
+    private var impactCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("将同步处理").font(.headline)
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
+                impactLine("本地记录", impact.captureCount, "doc.text")
+                impactLine("原始截图", impact.screenshotCount, "photo")
+                impactLine("受影响总结", impact.summaryCount, "calendar.badge.clock")
+                impactLine("总结条目", impact.summaryItemCount, "list.bullet.rectangle")
+                impactLine("派生提醒", impact.reminderCount, "bell.slash")
+                impactLine("历史回答", impact.conversationCount, "bubble.left.and.bubble.right")
+                impactLine("智能状态", impact.intelligenceCount, "brain.head.profile")
+            }
+        }
+        .padding(16)
+        .background(Color.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func impactLine(_ title: String, _ count: Int, _ icon: String) -> some View {
+        Label("\(title) · \(count)", systemImage: icon)
+            .font(.subheadline)
+            .foregroundStyle(count == 0 ? Color.secondary : Color.primary)
     }
 }
 
@@ -991,6 +1198,7 @@ private struct DailySummariesView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var expandedSummaryID: UUID?
     @State private var visibleSummaryCount = 12
+    @State private var summaryBeingManaged: DailySummary?
 
     private let pageSize = 12
 
@@ -1048,7 +1256,7 @@ private struct DailySummariesView: View {
                     summary: summary,
                     isExpanded: expandedSummaryID == summary.id,
                     onToggle: { toggle(summary) },
-                    onDelete: { model.deleteDailySummary(summary) },
+                    onManage: { summaryBeingManaged = summary },
                     onReviewInsight: { insight, rating in model.reviewInsight(insight, rating: rating) },
                     onUpdateRoutine: { routine, status in model.updateLearnedRoutine(routine, status: status) }
                 )
@@ -1063,6 +1271,10 @@ private struct DailySummariesView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.top, 4)
             }
+        }
+        .sheet(item: $summaryBeingManaged) { summary in
+            DailySummaryManagementSheet(summary: summary)
+                .environmentObject(model)
         }
     }
 
@@ -1130,11 +1342,14 @@ private struct DailySummaryCard: View {
     let summary: DailySummary
     let isExpanded: Bool
     let onToggle: () -> Void
-    let onDelete: () -> Void
+    let onManage: () -> Void
     let onReviewInsight: (PersonalInsight, InsightFeedbackRating) -> Void
     let onUpdateRoutine: (LearnedRoutine, LearnedRoutineStatus) -> Void
 
     private var displayContent: String {
+        if !summary.items.isEmpty {
+            return DailySummaryItemParser.markdown(from: summary.items)
+        }
         guard summary.generationKind == .cloud else {
             return DailySummaryContentFormatter.removingCitationMarkers(from: summary.content)
         }
@@ -1186,13 +1401,18 @@ private struct DailySummaryCard: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                Button("删除", role: .destructive, action: onDelete)
-                    .buttonStyle(.borderless)
-                    .font(.caption)
+                Button(action: onManage) {
+                    Label("管理", systemImage: "slider.horizontal.3")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
             if isExpanded {
                 Divider()
-                if summary.generationKind == .cloud {
+                if !summary.items.isEmpty {
+                    DailySummaryItemsView(items: summary.items)
+                        .textSelection(.enabled)
+                } else if summary.generationKind == .cloud {
                     MarkdownDocumentView(markdown: displayContent)
                         .textSelection(.enabled)
                 } else if let briefing = summary.briefing {
@@ -1229,6 +1449,235 @@ private struct DailySummaryCard: View {
 
     private var routineStates: [UUID: LearnedRoutineStatus] {
         Dictionary(uniqueKeysWithValues: model.state.learnedRoutines.map { ($0.id, $0.status) })
+    }
+}
+
+private struct DailySummaryItemsView: View {
+    let items: [DailySummaryItem]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            ForEach(DailySummarySection.allCases) { section in
+                let sectionItems = items.filter { $0.section == section }
+                if !sectionItems.isEmpty {
+                    VStack(alignment: .leading, spacing: 9) {
+                        Label(section.title, systemImage: section.systemImage)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(color(for: section))
+                        ForEach(sectionItems) { item in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(item.title)
+                                    .font(.system(size: 15, weight: .semibold))
+                                if !item.detail.isEmpty, item.detail != item.title {
+                                    Text(item.detail)
+                                        .font(.system(size: 15))
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .padding(.leading, 2)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func color(for section: DailySummarySection) -> Color {
+        switch section {
+        case .headline, .nextActions: .blue
+        case .progress: .green
+        case .openLoops, .todos: .orange
+        case .insights: .purple
+        case .recent: .teal
+        }
+    }
+}
+
+private struct DailySummaryManagementSheet: View {
+    @EnvironmentObject private var model: RecallAppModel
+    @Environment(\.dismiss) private var dismiss
+    let summary: DailySummary
+    @State private var reason: MemoryDeletionReason = .noLongerNeeded
+    @State private var suppressSimilar = false
+    @State private var pendingForgetItem: DailySummaryItem?
+    @State private var isConfirmingForget = false
+    @State private var isConfirmingSummaryDeletion = false
+    @State private var sourceItem: DailySummaryItem?
+
+    private var currentSummary: DailySummary {
+        model.state.dailySummaries.first(where: { $0.id == summary.id }) ?? summary
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.title2)
+                    .foregroundStyle(.white)
+                    .frame(width: 46, height: 46)
+                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("管理每日总结")
+                        .font(.title2.weight(.semibold))
+                    Text(summary.day.formatted(.dateTime.year().month().day().weekday()))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("完成") { dismiss() }
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(24)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("删除偏好")
+                            .font(.headline)
+                        Picker("原因", selection: $reason) {
+                            ForEach(MemoryDeletionReason.allCases) { Text($0.title).tag($0) }
+                        }
+                        Toggle("彻底忘记时，以后也忽略相似内容", isOn: $suppressSimilar)
+                        Text("“从总结移除”只修改这份展示；“彻底忘记”会删除对应原始记录，并重算总结、提醒和长期记忆。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(16)
+                    .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
+
+                    ForEach(DailySummarySection.allCases) { section in
+                        let sectionItems = currentSummary.items.filter { $0.section == section }
+                        if !sectionItems.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Label(section.title, systemImage: section.systemImage)
+                                    .font(.headline)
+                                ForEach(sectionItems) { item in
+                                    HStack(alignment: .top, spacing: 12) {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(item.title).font(.system(size: 15, weight: .semibold))
+                                            if !item.detail.isEmpty, item.detail != item.title {
+                                                Text(item.detail).font(.system(size: 14)).foregroundStyle(.secondary).lineLimit(3)
+                                            }
+                                            Label("关联 \(item.evidenceIDs.count) 条原始记忆", systemImage: "link")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Button {
+                                            sourceItem = item
+                                        } label: {
+                                            Label("来源", systemImage: "link")
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .disabled(item.evidenceIDs.isEmpty)
+                                        Menu {
+                                            Button("只从这份总结移除") {
+                                                model.removeSummaryItem(item, from: currentSummary, reason: reason)
+                                            }
+                                            Button("彻底忘记关联记录", role: .destructive) {
+                                                pendingForgetItem = item
+                                                isConfirmingForget = true
+                                            }
+                                        } label: {
+                                            Label("处理", systemImage: "ellipsis.circle")
+                                        }
+                                        .menuStyle(.borderlessButton)
+                                        .fixedSize()
+                                    }
+                                    .padding(14)
+                                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(.quaternary, lineWidth: 1))
+                                }
+                            }
+                        }
+                    }
+
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("只删除这份总结").font(.headline)
+                            Text("原始记录会保留，之后仍可重新生成。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("删除总结", role: .destructive) { isConfirmingSummaryDeletion = true }
+                            .buttonStyle(.bordered)
+                    }
+                    .padding(16)
+                    .background(Color.red.opacity(0.04), in: RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.red.opacity(0.18), lineWidth: 1))
+                }
+                .padding(24)
+            }
+        }
+        .frame(width: 760, height: 720)
+        .sheet(item: $sourceItem) { item in
+            SummaryItemSourceSheet(
+                item: item,
+                captures: model.state.captures.filter { item.evidenceIDs.contains($0.id) }
+            )
+        }
+        .confirmationDialog("彻底忘记关联原始记录？", isPresented: $isConfirmingForget, presenting: pendingForgetItem) { item in
+            Button("彻底忘记 \(item.evidenceIDs.count) 条关联记录", role: .destructive) {
+                model.forgetSources(for: item, in: currentSummary, reason: reason, suppressSimilar: suppressSimilar)
+            }
+            Button("取消", role: .cancel) {}
+        } message: { _ in
+            Text("它们会立即退出搜索、问一问和提醒；总结将在撤销窗口后重新计算。")
+        }
+        .confirmationDialog("只删除这份总结？", isPresented: $isConfirmingSummaryDeletion) {
+            Button("删除总结", role: .destructive) {
+                model.deleteDailySummary(currentSummary)
+                dismiss()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("原始记录不会被删除，可在 7 天内从最近删除恢复总结。")
+        }
+    }
+}
+
+private struct SummaryItemSourceSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let item: DailySummaryItem
+    let captures: [CaptureRecord]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("记忆来源").font(.title2.weight(.semibold))
+                    Text(item.title).foregroundStyle(.secondary).lineLimit(2)
+                }
+                Spacer()
+                Button("关闭") { dismiss() }.buttonStyle(.borderedProminent)
+            }
+            .padding(22)
+            Divider()
+            if captures.isEmpty {
+                ContentUnavailableView("来源已不可用", systemImage: "link.badge.plus", description: Text("这可能是旧总结，或关联记录已经被删除。"))
+            } else {
+                List(captures.sorted { $0.createdAt > $1.createdAt }) { capture in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(capture.sourceAppName ?? capture.eventTemplate.title).font(.headline)
+                            Spacer()
+                            Text(capture.createdAt.formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text(capture.summary ?? capture.ocrText)
+                            .font(.system(size: 15))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(5)
+                            .textSelection(.enabled)
+                    }
+                    .padding(.vertical, 6)
+                }
+                .listStyle(.inset)
+            }
+        }
+        .frame(width: 680, height: 520)
     }
 }
 
@@ -2476,6 +2925,9 @@ private struct PrivacyAndModelView: View {
     @State private var activeConfiguration = LLMConfiguration()
     @State private var isEditingModelConnection = false
     @State private var isShowingDiagnostics = false
+    @State private var itemPendingPermanentDeletion: RecentlyDeletedMemory?
+    @State private var isConfirmingPermanentDeletion = false
+    @State private var isConfirmingClearAll = false
 
     var body: some View {
         ScrollView {
@@ -2579,6 +3031,8 @@ private struct PrivacyAndModelView: View {
                     }
                 }
 
+                memoryGovernanceSection
+
                 HStack(alignment: .center, spacing: 14) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
@@ -2587,12 +3041,12 @@ private struct PrivacyAndModelView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("危险操作")
                             .font(.subheadline.weight(.semibold))
-                        Text("删除会同时移除本地记录、关联截图、会话和提醒，且无法撤销。")
+                        Text("清空全部数据不会进入最近删除；仅在确定不再需要任何本地记忆时使用。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("删除全部本地记忆", role: .destructive) { model.clearAllData() }
+                    Button("删除全部本地记忆", role: .destructive) { isConfirmingClearAll = true }
                         .buttonStyle(.bordered)
                 }
                 .padding(16)
@@ -2624,6 +3078,98 @@ private struct PrivacyAndModelView: View {
                 }
             }
         }
+        .confirmationDialog(
+            "永久删除后无法恢复",
+            isPresented: $isConfirmingPermanentDeletion,
+            presenting: itemPendingPermanentDeletion
+        ) { item in
+            Button("永久删除“\(item.label)”", role: .destructive) { model.permanentlyDelete(item) }
+            Button("取消", role: .cancel) {}
+        } message: { _ in
+            Text("关联截图和最近删除快照会从这台 Mac 上清除。")
+        }
+        .confirmationDialog("永久清空全部本地记忆？", isPresented: $isConfirmingClearAll) {
+            Button("永久清空", role: .destructive) { model.clearAllData() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("时间线、问一问、总结、提醒、长期记忆、截图、最近删除和忽略规则都会清除，且无法撤销。设置会保留。")
+        }
+    }
+
+    private var memoryGovernanceSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Label("记忆治理", systemImage: "trash.slash")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                Text("最近删除保留 \(MemoryGovernance.retentionDays) 天")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            Text("删除的内容会立即退出搜索、问一问、总结和派生提醒；你仍可在保留期内恢复。忽略规则只保存在本机，并在采集时生效。")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if model.state.recentlyDeletedMemories.isEmpty && model.state.memorySuppressionRules.isEmpty {
+                HStack(spacing: 12) {
+                    Image(systemName: "checkmark.shield.fill").foregroundStyle(.green)
+                    Text("暂无最近删除内容或忽略规则。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            } else {
+                if !model.state.recentlyDeletedMemories.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("最近删除").font(.headline)
+                        ForEach(model.state.recentlyDeletedMemories.prefix(8)) { item in
+                            HStack(spacing: 12) {
+                                Image(systemName: "trash.circle")
+                                    .foregroundStyle(.orange)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.label).font(.subheadline.weight(.medium)).lineLimit(1)
+                                    Text("\(item.reason.title) · \(item.expiresAt.formatted(.relative(presentation: .named)))永久删除")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("恢复") { model.restoreRecentlyDeleted(item) }
+                                    .buttonStyle(.bordered)
+                                Button("永久删除", role: .destructive) {
+                                    itemPendingPermanentDeletion = item
+                                    isConfirmingPermanentDeletion = true
+                                }
+                                    .buttonStyle(.borderless)
+                            }
+                            .padding(12)
+                            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                }
+
+                if !model.state.memorySuppressionRules.isEmpty {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("以后忽略").font(.headline)
+                        ForEach(model.state.memorySuppressionRules.filter(\.isEnabled).prefix(8)) { rule in
+                            HStack(spacing: 12) {
+                                Image(systemName: "nosign").foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(rule.phrase).font(.subheadline).lineLimit(1)
+                                    Text(rule.reason.title).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("删除规则", role: .destructive) { model.removeSuppressionRule(rule) }
+                                    .buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary, lineWidth: 1))
     }
 
     private var settingsHeader: some View {

@@ -135,7 +135,8 @@ public final class MemoryAssistant {
 
     private func makeSearchableEvidence(from summary: DailySummary) -> CaptureRecord {
         let todoText = summary.todos.map { "\($0.title)：\($0.detail)" }.joined(separator: "\n")
-        let text = [summary.content, todoText].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let governedContent = summary.items.isEmpty ? summary.content : DailySummaryItemParser.markdown(from: summary.items)
+        let text = [governedContent, todoText].filter { !$0.isEmpty }.joined(separator: "\n\n")
         return CaptureRecord(
             id: summary.id,
             eventTemplate: .dailyReview,
@@ -144,7 +145,7 @@ public final class MemoryAssistant {
             sourceBundleIdentifier: "im.recall.daily-summary",
             contentHash: "daily-summary-\(summary.id.uuidString)",
             ocrText: text,
-            summary: String(summary.content.prefix(300)),
+            summary: String(governedContent.prefix(300)),
             tags: ["每日总结"]
         )
     }
