@@ -23,6 +23,9 @@ struct RecallVerifier {
             try await verifyDailySummaryGeneration()
             try await verifyDailySummaryActionPrecision()
             try await verifyDailySummaryPersistenceAndDeletion()
+            try verifyStructuredDailySummaryItems()
+            try await verifyMemoryGovernanceDeletionAndRestore()
+            try await verifySuppressionLearning()
             try verifyPersonalIntelligenceConsolidation()
             try verifyConcreteDailySummarySubjects()
             try verifyInsightFeedbackLearning()
@@ -42,9 +45,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 36 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 39 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 35 integration checks.")
+                print("PASS: RecallVerifier completed 38 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -392,6 +395,126 @@ struct RecallVerifier {
         _ = try await store.deleteCapture(id: capture.id)
         let afterDeletion = await store.snapshot()
         try expect(afterDeletion.dailySummaries.isEmpty, "删除来源记录后应清除包含该内容的每日总结")
+    }
+
+    private static func verifyStructuredDailySummaryItems() throws {
+        let summary = DailySummary(
+            day: .now,
+            content: """
+            ## 今天的主线
+            退款接口：定位重复退款校验缺失
+
+            ## 真正完成的进展
+            - 补充幂等测试：21 项测试通过
+
+            ## 下一步
+            - 提交修复 PR
+            """,
+            sourceCaptureIDs: [UUID()],
+            todos: [],
+            generationKind: .cloud
+        )
+        try expect(summary.items.count == 3, "模型总结没有迁移为可治理的结构化条目")
+        try expect(summary.items.contains(where: { $0.section == .progress && $0.title.contains("补充幂等测试") }), "总结条目没有保留章节和具体事项")
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let restored = try decoder.decode(DailySummary.self, from: encoder.encode(summary))
+        try expect(restored.items == summary.items, "结构化总结条目没有持久化")
+    }
+
+    private static func verifyMemoryGovernanceDeletionAndRestore() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        let captureID = UUID()
+        let screenshotPath = try storage.saveScreenshot(Data("image".utf8), captureID: captureID)
+        let capture = CaptureRecord(
+            id: captureID,
+            eventTemplate: .manualMoment,
+            sourceAppName: "Notes",
+            sourceBundleIdentifier: "com.example.notes",
+            imageRelativePath: screenshotPath,
+            contentHash: "governance-hash",
+            ocrText: "待办：明天提交退款幂等测试",
+            summary: "明天提交退款幂等测试"
+        )
+        let summary = DailySummary(
+            day: capture.createdAt,
+            content: "## 待办与提醒\n- 提交退款幂等测试",
+            sourceCaptureIDs: [capture.id],
+            todos: [],
+            generationKind: .localFallback
+        )
+        let linked = ReminderCandidate(title: "提交退款幂等测试", detail: "派生", sourceCaptureIDs: [capture.id], confidence: 0.9, origin: .discovered)
+        let manual = ReminderCandidate(title: "手动提醒", detail: "保留", confidence: 1, origin: .manual)
+        let answer = ConversationMessage(role: .assistant, content: "请提交退款幂等测试", citations: [capture.id])
+        try await store.addCapture(capture)
+        try await store.upsertDailySummary(summary)
+        try await store.replaceReminders([linked, manual])
+        try await store.addMessage(answer)
+        try await store.updateConversationSummary("压缩摘要包含待办", coveredMessageCount: 1)
+
+        guard let summaryItem = summary.items.first,
+              let itemDeletion = try await store.removeDailySummaryItem(
+                summaryID: summary.id,
+                itemID: summaryItem.id,
+                reason: .inaccurate
+              ) else {
+            throw VerificationError.failed("总结条目无法单独移除")
+        }
+        let afterItemDeletion = await store.snapshot()
+        try expect(afterItemDeletion.dailySummaries.first?.content.contains("提交退款幂等测试") == false, "移除总结条目后旧 Markdown 仍进入检索")
+        _ = try await store.restoreRecentlyDeleted(id: itemDeletion.id)
+
+        let impact = await store.deletionImpact(for: [capture.id])
+        try expect(impact.captureCount == 1 && impact.screenshotCount == 1 && impact.summaryCount == 1, "删除影响预览不准确")
+        try expect(impact.reminderCount == 1 && impact.conversationCount == 1, "删除影响预览没有覆盖提醒或问一问")
+
+        guard let deleted = try await store.moveCapturesToRecentlyDeleted(ids: [capture.id], reason: .inaccurate, suppressSimilar: false) else {
+            throw VerificationError.failed("删除事务没有生成最近删除快照")
+        }
+        let afterDelete = await store.snapshot()
+        try expect(afterDelete.captures.isEmpty && afterDelete.dailySummaries.isEmpty, "删除内容仍在在线记忆路径")
+        try expect(afterDelete.reminders.map(\.id) == [manual.id], "删除来源误删手动提醒或残留派生提醒")
+        try expect(afterDelete.messages.isEmpty && afterDelete.conversationSummary == nil, "删除来源后聊天回答或压缩上下文仍残留")
+        try expect(!FileManager.default.fileExists(atPath: storage.screenshotURL(relativePath: screenshotPath).path), "删除截图没有移出在线目录")
+
+        _ = try await store.restoreRecentlyDeleted(id: deleted.id)
+        let restored = await store.snapshot()
+        try expect(restored.captures.map(\.id) == [capture.id] && restored.dailySummaries.map(\.id) == [summary.id], "撤销没有恢复记录与总结")
+        try expect(Set(restored.reminders.map(\.id)) == Set([linked.id, manual.id]), "撤销没有恢复派生提醒")
+        try expect(restored.messages.map(\.id) == [answer.id] && restored.conversationSummary != nil, "撤销没有恢复聊天上下文")
+        try expect(FileManager.default.fileExists(atPath: storage.screenshotURL(relativePath: screenshotPath).path), "撤销没有恢复截图")
+
+        let expiredAt = Date.now.addingTimeInterval(-8 * 86_400)
+        _ = try await store.moveCapturesToRecentlyDeleted(ids: [capture.id], reason: .noLongerNeeded, suppressSimilar: false, now: expiredAt)
+        let purged = try await store.purgeExpiredRecentlyDeleted(now: .now)
+        let afterPurge = await store.snapshot()
+        try expect(purged == 1 && afterPurge.recentlyDeletedMemories.isEmpty, "过期的最近删除内容没有永久清理")
+    }
+
+    @MainActor
+    private static func verifySuppressionLearning() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        var capture = makeCapture(text: "忽略这段重复的测试记录内容", app: "mockeditor")
+        capture.sourceBundleIdentifier = "com.example.mockeditor"
+        try await store.addCapture(capture)
+        _ = try await store.moveCapturesToRecentlyDeleted(ids: [capture.id], reason: .duplicate, suppressSimilar: true)
+        let pipeline = CapturePipeline(store: store, storage: storage, screenCapturer: MockCapturer(), recognizer: MockRecognizer())
+        let rule = EventRule(template: .manualMoment, isEnabled: true, scope: .textOnly)
+        do {
+            _ = try await pipeline.record(using: rule, userText: "忽略这段重复的测试记录内容")
+            throw VerificationError.failed("已学习的忽略规则没有拦截相似采集")
+        } catch CapturePipelineError.suppressedByUser {
+            // 预期：只在本地拦截，不重新进入时间线、总结和提醒发现。
+        }
     }
 
     private static func verifyDailySummaryActionPrecision() async throws {

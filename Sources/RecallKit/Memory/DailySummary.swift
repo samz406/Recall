@@ -156,6 +156,164 @@ public struct DailySummaryTodo: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+public enum DailySummarySection: String, Codable, CaseIterable, Identifiable, Sendable {
+    case headline
+    case progress
+    case openLoops
+    case insights
+    case todos
+    case recent
+    case nextActions
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .headline: "今天的主线"
+        case .progress: "真正完成的进展"
+        case .openLoops: "尚未闭环"
+        case .insights: "Recall 的发现"
+        case .todos: "待办与提醒"
+        case .recent: "近 14 天提醒与建议"
+        case .nextActions: "下一步"
+        }
+    }
+
+    public var systemImage: String {
+        switch self {
+        case .headline: "scope"
+        case .progress: "checkmark.seal.fill"
+        case .openLoops: "circle.dashed"
+        case .insights: "sparkles"
+        case .todos: "checklist"
+        case .recent: "calendar.badge.clock"
+        case .nextActions: "arrow.up.right.circle.fill"
+        }
+    }
+}
+
+public struct DailySummaryItem: Identifiable, Codable, Hashable, Sendable {
+    public var id: UUID
+    public var section: DailySummarySection
+    public var title: String
+    public var detail: String
+    public var evidenceIDs: [UUID]
+
+    public init(
+        id: UUID = UUID(),
+        section: DailySummarySection,
+        title: String,
+        detail: String = "",
+        evidenceIDs: [UUID] = []
+    ) {
+        self.id = id
+        self.section = section
+        self.title = title
+        self.detail = detail
+        self.evidenceIDs = evidenceIDs
+    }
+}
+
+public enum DailySummaryItemParser {
+    /// 将模型 Markdown 转成可单项治理的数据。旧总结会在首次加载时自动完成迁移。
+    public static func items(from content: String, defaultEvidenceIDs: [UUID]) -> [DailySummaryItem] {
+        var currentSection: DailySummarySection?
+        var result: [DailySummaryItem] = []
+        for rawLine in DailySummaryContentFormatter.removingCitationMarkers(from: content).components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            if line.hasPrefix("#") {
+                currentSection = section(for: line.replacingOccurrences(of: "#", with: "").trimmingCharacters(in: .whitespaces))
+                continue
+            }
+            guard let currentSection else { continue }
+            let cleaned = line.replacingOccurrences(of: #"^[-*+]\s+"#, with: "", options: .regularExpression)
+                .replacingOccurrences(of: #"^\d+[\.、]\s*"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard cleaned.count >= 2, !isPlaceholder(cleaned) else { continue }
+            let parts = cleaned.split(separator: "：", maxSplits: 1).map(String.init)
+            let title = parts.count == 2 ? parts[0] : String(cleaned.prefix(42))
+            let detail = parts.count == 2 ? parts[1] : (cleaned.count > 42 ? cleaned : "")
+            result.append(DailySummaryItem(
+                section: currentSection,
+                title: title,
+                detail: detail,
+                evidenceIDs: defaultEvidenceIDs
+            ))
+        }
+        return result
+    }
+
+    public static func items(
+        from content: String,
+        briefing: DailyBriefing?,
+        todos: [DailySummaryTodo],
+        defaultEvidenceIDs: [UUID]
+    ) -> [DailySummaryItem] {
+        var parsed = items(from: content, defaultEvidenceIDs: defaultEvidenceIDs)
+        var evidence: [(text: String, ids: [UUID])] = todos.map { ("\($0.title) \($0.detail)", $0.sourceCaptureIDs) }
+        if let briefing {
+            evidence.append(contentsOf: briefing.progress.map { ("\($0.title) \($0.detail)", $0.evidenceIDs) })
+            evidence.append(contentsOf: briefing.openLoops.map { ("\($0.title) \($0.detail)", $0.evidenceIDs) })
+            evidence.append(contentsOf: briefing.nextActions.map { ("\($0.title) \($0.detail)", $0.evidenceIDs) })
+            evidence.append(contentsOf: briefing.insights.map { ("\($0.title) \($0.detail)", $0.evidenceIDs) })
+        }
+        for index in parsed.indices {
+            let itemText = normalized("\(parsed[index].title) \(parsed[index].detail)")
+            guard let match = evidence.first(where: { candidate in
+                let candidateText = normalized(candidate.text)
+                return candidate.ids.isEmpty == false && (
+                    candidateText.contains(itemText) || itemText.contains(candidateText) ||
+                    overlap(itemText, candidateText) >= 2
+                )
+            }) else { continue }
+            parsed[index].evidenceIDs = match.ids
+        }
+        return parsed
+    }
+
+    public static func markdown(from items: [DailySummaryItem]) -> String {
+        DailySummarySection.allCases.compactMap { section in
+            let values = items.filter { $0.section == section }
+            guard !values.isEmpty else { return nil }
+            let lines = values.map { item in
+                item.detail.isEmpty || item.detail == item.title
+                    ? "- \(item.title)"
+                    : "- \(item.title)：\(item.detail)"
+            }
+            return "## \(section.title)\n\n" + lines.joined(separator: "\n")
+        }
+        .joined(separator: "\n\n")
+    }
+
+    private static func section(for heading: String) -> DailySummarySection? {
+        let compact = heading.replacingOccurrences(of: " ", with: "")
+        if compact.contains("主线") { return .headline }
+        if compact.contains("真正完成") || compact == "进展" { return .progress }
+        if compact.contains("尚未闭环") || compact.contains("未闭环") { return .openLoops }
+        if compact.contains("发现") { return .insights }
+        if compact.contains("待办") { return .todos }
+        if compact.contains("14天") || compact.contains("十四天") { return .recent }
+        if compact.contains("下一步") { return .nextActions }
+        return nil
+    }
+
+    private static func isPlaceholder(_ text: String) -> Bool {
+        ["未发现明确待办", "暂无需要主动打断你的建议", "无需要继续跟进的明确事项"].contains(text)
+    }
+
+    private static func normalized(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).lowercased()
+    }
+
+    private static func overlap(_ lhs: String, _ rhs: String) -> Int {
+        let separators = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
+        let left = Set(lhs.components(separatedBy: separators).filter { $0.count >= 2 })
+        let right = Set(rhs.components(separatedBy: separators).filter { $0.count >= 2 })
+        return left.intersection(right).count
+    }
+}
+
 public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     /// 总结所对应的本地自然日，始终归一化为当天零点。
@@ -167,6 +325,8 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
     public var generationKind: DailySummaryGenerationKind
     /// 模型可用时 `content` 是主要展示；结构化简报用于本地兜底与后台状态整理。
     public var briefing: DailyBriefing?
+    /// 结构化展示与条目级删除的数据源。Markdown 仅作为兼容与导出格式保留。
+    public var items: [DailySummaryItem]
 
     public init(
         id: UUID = UUID(),
@@ -176,7 +336,8 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
         sourceCaptureIDs: [UUID],
         todos: [DailySummaryTodo],
         generationKind: DailySummaryGenerationKind,
-        briefing: DailyBriefing? = nil
+        briefing: DailyBriefing? = nil,
+        items: [DailySummaryItem]? = nil
     ) {
         self.id = id
         self.day = Calendar.current.startOfDay(for: day)
@@ -186,6 +347,30 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
         self.todos = todos
         self.generationKind = generationKind
         self.briefing = briefing
+        self.items = items ?? DailySummaryItemParser.items(
+            from: content,
+            briefing: briefing,
+            todos: todos,
+            defaultEvidenceIDs: sourceCaptureIDs
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, day, createdAt, content, sourceCaptureIDs, todos, generationKind, briefing, items
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        day = Calendar.current.startOfDay(for: try container.decode(Date.self, forKey: .day))
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        content = try container.decode(String.self, forKey: .content)
+        sourceCaptureIDs = try container.decodeIfPresent([UUID].self, forKey: .sourceCaptureIDs) ?? []
+        todos = try container.decodeIfPresent([DailySummaryTodo].self, forKey: .todos) ?? []
+        generationKind = try container.decodeIfPresent(DailySummaryGenerationKind.self, forKey: .generationKind) ?? .localFallback
+        briefing = try container.decodeIfPresent(DailyBriefing.self, forKey: .briefing)
+        items = try container.decodeIfPresent([DailySummaryItem].self, forKey: .items)
+            ?? DailySummaryItemParser.items(from: content, briefing: briefing, todos: todos, defaultEvidenceIDs: sourceCaptureIDs)
     }
 }
 

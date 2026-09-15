@@ -10,6 +10,7 @@ public enum CapturePipelineError: LocalizedError {
     case noShareableWindow
     case captureExcluded(String)
     case duplicateCapture
+    case suppressedByUser
     case screenshotUnavailable
 
     public var errorDescription: String? {
@@ -18,6 +19,7 @@ public enum CapturePipelineError: LocalizedError {
         case .noShareableWindow: "找不到可供记录的当前窗口。"
         case .captureExcluded(let reason): reason
         case .duplicateCapture: "检测到与刚才相同的内容，已跳过重复记录。"
+        case .suppressedByUser: "这条内容符合你设置的忽略规则，已跳过记录。"
         case .screenshotUnavailable: "未能取得当前窗口的截图。"
         }
     }
@@ -168,6 +170,11 @@ public final class CapturePipeline {
             extractedText = ""
         }
         let redactedText = privacyEngine.redact(extractedText)
+        guard !currentState.memorySuppressionRules.contains(where: {
+            $0.matches(text: redactedText, sourceBundleIdentifier: payload.sourceBundleIdentifier)
+        }) else {
+            throw CapturePipelineError.suppressedByUser
+        }
         let digestSource = payload.imageData ?? Data(redactedText.utf8)
         let contentHash = SHA256.hash(data: digestSource).map { String(format: "%02x", $0) }.joined()
         guard !(await store.hasRecentHash(contentHash)) else { throw CapturePipelineError.duplicateCapture }

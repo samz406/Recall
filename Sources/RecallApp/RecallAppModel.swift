@@ -21,6 +21,7 @@ final class RecallAppModel: ObservableObject {
     @Published private(set) var typingMessageID: UUID?
     @Published private(set) var typingMessageContent = ""
     @Published var noticeMessage: String?
+    @Published private(set) var deletionUndoNotice: RecentlyDeletedMemory?
     @Published private(set) var enterKeyMonitorStatus: GlobalEnterKeyRecorderStatus = .disabled
     @Published private(set) var diagnosticEntries: [RecallDiagnosticEntry]
     @Published private(set) var reminderDeliveryStates: [UUID: ReminderDeliveryState] = [:]
@@ -62,6 +63,7 @@ final class RecallAppModel: ObservableObject {
                 Task { @MainActor [weak self] in self?.handleReminderNotificationAction(id: id, action: action) }
             }
             Task {
+                _ = try? await store.purgeExpiredRecentlyDeleted()
                 await refresh()
                 try? notificationScheduler.configureReminderActions()
                 discoverReminders(force: false, announce: false)
@@ -267,22 +269,139 @@ final class RecallAppModel: ObservableObject {
                 recordDiagnostic(.warning, source: diagnosticSource, message: "屏幕权限不可用", metadata: ["eventTemplate": rule.template.rawValue])
                 // 记录失败不应阻塞其他本地功能；提醒发现只读取已有记录，无需此权限。
                 noticeMessage = "未能截图记录：如需保存屏幕内容，请在系统设置中允许屏幕与系统音频录制。"
+            } catch CapturePipelineError.suppressedByUser {
+                recordDiagnostic(.info, source: diagnosticSource, message: "内容命中本地忽略规则，已跳过")
             } catch {
                 recordDiagnostic(.error, source: diagnosticSource, message: "记录失败", metadata: ["eventTemplate": rule.template.rawValue, "error": recallSafeErrorCode(error)])
             }
         }
     }
 
-    func deleteCapture(_ capture: CaptureRecord) {
-        let derivedReminders = state.reminders.filter { $0.sourceCaptureIDs.contains(capture.id) }
+    func deletionImpact(for captures: [CaptureRecord]) -> MemoryDeletionImpact {
+        MemoryGovernance.impact(of: Set(captures.map(\.id)), in: state)
+    }
+
+    func deleteCaptures(
+        _ captures: [CaptureRecord],
+        reason: MemoryDeletionReason,
+        suppressSimilar: Bool
+    ) {
+        let ids = Set(captures.map(\.id))
+        let derivedReminders = state.reminders.filter { reminder in
+            reminder.origin != .manual && ids.contains(where: reminder.sourceCaptureIDs.contains)
+        }
         Task {
             do {
+                guard let transaction = try await store.moveCapturesToRecentlyDeleted(
+                    ids: ids,
+                    reason: reason,
+                    suppressSimilar: suppressSimilar
+                ) else { return }
                 notificationScheduler.cancelAll(derivedReminders)
-                try await pipeline.removeCapture(capture)
                 await refresh()
-                noticeMessage = "已删除该记录及其关联截图。"
+                deletionUndoNotice = transaction
+                scheduleDerivedDataRebuild(after: transaction)
             } catch {
                 recordError(error, source: "Capture", message: "删除记录失败")
+            }
+        }
+    }
+
+    func deleteCapture(_ capture: CaptureRecord) {
+        deleteCaptures([capture], reason: .noLongerNeeded, suppressSimilar: false)
+    }
+
+    func deleteDailySummary(_ summary: DailySummary) {
+        Task {
+            do {
+                guard let transaction = try await store.moveDailySummaryToRecentlyDeleted(id: summary.id) else { return }
+                await refresh()
+                deletionUndoNotice = transaction
+            } catch {
+                recordError(error, source: "DailySummary", message: "删除每日总结失败")
+            }
+        }
+    }
+
+    func removeSummaryItem(_ item: DailySummaryItem, from summary: DailySummary, reason: MemoryDeletionReason) {
+        Task {
+            do {
+                guard let transaction = try await store.removeDailySummaryItem(
+                    summaryID: summary.id,
+                    itemID: item.id,
+                    reason: reason
+                ) else { return }
+                await refresh()
+                deletionUndoNotice = transaction
+            } catch {
+                recordError(error, source: "DailySummary", message: "移除总结条目失败")
+            }
+        }
+    }
+
+    func forgetSources(for item: DailySummaryItem, in summary: DailySummary, reason: MemoryDeletionReason, suppressSimilar: Bool) {
+        let ids = Set(item.evidenceIDs.isEmpty ? summary.sourceCaptureIDs : item.evidenceIDs)
+        let captures = state.captures.filter { ids.contains($0.id) }
+        deleteCaptures(captures, reason: reason, suppressSimilar: suppressSimilar)
+    }
+
+    func restoreRecentlyDeleted(_ item: RecentlyDeletedMemory) {
+        Task {
+            do {
+                guard let restored = try await store.restoreRecentlyDeleted(id: item.id) else { return }
+                await refresh()
+                if deletionUndoNotice?.id == item.id { deletionUndoNotice = nil }
+                for reminder in restored.reminders where reminder.status == .scheduled || reminder.status == .snoozed {
+                    try? await notificationScheduler.schedule(reminder)
+                }
+                noticeMessage = "已恢复“\(restored.label)”。"
+            } catch {
+                recordError(error, source: "MemoryGovernance", message: "恢复删除内容失败")
+            }
+        }
+    }
+
+    func undoLastDeletion() {
+        guard let item = deletionUndoNotice else { return }
+        restoreRecentlyDeleted(item)
+    }
+
+    func dismissDeletionUndoNotice() {
+        deletionUndoNotice = nil
+    }
+
+    func permanentlyDelete(_ item: RecentlyDeletedMemory) {
+        Task {
+            do {
+                try await store.purgeRecentlyDeleted(id: item.id)
+                await refresh()
+                if deletionUndoNotice?.id == item.id { deletionUndoNotice = nil }
+                noticeMessage = "已永久删除。"
+            } catch {
+                recordError(error, source: "MemoryGovernance", message: "永久删除失败")
+            }
+        }
+    }
+
+    func removeSuppressionRule(_ rule: MemorySuppressionRule) {
+        Task {
+            do {
+                try await store.removeSuppressionRule(id: rule.id)
+                await refresh()
+            } catch {
+                recordError(error, source: "MemoryGovernance", message: "删除忽略规则失败")
+            }
+        }
+    }
+
+    private func scheduleDerivedDataRebuild(after transaction: RecentlyDeletedMemory) {
+        guard !transaction.affectedDays.isEmpty else { return }
+        Task {
+            try? await Task.sleep(for: .seconds(10))
+            let current = await store.snapshot()
+            guard current.recentlyDeletedMemories.contains(where: { $0.id == transaction.id }) else { return }
+            for day in transaction.affectedDays.sorted() {
+                generateDailySummary(for: day, reason: .rebuildAfterDeletion)
             }
         }
     }
@@ -658,18 +777,6 @@ final class RecallAppModel: ObservableObject {
         generateDailySummary(for: previousDay, reason: .manual)
     }
 
-    func deleteDailySummary(_ summary: DailySummary) {
-        Task {
-            do {
-                try await store.deleteDailySummary(id: summary.id)
-                await refresh()
-                noticeMessage = "已删除该每日总结。"
-            } catch {
-                recordError(error, source: "DailySummary", message: "删除每日总结失败")
-            }
-        }
-    }
-
     func updateLLM(configuration: LLMConfiguration, apiKey: String?) {
         Task {
             do {
@@ -711,6 +818,7 @@ final class RecallAppModel: ObservableObject {
     private enum DailySummaryReason {
         case scheduled
         case manual
+        case rebuildAfterDeletion
     }
 
     private func generateDailySummary(for day: Date, reason: DailySummaryReason) {
@@ -765,9 +873,11 @@ final class RecallAppModel: ObservableObject {
                     discoverReminders(force: false, announce: false)
                 }
                 let mode = summary.generationKind == .cloud ? "模型总结" : "本地回退摘要"
-                noticeMessage = "已生成 \(day.formatted(date: .abbreviated, time: .omitted)) 的\(mode)。"
+                if reason != .rebuildAfterDeletion {
+                    noticeMessage = "已生成 \(day.formatted(date: .abbreviated, time: .omitted)) 的\(mode)。"
+                }
                 recordDiagnostic(.info, source: "DailySummary", message: "每日总结已生成", metadata: [
-                    "reason": reason == .scheduled ? "scheduled" : "manual",
+                    "reason": reason == .scheduled ? "scheduled" : (reason == .manual ? "manual" : "deletionRebuild"),
                     "generation": summary.generationKind.rawValue,
                     "sourceCount": "\(summary.sourceCaptureIDs.count)",
                     "todoCount": "\(summary.todos.count)"
@@ -897,18 +1007,13 @@ final class RecallAppModel: ObservableObject {
     }
 
     func clearAllData() {
-        let captures = state.captures
         let reminders = state.reminders
         Task {
             do {
                 notificationScheduler.cancelAll(reminders)
-                for capture in captures {
-                    try await pipeline.removeCapture(capture)
-                }
-                try await store.clearReminderData()
-                try await store.clearDailySummaries()
-                try await store.clearPersonalIntelligence()
+                try await store.clearAllMemoryData()
                 await refresh()
+                deletionUndoNotice = nil
                 noticeMessage = "已删除全部本地记忆记录。"
             } catch {
                 recordError(error, source: "Data", message: "清除本地数据失败")
