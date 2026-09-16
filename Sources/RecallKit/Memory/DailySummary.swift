@@ -94,10 +94,14 @@ public enum DailySummaryContentFormatter {
     }
 
     private static func normalizedAction(_ candidate: String) -> String? {
-        let action = candidate
+        var action = candidate
             .replacingOccurrences(of: #"^\s*(?:[-*•]+|\d+[.、)])\s*"#, with: "", options: .regularExpression)
             .replacingOccurrences(of: "**", with: "")
             .trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n:：·-—"))
+        let parts = action.split(maxSplits: 1, whereSeparator: { $0 == ":" || $0 == "：" }).map(String.init)
+        if parts.count == 2, isNoiseTitle(parts[0]) {
+            action = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         let compact = action.replacingOccurrences(of: #"[\s\p{P}\p{S}]+"#, with: "", options: .regularExpression)
         guard compact.count >= 4, compact.count <= 120 else { return nil }
         let generic = ["今天", "明天", "后天", "本周", "下周", "近期", "以后", "后续", "继续", "处理", "推进", "看看", "待办", "待确认", "暂无", "没有", "无"]
@@ -116,6 +120,11 @@ public enum DailySummaryContentFormatter {
         ]
         guard actionCues.contains(where: action.contains) else { return nil }
         return action
+    }
+
+    fileprivate static func isNoiseTitle(_ text: String) -> Bool {
+        let compact = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return compact.range(of: #"^[A-Za-z0-9]$"#, options: .regularExpression) != nil
     }
 }
 
@@ -231,9 +240,13 @@ public enum DailySummaryItemParser {
                 .replacingOccurrences(of: #"^\d+[\.、]\s*"#, with: "", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard cleaned.count >= 2, !isPlaceholder(cleaned) else { continue }
-            let parts = cleaned.split(separator: "：", maxSplits: 1).map(String.init)
-            let title = parts.count == 2 ? parts[0] : String(cleaned.prefix(42))
-            let detail = parts.count == 2 ? parts[1] : (cleaned.count > 42 ? cleaned : "")
+            let parts = cleaned.split(maxSplits: 1, whereSeparator: { $0 == ":" || $0 == "：" }).map(String.init)
+            var title = parts.count == 2 ? parts[0] : String(cleaned.prefix(42))
+            var detail = parts.count == 2 ? parts[1] : (cleaned.count > 42 ? cleaned : "")
+            if DailySummaryContentFormatter.isNoiseTitle(title), !detail.isEmpty {
+                title = detail
+                detail = ""
+            }
             result.append(DailySummaryItem(
                 section: currentSection,
                 title: title,
@@ -273,7 +286,8 @@ public enum DailySummaryItemParser {
     }
 
     public static func markdown(from items: [DailySummaryItem]) -> String {
-        DailySummarySection.allCases.compactMap { section in
+        let items = sanitized(items)
+        return DailySummarySection.allCases.compactMap { section in
             let values = items.filter { $0.section == section }
             guard !values.isEmpty else { return nil }
             let lines = values.map { item in
@@ -284,6 +298,18 @@ public enum DailySummaryItemParser {
             return "## \(section.title)\n\n" + lines.joined(separator: "\n")
         }
         .joined(separator: "\n\n")
+    }
+
+    /// 修复旧总结里由 OCR/模型残留产生的单字符标题，例如 `c：具体动作`。
+    /// 这类字符没有业务含义，保留冒号后的完整事项作为标题。
+    public static func sanitized(_ items: [DailySummaryItem]) -> [DailySummaryItem] {
+        items.map { item in
+            guard DailySummaryContentFormatter.isNoiseTitle(item.title), !item.detail.isEmpty else { return item }
+            var sanitized = item
+            sanitized.title = item.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            sanitized.detail = ""
+            return sanitized
+        }
     }
 
     private static func section(for heading: String) -> DailySummarySection? {
@@ -347,12 +373,12 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
         self.todos = todos
         self.generationKind = generationKind
         self.briefing = briefing
-        self.items = items ?? DailySummaryItemParser.items(
+        self.items = DailySummaryItemParser.sanitized(items ?? DailySummaryItemParser.items(
             from: content,
             briefing: briefing,
             todos: todos,
             defaultEvidenceIDs: sourceCaptureIDs
-        )
+        ))
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -369,8 +395,9 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
         todos = try container.decodeIfPresent([DailySummaryTodo].self, forKey: .todos) ?? []
         generationKind = try container.decodeIfPresent(DailySummaryGenerationKind.self, forKey: .generationKind) ?? .localFallback
         briefing = try container.decodeIfPresent(DailyBriefing.self, forKey: .briefing)
-        items = try container.decodeIfPresent([DailySummaryItem].self, forKey: .items)
+        let decodedItems = try container.decodeIfPresent([DailySummaryItem].self, forKey: .items)
             ?? DailySummaryItemParser.items(from: content, briefing: briefing, todos: todos, defaultEvidenceIDs: sourceCaptureIDs)
+        items = DailySummaryItemParser.sanitized(decodedItems)
     }
 }
 
