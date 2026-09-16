@@ -50,14 +50,6 @@ struct RecallRootView: View {
                         .controlSize(.small)
                 }
             }
-            // macOS 26 会把工具栏的毛玻璃背衬错误地定位到详情栏中部，形成横贯页面的白条。
-            .toolbarBackground(.hidden, for: .windowToolbar)
-            // 隐藏系统工具栏背衬后，ScrollView 会继续绘制到透明标题栏下方。
-            // 用固定、完全不透明的遮罩保护窗口标题，不改变各页面原有的滚动位置和顶部间距。
-            .overlay(alignment: .top) {
-                DetailTitlebarShield()
-                    .zIndex(90)
-            }
         }
         .sheet(isPresented: $showingRecordSheet) {
             RecordSheet()
@@ -107,23 +99,6 @@ struct RecallRootView: View {
 
     private var proposedReminderCount: Int {
         model.state.reminders.filter { $0.status == .proposed }.count
-    }
-}
-
-private struct DetailTitlebarShield: View {
-    private let minimumTitlebarHeight: CGFloat = 48
-
-    var body: some View {
-        GeometryReader { proxy in
-            Color(nsColor: .windowBackgroundColor)
-                .frame(height: max(proxy.safeAreaInsets.top, minimumTitlebarHeight))
-                .overlay(alignment: .bottom) {
-                    Divider().opacity(0.45)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }
 

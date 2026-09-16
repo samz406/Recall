@@ -103,11 +103,21 @@ private struct MainWindowActivationBridge: NSViewRepresentable {
     private final class ActivationView: NSView {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            guard window != nil else { return }
-            window?.isReleasedWhenClosed = false
+            guard let window else { return }
+            configure(window)
             DispatchQueue.main.async {
+                self.configure(window)
                 RecallAppDelegate.activateMainWindow()
             }
+        }
+
+        /// 使用标准 macOS 标题栏布局，让 SwiftUI 内容区从标题栏下方开始。
+        /// 这样 ScrollView 会在内容区边界裁剪，不需要额外遮罩，也不会再与窗口标题重叠。
+        private func configure(_ window: NSWindow) {
+            window.isReleasedWhenClosed = false
+            window.titlebarAppearsTransparent = false
+            window.titleVisibility = .visible
+            window.styleMask.remove(.fullSizeContentView)
         }
     }
 }
