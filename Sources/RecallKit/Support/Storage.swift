@@ -449,7 +449,7 @@ public actor FileMemoryStore {
         )
         state.dailySummaries[index].items.removeAll { $0.id == itemID }
         state.dailySummaries[index].content = DailySummaryItemParser.markdown(from: state.dailySummaries[index].items)
-        if item.section == .todos {
+        if item.section.canonical == .actions {
             let itemEvidence = Set(item.evidenceIDs)
             state.dailySummaries[index].todos.removeAll { todo in
                 todo.title == item.title || (!itemEvidence.isEmpty && !todo.sourceCaptureIDs.filter(itemEvidence.contains).isEmpty)
