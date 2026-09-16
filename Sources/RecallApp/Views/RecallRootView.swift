@@ -94,7 +94,9 @@ struct RecallRootView: View {
     }
 
     private var highPrioritySummaryTodoCount: Int {
-        model.state.dailySummaries.first?.todos.filter { $0.priority == .high }.count ?? 0
+        model.state.dailySummaries.first?.todos.filter {
+            $0.priority == .high && ($0.status == .pending || $0.status == .inProgress)
+        }.count ?? 0
     }
 
     private var proposedReminderCount: Int {
@@ -1387,8 +1389,8 @@ private struct DailySummaryCard: View {
                                 .font(.headline)
                             HStack(spacing: 8) {
                                 Label(summary.generationKind == .cloud ? "模型生成" : "本地摘要", systemImage: summary.generationKind == .cloud ? "cpu" : "text.document")
-                                if !summary.todos.isEmpty {
-                                    Label("\(summary.todos.count) 项待办", systemImage: "checklist")
+                                if activeActionCount > 0 {
+                                    Label("\(activeActionCount) 项待处理", systemImage: "checklist")
                                 }
                             }
                             .font(.caption)
@@ -1448,6 +1450,10 @@ private struct DailySummaryCard: View {
     private var routineStates: [UUID: LearnedRoutineStatus] {
         Dictionary(uniqueKeysWithValues: model.state.learnedRoutines.map { ($0.id, $0.status) })
     }
+
+    private var activeActionCount: Int {
+        summary.todos.filter { $0.status == .pending || $0.status == .inProgress }.count
+    }
 }
 
 private struct DailySummaryItemsView: View {
@@ -1455,19 +1461,30 @@ private struct DailySummaryItemsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            ForEach(DailySummarySection.allCases) { section in
+            ForEach(DailySummarySection.displaySections) { section in
                 let sectionItems = items.filter { $0.section == section }
                 if !sectionItems.isEmpty {
                     VStack(alignment: .leading, spacing: 9) {
                         Label(section.title, systemImage: section.systemImage)
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(color(for: section))
-                        ForEach(sectionItems) { item in
+                        ForEach(Array(sectionItems.enumerated()), id: \.element.id) { entry in
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(item.title)
-                                    .font(.system(size: 15, weight: .semibold))
-                                if !item.detail.isEmpty, item.detail != item.title {
-                                    Text(item.detail)
+                                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                                    if section == .actions, entry.offset == 0 {
+                                        Text("建议先做")
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(.orange)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Color.orange.opacity(0.1), in: Capsule())
+                                    }
+                                    Text(entry.element.title)
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                if !entry.element.detail.isEmpty, entry.element.detail != entry.element.title {
+                                    Text(entry.element.detail)
                                         .font(.system(size: 15))
                                         .foregroundStyle(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
@@ -1485,7 +1502,7 @@ private struct DailySummaryItemsView: View {
         switch section {
         case .headline, .nextActions: .blue
         case .progress: .green
-        case .openLoops, .todos: .orange
+        case .openLoops, .todos, .actions: .orange
         case .insights: .purple
         case .recent: .teal
         }
@@ -1528,7 +1545,7 @@ private struct DailySummaryManagementSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    ForEach(DailySummarySection.allCases) { section in
+                    ForEach(DailySummarySection.displaySections) { section in
                         let sectionItems = currentSummary.items.filter { $0.section == section }
                         if !sectionItems.isEmpty {
                             VStack(alignment: .leading, spacing: 10) {
@@ -1741,24 +1758,25 @@ private struct DailyBriefingView: View {
                     .font(.title2)
                     .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("今天的主线").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text("今天推进了什么").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Text(clean(briefing.headline)).font(.system(size: 15, weight: .semibold))
                 }
             }
-            briefingSection("真正完成的进展", icon: "checkmark.seal.fill", color: .green, items: briefing.progress, empty: "暂未识别出形成结果的关键进展。")
-            briefingSection("尚未闭环", icon: "circle.dashed", color: .orange, items: briefing.openLoops, empty: "未发现有明确证据的未闭环事项。")
+            if !briefing.progress.isEmpty {
+                briefingSection("具体进展", icon: "checkmark.seal.fill", color: .green, items: briefing.progress, empty: "")
+            }
+            if !actionItems.isEmpty {
+                briefingSection("接下来要处理", icon: "checklist", color: .orange, items: actionItems, empty: "")
+            }
 
-            if !briefing.insights.isEmpty {
+            let visibleInsights = briefing.insights.filter { $0.confidence >= 0.55 }
+            if !visibleInsights.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
-                    sectionTitle("Recall 的发现", icon: "sparkles", color: .purple)
-                    ForEach(briefing.insights) { insight in
+                    sectionTitle("值得留意", icon: "sparkles", color: .purple)
+                    ForEach(visibleInsights) { insight in
                         VStack(alignment: .leading, spacing: 7) {
-                            HStack {
-                                Text(clean(insight.title)).font(.system(size: 15, weight: .semibold))
-                                Spacer()
-                                Text("置信度 \(Int(insight.confidence * 100))%")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                            }
+                            Text(clean(insight.confidence < 0.75 ? "可能：\(insight.title)" : insight.title))
+                                .font(.system(size: 15, weight: .semibold))
                             Text(clean(insight.detail)).font(.system(size: 15)).foregroundStyle(.secondary)
                             if let recommendation = insight.recommendation {
                                 Label(clean(recommendation), systemImage: "arrow.right.circle.fill")
@@ -1772,8 +1790,6 @@ private struct DailyBriefingView: View {
                     }
                 }
             }
-
-            briefingSection("下一步", icon: "arrow.up.right.circle.fill", color: .blue, items: briefing.nextActions, empty: "暂无需要主动打断你的建议。")
             routineReview
         }
         .textSelection(.enabled)
@@ -1801,6 +1817,16 @@ private struct DailyBriefingView: View {
         Label(title, systemImage: icon)
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(color)
+    }
+
+    private var actionItems: [BriefingItem] {
+        var seen: Set<String> = []
+        return (briefing.openLoops + briefing.nextActions).filter { item in
+            let key = "\(item.title)\(item.detail)"
+                .replacingOccurrences(of: #"[\s\p{P}\p{S}]+"#, with: "", options: .regularExpression)
+                .lowercased()
+            return seen.insert(key).inserted
+        }
     }
 
     @ViewBuilder

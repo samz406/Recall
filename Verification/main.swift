@@ -360,12 +360,13 @@ struct RecallVerifier {
         )
         try expect(generation.generationKind == .localFallback, "未配置模型时应生成本地回退摘要")
         try expect(generation.sourceCaptureIDs == [source.id], "每日总结混入了非目标日期或旧回顾记录")
-        try expect(generation.todos.count == 1, "每日总结没有提取待办事项")
-        try expect(generation.todos.first?.priority == .high, "带有建议时间的待办应被标为优先处理")
-        try expect(generation.content.contains("个人简报"), "本地每日总结缺少可读摘要正文")
+        try expect(generation.actions.contains(where: { $0.title.contains("回复客户") }), "每日总结没有提取明确行动事项")
+        try expect(generation.actions.first(where: { $0.title.contains("回复客户") })?.priority == .high, "带有建议时间的行动应被标为建议先做")
+        try expect(generation.content.contains("今天推进了什么"), "本地每日总结缺少当天进展区块")
         try expect(!generation.briefing.headline.isEmpty && !generation.briefing.progress.isEmpty, "每日总结没有形成结构化工作主线")
-        try expect(generation.content.contains("近 14 天提醒与建议"), "每日总结缺少跨周期提醒区块")
-        try expect(generation.content.contains("跟进客户报价"), "近十四天已保存总结中的待办没有被聚合")
+        try expect(generation.content.contains("接下来要处理"), "本地每日总结缺少统一行动区块")
+        try expect(!generation.content.contains("近 14 天提醒与建议"), "时间筛选范围仍被错误展示为独立内容板块")
+        try expect(!generation.content.contains("跟进客户报价"), "历史总结快照中的待办被再次复制到当天行动区块")
         try expect(!generation.content.contains("过期历史待办"), "十四天窗口外的历史总结不应参与聚合")
         let cleaned = DailySummaryContentFormatter.removingCitationMarkers(from: "修复跨域配置 [16]，完成验证[1][2]，保留【优先处理】。")
         try expect(cleaned == "修复跨域配置，完成验证，保留【优先处理】。", "每日总结没有移除数字来源标记")
@@ -416,6 +417,41 @@ struct RecallVerifier {
         )
         try expect(summary.items.count == 3, "模型总结没有迁移为可治理的结构化条目")
         try expect(summary.items.contains(where: { $0.section == .progress && $0.title.contains("补充幂等测试") }), "总结条目没有保留章节和具体事项")
+        try expect(Set(summary.items.map(\.section)).isSubset(of: Set(DailySummarySection.displaySections)), "旧版七类总结没有迁移到三个用户维度")
+
+        let longTitle = "回复李林关于 Android 测试机的机型与系统版本并确认华为设备上的整体裁剪问题是否已经完成复现"
+        let untruncated = DailySummary(
+            day: .now,
+            content: "## 接下来要处理\n- \(longTitle)",
+            sourceCaptureIDs: [],
+            todos: [],
+            generationKind: .cloud
+        )
+        try expect(untruncated.items.first?.title == longTitle, "无说明的长事项仍被程序按字符数截断")
+        try expect(untruncated.items.first?.detail.isEmpty == true, "完整事项被重复写入详情")
+
+        let duplicatedLegacy = DailySummary(
+            day: .now,
+            content: """
+            ## 尚未闭环
+            - 补充退款幂等测试并提交 PR
+            ## 待办与提醒
+            - 【待办】补充退款幂等测试并提交 PR
+            ## 下一步
+            - 补充退款幂等测试并提交 PR
+            """,
+            sourceCaptureIDs: [],
+            todos: [],
+            generationKind: .cloud
+        )
+        try expect(duplicatedLegacy.items.count == 1 && duplicatedLegacy.items.first?.section == .actions, "旧版待办、未闭环和下一步没有归并去重")
+
+        let structuredJSON = """
+        {"headline":"今天推进退款链路修复","progress":[{"title":"补充幂等校验","detail":"21 项测试通过"}],"actions":[{"title":"提交退款修复 PR","detail":"等待评审"}],"insights":[{"title":"跨证据比较","detail":"客户端与服务端问题由同一组协作人并行推进","confidence":0.81},{"title":"低价值猜测","detail":"证据很弱","confidence":0.3}]}
+        """
+        let structuredItems = DailySummaryItemParser.itemsFromModelResponse(structuredJSON, defaultEvidenceIDs: []) ?? []
+        try expect(structuredItems.filter { $0.section == .insights }.count == 1, "低置信度发现没有在后台过滤")
+        try expect(!structuredItems.contains(where: { $0.title.contains("跨证据比较") || $0.title.contains("置信度") }), "算法术语仍暴露给普通用户")
 
         let noisy = DailySummary(
             day: .now,
@@ -539,7 +575,7 @@ struct RecallVerifier {
         let withoutAction = DailySummaryContentFormatter.normalizingNextActionSection(
             in: "## 今天的主线\n修复每日回顾。\n\n## 下一步\n\n- 继续"
         )
-        try expect(!withoutAction.contains("## 下一步"), "没有具体动作时仍展示空洞的下一步小节")
+        try expect(!withoutAction.contains("## 接下来要处理"), "没有具体动作时仍展示空洞的行动小节")
 
         let noisyPrefix = DailySummaryContentFormatter.normalizingNextActionSection(
             in: "## 今天的主线\n修复订单状态。\n\n## 下一步\n\n- c：定时任务扫描明细全终态但订单未完成的订单做补偿"
@@ -576,7 +612,7 @@ struct RecallVerifier {
             calendar: calendar
         )
         try expect(!generated.content.contains("以系统流程为中心"), "长期产品方向仍被误报为当前跟进行动")
-        try expect(generated.content.contains("补充退款幂等测试并提交 PR"), "明确历史动作被错误过滤")
+        try expect(!generated.content.contains("补充退款幂等测试并提交 PR"), "已保存总结快照中的历史动作仍被复制到当天总结")
     }
 
     private static func verifyPersonalIntelligenceConsolidation() throws {

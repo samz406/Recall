@@ -858,7 +858,8 @@ final class RecallAppModel: ObservableObject {
                     sourceCaptureIDs: generation.sourceCaptureIDs,
                     todos: generation.todos,
                     generationKind: generation.generationKind,
-                    briefing: generation.briefing
+                    briefing: generation.briefing,
+                    items: generation.items
                 )
                 try await store.commitDailySummary(summary, consolidation: generation.consolidation)
                 await refresh()
