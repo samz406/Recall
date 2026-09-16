@@ -1498,10 +1498,7 @@ private struct DailySummaryManagementSheet: View {
     @EnvironmentObject private var model: RecallAppModel
     @Environment(\.dismiss) private var dismiss
     let summary: DailySummary
-    @State private var reason: MemoryDeletionReason = .noLongerNeeded
-    @State private var suppressSimilar = false
     @State private var pendingForgetItem: DailySummaryItem?
-    @State private var isConfirmingForget = false
     @State private var isConfirmingSummaryDeletion = false
     @State private var sourceItem: DailySummaryItem?
 
@@ -1533,20 +1530,6 @@ private struct DailySummaryManagementSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("删除偏好")
-                            .font(.headline)
-                        Picker("原因", selection: $reason) {
-                            ForEach(MemoryDeletionReason.allCases) { Text($0.title).tag($0) }
-                        }
-                        Toggle("彻底忘记时，以后也忽略相似内容", isOn: $suppressSimilar)
-                        Text("“从总结移除”只修改这份展示；“彻底忘记”会删除对应原始记录，并重算总结、提醒和长期记忆。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(16)
-                    .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
-
                     ForEach(DailySummarySection.allCases) { section in
                         let sectionItems = currentSummary.items.filter { $0.section == section }
                         if !sectionItems.isEmpty {
@@ -1573,12 +1556,11 @@ private struct DailySummaryManagementSheet: View {
                                         .buttonStyle(.borderless)
                                         .disabled(item.evidenceIDs.isEmpty)
                                         Menu {
-                                            Button("只从这份总结移除") {
-                                                model.removeSummaryItem(item, from: currentSummary, reason: reason)
+                                            Button("只删除这条总结内容") {
+                                                model.removeSummaryItem(item, from: currentSummary, reason: .noLongerNeeded)
                                             }
-                                            Button("彻底忘记关联记录", role: .destructive) {
+                                            Button("连同原始记录一起删除…", role: .destructive) {
                                                 pendingForgetItem = item
-                                                isConfirmingForget = true
                                             }
                                         } label: {
                                             Label("处理", systemImage: "ellipsis.circle")
@@ -1618,13 +1600,18 @@ private struct DailySummaryManagementSheet: View {
                 captures: model.state.captures.filter { item.evidenceIDs.contains($0.id) }
             )
         }
-        .confirmationDialog("彻底忘记关联原始记录？", isPresented: $isConfirmingForget, presenting: pendingForgetItem) { item in
-            Button("彻底忘记 \(item.evidenceIDs.count) 条关联记录", role: .destructive) {
-                model.forgetSources(for: item, in: currentSummary, reason: reason, suppressSimilar: suppressSimilar)
+        .sheet(item: $pendingForgetItem) { item in
+            SummarySourceDeletionSheet(
+                item: item,
+                sourceCount: item.evidenceIDs.isEmpty ? currentSummary.sourceCaptureIDs.count : item.evidenceIDs.count
+            ) { reason, suppressSimilar in
+                model.forgetSources(
+                    for: item,
+                    in: currentSummary,
+                    reason: reason,
+                    suppressSimilar: suppressSimilar
+                )
             }
-            Button("取消", role: .cancel) {}
-        } message: { _ in
-            Text("它们会立即退出搜索、问一问和提醒；总结将在撤销窗口后重新计算。")
         }
         .confirmationDialog("只删除这份总结？", isPresented: $isConfirmingSummaryDeletion) {
             Button("删除总结", role: .destructive) {
@@ -1635,6 +1622,67 @@ private struct DailySummaryManagementSheet: View {
         } message: {
             Text("原始记录不会被删除，可在 7 天内从最近删除恢复总结。")
         }
+    }
+}
+
+private struct SummarySourceDeletionSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let item: DailySummaryItem
+    let sourceCount: Int
+    let onConfirm: (MemoryDeletionReason, Bool) -> Void
+    @State private var reason: MemoryDeletionReason = .noLongerNeeded
+    @State private var suppressSimilar = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "trash.slash.fill")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                    .frame(width: 48, height: 48)
+                    .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("删除内容和原始记录？")
+                        .font(.title2.weight(.semibold))
+                    Text(item.title)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Label("本次会删除 \(sourceCount) 条来源记录", systemImage: "doc.text.magnifyingglass")
+                    .font(.headline)
+                Text("相关内容会退出时间线、搜索、问一问和派生提醒，并在“最近删除”中保留 7 天。")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .background(Color.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
+
+            Picker("为什么删除（仅用于本机整理）", selection: $reason) {
+                ForEach(MemoryDeletionReason.allCases) { Text($0.title).tag($0) }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("以后不再记录类似内容", isOn: $suppressSimilar)
+                Text("可选。它只影响之后的新采集，不会改变本次删除的内容和范围；过滤规则可在“隐私与模型”中移除。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Button("取消") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("删除内容和原始记录", role: .destructive) {
+                    onConfirm(reason, suppressSimilar)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(26)
+        .frame(width: 590)
     }
 }
 

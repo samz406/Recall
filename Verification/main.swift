@@ -417,6 +417,16 @@ struct RecallVerifier {
         try expect(summary.items.count == 3, "模型总结没有迁移为可治理的结构化条目")
         try expect(summary.items.contains(where: { $0.section == .progress && $0.title.contains("补充幂等测试") }), "总结条目没有保留章节和具体事项")
 
+        let noisy = DailySummary(
+            day: .now,
+            content: "## 下一步\n- c：定时任务扫描明细全终态但订单未完成的订单做补偿",
+            sourceCaptureIDs: [],
+            todos: [],
+            generationKind: .cloud
+        )
+        try expect(noisy.items.first?.title == "定时任务扫描明细全终态但订单未完成的订单做补偿", "单字符 OCR 噪声仍被当作总结标题")
+        try expect(noisy.items.first?.detail.isEmpty == true, "清理噪声标题后仍重复展示详情")
+
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let decoder = JSONDecoder()
@@ -530,6 +540,12 @@ struct RecallVerifier {
             in: "## 今天的主线\n修复每日回顾。\n\n## 下一步\n\n- 继续"
         )
         try expect(!withoutAction.contains("## 下一步"), "没有具体动作时仍展示空洞的下一步小节")
+
+        let noisyPrefix = DailySummaryContentFormatter.normalizingNextActionSection(
+            in: "## 今天的主线\n修复订单状态。\n\n## 下一步\n\n- c：定时任务扫描明细全终态但订单未完成的订单做补偿"
+        )
+        try expect(!noisyPrefix.contains("- c："), "单字符噪声仍出现在下一步标题中")
+        try expect(noisyPrefix.contains("定时任务扫描明细全终态但订单未完成的订单做补偿"), "清理噪声时误删了具体下一步")
 
         let calendar = Calendar.current
         let day = calendar.startOfDay(for: .now)
