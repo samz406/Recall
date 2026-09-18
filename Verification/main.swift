@@ -430,6 +430,33 @@ struct RecallVerifier {
         try expect(untruncated.items.first?.title == longTitle, "无说明的长事项仍被程序按字符数截断")
         try expect(untruncated.items.first?.detail.isEmpty == true, "完整事项被重复写入详情")
 
+        let legacyFullTitle = "设计文档《回调订单状态并发竞态修复.md》待补全（根因、修复 SQL、方案对比、锁与死锁分析、测试计划、上线验证步骤）"
+        let repairedLegacy = DailySummary(
+            day: .now,
+            content: "## 近14天提醒与建议\n- \(legacyFullTitle)",
+            sourceCaptureIDs: [],
+            todos: [],
+            generationKind: .cloud,
+            items: [DailySummaryItem(
+                section: .recent,
+                title: String(legacyFullTitle.prefix(42)),
+                detail: legacyFullTitle
+            )]
+        )
+        try expect(repairedLegacy.items.first?.title == legacyFullTitle, "旧版 42 字截断条目没有在加载时恢复完整标题")
+        try expect(repairedLegacy.items.first?.detail.isEmpty == true, "旧版标题前缀与完整详情仍被重复展示")
+
+        let migratedEmptyItems = DailySummary(
+            day: .now,
+            content: "## 近14天提醒与建议\n- \(legacyFullTitle)",
+            sourceCaptureIDs: [],
+            todos: [],
+            generationKind: .cloud,
+            items: []
+        )
+        try expect(migratedEmptyItems.items.first?.title == legacyFullTitle, "已保存的空条目数组绕过了旧 Markdown 迁移")
+        try expect(migratedEmptyItems.items.first?.section == .actions, "近 14 天旧栏目没有迁移到统一行动事项")
+
         let duplicatedLegacy = DailySummary(
             day: .now,
             content: """
@@ -447,11 +474,12 @@ struct RecallVerifier {
         try expect(duplicatedLegacy.items.count == 1 && duplicatedLegacy.items.first?.section == .actions, "旧版待办、未闭环和下一步没有归并去重")
 
         let structuredJSON = """
-        {"headline":"今天推进退款链路修复","progress":[{"title":"补充幂等校验","detail":"21 项测试通过"}],"actions":[{"title":"提交退款修复 PR","detail":"等待评审"}],"insights":[{"title":"跨证据比较","detail":"客户端与服务端问题由同一组协作人并行推进","confidence":0.81},{"title":"低价值猜测","detail":"证据很弱","confidence":0.3}]}
+        {"headline":"**今天推进退款链路修复**","progress":[{"title":"**补充幂等校验**","detail":"21 项测试通过"}],"actions":[{"title":"**提交退款修复 PR**","detail":"等待评审"}],"insights":[{"title":"**跨证据比较**","detail":"客户端与服务端问题由同一组协作人并行推进","confidence":0.81},{"title":"低价值猜测","detail":"证据很弱","confidence":0.3}]}
         """
         let structuredItems = DailySummaryItemParser.itemsFromModelResponse(structuredJSON, defaultEvidenceIDs: []) ?? []
         try expect(structuredItems.filter { $0.section == .insights }.count == 1, "低置信度发现没有在后台过滤")
         try expect(!structuredItems.contains(where: { $0.title.contains("跨证据比较") || $0.title.contains("置信度") }), "算法术语仍暴露给普通用户")
+        try expect(!structuredItems.contains(where: { $0.title.contains("**") || $0.detail.contains("**") }), "模型返回的 Markdown 加粗标记仍被当成普通文字展示")
 
         let noisy = DailySummary(
             day: .now,

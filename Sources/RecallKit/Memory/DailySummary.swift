@@ -15,6 +15,12 @@ public enum DailySummaryContentFormatter {
         )
     }
 
+    /// 结构化条目最终由 SwiftUI `Text` 展示，不再经过 Markdown 渲染。
+    /// 模型偶尔仍会返回 `**标题**`，因此在进入数据模型时统一移除强调标记。
+    public static func removingMarkdownEmphasisMarkers(from content: String) -> String {
+        content.replacingOccurrences(of: "**", with: "")
+    }
+
     /// 兼容旧版 Markdown：把“未闭环/待办/近 14 天/下一步”统一归入行动事项，
     /// 并过滤“今天”“继续”这类无法执行的占位词。
     public static func normalizingNextActionSection(
@@ -391,6 +397,8 @@ public enum DailySummaryItemParser {
         for original in items {
             var item = original
             item.section = item.section.canonical
+            item.title = DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: item.title)
+            item.detail = DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: item.detail)
             if DailySummaryContentFormatter.isNoiseTitle(item.title), !item.detail.isEmpty {
                 item.title = item.detail.trimmingCharacters(in: .whitespacesAndNewlines)
                 item.detail = ""
@@ -413,6 +421,7 @@ public enum DailySummaryItemParser {
             }
             item.title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
             item.detail = item.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            repairLegacyPrefixDuplication(in: &item)
             guard !item.title.isEmpty else { continue }
 
             if let duplicateIndex = result.firstIndex(where: { isDuplicate($0, item) }) {
@@ -425,6 +434,18 @@ public enum DailySummaryItemParser {
             }
         }
         return result
+    }
+
+    /// 旧版曾把无冒号的长句截成前 42 个字符作为标题，同时把完整句子放进详情。
+    /// 已保存的数据仍会带着这个形态；加载时恢复完整标题并清空重复详情。
+    private static func repairLegacyPrefixDuplication(in item: inout DailySummaryItem) {
+        guard !item.detail.isEmpty else { return }
+        if item.detail == item.title || item.detail.hasPrefix(item.title) {
+            item.title = item.detail
+            item.detail = ""
+        } else if item.title.hasPrefix(item.detail) {
+            item.detail = ""
+        }
     }
 
     private static func isCategoricalActionTitle(_ title: String) -> Bool {
@@ -559,12 +580,16 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
         self.todos = todos
         self.generationKind = generationKind
         self.briefing = briefing
-        self.items = DailySummaryItemParser.sanitized(items ?? DailySummaryItemParser.items(
-            from: content,
-            briefing: briefing,
-            todos: todos,
-            defaultEvidenceIDs: sourceCaptureIDs
-        ))
+        let persistedItems = items ?? []
+        let resolvedItems = persistedItems.isEmpty && !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? DailySummaryItemParser.items(
+                from: content,
+                briefing: briefing,
+                todos: todos,
+                defaultEvidenceIDs: sourceCaptureIDs
+            )
+            : persistedItems
+        self.items = DailySummaryItemParser.sanitized(resolvedItems)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -581,8 +606,15 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
         todos = try container.decodeIfPresent([DailySummaryTodo].self, forKey: .todos) ?? []
         generationKind = try container.decodeIfPresent(DailySummaryGenerationKind.self, forKey: .generationKind) ?? .localFallback
         briefing = try container.decodeIfPresent(DailyBriefing.self, forKey: .briefing)
-        let decodedItems = try container.decodeIfPresent([DailySummaryItem].self, forKey: .items)
-            ?? DailySummaryItemParser.items(from: content, briefing: briefing, todos: todos, defaultEvidenceIDs: sourceCaptureIDs)
+        let persistedItems = try container.decodeIfPresent([DailySummaryItem].self, forKey: .items) ?? []
+        let decodedItems = persistedItems.isEmpty && !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? DailySummaryItemParser.items(
+                from: content,
+                briefing: briefing,
+                todos: todos,
+                defaultEvidenceIDs: sourceCaptureIDs
+            )
+            : persistedItems
         items = DailySummaryItemParser.sanitized(decodedItems)
     }
 }
