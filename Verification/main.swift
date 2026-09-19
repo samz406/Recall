@@ -474,12 +474,13 @@ struct RecallVerifier {
         try expect(duplicatedLegacy.items.count == 1 && duplicatedLegacy.items.first?.section == .actions, "旧版待办、未闭环和下一步没有归并去重")
 
         let structuredJSON = """
-        {"headline":"**今天推进退款链路修复**","progress":[{"title":"**补充幂等校验**","detail":"21 项测试通过"}],"actions":[{"title":"**提交退款修复 PR**","detail":"等待评审"}],"insights":[{"title":"**跨证据比较**","detail":"客户端与服务端问题由同一组协作人并行推进","confidence":0.81},{"title":"低价值猜测","detail":"证据很弱","confidence":0.3}]}
+        {"headline":"**今天推进退款链路修复** [19][22]","progress":[{"title":"**补充幂等校验**","detail":"21 项测试通过 [23][24]"}],"actions":[{"title":"**提交退款修复 PR** [32]","detail":"等待评审"}],"insights":[{"title":"**跨证据比较**","detail":"客户端与服务端问题由同一组协作人并行推进 [33][34]","confidence":0.81},{"title":"低价值猜测","detail":"证据很弱","confidence":0.3}]}
         """
         let structuredItems = DailySummaryItemParser.itemsFromModelResponse(structuredJSON, defaultEvidenceIDs: []) ?? []
         try expect(structuredItems.filter { $0.section == .insights }.count == 1, "低置信度发现没有在后台过滤")
         try expect(!structuredItems.contains(where: { $0.title.contains("跨证据比较") || $0.title.contains("置信度") }), "算法术语仍暴露给普通用户")
         try expect(!structuredItems.contains(where: { $0.title.contains("**") || $0.detail.contains("**") }), "模型返回的 Markdown 加粗标记仍被当成普通文字展示")
+        try expect(!structuredItems.contains(where: { $0.title.range(of: #"\[\d+\]"#, options: .regularExpression) != nil || $0.detail.range(of: #"\[\d+\]"#, options: .regularExpression) != nil }), "结构化模型条目仍展示引用编号")
 
         let noisy = DailySummary(
             day: .now,

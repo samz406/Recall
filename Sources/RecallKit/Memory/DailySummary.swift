@@ -397,8 +397,8 @@ public enum DailySummaryItemParser {
         for original in items {
             var item = original
             item.section = item.section.canonical
-            item.title = DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: item.title)
-            item.detail = DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: item.detail)
+            item.title = sanitizedText(item.title)
+            item.detail = sanitizedText(item.detail)
             if DailySummaryContentFormatter.isNoiseTitle(item.title), !item.detail.isEmpty {
                 item.title = item.detail.trimmingCharacters(in: .whitespacesAndNewlines)
                 item.detail = ""
@@ -434,6 +434,14 @@ public enum DailySummaryItemParser {
             }
         }
         return result
+    }
+
+    /// 模型 JSON、旧版 Markdown 和本地简报最终都会进入结构化条目；
+    /// 在这一层统一清理展示标记，避免某条生成路径遗漏引用编号或 Markdown 符号。
+    private static func sanitizedText(_ text: String) -> String {
+        DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(
+            from: DailySummaryContentFormatter.removingCitationMarkers(from: text)
+        )
     }
 
     /// 旧版曾把无冒号的长句截成前 42 个字符作为标题，同时把完整句子放进详情。
