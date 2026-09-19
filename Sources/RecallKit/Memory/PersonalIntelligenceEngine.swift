@@ -99,7 +99,7 @@ public struct PersonalIntelligenceEngine: Sendable {
         let ranked = bucket.records.sorted { recordSignal($0) > recordSignal($1) }
         let representative = ranked.first ?? bucket.records[0]
         let action = meaningfulExcerpt(from: representative)
-        let combined = bucket.records.map(\.ocrText).joined(separator: "\n")
+        let combined = bucket.records.map(userOwnedText).joined(separator: "\n")
         let status = episodeStatus(from: combined)
         let outcome = [.completed, .progressed].contains(status) ? outcomeExcerpt(from: bucket.records) : nil
         let nextAction = extractNextAction(from: bucket.records)
@@ -299,6 +299,8 @@ public struct PersonalIntelligenceEngine: Sendable {
             let sentences = record.ocrText
                 .components(separatedBy: CharacterSet(charactersIn: "。！？!?\n"))
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.hasPrefix("[聊天·对方]") && !$0.hasPrefix("[聊天·角色未知]") }
+                .map { $0.replacingOccurrences(of: "[聊天·自己]", with: "") }
                 .filter { !$0.isEmpty && $0.count <= 220 }
             for sentence in sentences {
                 guard let match = cues.first(where: { _, words in words.contains(where: sentence.contains) }) else { continue }
@@ -465,7 +467,7 @@ public struct PersonalIntelligenceEngine: Sendable {
     }
 
     private func concreteWorkSubject(for record: CaptureRecord) -> String? {
-        let text = record.summary?.nonEmpty ?? record.ocrText
+        let text = userOwnedText(record)
         let patterns = [
             #"(?:今天|昨日|昨天|上午|下午|晚上)?\s*(?:已经|已|正在|继续|计划|准备|需要)?\s*(?:完成|推进|修复|优化|重构|开发|实现|排查|分析|设计|验证|测试|提交|发布|处理|讨论|调研|编写|接入|迁移|解决)[了\s:：·-]*([^，。；！？!?\n]{3,56})(?=[，。；！？!?\n]|$)"#,
             #"(?:待办|下一步|后续)[\s:：·-]+([^，。；！？!?\n]{3,56})(?=[，。；！？!?\n]|$)"#
@@ -567,7 +569,7 @@ public struct PersonalIntelligenceEngine: Sendable {
     private func outcomeExcerpt(from records: [CaptureRecord]) -> String? {
         let cues = ["已完成", "完成了", "测试通过", "构建通过", "已合并", "上线", "done", "passed", "merged", "实现", "修复"]
         return records.reversed().compactMap { record in
-            sentences(in: record.ocrText).first(where: { sentence in containsAny(sentence.lowercased(), cues) })
+            sentences(in: userOwnedText(record)).first(where: { sentence in containsAny(sentence.lowercased(), cues) })
         }.first.map { String($0.prefix(180)) }
     }
 
@@ -579,19 +581,37 @@ public struct PersonalIntelligenceEngine: Sendable {
     }
 
     private func meaningfulExcerpt(from record: CaptureRecord) -> String {
-        let source = record.summary?.nonEmpty ?? record.ocrText
+        let source = userOwnedText(record)
         let clean = source.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         return String(clean.prefix(220))
     }
 
     private func recordSignal(_ record: CaptureRecord) -> Double {
-        let text = record.ocrText.lowercased()
+        let text = userOwnedText(record).lowercased()
         var score = 0.34
         if record.eventTemplate == .taskCommitment || record.eventTemplate == .documentMilestone { score += 0.18 }
         if containsAny(text, ["完成", "通过", "决定", "结论", "待办", "下一步", "阻塞", "失败", "merged", "passed"]) { score += 0.24 }
         if text.count > 80 { score += 0.08 }
         if record.windowTitle?.nonEmpty != nil { score += 0.06 }
         return min(score, 1)
+    }
+
+    /// 普通文档沿用原摘要；聊天截图只允许右侧“自己”的话参与用户进展、结果和长期记忆推断。
+    /// 对方提出的请求仍可由 ReminderExtractor 识别为待处理动作，但不会被写成“用户已决定/已完成”。
+    private func userOwnedText(_ record: CaptureRecord) -> String {
+        guard record.ocrText.contains("[聊天·") else {
+            return record.summary?.nonEmpty ?? record.ocrText
+        }
+        return record.ocrText
+            .components(separatedBy: .newlines)
+            .compactMap { line -> String? in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard trimmed.hasPrefix("[聊天·自己]") else { return nil }
+                return trimmed.replacingOccurrences(of: "[聊天·自己]", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
     }
 
     private func novelty(of kind: PersonalInsightKind, comparedWith previous: [PersonalInsight]) -> Double {

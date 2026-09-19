@@ -721,7 +721,9 @@ public struct DailySummaryGenerator: Sendable {
             minimized.imageRelativePath = nil
             minimized.windowTitle = nil
             let rawExcerpt = String(record.ocrText.prefix(maxCharactersPerRecord))
-            if let summary = record.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
+            // 聊天角色标签比旧的本地纯文本摘要更可靠；不能让摘要再次抹掉“谁说的”。
+            if !record.ocrText.contains("[聊天·"),
+               let summary = record.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
                 minimized.ocrText = "本地摘要：\(String(summary.prefix(280)))\n原始摘录：\(rawExcerpt)"
             } else {
                 minimized.ocrText = rawExcerpt
@@ -1076,6 +1078,8 @@ public struct DailySummaryGenerator: Sendable {
         应用名、工具名和网站名（例如微信、企业微信、Chrome、IDE、终端）只能作为证据来源，绝不能直接充当“主线”“进展”“尚未闭环”“发现”或行动建议的事项名称。每项结论必须落到可验证的具体事情，例如某个项目、功能、问题、交付物、决定或下一步动作；无法从证据中识别具体事情时，明确写“证据不足”，不要用工具名代替，也不要猜测。
 
         先做证据清洗：丢弃菜单、通讯录、标签页列表、搜索词列表、终端噪声、单独的 commit 哈希、截断乱码和重复截图；证据中出现非 \(date) 的旧日期时，不得把旧内容当作当天进展。只有“完成/合并/提交”却没有说明完成了什么，也不得列为进展。最多保留 3 条主线，每条用“具体事项 + 实际变化/结果 + 下一步”表达；多条证据指向同一事项时必须合并，禁止把互不相关的 OCR 片段拼成一个标题。
+
+        聊天证据中的“[聊天·自己]”表示用户在右侧发送的内容，“[聊天·对方]”表示左侧联系人或助手的内容，“[聊天·角色未知]”表示无法可靠判断。只有“自己”的表达才能作为用户的决定、承诺、偏好、经历或已完成事项；“对方”的请求可以形成用户待处理动作，但必须明确是对方提出，绝不能改写成用户已经决定或完成；角色未知时不得推断说话人。
 
         insights 最多 3 项，只写跨记录比较后才成立且对用户有决策价值的判断；单条记录、网页标签、导航文字和模型回复不得直接当作用户事实。confidence 是仅供后台过滤的 0 到 1 数值，正文标题禁止出现“置信度”“跨证据比较”“行为模式”等算法术语；证据不足时返回空数组。
 

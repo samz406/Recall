@@ -8,6 +8,7 @@ struct RecallVerifier {
             try verifyDefaultEventTemplates()
             try await verifyEventRuleMigration()
             try verifyPrivacy()
+            try verifyConversationRoleRecognition()
             try verifySearch()
             try verifyChineseNaturalLanguageSearch()
             try verifyNaturalLanguageTimeRanges()
@@ -89,6 +90,27 @@ struct RecallVerifier {
         try expect(!redacted.contains("super-secret"), "密码未被脱敏")
         let decision = engine.decision(for: "com.example.private", settings: PrivacySettings(excludedBundleIdentifiers: ["com.example.private"]))
         try expect(!decision.mayCapture, "排除应用仍被允许采集")
+    }
+
+    private static func verifyConversationRoleRecognition() throws {
+        let lines = [
+            PositionedTextLine(text: "请明天回复报价", boundingBox: CGRect(x: 0.04, y: 0.7, width: 0.55, height: 0.08)),
+            PositionedTextLine(text: "好的，我上午处理", boundingBox: CGRect(x: 0.47, y: 0.5, width: 0.49, height: 0.08)),
+            PositionedTextLine(text: "昨天 18:30", boundingBox: CGRect(x: 0.46, y: 0.4, width: 0.08, height: 0.04))
+        ]
+        let conversation = ConversationOCRFormatter.format(lines, context: .conversation)
+        try expect(conversation.contains("[聊天·对方] 请明天回复报价"), "聊天左侧内容没有标记为对方")
+        try expect(conversation.contains("[聊天·自己] 好的，我上午处理"), "聊天右侧内容没有标记为自己")
+        try expect(conversation.contains("[聊天·角色未知] 昨天 18:30"), "聊天中部内容不应强行归属角色")
+
+        let document = ConversationOCRFormatter.format(lines, context: .document)
+        try expect(!document.contains("[聊天·"), "普通文档 OCR 不应添加聊天角色")
+
+        let capture = makeCapture(text: "[聊天·对方] 我喜欢每天开会\n[聊天·自己] 我不喜欢没有结论的会议", app: "微信")
+        let consolidation = PersonalIntelligenceEngine().consolidate(day: capture.createdAt, records: [capture])
+        let memories = consolidation.memories.map(\.content).joined(separator: "\n")
+        try expect(!memories.contains("我喜欢每天开会"), "对方的话被错误写入用户长期记忆")
+        try expect(memories.contains("我不喜欢没有结论的会议"), "用户自己说的话没有进入长期记忆")
     }
 
     private static func verifySearch() throws {
