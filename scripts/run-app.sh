@@ -18,15 +18,22 @@ BIN_DIR="$(swift build --show-bin-path -c "$CONFIGURATION")"
 EXECUTABLE="$BIN_DIR/RecallApp"
 APP_BUNDLE="$ROOT_DIR/.build/Recall.app"
 CONTENTS="$APP_BUNDLE/Contents"
+ICON_SOURCE="$ROOT_DIR/Resources/AppIcon.icns"
 
 if [[ ! -x "$EXECUTABLE" ]]; then
   echo "RecallApp executable was not produced at: $EXECUTABLE" >&2
   exit 1
 fi
 
+if [[ ! -s "$ICON_SOURCE" ]]; then
+  echo "Recall app icon was not found at: $ICON_SOURCE" >&2
+  exit 1
+fi
+
 rm -rf "$APP_BUNDLE"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$EXECUTABLE" "$CONTENTS/MacOS/RecallApp"
+cp "$ICON_SOURCE" "$CONTENTS/Resources/AppIcon.icns"
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -41,6 +48,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <string>RecallApp</string>
     <key>CFBundleIdentifier</key>
     <string>im.recall.app</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
