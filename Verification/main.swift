@@ -208,9 +208,12 @@ struct RecallVerifier {
         let articleAdvice = makeCapture(text: "不要问“今天我要完成多少事”，而要问“我长期到底在构建什么”；截止：2026年9月21日 9:00", app: "Chrome", createdAt: base)
         let vagueFragment = makeCapture(text: "下一步是修复", app: "Orca", createdAt: base)
         let assistantPrompt = makeCapture(text: "生产环境需要登录才能验证，问下你想怎么处理：", app: "Orca", createdAt: base)
+        let principleNote = makeCapture(text: "的一条底层原则：Leader 的目标不是完成任务，而是让整个系统稳定完成任务", app: "flomo", createdAt: base)
+        let networkError = makeCapture(text: "网络异常，请检查网络后再试", app: "flomo", createdAt: base)
+        let knowledgeNote = makeCapture(text: "解释为什么人坐下来却干不了活：脑子同时挂着过去的懊悔、未来的任务、未完成事项", app: "flomo", createdAt: base)
 
         let candidates = ReminderExtractor().candidates(
-            from: [first, duplicate, deadlineOnly, uncertainQuestion, codeNoise, menuNoise, ocrNoise, commitNoise, completed, articleAdvice, vagueFragment, assistantPrompt],
+            from: [first, duplicate, deadlineOnly, uncertainQuestion, codeNoise, menuNoise, ocrNoise, commitNoise, completed, articleAdvice, vagueFragment, assistantPrompt, principleNote, networkError, knowledgeNote],
             existing: []
         )
         try expect(candidates.count == 1, "提醒精度过滤未排除疑问句、完成态、截止标签、菜单或代码噪声")
@@ -634,9 +637,13 @@ struct RecallVerifier {
         let badActions = DailySummaryItemParser.sanitized([
             DailySummaryItem(section: .actions, title: "不要问“今天我要完成多少事”", detail: "而要问“我长期到底在构建什么”"),
             DailySummaryItem(section: .actions, title: "下一步是修复", detail: "下一步是修复"),
-            DailySummaryItem(section: .actions, title: "生产环境需要登录才能验证，问下你想怎么处理：")
+            DailySummaryItem(section: .actions, title: "生产环境需要登录才能验证，问下你想怎么处理："),
+            DailySummaryItem(section: .actions, title: "的一条底层原则：Leader 的目标不是完成任务"),
+            DailySummaryItem(section: .actions, title: "网络异常，请检查网络后再试"),
+            DailySummaryItem(section: .actions, title: "解释为什么人坐下来却干不了活：脑子同时挂着过去的懊悔、未来的任务、未完成事项")
         ])
         try expect(badActions.isEmpty, "文章观点、助手追问或无对象残句仍被归入接下来要处理")
+        try expect(DailySummaryItemParser.markdown(from: badActions).isEmpty, "没有明确行动时仍展示接下来要处理模块")
 
         let noisyPrefix = DailySummaryContentFormatter.normalizingNextActionSection(
             in: "## 今天的主线\n修复订单状态。\n\n## 下一步\n\n- c：定时任务扫描明细全终态但订单未完成的订单做补偿"

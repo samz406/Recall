@@ -150,14 +150,19 @@ public enum DailySummaryContentFormatter {
     private static func looksLikeAdviceOrPrompt(_ text: String) -> Bool {
         let compact = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let advicePatterns = [
-            "不要问", "而要问", "你应该问", "建议思考", "文章提到", "文中提到", "举例来说"
+            "不要问", "而要问", "你应该问", "建议思考", "文章提到", "文中提到", "举例来说",
+            "底层原则", "目标不是完成任务", "解释为什么", "脑子同时挂着", "的一条"
         ]
         let promptPatterns = [
             "你想怎么处理", "您想怎么处理", "问下你", "请告诉我", "你希望我", "您希望我",
             "需要我怎么", "接下来想做什么", "还有什么需要处理"
         ]
+        let systemMessages = [
+            "网络异常", "网络错误", "连接失败", "请求失败", "服务异常", "请检查网络", "稍后重试"
+        ]
         return advicePatterns.contains(where: compact.contains)
             || promptPatterns.contains(where: compact.contains)
+            || systemMessages.contains(where: compact.contains)
             || compact.hasSuffix("：")
             || compact.hasSuffix(":")
             || compact.hasSuffix("？")
@@ -1140,7 +1145,7 @@ public struct DailySummaryGenerator: Sendable {
 
         insights 最多 3 项，只写跨记录比较后才成立且对用户有决策价值的判断；单条记录、网页标签、导航文字和模型回复不得直接当作用户事实。confidence 是仅供后台过滤的 0 到 1 数值，正文标题禁止出现“置信度”“跨证据比较”“行为模式”等算法术语；证据不足时返回空数组。
 
-        actions 每条必须同时包含对象、动作和可判断的结果，例如“补充退款幂等测试并提交 PR”。它表示用户尚未完成、接下来确实需要亲自推进的承诺或开放事项；禁止把文章观点（如“不要问……而要问……”）、助手向用户提出的问题（如“你想怎么处理”）、缺少对象的残句（如“下一步是修复”），以及“今天”“明天”“继续”“推进”等时间词或泛化动词写入 actions。不要从旧总结快照复制行动事项。
+        actions 采用“默认不成立”的严格准入：只有证据明确表达为用户的待办、提醒、承诺，或同时包含明确时间与可执行动作时才输出。每条必须同时包含对象、动作和可判断的结果，例如“补充退款幂等测试并提交 PR”。禁止仅因出现“任务、完成、需要、检查”等词就推断行动；禁止把文章/笔记观点、知识内容、系统错误提示（如“网络异常，请检查后重试”）、助手向用户提出的问题、缺少对象的残句写入 actions。没有足够明确的行动时必须返回空数组，页面会隐藏整个“接下来要处理”模块。不要从旧总结快照复制行动事项。
 
         insights 与 actions 必须互斥。insights 表示会影响判断的事实、风险、规律或已形成的共识，不要求用户立即执行；如果一条内容已经能写成明确行动，只放入 actions，不要在 insights 重复。insights 的 title 要直接写结论，不写“跨证据比较”“行为模式”或算法评分。
 

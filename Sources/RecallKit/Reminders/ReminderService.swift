@@ -104,8 +104,7 @@ public struct ReminderExtractor: Sendable {
         guard compact.count >= 5, compact.count <= 300 else { return nil }
         guard !looksLikeNoise(lower), !looksLikeQuestion(compact), !looksLikeQuotedAdvice(compact), !looksCompleted(lower) else { return nil }
 
-        let explicitMarkers = ["待办", "任务", "todo", "action item", "记得", "别忘", "务必", "提醒我"]
-        let directiveMarkers = ["我需要", "我要", "需要", "应该", "应当", "必须", "请", "计划", "准备", "要在", "需在", "下一步"]
+        let reminderMarkers = ["记得", "别忘", "务必", "提醒我"]
         let actionVerbs = [
             "回复", "提交", "完成", "跟进", "处理", "联系", "确认", "预约", "支付", "续费",
             "更新", "发送", "整理", "准备", "参加", "取消", "购买", "缴纳", "检查", "修复",
@@ -118,8 +117,22 @@ public struct ReminderExtractor: Sendable {
             "每天", "每日", "每周", "每月", "today", "tomorrow", "next week", "deadline", "due"
         ]
 
-        let hasExplicitMarker = explicitMarkers.contains(where: { lower.contains($0) })
-        let hasDirective = directiveMarkers.contains(where: { lower.contains($0) })
+        // “任务/完成/需要”等词经常出现在文章、网页和系统提示中，不能仅靠包含关系判定待办。
+        // 采用正向准入：明确待办标签、用户第一人称承诺、句首指令、带时间的行动，或动作句本身。
+        let hasTaskLabel = lower.range(
+            of: #"(?i)^\s*【?(?:待办|任务|todo|action\s*item)】?\s*[:：\-]"#,
+            options: .regularExpression
+        ) != nil
+        let hasReminderMarker = reminderMarkers.contains(where: { lower.contains($0) })
+        let hasFirstPersonCommitment = ["我需要", "我要", "我计划", "我准备", "我打算"].contains(where: { lower.contains($0) })
+        let hasLeadingDirective = lower.range(
+            of: #"^(?:需要|应该|应当|必须|请|计划|准备|要在|需在|下一步)"#,
+            options: .regularExpression
+        ) != nil
+        let isOtherPartyRequest = lower.contains("[聊天·对方]")
+            && ["请", "麻烦", "需要你", "别忘"].contains(where: { lower.contains($0) })
+        let hasExplicitMarker = hasTaskLabel || hasReminderMarker
+        let hasDirective = hasFirstPersonCommitment || hasLeadingDirective || isOtherPartyRequest
         let matchedActionVerb = actionVerbs.first(where: { lower.contains($0) })
         let hasAction = matchedActionVerb != nil
         let hasTime = timeMarkers.contains(where: { lower.contains($0) }) || containsExplicitDate(lower)
@@ -127,7 +140,8 @@ public struct ReminderExtractor: Sendable {
         let title = normalizedTitle(from: compact, actionVerbs: actionVerbs)
         let startsWithAction = actionVerbs.contains { title.localizedCaseInsensitiveContains($0) && title.lowercased().hasPrefix($0.lowercased()) }
 
-        guard hasAction, hasExplicitMarker || hasDirective || hasTime || startsWithAction else { return nil }
+        guard hasAction,
+              hasExplicitMarker || hasDirective || hasTime || startsWithAction else { return nil }
         guard title.count >= 5,
               DailySummaryContentFormatter.isUsableAction(title: title) else { return nil }
 
@@ -136,7 +150,7 @@ public struct ReminderExtractor: Sendable {
         if hasExplicitMarker { confidence += 0.34 }
         if hasDirective { confidence += 0.20 }
         if hasAction { confidence += 0.24 }
-        if startsWithAction { confidence += 0.10 }
+        if startsWithAction { confidence += 0.18 }
         if hasTime { confidence += 0.10 }
         if hasRecurrence { confidence += 0.18 }
         if dueAt != nil { confidence += 0.06 }
