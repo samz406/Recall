@@ -398,24 +398,9 @@ public struct PersonalIntelligenceEngine: Sendable {
                     evidenceIDs: episode.evidenceIDs
                 )
             }
+        // “值得留意”是判断线索，不应仅因为附带 recommendation 就自动变成待办；
+        // 没有明确开放事项时也不制造“沉淀今天的结果”这类泛化动作。
         var nextActions = Array(openLoops.prefix(2))
-        for insight in insights where nextActions.count < 3 {
-            guard let recommendation = insight.recommendation else { continue }
-            nextActions.append(BriefingItem(
-                title: "建议 · \(insight.kind.title)",
-                detail: recommendation,
-                confidence: insight.confidence,
-                evidenceIDs: insight.evidenceIDs
-            ))
-        }
-        if nextActions.isEmpty, let first = ranked.first {
-            nextActions = [BriefingItem(
-                title: "沉淀今天的结果",
-                detail: "确认 \(first.projectName) 的最终结果，并明确下一次从哪里继续。",
-                confidence: 0.62,
-                evidenceIDs: first.evidenceIDs
-            )]
-        }
         let activeProjectKeys = Set(ranked.map(\.projectKey))
         for routine in routines where routine.status == .enabled && nextActions.count < 3 {
             let projectKey = routine.key.replacingOccurrences(of: "project-close:", with: "")

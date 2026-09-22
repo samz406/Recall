@@ -102,7 +102,7 @@ public struct ReminderExtractor: Sendable {
         let compact = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = compact.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
         guard compact.count >= 5, compact.count <= 300 else { return nil }
-        guard !looksLikeNoise(lower), !looksLikeQuestion(compact), !looksCompleted(lower) else { return nil }
+        guard !looksLikeNoise(lower), !looksLikeQuestion(compact), !looksLikeQuotedAdvice(compact), !looksCompleted(lower) else { return nil }
 
         let explicitMarkers = ["待办", "任务", "todo", "action item", "记得", "别忘", "务必", "提醒我"]
         let directiveMarkers = ["我需要", "我要", "需要", "应该", "应当", "必须", "请", "计划", "准备", "要在", "需在", "下一步"]
@@ -128,7 +128,8 @@ public struct ReminderExtractor: Sendable {
         let startsWithAction = actionVerbs.contains { title.localizedCaseInsensitiveContains($0) && title.lowercased().hasPrefix($0.lowercased()) }
 
         guard hasAction, hasExplicitMarker || hasDirective || hasTime || startsWithAction else { return nil }
-        guard title.count >= 5 else { return nil }
+        guard title.count >= 5,
+              DailySummaryContentFormatter.isUsableAction(title: title) else { return nil }
 
         let dueAt = inferredDueDate(in: compact, base: base)
         var confidence = 0.18
@@ -189,9 +190,16 @@ public struct ReminderExtractor: Sendable {
     private func looksLikeQuestion(_ text: String) -> Bool {
         let compact = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let uncertaintyMarkers = ["是不是", "是否", "能否", "要不要", "可不可以", "可能", "好像", "我记得"]
+        let assistantPrompts = ["你想怎么处理", "您想怎么处理", "问下你", "请告诉我", "你希望我", "您希望我", "需要我怎么", "还有什么需要处理"]
         let questionEndings = ["吗", "呢", "吧", "么", "？", "?"]
         return questionEndings.contains(where: { compact.hasSuffix($0) })
             || (uncertaintyMarkers.contains(where: { compact.contains($0) }) && !compact.contains("提醒我"))
+            || assistantPrompts.contains(where: compact.contains)
+    }
+
+    private func looksLikeQuotedAdvice(_ text: String) -> Bool {
+        let markers = ["不要问", "而要问", "你应该问", "文章提到", "文中提到", "举例来说"]
+        return markers.contains(where: text.contains)
     }
 
     private func looksCompleted(_ text: String) -> Bool {

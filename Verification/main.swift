@@ -205,9 +205,12 @@ struct RecallVerifier {
         let ocrNoise = makeCapture(text: "完成 ×|C) col x|S 集况×", app: "Terminal", createdAt: base)
         let commitNoise = makeCapture(text: "最终提交：34cdc34，main CI 构建及21项集成测试全部通过", app: "Terminal", createdAt: base)
         let completed = makeCapture(text: "已完成：明天提交版本发布说明", app: "Notes", createdAt: base)
+        let articleAdvice = makeCapture(text: "不要问“今天我要完成多少事”，而要问“我长期到底在构建什么”；截止：2026年9月21日 9:00", app: "Chrome", createdAt: base)
+        let vagueFragment = makeCapture(text: "下一步是修复", app: "Orca", createdAt: base)
+        let assistantPrompt = makeCapture(text: "生产环境需要登录才能验证，问下你想怎么处理：", app: "Orca", createdAt: base)
 
         let candidates = ReminderExtractor().candidates(
-            from: [first, duplicate, deadlineOnly, uncertainQuestion, codeNoise, menuNoise, ocrNoise, commitNoise, completed],
+            from: [first, duplicate, deadlineOnly, uncertainQuestion, codeNoise, menuNoise, ocrNoise, commitNoise, completed, articleAdvice, vagueFragment, assistantPrompt],
             existing: []
         )
         try expect(candidates.count == 1, "提醒精度过滤未排除疑问句、完成态、截止标签、菜单或代码噪声")
@@ -627,6 +630,13 @@ struct RecallVerifier {
             in: "## 今天的主线\n修复每日回顾。\n\n## 下一步\n\n- 继续"
         )
         try expect(!withoutAction.contains("## 接下来要处理"), "没有具体动作时仍展示空洞的行动小节")
+
+        let badActions = DailySummaryItemParser.sanitized([
+            DailySummaryItem(section: .actions, title: "不要问“今天我要完成多少事”", detail: "而要问“我长期到底在构建什么”"),
+            DailySummaryItem(section: .actions, title: "下一步是修复", detail: "下一步是修复"),
+            DailySummaryItem(section: .actions, title: "生产环境需要登录才能验证，问下你想怎么处理：")
+        ])
+        try expect(badActions.isEmpty, "文章观点、助手追问或无对象残句仍被归入接下来要处理")
 
         let noisyPrefix = DailySummaryContentFormatter.normalizingNextActionSection(
             in: "## 今天的主线\n修复订单状态。\n\n## 下一步\n\n- c：定时任务扫描明细全终态但订单未完成的订单做补偿"

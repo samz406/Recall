@@ -59,7 +59,10 @@ public enum DailySummaryContentFormatter {
 
     public static func validatedNextActions(from candidates: [String], limit: Int = 3) -> [String] {
         var seen: Set<String> = []
-        return candidates.compactMap(normalizedAction)
+        return candidates.compactMap { candidate in
+            guard isUsableAction(title: candidate) else { return nil }
+            return normalizedAction(candidate)
+        }
             .filter { action in
                 let key = action
                     .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
@@ -69,6 +72,19 @@ public enum DailySummaryContentFormatter {
             }
             .prefix(max(limit, 1))
             .map { $0 }
+    }
+
+    /// “接下来要处理”只接收用户确实可以执行并能判断是否完成的事项。
+    /// 这里是模型、本地简报和规则提醒共同经过的最后一道质量门，避免文章观点、
+    /// 助手追问或“下一步是修复”这类缺少对象的残句进入每日总结。
+    public static func isUsableAction(title: String, detail: String = "") -> Bool {
+        let title = removingMarkdownEmphasisMarkers(from: removingCitationMarkers(from: title))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = removingMarkdownEmphasisMarkers(from: removingCitationMarkers(from: detail))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let combined = [title, detail].filter { !$0.isEmpty }.joined(separator: "；")
+        guard !title.isEmpty, !looksLikeAdviceOrPrompt(combined), !isGenericActionFragment(title) else { return false }
+        return normalizedAction(title) != nil || (!detail.isEmpty && normalizedAction(detail) != nil)
     }
 
     private static func markdownHeadingTitle(_ line: String) -> String? {
@@ -125,10 +141,38 @@ public enum DailySummaryContentFormatter {
             "完成", "修复", "确认", "联系", "回复", "提交", "评审", "验证", "整理", "安排", "决定", "选择", "下单",
             "输出", "拆分", "关闭", "更新", "跟进", "检查", "创建", "推进", "解决", "补充", "复盘", "记录", "归档",
             "预约", "约", "购买", "发送", "实现", "优化", "发布", "测试", "接入", "迁移", "准备", "讨论", "调研",
-            "编写", "阅读", "学习", "练习"
+            "编写", "阅读", "学习", "练习", "补全", "补偿", "扫描", "复现", "回访"
         ]
         guard actionCues.contains(where: action.contains) else { return nil }
         return action
+    }
+
+    private static func looksLikeAdviceOrPrompt(_ text: String) -> Bool {
+        let compact = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let advicePatterns = [
+            "不要问", "而要问", "你应该问", "建议思考", "文章提到", "文中提到", "举例来说"
+        ]
+        let promptPatterns = [
+            "你想怎么处理", "您想怎么处理", "问下你", "请告诉我", "你希望我", "您希望我",
+            "需要我怎么", "接下来想做什么", "还有什么需要处理"
+        ]
+        return advicePatterns.contains(where: compact.contains)
+            || promptPatterns.contains(where: compact.contains)
+            || compact.hasSuffix("：")
+            || compact.hasSuffix(":")
+            || compact.hasSuffix("？")
+            || compact.hasSuffix("?")
+    }
+
+    private static func isGenericActionFragment(_ text: String) -> Bool {
+        let compact = text
+            .replacingOccurrences(of: #"[\s\p{P}\p{S}]+"#, with: "", options: .regularExpression)
+            .lowercased()
+        let generic = [
+            "下一步是修复", "下一步修复", "下一步是处理", "下一步处理", "继续修复", "继续处理",
+            "需要修复", "需要处理", "待修复", "待处理", "修复问题", "处理问题"
+        ]
+        return generic.contains(compact)
     }
 
     fileprivate static func isNoiseTitle(_ text: String) -> Bool {
@@ -413,6 +457,9 @@ public enum DailySummaryItemParser {
                     item.title = item.detail
                     item.detail = ""
                 }
+                guard DailySummaryContentFormatter.isUsableAction(title: item.title, detail: item.detail) else {
+                    continue
+                }
             }
             if item.section == .insights, isAlgorithmLabel(item.title) {
                 guard isConcreteInsight(item.detail) else { continue }
@@ -433,7 +480,10 @@ public enum DailySummaryItemParser {
                 result.append(item)
             }
         }
-        return result
+        let actions = result.filter { $0.section == .actions }
+        return result.filter { item in
+            item.section != .insights || !actions.contains(where: { hasSameMeaning($0, item) })
+        }
     }
 
     /// 模型 JSON、旧版 Markdown 和本地简报最终都会进入结构化条目；
@@ -474,6 +524,10 @@ public enum DailySummaryItemParser {
 
     private static func isDuplicate(_ lhs: DailySummaryItem, _ rhs: DailySummaryItem) -> Bool {
         guard lhs.section == rhs.section else { return false }
+        return hasSameMeaning(lhs, rhs)
+    }
+
+    private static func hasSameMeaning(_ lhs: DailySummaryItem, _ rhs: DailySummaryItem) -> Bool {
         let leftTitle = normalizedKey(lhs.title)
         let rightTitle = normalizedKey(rhs.title)
         if leftTitle == rightTitle { return true }
@@ -949,7 +1003,10 @@ public struct DailySummaryGenerator: Sendable {
         ruleActions: [DailySummaryTodo],
         now: Date
     ) -> [DailySummaryTodo] {
-        var result = ruleActions.filter { $0.status == .pending || $0.status == .inProgress }
+        var result = ruleActions.filter {
+            ($0.status == .pending || $0.status == .inProgress)
+                && DailySummaryContentFormatter.isUsableAction(title: $0.title, detail: $0.detail)
+        }
         for item in items where item.section == .actions {
             let itemKey = actionKey(item.title)
             if let index = result.firstIndex(where: { actionKey($0.title) == itemKey }) {
@@ -1083,7 +1140,9 @@ public struct DailySummaryGenerator: Sendable {
 
         insights 最多 3 项，只写跨记录比较后才成立且对用户有决策价值的判断；单条记录、网页标签、导航文字和模型回复不得直接当作用户事实。confidence 是仅供后台过滤的 0 到 1 数值，正文标题禁止出现“置信度”“跨证据比较”“行为模式”等算法术语；证据不足时返回空数组。
 
-        actions 每条必须同时包含对象、动作和可判断的结果，例如“补充退款幂等测试并提交 PR”；禁止输出“今天”“明天”“继续”“推进”等单独时间词或泛化动词。不要从旧总结快照复制行动事项。
+        actions 每条必须同时包含对象、动作和可判断的结果，例如“补充退款幂等测试并提交 PR”。它表示用户尚未完成、接下来确实需要亲自推进的承诺或开放事项；禁止把文章观点（如“不要问……而要问……”）、助手向用户提出的问题（如“你想怎么处理”）、缺少对象的残句（如“下一步是修复”），以及“今天”“明天”“继续”“推进”等时间词或泛化动词写入 actions。不要从旧总结快照复制行动事项。
+
+        insights 与 actions 必须互斥。insights 表示会影响判断的事实、风险、规律或已形成的共识，不要求用户立即执行；如果一条内容已经能写成明确行动，只放入 actions，不要在 insights 重复。insights 的 title 要直接写结论，不写“跨证据比较”“行为模式”或算法评分。
 
         总长度控制在 1,200 个汉字以内。
 
