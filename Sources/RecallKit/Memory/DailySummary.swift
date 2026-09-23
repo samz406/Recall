@@ -191,7 +191,8 @@ public enum DailySummaryContentFormatter {
             "已完成", "已经完成", "完成了", "已提交", "已经提交", "提交完成", "已合并", "已经合并",
             "测试通过", "验收完成", "已经发布", "已发布", "收尾完成"
         ]
-        if completedMarkers.contains(where: combined.contains), !hasOpenState { return true }
+        let isVerificationQuestion = combined.contains("是否") || combined.contains("有没有")
+        if completedMarkers.contains(where: combined.contains), !hasOpenState, !isVerificationQuestion { return true }
 
         let compactTitle = title.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression)
         let lowercasedTitle = compactTitle.lowercased()
