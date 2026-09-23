@@ -131,6 +131,8 @@ public struct ReminderExtractor: Sendable {
         ) != nil
         let isOtherPartyRequest = lower.contains("[聊天·对方]")
             && ["请", "麻烦", "需要你", "别忘"].contains(where: { lower.contains($0) })
+        let hasStructuredRequirement = startsWithAnyAction(in: lower, verbs: actionVerbs)
+            && ["需要包含", "要求包含", "需要完成", "需完成"].contains(where: { lower.contains($0) })
         let hasExplicitMarker = hasTaskLabel || hasReminderMarker
         let hasDirective = hasFirstPersonCommitment || hasLeadingDirective || isOtherPartyRequest
         let matchedActionVerb = actionVerbs.first(where: { lower.contains($0) })
@@ -141,7 +143,7 @@ public struct ReminderExtractor: Sendable {
         let startsWithAction = actionVerbs.contains { title.localizedCaseInsensitiveContains($0) && title.lowercased().hasPrefix($0.lowercased()) }
 
         guard hasAction,
-              hasExplicitMarker || hasDirective || hasTime || startsWithAction else { return nil }
+              hasExplicitMarker || hasDirective || hasTime || hasStructuredRequirement else { return nil }
         guard title.count >= 5,
               DailySummaryContentFormatter.isUsableAction(title: title) else { return nil }
 
@@ -225,6 +227,10 @@ public struct ReminderExtractor: Sendable {
         ]
         return completedMarkers.contains(where: { text.contains($0) })
             || text.range(of: #"^完成[\s:：·\-]"#, options: .regularExpression) != nil
+    }
+
+    private func startsWithAnyAction(in text: String, verbs: [String]) -> Bool {
+        verbs.contains { text.hasPrefix($0.lowercased()) }
     }
 
     private func normalizedTitle(from source: String, actionVerbs: [String]) -> String {

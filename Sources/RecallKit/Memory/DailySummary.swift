@@ -83,7 +83,10 @@ public enum DailySummaryContentFormatter {
         let detail = removingMarkdownEmphasisMarkers(from: removingCitationMarkers(from: detail))
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let combined = [title, detail].filter { !$0.isEmpty }.joined(separator: "；")
-        guard !title.isEmpty, !looksLikeAdviceOrPrompt(combined), !isGenericActionFragment(title) else { return false }
+        guard !title.isEmpty,
+              !looksLikeAdviceOrPrompt(combined),
+              !looksCompletedOrMetadata(title: title, detail: detail),
+              !isGenericActionFragment(title) else { return false }
         return normalizedAction(title) != nil || (!detail.isEmpty && normalizedAction(detail) != nil)
     }
 
@@ -178,6 +181,28 @@ public enum DailySummaryContentFormatter {
             "需要修复", "需要处理", "待修复", "待处理", "修复问题", "处理问题"
         ]
         return generic.contains(compact)
+    }
+
+    private static func looksCompletedOrMetadata(title: String, detail: String) -> Bool {
+        let combined = [title, detail].filter { !$0.isEmpty }.joined(separator: "；")
+        let openStateMarkers = ["待办", "待完成", "未完成", "尚未", "下一步", "需要", "需在", "计划", "准备", "截止", "提醒"]
+        let hasOpenState = openStateMarkers.contains(where: combined.contains)
+        let completedMarkers = [
+            "已完成", "已经完成", "完成了", "已提交", "已经提交", "提交完成", "已合并", "已经合并",
+            "测试通过", "验收完成", "已经发布", "已发布", "收尾完成"
+        ]
+        if completedMarkers.contains(where: combined.contains), !hasOpenState { return true }
+
+        let compactTitle = title.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression)
+        let metadataPrefixes = ["发布日期", "发布时间", "提交记录", "提交哈希", "提交ID", "commit记录", "commitid"]
+        if metadataPrefixes.contains(where: { compactTitle.localizedCaseInsensitiveHasPrefix($0) }) { return true }
+        if compactTitle.range(of: #"^(?:commit|提交记录)[:：]?[a-f0-9]{6,40}[a-z]?$"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+
+        // “完成 X”在没有待办、计划、截止等开放状态证据时，属于结果陈述而不是下一步。
+        if compactTitle.hasPrefix("完成"), !hasOpenState { return true }
+        return false
     }
 
     fileprivate static func isNoiseTitle(_ text: String) -> Bool {
@@ -644,7 +669,9 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
         self.createdAt = createdAt
         self.content = content
         self.sourceCaptureIDs = sourceCaptureIDs
-        self.todos = todos
+        self.todos = todos.filter {
+            DailySummaryContentFormatter.isUsableAction(title: $0.title, detail: $0.detail)
+        }
         self.generationKind = generationKind
         self.briefing = briefing
         let persistedItems = items ?? []
@@ -670,7 +697,9 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         content = try container.decode(String.self, forKey: .content)
         sourceCaptureIDs = try container.decodeIfPresent([UUID].self, forKey: .sourceCaptureIDs) ?? []
-        todos = try container.decodeIfPresent([DailySummaryTodo].self, forKey: .todos) ?? []
+        todos = (try container.decodeIfPresent([DailySummaryTodo].self, forKey: .todos) ?? []).filter {
+            DailySummaryContentFormatter.isUsableAction(title: $0.title, detail: $0.detail)
+        }
         generationKind = try container.decodeIfPresent(DailySummaryGenerationKind.self, forKey: .generationKind) ?? .localFallback
         briefing = try container.decodeIfPresent(DailyBriefing.self, forKey: .briefing)
         let persistedItems = try container.decodeIfPresent([DailySummaryItem].self, forKey: .items) ?? []

@@ -384,7 +384,7 @@ public struct PersonalIntelligenceEngine: Sendable {
             .map { BriefingItem(title: $0.title, detail: $0.outcome ?? $0.action, confidence: $0.confidence, evidenceIDs: $0.evidenceIDs) }
         var seenOpenLoops: Set<String> = []
         let openLoops = ranked
-            .filter { [.pending, .blocked].contains($0.status) || $0.nextAction != nil }
+            .filter { [.pending, .blocked].contains($0.status) }
             .filter { episode in
                 let key = normalizedKey(episode.nextAction ?? episode.projectName)
                 return seenOpenLoops.insert(key).inserted
@@ -559,9 +559,13 @@ public struct PersonalIntelligenceEngine: Sendable {
     }
 
     private func extractNextAction(from records: [CaptureRecord]) -> String? {
-        let cues = ["待办", "下一步", "需要", "明天", "后续", "回复", "提交", "推送", "todo", "follow up"]
+        let cues = ["待办", "下一步", "需要", "需在", "尚未", "未完成", "明天", "后续", "计划", "准备", "todo", "follow up"]
+        let completed = ["已完成", "完成了", "已提交", "提交记录", "已合并", "测试通过", "验收完成"]
         return records.reversed().compactMap { record in
-            sentences(in: record.ocrText).first(where: { sentence in containsAny(sentence.lowercased(), cues) })
+            sentences(in: userOwnedText(record)).first(where: { sentence in
+                let normalized = sentence.lowercased()
+                return containsAny(normalized, cues) && !containsAny(normalized, completed)
+            })
         }.first.map { String($0.prefix(180)) }
     }
 
