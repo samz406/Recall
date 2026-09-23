@@ -820,12 +820,20 @@ struct RecallVerifier {
         let store = try FileMemoryStore(storage: storage)
         let indexAvailable = await store.isIntelligenceIndexAvailable()
         try expect(indexAvailable, "SQLite/FTS5 本地智能索引没有启用")
-        let capture = makeCapture(text: "RecallUniqueFTSTerm 完成智能索引迁移", app: "Verifier")
+        let capture = makeCapture(text: "项目：RecallUniqueFTSTerm 完成智能索引迁移", app: "Verifier")
         try await store.addCapture(capture)
         let indexed = await store.indexedCaptureIDs(matching: "RecallUniqueFTSTerm")
         try expect(indexed == [capture.id], "FTS5 没有检索到已持久化的记录")
 
-        let consolidation = PersonalIntelligenceEngine().consolidate(day: capture.createdAt, records: [capture])
+        let insightRecords = [capture] + (1...3).map { index in
+            makeCapture(
+                text: "项目：Persistence\(index) 推进独立验证事项",
+                app: "Verifier",
+                createdAt: capture.createdAt.addingTimeInterval(Double(index) * 70 * 60)
+            )
+        }
+        for record in insightRecords.dropFirst() { try await store.addCapture(record) }
+        let consolidation = PersonalIntelligenceEngine().consolidate(day: capture.createdAt, records: insightRecords)
         let summary = DailySummary(
             day: capture.createdAt,
             content: "结构化持久化测试",
