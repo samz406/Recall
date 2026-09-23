@@ -194,8 +194,9 @@ public enum DailySummaryContentFormatter {
         if completedMarkers.contains(where: combined.contains), !hasOpenState { return true }
 
         let compactTitle = title.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression)
+        let lowercasedTitle = compactTitle.lowercased()
         let metadataPrefixes = ["发布日期", "发布时间", "提交记录", "提交哈希", "提交ID", "commit记录", "commitid"]
-        if metadataPrefixes.contains(where: { compactTitle.localizedCaseInsensitiveHasPrefix($0) }) { return true }
+        if metadataPrefixes.contains(where: { lowercasedTitle.hasPrefix($0.lowercased()) }) { return true }
         if compactTitle.range(of: #"^(?:commit|提交记录)[:：]?[a-f0-9]{6,40}[a-z]?$"#, options: [.regularExpression, .caseInsensitive]) != nil {
             return true
         }
