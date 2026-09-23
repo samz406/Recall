@@ -236,6 +236,11 @@ struct RecallVerifier {
         )
         let reportCandidate = ReminderExtractor().candidates(from: [report], existing: []).first
         try expect(reportCandidate?.title == "写一篇介绍《社会心理学》的调研报告", "长句提醒没有提炼行动主干")
+
+        let expiry = makeCapture(text: "合同将于2026年9月30日到期", app: "Notes", createdAt: base)
+        let expiryCandidate = ReminderExtractor().candidates(from: [expiry], existing: []).first
+        try expect(expiryCandidate?.title == "合同将于2026年9月30日到期", "只有日期和到期状态的有效提醒被漏掉")
+        try expect(expiryCandidate?.dueAt.map { calendar.component(.day, from: $0) } == 30, "期限事项没有识别出日期")
     }
 
     private static func verifyReminderTimeAndRecurrence() throws {
@@ -505,13 +510,22 @@ struct RecallVerifier {
         try expect(duplicatedLegacy.items.count == 1 && duplicatedLegacy.items.first?.section == .actions, "旧版待办、未闭环和下一步没有归并去重")
 
         let structuredJSON = """
-        {"headline":"**今天推进退款链路修复** [19][22]","progress":[{"title":"**补充幂等校验**","detail":"21 项测试通过 [23][24]"}],"actions":[{"title":"**提交退款修复 PR** [32]","detail":"等待评审"}],"insights":[{"title":"**跨证据比较**","detail":"客户端与服务端问题由同一组协作人并行推进 [33][34]","confidence":0.81},{"title":"低价值猜测","detail":"证据很弱","confidence":0.3}]}
+        {"headline":"**今天推进退款链路修复** [19][22]","progress":[{"title":"**补充幂等校验**","detail":"21 项测试通过 [23][24]"}],"actions":[{"title":"**提交退款修复 PR** [32]","detail":"等待评审"}],"insights":[{"title":"**跨证据比较**","detail":"客户端与服务端问题由同一组协作人并行推进 [33][34]","confidence":0.81},{"title":"可能：单日流程可以长期复用","detail":"只跑通了两次","confidence":0.7},{"title":"低价值猜测","detail":"证据很弱","confidence":0.3}]}
         """
         let structuredItems = DailySummaryItemParser.itemsFromModelResponse(structuredJSON, defaultEvidenceIDs: []) ?? []
         try expect(structuredItems.filter { $0.section == .insights }.count == 1, "低置信度发现没有在后台过滤")
         try expect(!structuredItems.contains(where: { $0.title.contains("跨证据比较") || $0.title.contains("置信度") }), "算法术语仍暴露给普通用户")
         try expect(!structuredItems.contains(where: { $0.title.contains("**") || $0.detail.contains("**") }), "模型返回的 Markdown 加粗标记仍被当成普通文字展示")
         try expect(!structuredItems.contains(where: { $0.title.range(of: #"\[\d+\]"#, options: .regularExpression) != nil || $0.detail.range(of: #"\[\d+\]"#, options: .regularExpression) != nil }), "结构化模型条目仍展示引用编号")
+
+        let uncertainInsight = DailySummary(
+            day: .now,
+            content: "## 值得留意\n- 可能：主线方法论与实际工作节奏高度同构：仅由当天一篇笔记推断",
+            sourceCaptureIDs: [],
+            todos: [],
+            generationKind: .cloud
+        )
+        try expect(uncertainInsight.items.isEmpty, "低确定性的‘可能’判断仍进入值得留意")
 
         let noisy = DailySummary(
             day: .now,
@@ -769,6 +783,17 @@ struct RecallVerifier {
         let engine = PersonalIntelligenceEngine()
         let initial = engine.consolidate(day: day, records: records)
         try expect(initial.insights.contains(where: { $0.kind == .contextSwitching }), "多项目切换没有形成行为洞察")
+        try expect(initial.insights.first(where: { $0.kind == .contextSwitching })?.confidence ?? 1 < 0.75, "单日上下文切换被直接作为高价值发现展示")
+        let repeatedDay = day.addingTimeInterval(86_400)
+        let repeatedRecords = (0..<4).map { index in
+            makeCapture(
+                text: "项目：Repeated\(index) 正在处理不同任务。",
+                app: "Editor",
+                createdAt: repeatedDay.addingTimeInterval(Double(index) * 70 * 60)
+            )
+        }
+        let repeated = engine.consolidate(day: repeatedDay, records: repeatedRecords, previousInsights: initial.insights)
+        try expect(repeated.insights.first(where: { $0.kind == .contextSwitching })?.confidence ?? 0 >= 0.75, "连续多日出现的上下文切换没有升级为值得留意")
         let rejected = [
             InsightFeedback(insightID: UUID(), insightKind: .contextSwitching, rating: .inaccurate),
             InsightFeedback(insightID: UUID(), insightKind: .contextSwitching, rating: .dismissed)

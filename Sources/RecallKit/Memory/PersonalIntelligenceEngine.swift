@@ -172,55 +172,24 @@ public struct PersonalIntelligenceEngine: Sendable {
         guard !episodes.isEmpty else { return [] }
         let evidence = episodes.flatMap(\.evidenceIDs).uniqued()
         let distinctProjects = Set(episodes.map(\.projectKey))
-        let topProjects = Dictionary(grouping: episodes, by: \.projectKey)
-            .map { key, values in
-                (key: key, name: values[0].projectName, score: values.reduce(0) { $0 + $1.importance })
-            }
-            .sorted { $0.score > $1.score }
         var candidates: [PersonalInsight] = []
 
-        if let first = topProjects.first,
-           episodes.filter({ $0.projectKey == first.key }).flatMap(\.evidenceIDs).uniqued().count >= 2 {
-            let secondary = topProjects.dropFirst().first.map { "，其次是 \($0.name)" } ?? ""
-            candidates.append(PersonalInsight(
-                day: day,
-                kind: .focus,
-                title: "今天反复推进：\(first.name)",
-                detail: "多条记录都指向 \(first.name)\(secondary)，这是基于记录密度的判断，不代表精确工时。",
-                recommendation: nil,
-                confidence: min(0.92, 0.65 + Double(episodes.filter { $0.projectKey == first.key }.count) * 0.06),
-                impact: 0.62,
-                novelty: novelty(of: .focus, comparedWith: previousInsights),
-                evidenceIDs: episodes.filter { $0.projectKey == first.key }.flatMap(\.evidenceIDs).uniqued()
-            ))
-        }
-
         if distinctProjects.count >= 4 || episodes.count >= 7 {
+            let repeatedRecently = previousInsights.contains {
+                $0.kind == .contextSwitching &&
+                day.timeIntervalSince($0.day) >= 0 &&
+                day.timeIntervalSince($0.day) <= 14 * 86_400
+            }
             candidates.append(PersonalInsight(
                 day: day,
                 kind: .contextSwitching,
-                title: "今天的上下文切换偏多",
-                detail: "记录涉及 \(distinctProjects.count) 条工作主线并形成 \(episodes.count) 个工作片段，这通常会增加重新进入任务的成本。该结论是行为推断，不是确定事实。",
+                title: repeatedRecently ? "近期多次出现上下文切换偏多" : "今天的上下文切换偏多",
+                detail: "记录涉及 \(distinctProjects.count) 条工作主线并形成 \(episodes.count) 个工作片段；只有连续多日出现时，才作为值得留意的工作节奏信号。",
                 recommendation: "明天先关闭最重要的一项未完成工作，再开启新的工作主线。",
-                confidence: min(0.9, 0.55 + Double(distinctProjects.count) * 0.06),
+                confidence: repeatedRecently ? min(0.9, 0.62 + Double(distinctProjects.count) * 0.06) : 0.54,
                 impact: 0.86,
                 novelty: novelty(of: .contextSwitching, comparedWith: previousInsights),
                 evidenceIDs: evidence
-            ))
-        }
-
-        let completed = episodes.filter { $0.status == .completed }
-        if !completed.isEmpty {
-            candidates.append(PersonalInsight(
-                day: day,
-                kind: .completion,
-                title: "今天形成了 \(completed.count) 个可验证结果",
-                detail: completed.prefix(3).map { $0.outcome ?? $0.action }.joined(separator: "；"),
-                recommendation: "优先把已完成结果沉淀为可复用资产或明确交付。",
-                confidence: 0.82,
-                impact: 0.72,
-                novelty: novelty(of: .completion, comparedWith: previousInsights),
-                evidenceIDs: completed.flatMap(\.evidenceIDs).uniqued()
             ))
         }
 

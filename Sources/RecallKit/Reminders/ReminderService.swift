@@ -135,9 +135,11 @@ public struct ReminderExtractor: Sendable {
             && ["需要包含", "要求包含", "需要完成", "需完成"].contains(where: { lower.contains($0) })
         let hasExplicitMarker = hasTaskLabel || hasReminderMarker
         let hasDirective = hasFirstPersonCommitment || hasLeadingDirective || isOtherPartyRequest
-        let matchedActionVerb = actionVerbs.first(where: { lower.contains($0) })
-        let hasAction = matchedActionVerb != nil
         let hasTime = timeMarkers.contains(where: { lower.contains($0) }) || containsExplicitDate(lower)
+        let matchedActionVerb = actionVerbs.first(where: { lower.contains($0) })
+        let deadlineStateMarkers = ["到期", "过期", "还款日", "续费日", "缴费日", "生日", "纪念日", "会议时间", "预约时间"]
+        let hasDeadlineState = hasTime && deadlineStateMarkers.contains(where: { lower.contains($0) })
+        let hasAction = matchedActionVerb != nil || hasDeadlineState
         let hasRecurrence = ["每天", "每日", "每周", "每星期", "每月"].contains(where: { lower.contains($0) })
         let title = normalizedTitle(from: compact, actionVerbs: actionVerbs)
         let startsWithAction = actionVerbs.contains { title.localizedCaseInsensitiveContains($0) && title.lowercased().hasPrefix($0.lowercased()) }
@@ -154,6 +156,7 @@ public struct ReminderExtractor: Sendable {
         if hasAction { confidence += 0.24 }
         if startsWithAction { confidence += 0.18 }
         if hasTime { confidence += 0.10 }
+        if hasDeadlineState { confidence += 0.18 }
         if hasRecurrence { confidence += 0.18 }
         if dueAt != nil { confidence += 0.06 }
         if lower.contains("截止") || lower.contains("deadline") || lower.contains("due") { confidence += 0.06 }
@@ -166,6 +169,8 @@ public struct ReminderExtractor: Sendable {
         let reason: String
         if lower.contains("提醒我") || lower.contains("别忘") || lower.contains("记得") {
             reason = "明确提醒"
+        } else if hasDeadlineState {
+            reason = "期限事项"
         } else if hasTime {
             reason = "行动与时间"
         } else if hasExplicitMarker {

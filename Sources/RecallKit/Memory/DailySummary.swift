@@ -144,7 +144,7 @@ public enum DailySummaryContentFormatter {
             "完成", "修复", "确认", "联系", "回复", "提交", "评审", "验证", "整理", "安排", "决定", "选择", "下单",
             "输出", "拆分", "关闭", "更新", "跟进", "检查", "创建", "推进", "解决", "补充", "复盘", "记录", "归档",
             "预约", "约", "购买", "发送", "实现", "优化", "发布", "测试", "接入", "迁移", "准备", "讨论", "调研",
-            "编写", "阅读", "学习", "练习", "补全", "补偿", "扫描", "复现", "回访"
+            "编写", "阅读", "学习", "练习", "补全", "补偿", "扫描", "复现", "回访", "到期", "过期"
         ]
         guard actionCues.contains(where: action.contains) else { return nil }
         return action
@@ -379,12 +379,8 @@ public enum DailySummaryItemParser {
             modelItem(value, section: .actions, evidenceIDs: defaultEvidenceIDs)
         })
         items.append(contentsOf: response.insights.compactMap { value in
-            guard (value.confidence ?? 0.7) >= 0.55,
-                  var item = modelItem(value, section: .insights, evidenceIDs: defaultEvidenceIDs) else { return nil }
-            if let confidence = value.confidence, confidence < 0.75, !item.title.hasPrefix("可能") {
-                item.title = "可能：\(item.title)"
-            }
-            return item
+            guard (value.confidence ?? 0) >= 0.75 else { return nil }
+            return modelItem(value, section: .insights, evidenceIDs: defaultEvidenceIDs)
         })
         let sanitizedItems = sanitized(items)
         return sanitizedItems.isEmpty ? nil : sanitizedItems
@@ -498,6 +494,7 @@ public enum DailySummaryItemParser {
                 item.title = item.detail
                 item.detail = ""
             }
+            if item.section == .insights, isLowValueInsight(item) { continue }
             item.title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
             item.detail = item.detail.trimmingCharacters(in: .whitespacesAndNewlines)
             repairLegacyPrefixDuplication(in: &item)
@@ -552,6 +549,16 @@ public enum DailySummaryItemParser {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let noise = ["证据不足", "暂无", "无明确", "跨证据", "行为模式"]
         return trimmed.count >= 8 && !noise.contains(where: trimmed.hasPrefix)
+    }
+
+    private static func isLowValueInsight(_ item: DailySummaryItem) -> Bool {
+        let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let combined = "\(title)；\(item.detail)"
+        if title == "可能" || title.hasPrefix("可能：") || title.hasPrefix("可能:") { return true }
+        let progressOnly = ["今天完成", "今天形成", "流程跑通", "已经提交", "已提交", "完成并提交"]
+        let decisionSignals = ["风险", "连续", "多次", "反复", "异常", "冲突", "依赖", "停滞", "变化", "趋势"]
+        return progressOnly.contains(where: combined.contains)
+            && !decisionSignals.contains(where: combined.contains)
     }
 
     private static func isDuplicate(_ lhs: DailySummaryItem, _ rhs: DailySummaryItem) -> Bool {
@@ -1004,12 +1011,9 @@ public struct DailySummaryGenerator: Sendable {
         })
 
         items.append(contentsOf: briefing.insights.compactMap { insight in
-            guard insight.confidence >= 0.55 else { return nil }
-            let title = insight.confidence < 0.75 && !insight.title.hasPrefix("可能")
-                ? "可能：\(insight.title)"
-                : insight.title
+            guard insight.confidence >= 0.75 else { return nil }
             let detail = [insight.detail, insight.recommendation].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "；")
-            return DailySummaryItem(section: .insights, title: title, detail: detail, evidenceIDs: insight.evidenceIDs)
+            return DailySummaryItem(section: .insights, title: insight.title, detail: detail, evidenceIDs: insight.evidenceIDs)
         })
         return limited(DailySummaryItemParser.sanitized(items))
     }
@@ -1174,7 +1178,7 @@ public struct DailySummaryGenerator: Sendable {
 
         聊天证据中的“[聊天·自己]”表示用户在右侧发送的内容，“[聊天·对方]”表示左侧联系人或助手的内容，“[聊天·角色未知]”表示无法可靠判断。只有“自己”的表达才能作为用户的决定、承诺、偏好、经历或已完成事项；“对方”的请求可以形成用户待处理动作，但必须明确是对方提出，绝不能改写成用户已经决定或完成；角色未知时不得推断说话人。
 
-        insights 最多 3 项，只写跨记录比较后才成立且对用户有决策价值的判断；单条记录、网页标签、导航文字和模型回复不得直接当作用户事实。confidence 是仅供后台过滤的 0 到 1 数值，正文标题禁止出现“置信度”“跨证据比较”“行为模式”等算法术语；证据不足时返回空数组。
+        insights 最多 3 项，只写跨记录比较后才成立且对用户有决策价值的判断；单条记录、网页标签、导航文字和模型回复不得直接当作用户事实。不得用知识笔记中的观点解释用户当天的心理或行为，不得因为同一天跑通一两次流程就声称“稳定、可复用”或形成长期方法；这类内容应留在 progress。只有跨时间重复出现的风险、异常、冲突、停滞、稳定规律或会改变后续决策的信号才进入 insights。confidence 是仅供后台过滤的 0 到 1 数值，低于 0.75 必须返回空数组，正文标题禁止出现“可能”“置信度”“跨证据比较”“行为模式”等算法术语；证据不足时返回空数组。
 
         actions 采用“默认不成立”的严格准入：只有证据明确表达为用户的待办、提醒、承诺，或同时包含明确时间与可执行动作时才输出。每条必须同时包含对象、动作和可判断的结果，例如“补充退款幂等测试并提交 PR”。禁止仅因出现“任务、完成、需要、检查”等词就推断行动；禁止把文章/笔记观点、知识内容、系统错误提示（如“网络异常，请检查后重试”）、助手向用户提出的问题、缺少对象的残句写入 actions。没有足够明确的行动时必须返回空数组，页面会隐藏整个“接下来要处理”模块。不要从旧总结快照复制行动事项。
 

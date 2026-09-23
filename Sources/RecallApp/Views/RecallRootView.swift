@@ -1769,13 +1769,13 @@ private struct DailyBriefingView: View {
                 briefingSection("接下来要处理", icon: "checklist", color: .orange, items: actionItems, empty: "")
             }
 
-            let visibleInsights = briefing.insights.filter { $0.confidence >= 0.55 }
+            let visibleInsights = briefing.insights.filter { $0.confidence >= 0.75 }
             if !visibleInsights.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     sectionTitle("值得留意", icon: "sparkles", color: .purple)
                     ForEach(visibleInsights) { insight in
                         VStack(alignment: .leading, spacing: 7) {
-                            Text(clean(insight.confidence < 0.75 ? "可能：\(insight.title)" : insight.title))
+                            Text(clean(insight.title))
                                 .font(.system(size: 15, weight: .semibold))
                             Text(clean(insight.detail)).font(.system(size: 15)).foregroundStyle(.secondary)
                             if let recommendation = insight.recommendation {
@@ -2684,7 +2684,7 @@ private struct ReminderCandidateCard: View {
                         Label("创建前选择时间", systemImage: "calendar.badge.clock")
                     }
                     if reminder.status == .proposed {
-                        Text("可信度 \(Int(reminder.confidence * 100))%")
+                        Text(reminder.confidence >= 0.8 ? "线索明确" : "请核对")
                     }
                     if reminder.recurrence != .none {
                         Label(reminder.recurrence.title, systemImage: "repeat")
