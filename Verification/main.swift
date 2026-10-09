@@ -8,6 +8,8 @@ struct RecallVerifier {
             try verifyDefaultEventTemplates()
             try await verifyEventRuleMigration()
             try verifyPrivacy()
+            try verifyLocalSummaryNoiseFiltering()
+            try verifyCapturePresentation()
             try verifyConversationRoleRecognition()
             try verifySearch()
             try verifyChineseNaturalLanguageSearch()
@@ -46,9 +48,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 39 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 41 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 38 integration checks.")
+                print("PASS: RecallVerifier completed 40 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -90,6 +92,54 @@ struct RecallVerifier {
         try expect(!redacted.contains("super-secret"), "密码未被脱敏")
         let decision = engine.decision(for: "com.example.private", settings: PrivacySettings(excludedBundleIdentifiers: ["com.example.private"]))
         try expect(!decision.mayCapture, "排除应用仍被允许采集")
+    }
+
+    private static func verifyLocalSummaryNoiseFiltering() throws {
+        let text = """
+        [聊天·对方] 2 chatgpt.com
+        [聊天·对方] C New chat
+        [聊天·自己] 登录
+        [聊天·角色未知] 9:39
+        [聊天·对方] 评估服务的生产就绪性，需要核对事务一致性和证据化查询
+        [聊天·自己] 下一步完成只读接口的权限校验
+        [聊天·自己] 下一步完成只读接口的权限校验
+        """
+        let summary = LocalSummary.make(from: text) ?? ""
+        try expect(summary.contains("事务一致性") && summary.contains("权限校验"), "摘要没有保留有效正文")
+        try expect(!summary.contains("聊天·") && !summary.contains("chatgpt.com") && !summary.contains("New chat"), "摘要仍混入角色标记或界面噪声")
+        try expect(summary.components(separatedBy: "权限校验").count == 2, "摘要没有去重")
+        let tags = LocalSummary.tags(from: text)
+        try expect(!tags.contains(where: { ["聊天", "对方", "自己", "com", "chatgpt", "登录"].contains($0.lowercased()) }), "标签仍包含界面或角色噪声")
+        try expect(LocalSummary.make(from: "ChatGPT - chat.openai.com; ChatGPT - chatgpt.com\n•；•\n09:39\n登录") == nil, "纯界面噪声不应生成伪摘要")
+        let linkText = "需要核对设计文档 https://example.com/design 并完成权限校验"
+        try expect(LocalSummary.make(from: linkText)?.contains("权限校验") == true, "清理网址误删了同一行的有效内容")
+        try expect(LocalSummary.make(from: linkText)?.contains("example.com") == false, "正文中的网址没有清理")
+        let longText = "完成验证：" + String(repeating: "事务一致性与权限校验", count: 40)
+        let bounded = LocalSummary.make(from: longText) ?? ""
+        try expect(bounded.count == 240 && bounded.hasSuffix("…"), "长摘要没有在限制内明确显示省略")
+    }
+
+    private static func verifyCapturePresentation() throws {
+        let raw = "[聊天·对方] chatgpt.com\n[聊天·自己] 完成退款幂等设计，下一步核对重复请求的处理结果"
+        var capture = makeCapture(text: raw, app: "Google Chrome")
+        capture.eventTemplate = .enterKeyTrigger
+        capture.summary = "[聊天·对方] chatgpt.com"
+        capture.tags = ["聊天", "自己", "com"]
+        let presentation = CapturePresentation(capture: capture)
+        try expect(presentation.title.contains("退款幂等"), "旧记录仍以触发方式或旧摘要作为标题")
+        try expect(!presentation.summary.contains("chatgpt.com") && !presentation.summary.contains("聊天·"), "旧记录没有使用新摘要规则")
+        try expect(capture.ocrText == raw && capture.summary == "[聊天·对方] chatgpt.com", "展示转换改写了原始证据或旧状态")
+        capture.ocrText = "chatgpt.com\n登录\n9:39"
+        capture.windowTitle = "ChatGPT - chatgpt.com"
+        let noiseOnly = CapturePresentation(capture: capture)
+        try expect(noiseOnly.title == "Google Chrome的记录" && noiseOnly.summary.contains("未提取到清晰正文"), "噪声记录没有准确的回退说明")
+        capture.ocrText = ""
+        capture.summary = nil
+        capture.windowTitle = "季度产品设计评审"
+        let empty = CapturePresentation(capture: capture)
+        try expect(empty.title == "季度产品设计评审" && empty.summary.contains("未识别出文本"), "空 OCR 没有使用可读窗口标题回退")
+        capture.summary = "完成历史记录迁移"
+        try expect(CapturePresentation(capture: capture).title == "完成历史记录迁移", "仅有摘要的兼容记录无法展示")
     }
 
     private static func verifyConversationRoleRecognition() throws {
@@ -894,6 +944,7 @@ struct RecallVerifier {
 
         try expect(snapshot.captures.count == 1, "记录管线没有写入本地记忆")
         try expect(capture.isRedacted, "记录管线未对 OCR 内容执行脱敏")
+        try expect(capture.ocrText == PrivacyEngine().redact("请联系 alice@example.com，密码: demo-secret"), "摘要生成截断或改写了完整 OCR")
         try expect(capture.imageRelativePath != nil, "记录管线未保存用户允许保留的截图")
         do {
             _ = try await pipeline.record(using: rule)

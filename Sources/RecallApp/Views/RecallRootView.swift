@@ -224,6 +224,7 @@ private struct TimelineView: View {
     @State private var selectedCaptureIDs: Set<UUID> = []
     @State private var capturesPendingDeletion: [CaptureRecord] = []
     @State private var isShowingDeletionSheet = false
+    @State private var captureShowingDetail: CaptureRecord?
 
     private var availableDayOptions: [TimelineDayOption] {
         let calendar = Calendar.current
@@ -282,7 +283,8 @@ private struct TimelineView: View {
                                     isManaging: isManaging,
                                     selectedCaptureIDs: selectedCaptureIDs,
                                     onToggleSelection: toggleSelection,
-                                    onDelete: requestDeletion
+                                    onDelete: requestDeletion,
+                                    onOpen: { captureShowingDetail = $0 }
                                 )
                                 .id(group.id)
                             }
@@ -300,6 +302,15 @@ private struct TimelineView: View {
         .onChange(of: dayGroups.map(\.id)) { _, _ in initializeExpandedDays() }
         .safeAreaInset(edge: .bottom) {
             if isManaging { selectionBar }
+        }
+        .sheet(item: $captureShowingDetail) { capture in
+            CaptureDetailSheet(capture: capture)
+                .environmentObject(model)
+        }
+        .onChange(of: model.state.captures.map(\.id)) { _, ids in
+            if let capture = captureShowingDetail, !ids.contains(capture.id) {
+                captureShowingDetail = nil
+            }
         }
         .sheet(isPresented: $isShowingDeletionSheet) {
             CaptureDeletionSheet(
@@ -644,6 +655,7 @@ private struct TimelineDaySection: View {
     let selectedCaptureIDs: Set<UUID>
     let onToggleSelection: (CaptureRecord) -> Void
     let onDelete: (CaptureRecord) -> Void
+    let onOpen: (CaptureRecord) -> Void
 
     var body: some View {
         Section {
@@ -654,9 +666,11 @@ private struct TimelineDaySection: View {
                         isManaging: isManaging,
                         isSelected: selectedCaptureIDs.contains(capture.id),
                         onToggleSelection: onToggleSelection,
-                        onDelete: onDelete
+                        onDelete: onDelete,
+                        onOpen: onOpen
                     )
                         .contextMenu {
+                            Button("查看详情") { onOpen(capture) }
                             Button("删除记录", role: .destructive) { onDelete(capture) }
                         }
                     Divider()
@@ -694,8 +708,10 @@ private struct CaptureRow: View {
     let isSelected: Bool
     let onToggleSelection: (CaptureRecord) -> Void
     let onDelete: (CaptureRecord) -> Void
+    let onOpen: (CaptureRecord) -> Void
 
     var body: some View {
+        let presentation = CapturePresentation(capture: capture)
         HStack(alignment: .top, spacing: 12) {
             if isManaging {
                 Button { onToggleSelection(capture) } label: {
@@ -705,42 +721,66 @@ private struct CaptureRow: View {
                 }
                 .buttonStyle(.plain)
             }
-            Image(systemName: capture.imageRelativePath == nil ? "doc.text" : "rectangle.on.rectangle")
-                .frame(width: 34, height: 34)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text(capture.eventTemplate.title)
-                        .font(.headline)
-                    if capture.isRedacted {
-                        Label("已脱敏", systemImage: "lock.fill")
+            Button {
+                if isManaging { onToggleSelection(capture) } else { onOpen(capture) }
+            } label: {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: capture.imageRelativePath == nil ? "doc.text" : "rectangle.on.rectangle")
+                        .frame(width: 34, height: 34)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text(presentation.title)
+                                .font(.headline)
+                                .lineLimit(2)
+                            if capture.isRedacted {
+                                Label("已脱敏", systemImage: "lock.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Text(presentation.summary)
+                            .lineLimit(2)
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            Text(capture.createdAt.formatted(date: .omitted, time: .shortened))
+                            if let source = capture.sourceAppName { Text(source) }
+                            Text(capture.eventTemplate.title)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        if !presentation.tags.isEmpty {
+                            HStack(spacing: 6) {
+                                ForEach(presentation.tags.prefix(3), id: \.self) { tag in
+                                    Text(tag).lineLimit(1)
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(.quaternary, in: Capsule())
+                                }
+                            }
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer(minLength: 8)
+                    if !isManaging {
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
                     }
                 }
-                Text(capture.summary ?? "未识别出文本")
-                    .lineLimit(2)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    Text(capture.createdAt.formatted(date: .omitted, time: .shortened))
-                    if let source = capture.sourceAppName { Text(source) }
-                    ForEach(capture.tags.prefix(3), id: \.self) { tag in
-                        Text(tag).padding(.horizontal, 6).padding(.vertical, 2).background(.quaternary, in: Capsule())
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            Spacer()
+            .buttonStyle(.plain)
+            .accessibilityLabel(isManaging ? "选择记录：\(presentation.title)" : "查看详情：\(presentation.title)")
             if !isManaging {
                 Button(role: .destructive) { onDelete(capture) } label: {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
+                .accessibilityLabel("删除记录")
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture { if isManaging { onToggleSelection(capture) } }
         .padding(.vertical, 8)
     }
 }
