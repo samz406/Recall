@@ -147,11 +147,13 @@ public struct ReminderExtractor: Sendable {
             && deadlineStateMarkers.contains(where: { lower.contains($0) })
         let hasAction = matchedActionVerb != nil || hasDeadlineState
         let hasRecurrence = ["每天", "每日", "每周", "每星期", "每月"].contains(where: { lower.contains($0) })
+        let hasRecurringAction = hasRecurrence && !looksLikeTechnicalPolicy(lower)
+            && lower.range(of: #"^(?:每天|每日|每周|每星期|每月).{0,24}(?:回复|提交|完成|跟进|处理|联系|确认|检查|发送|整理|缴纳|练习|支付)"#, options: .regularExpression) != nil
         let title = normalizedTitle(from: compact, actionVerbs: actionVerbs)
         let startsWithAction = actionVerbs.contains { title.localizedCaseInsensitiveContains($0) && title.lowercased().hasPrefix($0.lowercased()) }
 
         guard hasAction,
-              hasExplicitMarker || hasDirective || hasStructuredRequirement || startsWithAction || hasDeadlineState else { return nil }
+              hasExplicitMarker || hasDirective || hasStructuredRequirement || startsWithAction || hasDeadlineState || hasRecurringAction else { return nil }
         if looksLikeTechnicalPolicy(lower) && !hasExplicitMarker && !hasFirstPersonCommitment && !isOtherPartyRequest {
             return nil
         }
