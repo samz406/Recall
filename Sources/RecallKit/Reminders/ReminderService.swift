@@ -99,10 +99,15 @@ public struct ReminderExtractor: Sendable {
     }
 
     private func analyze(_ rawText: String, base: Date) -> Analysis? {
-        let compact = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let role = rawText.hasPrefix("[聊天·对方]") ? "other" : (rawText.hasPrefix("[聊天·角色未知]") ? "unknown" : "self")
+        let compact = rawText
+            .replacingOccurrences(of: #"^\[聊天·(?:自己|对方|角色未知)\]\s*"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = compact.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
         guard compact.count >= 5, compact.count <= 300 else { return nil }
         guard !looksLikeNoise(lower), !looksLikeQuestion(compact), !looksLikeQuotedAdvice(compact), !looksCompleted(lower) else { return nil }
+        // 左侧聊天内容是对方的陈述，不等于用户的待办；仅接受明确向用户发出的请求。
+        if role == "unknown" || (role == "other" && !isDirectRequestToUser(lower)) { return nil }
 
         let reminderMarkers = ["记得", "别忘", "务必", "提醒我"]
         let actionVerbs = [
@@ -129,8 +134,7 @@ public struct ReminderExtractor: Sendable {
             of: #"^(?:需要|应该|应当|必须|请|计划|准备|要在|需在|下一步)"#,
             options: .regularExpression
         ) != nil
-        let isOtherPartyRequest = lower.contains("[聊天·对方]")
-            && ["请", "麻烦", "需要你", "别忘"].contains(where: { lower.contains($0) })
+        let isOtherPartyRequest = role == "other" && isDirectRequestToUser(lower)
         let hasStructuredRequirement = startsWithAnyAction(in: lower, verbs: actionVerbs)
             && ["需要包含", "要求包含", "需要完成", "需完成"].contains(where: { lower.contains($0) })
         let hasExplicitMarker = hasTaskLabel || hasReminderMarker
@@ -138,14 +142,19 @@ public struct ReminderExtractor: Sendable {
         let hasTime = timeMarkers.contains(where: { lower.contains($0) }) || containsExplicitDate(lower)
         let matchedActionVerb = actionVerbs.first(where: { lower.contains($0) })
         let deadlineStateMarkers = ["到期", "过期", "还款日", "续费日", "缴费日", "生日", "纪念日", "会议时间", "预约时间"]
-        let hasDeadlineState = hasTime && deadlineStateMarkers.contains(where: { lower.contains($0) })
+        // “24 小时过期”“每天最多登录一次”属于产品规则，不是次日的个人期限。
+        let hasDeadlineState = hasCalendarDate(lower) && !looksLikeTechnicalPolicy(lower)
+            && deadlineStateMarkers.contains(where: { lower.contains($0) })
         let hasAction = matchedActionVerb != nil || hasDeadlineState
         let hasRecurrence = ["每天", "每日", "每周", "每星期", "每月"].contains(where: { lower.contains($0) })
         let title = normalizedTitle(from: compact, actionVerbs: actionVerbs)
         let startsWithAction = actionVerbs.contains { title.localizedCaseInsensitiveContains($0) && title.lowercased().hasPrefix($0.lowercased()) }
 
         guard hasAction,
-              hasExplicitMarker || hasDirective || hasTime || hasStructuredRequirement else { return nil }
+              hasExplicitMarker || hasDirective || hasStructuredRequirement || startsWithAction || hasDeadlineState else { return nil }
+        if looksLikeTechnicalPolicy(lower) && !hasExplicitMarker && !hasFirstPersonCommitment && !isOtherPartyRequest {
+            return nil
+        }
         guard title.count >= 5,
               DailySummaryContentFormatter.isUsableAction(title: title) else { return nil }
 
@@ -179,6 +188,20 @@ public struct ReminderExtractor: Sendable {
             reason = "未闭环行动"
         }
         return Analysis(title: title, dueAt: dueAt, confidence: confidence, reason: reason)
+    }
+
+    private func isDirectRequestToUser(_ text: String) -> Bool {
+        text.range(of: #"(?:请你|请您|麻烦你|麻烦您|需要你|需要您|你能|您能|帮我|替我|给我)(?:.{0,24})(?:回复|提交|确认|处理|发送|准备|联系|安排|检查|修复|完成)"#, options: .regularExpression) != nil
+    }
+
+    private func looksLikeTechnicalPolicy(_ text: String) -> Bool {
+        let technical = ["无操作", "登录一次", "登录态", "session", "token", "ttl", "cookie", "缓存过期", "超时配置", "超时策略"]
+        return technical.contains(where: text.contains) &&
+            (text.contains("过期") || text.contains("分钟") || text.contains("小时") || text.contains("每天"))
+    }
+
+    private func hasCalendarDate(_ text: String) -> Bool {
+        text.range(of: #"\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}[日号]?|\d{1,2}月\d{1,2}[日号]?"#, options: .regularExpression) != nil
     }
 
     private func segments(from text: String) -> [String] {
@@ -240,6 +263,7 @@ public struct ReminderExtractor: Sendable {
 
     private func normalizedTitle(from source: String, actionVerbs: [String]) -> String {
         var title = source
+            .replacingOccurrences(of: #"^\[聊天·(?:自己|对方|角色未知)\]\s*"#, with: "", options: .regularExpression)
             .replacingOccurrences(of: #"^[\s•·●\-*]+"#, with: "", options: .regularExpression)
             .replacingOccurrences(
                 of: #"(?i)^(待办|todo|action item|任务|下一步)\s*[:：\-]\s*"#,

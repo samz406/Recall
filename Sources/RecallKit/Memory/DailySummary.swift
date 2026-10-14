@@ -85,6 +85,7 @@ public enum DailySummaryContentFormatter {
         let combined = [title, detail].filter { !$0.isEmpty }.joined(separator: "；")
         guard !title.isEmpty,
               !looksLikeAdviceOrPrompt(combined),
+              !looksLikeUnassignedPolicyOrChat(title: title, detail: detail),
               !looksCompletedOrMetadata(title: title, detail: detail),
               !isGenericActionFragment(title) else { return false }
         return normalizedAction(title) != nil || (!detail.isEmpty && normalizedAction(detail) != nil)
@@ -181,6 +182,20 @@ public enum DailySummaryContentFormatter {
             "需要修复", "需要处理", "待修复", "待处理", "修复问题", "处理问题"
         ]
         return generic.contains(compact)
+    }
+
+    private static func looksLikeUnassignedPolicyOrChat(title: String, detail: String) -> Bool {
+        let combined = "\(title)；\(detail)"
+        if title.hasPrefix("[聊天·对方]") || title.hasPrefix("[聊天·角色未知]") { return true }
+        if title.range(of: #"^(?:若|如果|假如).{0,24}(?:就|则|才)"#, options: .regularExpression) != nil { return true }
+        let policyTerms = ["无操作", "登录一次", "登录态", "session", "token", "ttl", "cookie", "缓存过期"]
+        if policyTerms.contains(where: { combined.localizedCaseInsensitiveContains($0) }),
+           ["过期", "分钟", "小时", "每天"].contains(where: combined.contains),
+           !["待办：", "提醒我", "我需要", "我要", "明天修复", "明天确认"].contains(where: combined.contains) {
+            return true
+        }
+        if title.hasPrefix("准备工作是") || title.hasPrefix("准备工作很") { return true }
+        return false
     }
 
     private static func looksCompletedOrMetadata(title: String, detail: String) -> Bool {
@@ -555,6 +570,14 @@ public enum DailySummaryItemParser {
         let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let combined = "\(title)；\(item.detail)"
         if title == "可能" || title.hasPrefix("可能：") || title.hasPrefix("可能:") { return true }
+        if title.contains("很可能") || title.contains("疑似") { return true }
+        if item.detail.contains("同一天出现") && (title.contains("同一条") || title.contains("同一问题") || item.detail.contains("表明同一")) { return true }
+        // 旧本地算法曾把 OCR 半句当成项目名，拼出“的、……已连续多日没有新进展”。
+        if title.range(of: #"^(?:的|和|与|及|、|，|,|：|:)[、，,\s]"#, options: .regularExpression) != nil { return true }
+        if title.contains("已连续多日没有新进展") && (title.contains("×") || title.contains("|") || title.contains("】")) { return true }
+        // 截图数量不能证明真实工作切换，旧版按片段计数生成的判断不应继续展示。
+        if title.contains("上下文切换偏多") && item.detail.contains("工作片段") { return true }
+        if item.detail.contains("×|") || item.detail.contains("|×") { return true }
         let progressOnly = ["今天完成", "今天形成", "流程跑通", "已经提交", "已提交", "完成并提交"]
         let decisionSignals = ["风险", "连续", "多次", "反复", "异常", "冲突", "依赖", "停滞", "变化", "趋势"]
         return progressOnly.contains(where: combined.contains)
@@ -1003,17 +1026,12 @@ public struct DailySummaryGenerator: Sendable {
         items.append(contentsOf: activeTodos.map { todo in
             DailySummaryItem(section: .actions, title: todo.title, detail: todo.detail, evidenceIDs: todo.sourceCaptureIDs)
         })
-        items.append(contentsOf: briefing.openLoops.map {
-            DailySummaryItem(section: .actions, title: $0.title, detail: $0.detail, evidenceIDs: $0.evidenceIDs)
-        })
-        items.append(contentsOf: briefing.nextActions.map {
-            DailySummaryItem(section: .actions, title: $0.title, detail: $0.detail, evidenceIDs: $0.evidenceIDs)
-        })
+        // 工作片段里的“未闭环”只按关键词推断，不具有待办主体/动作的证据强度。
+        // 行动栏目由逐条原始记录核准的规则候选驱动。
 
         items.append(contentsOf: briefing.insights.compactMap { insight in
             guard insight.confidence >= 0.75 else { return nil }
-            let detail = [insight.detail, insight.recommendation].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "；")
-            return DailySummaryItem(section: .insights, title: insight.title, detail: detail, evidenceIDs: insight.evidenceIDs)
+            return DailySummaryItem(section: .insights, title: insight.title, detail: insight.detail, evidenceIDs: insight.evidenceIDs)
         })
         return limited(DailySummaryItemParser.sanitized(items))
     }
@@ -1047,22 +1065,13 @@ public struct DailySummaryGenerator: Sendable {
             ($0.status == .pending || $0.status == .inProgress)
                 && DailySummaryContentFormatter.isUsableAction(title: $0.title, detail: $0.detail)
         }
+        // 模型生成的动作只能补充已经从原始记录确认的同一事项，不能凭改写后的句子凭空创建待办。
         for item in items where item.section == .actions {
             let itemKey = actionKey(item.title)
             if let index = result.firstIndex(where: { actionKey($0.title) == itemKey }) {
                 if item.detail.count > result[index].detail.count { result[index].detail = item.detail }
                 result[index].sourceCaptureIDs = Array(Set(result[index].sourceCaptureIDs + item.evidenceIDs))
                 result[index].updatedAt = now
-            } else {
-                result.append(DailySummaryTodo(
-                    title: item.title,
-                    detail: item.detail,
-                    status: .pending,
-                    sourceCaptureIDs: item.evidenceIDs,
-                    priority: result.isEmpty ? .high : .normal,
-                    firstSeenAt: now,
-                    updatedAt: now
-                ))
             }
         }
         return Array(result.prefix(3))
@@ -1178,9 +1187,9 @@ public struct DailySummaryGenerator: Sendable {
 
         聊天证据中的“[聊天·自己]”表示用户在右侧发送的内容，“[聊天·对方]”表示左侧联系人或助手的内容，“[聊天·角色未知]”表示无法可靠判断。只有“自己”的表达才能作为用户的决定、承诺、偏好、经历或已完成事项；“对方”的请求可以形成用户待处理动作，但必须明确是对方提出，绝不能改写成用户已经决定或完成；角色未知时不得推断说话人。
 
-        insights 最多 3 项，只写跨记录比较后才成立且对用户有决策价值的判断；单条记录、网页标签、导航文字和模型回复不得直接当作用户事实。不得用知识笔记中的观点解释用户当天的心理或行为，不得因为同一天跑通一两次流程就声称“稳定、可复用”或形成长期方法；这类内容应留在 progress。只有跨时间重复出现的风险、异常、冲突、停滞、稳定规律或会改变后续决策的信号才进入 insights。confidence 是仅供后台过滤的 0 到 1 数值，低于 0.75 必须返回空数组，正文标题禁止出现“可能”“置信度”“跨证据比较”“行为模式”等算法术语；证据不足时返回空数组。
+        insights 最多 3 项，只写跨记录比较后才成立且对用户有决策价值的判断；单条记录、网页标签、导航文字和模型回复不得直接当作用户事实。不得用知识笔记中的观点解释用户当天的心理或行为，不得因为同一天跑通一两次流程就声称“稳定、可复用”或形成长期方法；这类内容应留在 progress。两件事同日出现不代表同一根因，不得把生产超时与其他功能问题仅凭时间接近推为同一链路。只有跨时间重复出现且证据确实支持的风险、异常、冲突、停滞、稳定规律或会改变后续决策的信号才进入 insights。不要根据截图数量或片段数量推断用户的工作节奏。title 必须是完整、可独立阅读的结论，不能是截断半句、以连接词开头或原始 OCR 残片；detail 只写支撑结论的事实，不要附带伪造的“下一步”。confidence 是仅供后台过滤的 0 到 1 数值，低于 0.75 必须返回空数组，正文标题禁止出现“可能”“置信度”“跨证据比较”“行为模式”等算法术语；证据不足时返回空数组。
 
-        actions 采用“默认不成立”的严格准入：只有证据明确表达为用户的待办、提醒、承诺，或同时包含明确时间与可执行动作时才输出。每条必须同时包含对象、动作和可判断的结果，例如“补充退款幂等测试并提交 PR”。禁止仅因出现“任务、完成、需要、检查”等词就推断行动；禁止把文章/笔记观点、知识内容、系统错误提示（如“网络异常，请检查后重试”）、助手向用户提出的问题、缺少对象的残句写入 actions。没有足够明确的行动时必须返回空数组，页面会隐藏整个“接下来要处理”模块。不要从旧总结快照复制行动事项。
+        actions 采用“默认不成立”的严格准入：只有证据明确表达为用户的待办、提醒、承诺，或同时包含明确日历时间与用户可执行动作时才输出。每条必须同时包含对象、动作和可判断的结果，例如“补充退款幂等测试并提交 PR”。技术规则中的 TTL、30 分钟无操作过期、每天最多登录一次、系统配置时长不是用户的截止时间，绝不能推算为明天 9:00 的提醒。对方陈述、助手回答、条件句“若业务确认就……”和已完成事项也不属于用户的待办。禁止仅因出现“任务、完成、需要、检查”等词就推断行动；禁止把文章/笔记观点、知识内容、系统错误提示（如“网络异常，请检查后重试”）、助手向用户提出的问题、缺少对象的残句写入 actions。没有足够明确的行动时必须返回空数组，页面会隐藏整个“接下来要处理”模块。不要从旧总结快照复制行动事项。
 
         insights 与 actions 必须互斥。insights 表示会影响判断的事实、风险、规律或已形成的共识，不要求用户立即执行；如果一条内容已经能写成明确行动，只放入 actions，不要在 insights 重复。insights 的 title 要直接写结论，不写“跨证据比较”“行为模式”或算法评分。
 

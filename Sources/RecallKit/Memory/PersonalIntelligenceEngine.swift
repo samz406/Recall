@@ -175,18 +175,15 @@ public struct PersonalIntelligenceEngine: Sendable {
         var candidates: [PersonalInsight] = []
 
         if distinctProjects.count >= 4 || episodes.count >= 7 {
-            let repeatedRecently = previousInsights.contains {
-                $0.kind == .contextSwitching &&
-                day.timeIntervalSince($0.day) >= 0 &&
-                day.timeIntervalSince($0.day) <= 14 * 86_400
-            }
+            // 截图/OCR 片段数只能描述采样密度，不能证明真实的任务切换频率。
+            // 暂保留低确定性内部线索供反馈，禁止升级为面向用户的“值得留意”。
             candidates.append(PersonalInsight(
                 day: day,
                 kind: .contextSwitching,
-                title: repeatedRecently ? "近期多次出现上下文切换偏多" : "今天的上下文切换偏多",
-                detail: "记录涉及 \(distinctProjects.count) 条工作主线并形成 \(episodes.count) 个工作片段；只有连续多日出现时，才作为值得留意的工作节奏信号。",
-                recommendation: "明天先关闭最重要的一项未完成工作，再开启新的工作主线。",
-                confidence: repeatedRecently ? min(0.9, 0.62 + Double(distinctProjects.count) * 0.06) : 0.54,
+                title: "当天记录涉及多条不同主线",
+                detail: "记录涉及 \(distinctProjects.count) 条主线、\(episodes.count) 个片段；采样记录不足以判断实际切换节奏。",
+                recommendation: nil,
+                confidence: 0.54,
                 impact: 0.86,
                 novelty: novelty(of: .contextSwitching, comparedWith: previousInsights),
                 evidenceIDs: evidence
@@ -196,7 +193,8 @@ public struct PersonalIntelligenceEngine: Sendable {
         let activeKeys = Set(episodes.map(\.projectKey))
         let stalled = projects.filter {
             !activeKeys.contains($0.projectKey) &&
-            $0.nextAction != nil &&
+            isHighQualitySubject($0.displayName) &&
+            $0.nextAction.map { DailySummaryContentFormatter.isUsableAction(title: $0) } == true &&
             day.timeIntervalSince($0.lastActiveAt) >= 3 * 86_400
         }
         if let project = stalled.first {
@@ -451,6 +449,8 @@ public struct PersonalIntelligenceEngine: Sendable {
     private func isHighQualitySubject(_ value: String) -> Bool {
         let subject = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !subject.isEmpty else { return false }
+        if subject.range(of: #"^(?:的|和|与|及|但|而|、|，|,|：|:)[、，,\s]"#, options: .regularExpression) != nil { return false }
+        if subject.range(of: #"(?:的|与|和|及|对|把|将)$"#, options: .regularExpression) != nil { return false }
         let normalized = normalizedKey(subject)
         let processOnly = [
             "实现了", "已实现", "完成了", "已完成", "合并到main", "并合并到main", "提交到main",
@@ -534,6 +534,7 @@ public struct PersonalIntelligenceEngine: Sendable {
             sentences(in: userOwnedText(record)).first(where: { sentence in
                 let normalized = sentence.lowercased()
                 return containsAny(normalized, cues) && !containsAny(normalized, completed)
+                    && DailySummaryContentFormatter.isUsableAction(title: sentence)
             })
         }.first.map { String($0.prefix(180)) }
     }

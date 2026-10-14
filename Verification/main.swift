@@ -291,6 +291,16 @@ struct RecallVerifier {
         let expiryCandidate = ReminderExtractor().candidates(from: [expiry], existing: []).first
         try expect(expiryCandidate?.title == "合同将于2026年9月30日到期", "只有日期和到期状态的有效提醒被漏掉")
         try expect(expiryCandidate?.dueAt.map { calendar.component(.day, from: $0) } == 30, "期限事项没有识别出日期")
+
+        let technicalRules = [
+            "24 小时过期，用户每天最多登录一次",
+            "30 分钟无操作即过期一比‘每天一次’更严",
+            "若业务确认要维持每天登录一次的体验，就按 24h/1440min 配置"
+        ].map { makeCapture(text: $0, app: "Orca", createdAt: base) }
+        let quotedChat = makeCapture(text: "[聊天·对方] 用户 PC 网页提交订单—请求后端【创建支付单】", app: "企业微信", createdAt: base)
+        let directRequest = makeCapture(text: "[聊天·对方] 麻烦你明天回复客户关于报价的邮件", app: "企业微信", createdAt: base)
+        let precise = ReminderExtractor().candidates(from: technicalRules + [quotedChat, directRequest], existing: [], now: base)
+        try expect(precise.count == 1 && precise[0].title.contains("回复客户"), "技术配置或他人陈述被误识别成个人提醒")
     }
 
     private static func verifyReminderTimeAndRecurrence() throws {
@@ -710,7 +720,12 @@ struct RecallVerifier {
             DailySummaryItem(section: .actions, title: "解释为什么人坐下来却干不了活：脑子同时挂着过去的懊悔、未来的任务、未完成事项"),
             DailySummaryItem(section: .actions, title: "发布日期：2026年9月18日", detail: "发布日期：2026年9月18日；截止：2026年9月18日 9:00"),
             DailySummaryItem(section: .actions, title: "完成 4 篇纯中文完整译文", detail: "完成 4 篇纯中文完整译文"),
-            DailySummaryItem(section: .actions, title: "提交记录：0a92cfcn", detail: "提交记录：0a92cfcn")
+            DailySummaryItem(section: .actions, title: "提交记录：0a92cfcn", detail: "提交记录：0a92cfcn"),
+            DailySummaryItem(section: .actions, title: "24 小时过期，用户每天最多登录一次", detail: "期限事项 · Orca；截止：2026年10月13日 9:00"),
+            DailySummaryItem(section: .actions, title: "30 分钟无操作即过期", detail: "期限事项 · Orca"),
+            DailySummaryItem(section: .actions, title: "准备工作是最重要的部分", detail: "知识笔记"),
+            DailySummaryItem(section: .actions, title: "[聊天·对方] 用户 PC 网页提交订单—请求后端【创建支付单】"),
+            DailySummaryItem(section: .actions, title: "若业务确认要维持每天登录一次的体验，就按 24h 配置")
         ])
         try expect(badActions.isEmpty, "文章观点、助手追问或无对象残句仍被归入接下来要处理")
         try expect(DailySummaryItemParser.markdown(from: badActions).isEmpty, "没有明确行动时仍展示接下来要处理模块")
@@ -723,6 +738,14 @@ struct RecallVerifier {
             )
         ])
         try expect(validActions.count == 1, "收紧完成态过滤时误删了明确未完成的具体行动")
+
+        let brokenInsights = DailySummaryItemParser.sanitized([
+            DailySummaryItem(section: .insights, title: "的、需要我协调的和后续责任分别定下来 已连续多日没有新进展", detail: "该项目仍保留下一步；若继续，下一步是：×|图 提取内容比较"),
+            DailySummaryItem(section: .insights, title: "近期多次出现上下文切换偏多", detail: "记录涉及 33 条工作主线并形成 59 个工作片段"),
+            DailySummaryItem(section: .insights, title: "生产超时与儿童 PNR 很可能是同一条 IBE 链路问题", detail: "同一天出现超时和 PNR 错误"),
+            DailySummaryItem(section: .insights, title: "航旅接口错误率连续三天升高", detail: "生产监控显示错误率逐日增加")
+        ])
+        try expect(brokenInsights.map(\.title) == ["航旅接口错误率连续三天升高"], "旧洞察里的 OCR 断句或截图计数推断仍在展示")
 
         let noisyPrefix = DailySummaryContentFormatter.normalizingNextActionSection(
             in: "## 今天的主线\n修复订单状态。\n\n## 下一步\n\n- c：定时任务扫描明细全终态但订单未完成的订单做补偿"
@@ -843,7 +866,17 @@ struct RecallVerifier {
             )
         }
         let repeated = engine.consolidate(day: repeatedDay, records: repeatedRecords, previousInsights: initial.insights)
-        try expect(repeated.insights.first(where: { $0.kind == .contextSwitching })?.confidence ?? 0 >= 0.75, "连续多日出现的上下文切换没有升级为值得留意")
+        try expect(repeated.insights.first(where: { $0.kind == .contextSwitching })?.confidence ?? 1 < 0.75, "截图计数被升级为真实上下文切换判断")
+        let fragmentProject = ProjectState(
+            projectKey: "topic:fragment",
+            displayName: "的、需要我协调的和后续责任分别定下来",
+            currentState: "OCR 半句",
+            nextAction: "确认具体责任人",
+            confidence: 0.8,
+            lastActiveAt: day.addingTimeInterval(-4 * 86_400)
+        )
+        let broken = engine.consolidate(day: day, records: records, previousProjects: [fragmentProject])
+        try expect(!broken.insights.contains(where: { $0.kind == .stalledWork }), "历史 OCR 半句仍被拼成停滞项目洞察")
         let rejected = [
             InsightFeedback(insightID: UUID(), insightKind: .contextSwitching, rating: .inaccurate),
             InsightFeedback(insightID: UUID(), insightKind: .contextSwitching, rating: .dismissed)
