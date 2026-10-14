@@ -12,7 +12,6 @@ struct RecallApp: App {
         Window("Recall · 个人记忆", id: "main") {
             RecallRootView()
                 .environmentObject(model)
-                .background(MainWindowActivationBridge())
                 .frame(minWidth: 980, minHeight: 680)
         }
         .defaultSize(width: 1180, height: 780)
@@ -89,35 +88,6 @@ final class RecallAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
             }
             mainWindow?.orderFrontRegardless()
             mainWindow?.makeKeyAndOrderFront(nil)
-        }
-    }
-}
-
-private struct MainWindowActivationBridge: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        ActivationView()
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {}
-
-    private final class ActivationView: NSView {
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            guard let window else { return }
-            configure(window)
-            DispatchQueue.main.async {
-                self.configure(window)
-                RecallAppDelegate.activateMainWindow()
-            }
-        }
-
-        /// 使用标准 macOS 标题栏布局，让 SwiftUI 内容区从标题栏下方开始。
-        /// 这样 ScrollView 会在内容区边界裁剪，不需要额外遮罩，也不会再与窗口标题重叠。
-        private func configure(_ window: NSWindow) {
-            window.isReleasedWhenClosed = false
-            window.titlebarAppearsTransparent = false
-            window.titleVisibility = .visible
-            window.styleMask.remove(.fullSizeContentView)
         }
     }
 }
