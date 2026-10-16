@@ -714,6 +714,8 @@ struct RecallVerifier {
         try expect(requests[0].detail.hasPrefix("对方请求"), "对方明确请求没有保留归属")
         let memories = PersonalIntelligenceEngine().consolidate(day: base, records: [conversation]).memories
         try expect(memories.count == 1 && memories[0].content.contains("有结论的会议"), "对方第二句话仍污染长期偏好")
+        let repeatedMemories = PersonalIntelligenceEngine().consolidate(day: base, records: [conversation], existingMemories: memories).memories
+        try expect(repeatedMemories[0].confidence == memories[0].confidence, "重复运行使同一份证据的记忆评分不断上升")
 
         let noise = ["更新 abc1234..def5678", "支付设置「钱包」：关闭》开启", "修复（按验证方案", "确认后我提交并推送到 stable", "写一篇介绍语义检索的调研报告，需要包含实施方案"]
         for text in noise {
@@ -740,6 +742,8 @@ struct RecallVerifier {
         manual.textOrigin = .userInput
         let recurrence = extractor.candidates(from: [manual], existing: [], now: base)
         try expect(recurrence.count == 1 && recurrence[0].recurrence == .daily, "用户明确输入的周期提醒被精度门误删")
+        let practice = makeCapture(text: "提醒我每天上午十点练习口语", app: "Notes", createdAt: base)
+        try expect(extractor.candidates(from: [practice], existing: []).first?.recurrence == .daily, "明确的周期练习提醒被漏掉")
         var scheduled = candidate[0]
         scheduled.id = UUID()
         scheduled.status = .scheduled
@@ -804,6 +808,9 @@ struct RecallVerifier {
         duplicate.createdAt = pair[1].createdAt
         let repeated = try await generator.generate(day: day, from: [pair[0], duplicate], responder: groundedInsight)
         try expect(repeated.items.filter { $0.section == .insights }.isEmpty, "同一内容重复截图被当成两条独立证据")
+        let markdown = SummaryResponseStub { _ in "## 值得留意\n- 账单同步延迟与重试积压同时增长：应继续观察其关联" }
+        let ungrounded = try await generator.generate(day: day, from: pair, responder: markdown)
+        try expect(ungrounded.items.filter { $0.section == .insights }.isEmpty, "Markdown 回退用整份请求的来源冒充逐项证据")
     }
 
     private static func verifyDailySummaryActionPrecision() async throws {

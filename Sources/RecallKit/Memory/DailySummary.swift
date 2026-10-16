@@ -1026,6 +1026,8 @@ public struct DailySummaryGenerator: Sendable {
         let evidenceByID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, actionKey($0.ocrText)) })
         let groundedModelItems = modelItems.filter { item in
             guard item.section == .insights else { return true }
+            // 旧 Markdown 没有逐项来源协议，不能用整份请求的来源冒充该结论的证据。
+            guard structuredItems != nil else { return false }
             let independentTexts = Set(item.evidenceIDs.compactMap { evidenceByID[$0] }.filter { !$0.isEmpty })
             return independentTexts.count >= 2
         }
