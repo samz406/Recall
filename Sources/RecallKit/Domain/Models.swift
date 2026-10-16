@@ -152,6 +152,11 @@ public struct EventRule: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+public enum CaptureTextOrigin: String, Codable, Sendable {
+    case userInput
+    case screenOCR
+}
+
 public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var eventTemplate: CaptureEventTemplate
@@ -165,6 +170,8 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
     public var ocrText: String
     public var summary: String?
     public var tags: [String]
+    /// 旧记录没有该字段时保持未知；手动触发截图不等于用户亲自写下文本。
+    public var textOrigin: CaptureTextOrigin?
 
     public init(
         id: UUID = UUID(),
@@ -178,7 +185,8 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
         isRedacted: Bool = false,
         ocrText: String,
         summary: String? = nil,
-        tags: [String] = []
+        tags: [String] = [],
+        textOrigin: CaptureTextOrigin? = nil
     ) {
         self.id = id
         self.eventTemplate = eventTemplate
@@ -192,6 +200,7 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
         self.ocrText = ocrText
         self.summary = summary
         self.tags = tags
+        self.textOrigin = textOrigin
     }
 }
 
@@ -287,19 +296,22 @@ public struct ReminderDiscoveryCheckpoint: Codable, Hashable, Sendable {
     public var eligibleRecordCount: Int
     public var analyzedRecordCount: Int
     public var discoveredCount: Int
+    public var extractorVersion: Int?
 
     public init(
         processedCaptureHashes: [String: String] = [:],
         lastRunAt: Date? = nil,
         eligibleRecordCount: Int = 0,
         analyzedRecordCount: Int = 0,
-        discoveredCount: Int = 0
+        discoveredCount: Int = 0,
+        extractorVersion: Int? = nil
     ) {
         self.processedCaptureHashes = processedCaptureHashes
         self.lastRunAt = lastRunAt
         self.eligibleRecordCount = eligibleRecordCount
         self.analyzedRecordCount = analyzedRecordCount
         self.discoveredCount = discoveredCount
+        self.extractorVersion = extractorVersion
     }
 }
 

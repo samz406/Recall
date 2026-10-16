@@ -20,11 +20,13 @@ struct RecallVerifier {
             try verifyReminderPrecision()
             try verifyReminderTimeAndRecurrence()
             try verifyReminderOccurrenceLifecycle()
+            try verifyReminderContextAndOwnership()
             try verifyReminderLearning()
             try await verifyReminderSchedulePersistence()
             try await verifyReminderDeletionAndCheckpoint()
             try await verifyDailySummaryGeneration()
             try await verifyDailySummaryActionPrecision()
+            try await verifySummaryModelReview()
             try await verifyDailySummaryPersistenceAndDeletion()
             try verifyStructuredDailySummaryItems()
             try await verifyMemoryGovernanceDeletionAndRestore()
@@ -48,9 +50,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 41 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 43 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 40 integration checks.")
+                print("PASS: RecallVerifier completed 42 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -280,14 +282,14 @@ struct RecallVerifier {
         }
 
         let report = makeCapture(
-            text: "写一篇介绍《社会心理学》的调研报告，需要包含主要内容和产品设计应用",
+            text: "[聊天·自己] 写一篇介绍《社会心理学》的调研报告，需要包含主要内容和产品设计应用",
             app: "Chrome",
             createdAt: base
         )
         let reportCandidate = ReminderExtractor().candidates(from: [report], existing: []).first
         try expect(reportCandidate?.title == "写一篇介绍《社会心理学》的调研报告", "长句提醒没有提炼行动主干")
 
-        let expiry = makeCapture(text: "合同将于2026年9月30日到期", app: "Notes", createdAt: base)
+        let expiry = makeCapture(text: "[聊天·自己] 合同将于2026年9月30日到期", app: "Notes", createdAt: base)
         let expiryCandidate = ReminderExtractor().candidates(from: [expiry], existing: []).first
         try expect(expiryCandidate?.title == "合同将于2026年9月30日到期", "只有日期和到期状态的有效提醒被漏掉")
         try expect(expiryCandidate?.dueAt.map { calendar.component(.day, from: $0) } == 30, "期限事项没有识别出日期")
@@ -308,7 +310,7 @@ struct RecallVerifier {
         let base = calendar.date(from: DateComponents(year: 2026, month: 9, day: 8, hour: 11, minute: 10))!
         let relative = makeCapture(text: "提醒我3小时后提交报价单", app: "Notes", createdAt: base)
         let chineseTime = makeCapture(text: "待办：明天下午三点半回复客户", app: "Mail", createdAt: base)
-        let recurring = makeCapture(text: "每天上午九点检查服务告警", app: "Notes", createdAt: base)
+        let recurring = makeCapture(text: "[聊天·自己] 每天上午九点检查服务告警", app: "Notes", createdAt: base)
         let candidates = ReminderExtractor().candidates(from: [relative, chineseTime, recurring], existing: [], now: base)
 
         let relativeDue = candidates.first(where: { $0.title.contains("提交报价单") })?.dueAt
@@ -457,7 +459,7 @@ struct RecallVerifier {
         try expect(generation.generationKind == .localFallback, "未配置模型时应生成本地回退摘要")
         try expect(generation.sourceCaptureIDs == [source.id], "每日总结混入了非目标日期或旧回顾记录")
         try expect(generation.actions.contains(where: { $0.title.contains("回复客户") }), "每日总结没有提取明确行动事项")
-        try expect(generation.actions.first(where: { $0.title.contains("回复客户") })?.priority == .high, "带有建议时间的行动应被标为建议先做")
+        try expect(generation.actions.first(where: { $0.title.contains("回复客户") })?.priority == .normal, "仅有时间或较高识别分数不应被标为建议先做")
         try expect(generation.content.contains("今天推进了什么"), "本地每日总结缺少当天进展区块")
         try expect(!generation.briefing.headline.isEmpty && !generation.briefing.progress.isEmpty, "每日总结没有形成结构化工作主线")
         try expect(generation.content.contains("接下来要处理"), "本地每日总结缺少统一行动区块")
@@ -570,9 +572,9 @@ struct RecallVerifier {
         try expect(duplicatedLegacy.items.count == 1 && duplicatedLegacy.items.first?.section == .actions, "旧版待办、未闭环和下一步没有归并去重")
 
         let structuredJSON = """
-        {"headline":"**今天推进退款链路修复** [19][22]","progress":[{"title":"**补充幂等校验**","detail":"21 项测试通过 [23][24]"}],"actions":[{"title":"**提交退款修复 PR** [32]","detail":"等待评审"}],"insights":[{"title":"**跨证据比较**","detail":"客户端与服务端问题由同一组协作人并行推进 [33][34]","confidence":0.81},{"title":"可能：单日流程可以长期复用","detail":"只跑通了两次","confidence":0.7},{"title":"低价值猜测","detail":"证据很弱","confidence":0.3}]}
+        {"headline":"**今天推进退款链路修复** [19][22]","progress":[{"title":"**补充幂等校验**","detail":"21 项测试通过 [23][24]"}],"actions":[{"title":"**提交退款修复 PR** [32]","detail":"等待评审"}],"insights":[{"title":"**跨证据比较**","detail":"客户端与服务端问题由同一组协作人并行推进 [33][34]","confidence":0.81,"evidenceIndices":[1,2]},{"title":"可能：单日流程可以长期复用","detail":"只跑通了两次","confidence":0.7},{"title":"低价值猜测","detail":"证据很弱","confidence":0.3}]}
         """
-        let structuredItems = DailySummaryItemParser.itemsFromModelResponse(structuredJSON, defaultEvidenceIDs: []) ?? []
+        let structuredItems = DailySummaryItemParser.itemsFromModelResponse(structuredJSON, defaultEvidenceIDs: [UUID(), UUID()]) ?? []
         try expect(structuredItems.filter { $0.section == .insights }.count == 1, "低置信度发现没有在后台过滤")
         try expect(!structuredItems.contains(where: { $0.title.contains("跨证据比较") || $0.title.contains("置信度") }), "算法术语仍暴露给普通用户")
         try expect(!structuredItems.contains(where: { $0.title.contains("**") || $0.detail.contains("**") }), "模型返回的 Markdown 加粗标记仍被当成普通文字展示")
@@ -697,6 +699,113 @@ struct RecallVerifier {
         }
     }
 
+    private static func verifyReminderContextAndOwnership() throws {
+        let base = Calendar.current.startOfDay(for: .now).addingTimeInterval(3_600)
+        let extractor = ReminderExtractor()
+        // 合成整段对话：角色必须跨句保留，不能把对方/助手的后半句变成用户的任务或偏好。
+        let conversation = makeCapture(text: """
+        [聊天·对方] 我可以说明配置方案。下一步：你同意后我把测试配置注入做掉；确认后我提交并推送到 stable。我喜欢每周修改配置。
+        [聊天·角色未知] 待办：明天提交界面方案。
+        [聊天·对方] 麻烦你明天回复客户验收邮件。
+        [聊天·自己] 我更喜欢有结论的会议。
+        """, app: "Chat", createdAt: base)
+        let requests = extractor.candidates(from: [conversation], existing: [], now: base)
+        try expect(requests.count == 1 && requests[0].title.contains("回复客户验收邮件"), "拆句后丢失角色或把助手承诺变成用户待办")
+        try expect(requests[0].detail.hasPrefix("对方请求"), "对方明确请求没有保留归属")
+        let memories = PersonalIntelligenceEngine().consolidate(day: base, records: [conversation]).memories
+        try expect(memories.count == 1 && memories[0].content.contains("有结论的会议"), "对方第二句话仍污染长期偏好")
+
+        let noise = ["更新 abc1234..def5678", "支付设置「钱包」：关闭》开启", "修复（按验证方案", "确认后我提交并推送到 stable", "写一篇介绍语义检索的调研报告，需要包含实施方案"]
+        for text in noise {
+            let source = makeCapture(text: text, app: "Editor", createdAt: base)
+            try expect(extractor.candidates(from: [source], existing: []).isEmpty, "未归属的屏幕文字变成待办：\(text)")
+        }
+        for text in noise.prefix(4) {
+            try expect(!DailySummaryContentFormatter.isUsableAction(title: text), "旧总结质量门仍接收残句/助手建议/元数据：\(text)")
+        }
+
+        let finishedInMessage = makeCapture(text: "[聊天·自己] 待办：明天提交客户验收报价单。客户验收报价单已提交。", app: "Chat", createdAt: base)
+        try expect(extractor.candidates(from: [finishedInMessage], existing: []).isEmpty, "同一条消息后半段已完成的事项又成为待办")
+        let pending = makeCapture(text: "[聊天·自己] 待办：明天整理服务验收清单", app: "Chat", createdAt: base)
+        let unrelated = makeCapture(text: "[聊天·自己] 已完成整理客户会议纪要", app: "Chat", createdAt: base.addingTimeInterval(60))
+        let candidate = extractor.candidates(from: [pending, unrelated], existing: [], now: base)
+        try expect(candidate.count == 1, "其他事项完成错误关闭了当前待办")
+        let cancelled = makeCapture(text: "[聊天·自己] 整理服务验收清单的任务已取消", app: "Chat", createdAt: base.addingTimeInterval(120))
+        try expect(extractor.candidates(from: [pending], existing: [], resolutionCaptures: [cancelled]).isEmpty, "后续取消证据没有参与旧候选校验")
+        let otherCompleted = makeCapture(text: "[聊天·对方] 服务验收清单已完成", app: "Chat", createdAt: base.addingTimeInterval(120))
+        try expect(extractor.candidates(from: [pending, otherCompleted], existing: []).count == 1, "他人完成事项被当作用户已完成")
+
+        var manual = makeCapture(text: "每天上午九点检查账单同步结果", app: "Notes", createdAt: base)
+        try expect(extractor.candidates(from: [manual], existing: []).isEmpty, "未标记来源被默认当作用户输入")
+        manual.textOrigin = .userInput
+        let recurrence = extractor.candidates(from: [manual], existing: [], now: base)
+        try expect(recurrence.count == 1 && recurrence[0].recurrence == .daily, "用户明确输入的周期提醒被精度门误删")
+        var scheduled = candidate[0]
+        scheduled.id = UUID()
+        scheduled.status = .scheduled
+        var direct = candidate[0]
+        direct.id = UUID()
+        direct.origin = .manual
+        let reconciled = extractor.merging([], into: [candidate[0], scheduled, direct], revalidatedCaptureIDs: [pending.id])
+        try expect(Set(reconciled.map(\.id)) == Set([scheduled.id, direct.id]), "重验旧候选误删已安排或手动提醒")
+        let kept = extractor.merging(candidate, into: [candidate[0]], revalidatedCaptureIDs: [pending.id])
+        try expect(kept.first?.id == candidate[0].id, "重新分析有效候选丢失原标识")
+
+        let legacyData = try JSONEncoder().encode(pending)
+        let restored = try JSONDecoder().decode(CaptureRecord.self, from: legacyData)
+        try expect(restored.textOrigin == nil, "旧采集记录被误迁移为用户输入")
+        let oldCheckpoint = Data(#"{"processedCaptureHashes":{},"eligibleRecordCount":0,"analyzedRecordCount":0,"discoveredCount":0}"#.utf8)
+        let restoredCheckpoint = try JSONDecoder().decode(ReminderDiscoveryCheckpoint.self, from: oldCheckpoint)
+        try expect(restoredCheckpoint.extractorVersion == nil, "旧扫描检查点不能触发新提取器重验")
+    }
+
+    private static func verifySummaryModelReview() async throws {
+        let day = Calendar.current.startOfDay(for: .now)
+        let source = makeCapture(text: "[聊天·自己] 待办：明天提交客户报价方案，补齐成本说明后发给客户。", app: "Chat", createdAt: day.addingTimeInterval(3_600))
+        let generator = DailySummaryGenerator()
+        let empty = SummaryResponseStub { _ in #"{"headline":"","progress":[],"actions":[],"insights":[]}"# }
+        let declined = try await generator.generate(day: day, from: [source], responder: empty)
+        try expect(declined.generationKind == .cloud && declined.items.isEmpty && declined.todos.isEmpty, "模型明确返回空内容后仍被本地候选补回")
+        try expect(!declined.content.contains("接下来要处理") && !declined.content.contains("值得留意"), "空栏目仍被展示")
+        try expect(DailySummaryItemParser.itemsFromModelResponse("{}", defaultEvidenceIDs: []) == nil, "无协议字段的对象被当作有效总结")
+
+        let rewrite = SummaryResponseStub { request in
+            let range = request.question.range(of: #"(?<=candidateID=)[A-Fa-f0-9-]{36}"#, options: .regularExpression)
+            let candidateID = range.map { String(request.question[$0]) } ?? UUID().uuidString
+            return """
+            {"progress":[],"actions":[{"candidateID":"\(candidateID)","title":"提交客户报价方案供评审","detail":"补齐成本说明后发给客户"}],"insights":[]}
+            """
+        }
+        let rewritten = try await generator.generate(day: day, from: [source], responder: rewrite)
+        try expect(rewritten.todos.count == 1 && rewritten.todos[0].title == "提交客户报价方案供评审", "模型核准的同一事项改写被规则原文覆盖")
+        try expect(rewritten.todos[0].sourceCaptureIDs == [source.id] && rewritten.todos[0].dueAt != nil, "行动改写丢失准确来源或时间")
+        try expect(rewritten.todos[0].priority == .normal, "识别分数被当作优先级")
+
+        let invented = SummaryResponseStub { _ in #"{"progress":[],"actions":[{"candidateID":"00000000-0000-0000-0000-000000000000","title":"购买演示设备"}],"insights":[]}"# }
+        let rejected = try await generator.generate(day: day, from: [source], responder: invented)
+        try expect(rejected.todos.isEmpty, "不存在的候选 ID 被允许创造新待办")
+        let corrupted = try await generator.generate(day: day, from: [source], responder: SummaryResponseStub { _ in "无法解析的响应" })
+        try expect(corrupted.generationKind == .localFallback && corrupted.todos.count == 1, "无效模型响应未保留明确的本地提醒兜底")
+
+        var closed = ReminderExtractor().candidates(from: [source], existing: [])[0]
+        closed.status = .completed
+        closed.completedAt = .now
+        let resolved = try await generator.generate(day: day, from: [source], existingReminders: [closed])
+        try expect(resolved.todos.isEmpty, "用户已完成的提醒又被每日总结复活")
+
+        let pair = [makeCapture(text: "[聊天·自己] 测试环境的账单同步延迟连续两轮升高", app: "Notes", createdAt: day.addingTimeInterval(7_200)), makeCapture(text: "[聊天·自己] 账单同步延迟升高时重试队列也在增长", app: "Notes", createdAt: day.addingTimeInterval(10_800))]
+        let groundedInsight = SummaryResponseStub { _ in #"{"progress":[],"actions":[],"insights":[{"title":"账单同步延迟与重试积压同时增长","detail":"两次检查分别记录延迟和积压，应继续观察其关联","confidence":0.9,"evidenceIndices":[1,2]}]}"# }
+        let supported = try await generator.generate(day: day, from: pair, responder: groundedInsight)
+        try expect(supported.items.filter { $0.section == .insights }.count == 1, "有两条独立来源的发现没有保留")
+        let single = try await generator.generate(day: day, from: [pair[0]], responder: groundedInsight)
+        try expect(single.items.filter { $0.section == .insights }.isEmpty, "不存在的来源编号仍支撑发现")
+        var duplicate = pair[0]
+        duplicate.id = UUID()
+        duplicate.createdAt = pair[1].createdAt
+        let repeated = try await generator.generate(day: day, from: [pair[0], duplicate], responder: groundedInsight)
+        try expect(repeated.items.filter { $0.section == .insights }.isEmpty, "同一内容重复截图被当成两条独立证据")
+    }
+
     private static func verifyDailySummaryActionPrecision() async throws {
         let normalized = DailySummaryContentFormatter.normalizingNextActionSection(
             in: "## 今天的主线\n修复每日回顾。\n\n## 近14天提醒与建议\n- 页面以系统流程为中心，属于长期产品改进方向。\n\n## 下一步\n\n- 今天",
@@ -793,7 +902,7 @@ struct RecallVerifier {
         first.windowTitle = "Recall - Xcode"
         var second = makeCapture(text: "项目：Recall 已完成 Episode 聚类，测试通过。下一步：接入反馈。", app: "Xcode", createdAt: day.addingTimeInterval(20 * 60))
         second.windowTitle = "Recall - Xcode"
-        var preference = makeCapture(text: "我喜欢高密度、少打扰的个人建议。", app: "Notes", createdAt: day.addingTimeInterval(90 * 60))
+        var preference = makeCapture(text: "[聊天·自己] 我喜欢高密度、少打扰的个人建议。", app: "Notes", createdAt: day.addingTimeInterval(90 * 60))
         preference.windowTitle = "个人工作约定 - Notes"
 
         let engine = PersonalIntelligenceEngine()
@@ -875,7 +984,8 @@ struct RecallVerifier {
             confidence: 0.8,
             lastActiveAt: day.addingTimeInterval(-4 * 86_400)
         )
-        let broken = engine.consolidate(day: day, records: records, previousProjects: [fragmentProject])
+        let ordinaryProject = ProjectState(projectKey: "topic:export", displayName: "账单导出", currentState: "等待测试", nextAction: "补充账单导出测试", confidence: 0.9, lastActiveAt: day.addingTimeInterval(-10 * 86_400))
+        let broken = engine.consolidate(day: day, records: records, previousProjects: [fragmentProject, ordinaryProject])
         try expect(!broken.insights.contains(where: { $0.kind == .stalledWork }), "历史 OCR 半句仍被拼成停滞项目洞察")
         let rejected = [
             InsightFeedback(insightID: UUID(), insightKind: .contextSwitching, rating: .inaccurate),
@@ -1226,6 +1336,14 @@ struct RecallVerifier {
 @MainActor
 private final class ChatPersistenceProbe {
     var didRefreshAfterSave = false
+}
+
+private struct SummaryResponseStub: LLMResponding {
+    let content: @Sendable (LLMRequest) -> String
+    init(_ content: @escaping @Sendable (LLMRequest) -> String) { self.content = content }
+    func answer(to request: LLMRequest) async throws -> LLMAnswer {
+        LLMAnswer(content: content(request), citedCaptureIDs: request.context.map(\.id))
+    }
 }
 
 private final class HeaderInspectingURLProtocol: URLProtocol, @unchecked Sendable {

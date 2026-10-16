@@ -190,26 +190,8 @@ public struct PersonalIntelligenceEngine: Sendable {
             ))
         }
 
-        let activeKeys = Set(episodes.map(\.projectKey))
-        let stalled = projects.filter {
-            !activeKeys.contains($0.projectKey) &&
-            isHighQualitySubject($0.displayName) &&
-            $0.nextAction.map { DailySummaryContentFormatter.isUsableAction(title: $0) } == true &&
-            day.timeIntervalSince($0.lastActiveAt) >= 3 * 86_400
-        }
-        if let project = stalled.first {
-            candidates.append(PersonalInsight(
-                day: day,
-                kind: .stalledWork,
-                title: "\(project.displayName) 已连续多日没有新进展",
-                detail: "该项目仍保留下一步，但最近三天没有新的可追溯记录。",
-                recommendation: project.nextAction.map { "决定继续、延期或关闭；若继续，下一步是：\($0)" },
-                confidence: 0.76,
-                impact: 0.8,
-                novelty: novelty(of: .stalledWork, comparedWith: previousInsights),
-                evidenceIDs: project.evidenceIDs
-            ))
-        }
+        // 显式采集不连续：没有新截图只能说明缺少观测，不能证明项目停滞。
+        // 待有明确延期/阻塞证据时再生成对应判断，不按 lastActiveAt 自动创造行动。
 
         let rejectedKinds = Dictionary(grouping: feedback.filter { [.inaccurate, .dismissed].contains($0.rating) }, by: \.insightKind)
         return candidates
@@ -263,11 +245,10 @@ public struct PersonalIntelligenceEngine: Sendable {
         ]
         var result: [UserMemory] = []
         for record in records {
-            let sentences = record.ocrText
-                .components(separatedBy: CharacterSet(charactersIn: "。！？!?\n"))
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.hasPrefix("[聊天·对方]") && !$0.hasPrefix("[聊天·角色未知]") }
-                .map { $0.replacingOccurrences(of: "[聊天·自己]", with: "") }
+            let sentences = RecordedText.segments(in: record)
+                .filter { $0.speaker == .user }
+                .map(\.text)
+                .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n。！？!?；;")) }
                 .filter { !$0.isEmpty && $0.count <= 220 }
             for sentence in sentences {
                 guard let match = cues.first(where: { _, words in words.contains(where: sentence.contains) }) else { continue }
@@ -288,7 +269,8 @@ public struct PersonalIntelligenceEngine: Sendable {
         return Dictionary(grouping: result, by: \.key).compactMap { _, values in
             guard var first = values.first else { return nil }
             first.evidenceIDs = values.flatMap(\.evidenceIDs).uniqued()
-            first.confidence = min(0.9, first.confidence + Double(values.count - 1) * 0.08)
+            // 重复截图只增加来源，不等于多次独立的偏好表达。
+            first.confidence = values.map(\.confidence).max() ?? first.confidence
             return first
         }
     }
@@ -302,7 +284,7 @@ public struct PersonalIntelligenceEngine: Sendable {
             }
             guard previous.status != .rejected else { continue }
             previous.evidenceIDs = (previous.evidenceIDs + candidate.evidenceIDs).uniqued()
-            previous.confidence = min(0.95, max(previous.confidence, candidate.confidence) + 0.04)
+            previous.confidence = max(previous.confidence, candidate.confidence)
             if previous.status == .proposed { previous.status = .confirmed }
             previous.updatedAt = max(previous.updatedAt, candidate.updatedAt)
             memories[candidate.key] = previous
@@ -454,7 +436,7 @@ public struct PersonalIntelligenceEngine: Sendable {
         let normalized = normalizedKey(subject)
         let processOnly = [
             "实现了", "已实现", "完成了", "已完成", "合并到main", "并合并到main", "提交到main",
-            "推送到main", "测试通过", "构建通过", "发布成功", "登录", "搜索", "discover", "验证窗口"
+            "推送到main", "测试通过", "构建通过", "发布成功", "登录", "搜索", "discover", "验证窗口", "锁定屏幕", "锁屏", "lockscreen", "屏幕保护程序"
         ]
         guard !processOnly.contains(normalized) else { return false }
         guard firstMatch(in: normalized, pattern: #"^[a-f0-9]{6,12}[a-z]?$"#, group: 0) == nil else { return false }
@@ -486,7 +468,7 @@ public struct PersonalIntelligenceEngine: Sendable {
         let tools = [
             "微信", "企业微信", "wechat", "wecom", "chrome", "googlechrome", "safari", "edge", "firefox",
             "xcode", "intellijidea", "vscode", "visualstudiocode", "terminal", "终端", "iterm", "zsh",
-            "chatgpt", "claude", "codex", "gemini", "perplexity", "localmcp"
+            "chatgpt", "claude", "codex", "gemini", "perplexity", "localmcp", "锁定屏幕", "锁屏", "lockscreen", "屏幕保护程序"
         ]
         return tools.contains(normalized)
     }

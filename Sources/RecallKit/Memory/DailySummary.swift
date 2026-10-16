@@ -87,6 +87,7 @@ public enum DailySummaryContentFormatter {
               !looksLikeAdviceOrPrompt(combined),
               !looksLikeUnassignedPolicyOrChat(title: title, detail: detail),
               !looksCompletedOrMetadata(title: title, detail: detail),
+              !isIncompleteAction(title),
               !isGenericActionFragment(title) else { return false }
         return normalizedAction(title) != nil || (!detail.isEmpty && normalizedAction(detail) != nil)
     }
@@ -166,11 +167,19 @@ public enum DailySummaryContentFormatter {
         ]
         return advicePatterns.contains(where: compact.contains)
             || promptPatterns.contains(where: compact.contains)
+            || compact.range(of: #"(?:你|您)?(?:确认|同意|批准|允许)(?:之)?后[，,\s]*(?:我|再由我)|(?:等|等待)(?:你|您)(?:确认|同意)|(?:我可以|需要我|要我)(?:帮你|为你)?"#, options: .regularExpression) != nil
             || systemMessages.contains(where: compact.contains)
             || compact.hasSuffix("：")
             || compact.hasSuffix(":")
             || compact.hasSuffix("？")
             || compact.hasSuffix("?")
+    }
+
+    private static func isIncompleteAction(_ text: String) -> Bool {
+        let pairs: [(Character, Character)] = [("（", "）"), ("(", ")"), ("【", "】"), ("[", "]"), ("“", "”"), ("「", "」"), ("《", "》")]
+        if pairs.contains(where: { pair in text.filter { $0 == pair.0 }.count != text.filter { $0 == pair.1 }.count }) { return true }
+        if text.hasSuffix("…") || text.hasSuffix("...") { return true }
+        return text.range(of: #"(?:按照|根据|以及|或者|和|与|把|将|的|并|再)$"#, options: .regularExpression) != nil
     }
 
     private static func isGenericActionFragment(_ text: String) -> Bool {
@@ -211,6 +220,8 @@ public enum DailySummaryContentFormatter {
 
         let compactTitle = title.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression)
         let lowercasedTitle = compactTitle.lowercased()
+        if lowercasedTitle.range(of: #"^(?:更新|提交|合并|update|commit|merge)[:：\s]*[a-f0-9]{6,40}(?:\.{2,3}|…)[a-f0-9]{6,40}"#, options: .regularExpression) != nil { return true }
+        if compactTitle.range(of: #"[:：].*(?:关闭|开启|启用|禁用|开|关)[>》→]+(?:关闭|开启|启用|禁用|开|关)$"#, options: .regularExpression) != nil { return true }
         let metadataPrefixes = ["发布日期", "发布时间", "提交记录", "提交哈希", "提交ID", "commit记录", "commitid"]
         if metadataPrefixes.contains(where: { lowercasedTitle.hasPrefix($0.lowercased()) }) { return true }
         if compactTitle.range(of: #"^(?:commit|提交记录)[:：]?[a-f0-9]{6,40}[a-z]?$"#, options: [.regularExpression, .caseInsensitive]) != nil {
@@ -354,19 +365,23 @@ public struct DailySummaryItem: Identifiable, Codable, Hashable, Sendable {
     public var title: String
     public var detail: String
     public var evidenceIDs: [UUID]
+    /// 模型只能核准/改写已提取的具体行动，不能通过自由文本新增待办。
+    public var actionCandidateID: UUID?
 
     public init(
         id: UUID = UUID(),
         section: DailySummarySection,
         title: String,
         detail: String = "",
-        evidenceIDs: [UUID] = []
+        evidenceIDs: [UUID] = [],
+        actionCandidateID: UUID? = nil
     ) {
         self.id = id
         self.section = section
         self.title = title
         self.detail = detail
         self.evidenceIDs = evidenceIDs
+        self.actionCandidateID = actionCandidateID
     }
 }
 
@@ -394,11 +409,14 @@ public enum DailySummaryItemParser {
             modelItem(value, section: .actions, evidenceIDs: defaultEvidenceIDs)
         })
         items.append(contentsOf: response.insights.compactMap { value in
-            guard (value.confidence ?? 0) >= 0.75 else { return nil }
-            return modelItem(value, section: .insights, evidenceIDs: defaultEvidenceIDs)
+            let indices = Set(value.evidenceIndices ?? [])
+            guard (value.confidence ?? 0) >= 0.75, indices.count >= 2,
+                  indices.allSatisfy({ $0 >= 1 && $0 <= defaultEvidenceIDs.count }) else { return nil }
+            return modelItem(value, section: .insights, evidenceIDs: indices.sorted().map { defaultEvidenceIDs[$0 - 1] })
         })
         let sanitizedItems = sanitized(items)
-        return sanitizedItems.isEmpty ? nil : sanitizedItems
+        // 合法空数组就是有效的“没有内容”，不能触发本地兜底把弱候选重新塞回去。
+        return sanitizedItems
     }
 
     /// 将模型 Markdown 转成可单项治理的数据。旧总结会在首次加载时自动完成迁移。
@@ -486,6 +504,7 @@ public enum DailySummaryItemParser {
             item.section = item.section.canonical
             item.title = sanitizedText(item.title)
             item.detail = sanitizedText(item.detail)
+            repairLegacyPrefixDuplication(in: &item)
             if DailySummaryContentFormatter.isNoiseTitle(item.title), !item.detail.isEmpty {
                 item.title = item.detail.trimmingCharacters(in: .whitespacesAndNewlines)
                 item.detail = ""
@@ -574,7 +593,7 @@ public enum DailySummaryItemParser {
         if item.detail.contains("同一天出现") && (title.contains("同一条") || title.contains("同一问题") || item.detail.contains("表明同一")) { return true }
         // 旧本地算法曾把 OCR 半句当成项目名，拼出“的、……已连续多日没有新进展”。
         if title.range(of: #"^(?:的|和|与|及|、|，|,|：|:)[、，,\s]"#, options: .regularExpression) != nil { return true }
-        if title.contains("已连续多日没有新进展") && (title.contains("×") || title.contains("|") || title.contains("】")) { return true }
+        if title.contains("已连续多日没有新进展") || combined.contains("最近三天没有新的可追溯记录") { return true }
         // 截图数量不能证明真实工作切换，旧版按片段计数生成的判断不应继续展示。
         if title.contains("上下文切换偏多") && item.detail.contains("工作片段") { return true }
         if item.detail.contains("×|") || item.detail.contains("|×") { return true }
@@ -642,7 +661,7 @@ public enum DailySummaryItemParser {
         let title = value.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let detail = value.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !title.isEmpty else { return nil }
-        return DailySummaryItem(section: section, title: title, detail: detail, evidenceIDs: evidenceIDs)
+        return DailySummaryItem(section: section, title: title, detail: detail, evidenceIDs: evidenceIDs, actionCandidateID: section == .actions ? value.candidateID : nil)
     }
 }
 
@@ -656,6 +675,9 @@ private struct DailySummaryModelResponse: Decodable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard container.contains(.progress) || container.contains(.actions) || container.contains(.insights) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Not a daily summary response"))
+        }
         headline = try container.decodeIfPresent(String.self, forKey: .headline)
         progress = try container.decodeIfPresent([DailySummaryModelItem].self, forKey: .progress) ?? []
         actions = try container.decodeIfPresent([DailySummaryModelItem].self, forKey: .actions) ?? []
@@ -667,6 +689,8 @@ private struct DailySummaryModelItem: Decodable {
     var title: String?
     var detail: String?
     var confidence: Double?
+    var candidateID: UUID?
+    var evidenceIndices: [Int]?
 }
 
 public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
@@ -868,14 +892,16 @@ public struct DailySummaryGenerator: Sendable {
             }
     }
 
-    public func todos(from records: [CaptureRecord]) -> [DailySummaryTodo] {
-        let candidates = ReminderExtractor().candidates(from: records, existing: [])
+    public func todos(from records: [CaptureRecord], existingReminders: [ReminderCandidate] = []) -> [DailySummaryTodo] {
+        let closed = existingReminders.filter { [.completed, .cancelled, .dismissed].contains($0.status) }
+        let candidates = ReminderExtractor().candidates(from: records, existing: closed)
         return candidates.map { candidate in
-            let priority: DailySummaryTodoPriority = candidate.dueAt != nil || candidate.confidence >= 0.8 ? .high : .normal
+            // 识别把握和存在日期都不等于重要程度。只有来源明确标注紧急才提高优先级。
+            let priority: DailySummaryTodoPriority = ["紧急", "优先处理", "务必先"].contains(where: candidate.detail.contains) ? .high : .normal
             return DailySummaryTodo(
                 id: candidate.id,
                 title: candidate.title,
-                detail: candidate.detail,
+                detail: actionDetail(for: candidate),
                 status: candidate.status == .completed ? .completed : (candidate.status == .dismissed || candidate.status == .cancelled ? .ignored : .pending),
                 dueAt: candidate.dueAt,
                 reminderAt: candidate.scheduledAt,
@@ -896,6 +922,18 @@ public struct DailySummaryGenerator: Sendable {
         }
     }
 
+    private func actionDetail(for candidate: ReminderCandidate) -> String {
+        var excerpt = candidate.detail.components(separatedBy: .newlines).dropFirst().joined(separator: "\n")
+            .replacingOccurrences(of: #"^(?:待办|任务|todo|下一步)\s*[:：\-]\s*|^(?:请)?(?:提醒我|记得|别忘|务必)\s*[:：，,]?\s*"#, with: "", options: [.regularExpression, .caseInsensitive])
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n。；;"))
+        if excerpt.hasPrefix(candidate.title) {
+            excerpt = String(excerpt.dropFirst(candidate.title.count)).trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n，,；;。"))
+        }
+        if candidate.title == "待" + excerpt { excerpt = "" }
+        let provenance = candidate.detail.hasPrefix("对方请求") ? "对方提出的请求，尚未确认完成。" : ""
+        return provenance + excerpt
+    }
+
     public func generate(
         day: Date,
         from captures: [CaptureRecord],
@@ -906,6 +944,7 @@ public struct DailySummaryGenerator: Sendable {
         previousInsights: [PersonalInsight] = [],
         feedback: [InsightFeedback] = [],
         existingRoutines: [LearnedRoutine] = [],
+        existingReminders: [ReminderCandidate] = [],
         responder: (any LLMResponding)? = nil,
         calendar: Calendar = .current
     ) async throws -> DailySummaryGeneration {
@@ -913,7 +952,7 @@ public struct DailySummaryGenerator: Sendable {
         let originalDayRecords = captures.filter {
             $0.eventTemplate != .dailyReview && calendar.isDate($0.createdAt, inSameDayAs: day)
         }
-        let priorityTodos = todos(from: originalDayRecords)
+        let priorityTodos = todos(from: originalDayRecords, existingReminders: existingReminders)
         let consolidation = intelligenceEngine.consolidate(
             day: day,
             records: captures,
@@ -944,7 +983,7 @@ public struct DailySummaryGenerator: Sendable {
                 todos: priorityTodos,
                 defaultEvidenceIDs: records.map(\.id)
             )
-            let actions = unifiedActions(from: extractedItems, ruleActions: priorityTodos, now: day)
+            let actions = Array(priorityTodos.prefix(3))
             let items = replacingActionItems(in: extractedItems, with: actions)
             return DailySummaryGeneration(
                 content: DailySummaryItemParser.markdown(from: items),
@@ -957,8 +996,10 @@ public struct DailySummaryGenerator: Sendable {
             )
         }
 
+        let sentEvidenceIDs = Set(records.map(\.id))
+        let reviewableActions = Array(priorityTodos.filter { !Set($0.sourceCaptureIDs).isDisjoint(with: sentEvidenceIDs) }.prefix(12))
         let answer = try await responder.answer(to: LLMRequest(
-            question: cloudPrompt(for: day, todos: priorityTodos),
+            question: cloudPrompt(for: day, todos: reviewableActions),
             context: records,
             supplementaryContext: structuredContext(
                 targetDay: day,
@@ -968,27 +1009,37 @@ public struct DailySummaryGenerator: Sendable {
                 calendar: calendar
             )
         ))
-        let modelItems = DailySummaryItemParser.itemsFromModelResponse(
+        let structuredItems = DailySummaryItemParser.itemsFromModelResponse(
             answer.content,
-            defaultEvidenceIDs: answer.citedCaptureIDs
-        ) ?? DailySummaryItemParser.items(
+            defaultEvidenceIDs: records.map(\.id)
+        )
+        let modelItems = structuredItems ?? DailySummaryItemParser.items(
             from: answer.content,
-            defaultEvidenceIDs: answer.citedCaptureIDs
+            defaultEvidenceIDs: records.map(\.id)
         )
         let fallbackItems = localItems(
             briefing: consolidation.briefing,
             todos: priorityTodos,
             defaultEvidenceIDs: records.map(\.id)
         )
-        let extractedItems = mergedItems(modelItems: modelItems, fallbackItems: fallbackItems)
-        let actions = unifiedActions(from: extractedItems, ruleActions: priorityTodos, now: day)
+        let hasValidModelResponse = structuredItems != nil || !modelItems.isEmpty
+        let evidenceByID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, actionKey($0.ocrText)) })
+        let groundedModelItems = modelItems.filter { item in
+            guard item.section == .insights else { return true }
+            let independentTexts = Set(item.evidenceIDs.compactMap { evidenceByID[$0] }.filter { !$0.isEmpty })
+            return independentTexts.count >= 2
+        }
+        let extractedItems = hasValidModelResponse ? limited(groundedModelItems) : fallbackItems
+        let actions = hasValidModelResponse
+            ? unifiedActions(from: modelItems, ruleActions: reviewableActions, now: day)
+            : Array(priorityTodos.prefix(3))
         let finalItems = replacingActionItems(in: extractedItems, with: actions)
         return DailySummaryGeneration(
             content: DailySummaryItemParser.markdown(from: finalItems),
-            sourceCaptureIDs: answer.citedCaptureIDs,
+            sourceCaptureIDs: records.map(\.id),
             todos: actions,
             items: finalItems,
-            generationKind: .cloud,
+            generationKind: hasValidModelResponse ? .cloud : .localFallback,
             briefing: consolidation.briefing,
             consolidation: consolidation
         )
@@ -1036,19 +1087,6 @@ public struct DailySummaryGenerator: Sendable {
         return limited(DailySummaryItemParser.sanitized(items))
     }
 
-    private func mergedItems(
-        modelItems: [DailySummaryItem],
-        fallbackItems: [DailySummaryItem]
-    ) -> [DailySummaryItem] {
-        let modelSections = Set(modelItems.map { $0.section.canonical })
-        var merged = modelItems
-        // 模型漏掉行动事项时仍保留本地明确提取结果；“值得留意”没有高价值内容时保持隐藏。
-        merged.append(contentsOf: fallbackItems.filter { item in
-            item.section == .actions || !modelSections.contains(item.section)
-        })
-        return limited(DailySummaryItemParser.sanitized(merged))
-    }
-
     private func limited(_ items: [DailySummaryItem]) -> [DailySummaryItem] {
         DailySummarySection.displaySections.flatMap { section in
             let limit = section == .progress ? 4 : 3
@@ -1061,20 +1099,39 @@ public struct DailySummaryGenerator: Sendable {
         ruleActions: [DailySummaryTodo],
         now: Date
     ) -> [DailySummaryTodo] {
-        var result = ruleActions.filter {
+        let eligible = ruleActions.filter {
             ($0.status == .pending || $0.status == .inProgress)
                 && DailySummaryContentFormatter.isUsableAction(title: $0.title, detail: $0.detail)
         }
-        // 模型生成的动作只能补充已经从原始记录确认的同一事项，不能凭改写后的句子凭空创建待办。
+        var result: [DailySummaryTodo] = []
+        // 模型有否决权。候选 ID 保留原始证据与时间；旧 Markdown 仅支持标题完全一致的候选。
         for item in items where item.section == .actions {
-            let itemKey = actionKey(item.title)
-            if let index = result.firstIndex(where: { actionKey($0.title) == itemKey }) {
-                if item.detail.count > result[index].detail.count { result[index].detail = item.detail }
-                result[index].sourceCaptureIDs = Array(Set(result[index].sourceCaptureIDs + item.evidenceIDs))
-                result[index].updatedAt = now
-            }
+            guard var action = eligible.first(where: {
+                item.actionCandidateID == nil
+                    ? actionKey($0.title) == actionKey(item.title)
+                    : $0.id == item.actionCandidateID
+            }), !result.contains(where: { $0.id == action.id }),
+                  sameActionSubject(action.title, item.title),
+                  DailySummaryContentFormatter.isUsableAction(title: item.title, detail: item.detail) else { continue }
+            action.title = item.title
+            action.detail = item.detail
+            action.updatedAt = now
+            result.append(action)
         }
         return Array(result.prefix(3))
+    }
+
+    private func sameActionSubject(_ original: String, _ rewritten: String) -> Bool {
+        let left = actionKey(original), right = actionKey(rewritten)
+        if left == right { return true }
+        func pairs(_ value: String) -> Set<String> {
+            let chars = Array(value)
+            guard chars.count > 1 else { return [] }
+            return Set((0..<(chars.count - 1)).map { String(chars[$0...($0 + 1)]) })
+        }
+        let a = pairs(left), b = pairs(right)
+        let shared = a.intersection(b).count
+        return shared >= 3 && Double(shared) / Double(max(min(a.count, b.count), 1)) >= 0.4
     }
 
     private func actionKey(_ text: String) -> String {
@@ -1161,11 +1218,11 @@ public struct DailySummaryGenerator: Sendable {
         let date = day.formatted(.dateTime.year().month().day())
         let knownTodos: String
         if todos.isEmpty {
-            knownTodos = "未从规则中识别出明确待办；请仅在证据确有待办、承诺、截止或回复事项时列出。"
+            knownTodos = "无通过来源准入的候选。本次 actions 必须为空数组。"
         } else {
             knownTodos = todos.map { todo in
                 let due = todo.dueAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "未推断时间"
-                return "- \(todo.priority.title)：\(todo.title)（\(due)）"
+                return "- candidateID=\(todo.id.uuidString)：\(todo.title)（\(due)）；上下文：\(todo.detail)"
             }.joined(separator: "\n")
         }
         return """
@@ -1175,11 +1232,11 @@ public struct DailySummaryGenerator: Sendable {
         {
           "headline": "一句话概括今天真正推进的具体事情",
           "progress": [{"title": "具体成果", "detail": "实际变化或可验证结果"}],
-          "actions": [{"title": "对象明确的可执行动作", "detail": "状态、截止或判断完成的标准"}],
-          "insights": [{"title": "具体的新规律、风险或决策线索", "detail": "为什么值得留意", "confidence": 0.0}]
+          "actions": [{"candidateID": "对应候选的 UUID", "title": "对象明确的可执行动作", "detail": "状态、截止或判断完成的标准"}],
+          "insights": [{"title": "具体的新规律、风险或决策线索", "detail": "为什么值得留意", "confidence": 0.0, "evidenceIndices": [1, 2]}]
         }
 
-        页面最终只回答三个问题：今天推进了什么、接下来要处理什么、有什么值得留意。不要把“尚未闭环、待办、下一步、提醒、近14天”拆成并列分类；它们都是 action 的状态、优先级、通知方式或筛选条件。同一事项只能出现一次。actions 最多 3 条，将最值得先做的放在第一条；没有明确动作就返回空数组。
+        页面最终只回答三个问题：今天推进了什么、接下来要处理什么、有什么值得留意。不要把“尚未闭环、待办、下一步、提醒、近14天”拆成并列分类；它们都是 action 的状态、优先级、通知方式或筛选条件。同一事项只能出现一次。actions 最多 3 条；没有明确动作就返回空数组。不自行赋予优先级。
 
         应用名、工具名和网站名（例如微信、企业微信、Chrome、IDE、终端）只能作为证据来源，绝不能直接充当“主线”“进展”“尚未闭环”“发现”或行动建议的事项名称。每项结论必须落到可验证的具体事情，例如某个项目、功能、问题、交付物、决定或下一步动作；无法从证据中识别具体事情时，明确写“证据不足”，不要用工具名代替，也不要猜测。
 
@@ -1192,6 +1249,8 @@ public struct DailySummaryGenerator: Sendable {
         actions 采用“默认不成立”的严格准入：只有证据明确表达为用户的待办、提醒、承诺，或同时包含明确日历时间与用户可执行动作时才输出。每条必须同时包含对象、动作和可判断的结果，例如“补充退款幂等测试并提交 PR”。技术规则中的 TTL、30 分钟无操作过期、每天最多登录一次、系统配置时长不是用户的截止时间，绝不能推算为明天 9:00 的提醒。对方陈述、助手回答、条件句“若业务确认就……”和已完成事项也不属于用户的待办。禁止仅因出现“任务、完成、需要、检查”等词就推断行动；禁止把文章/笔记观点、知识内容、系统错误提示（如“网络异常，请检查后重试”）、助手向用户提出的问题、缺少对象的残句写入 actions。没有足够明确的行动时必须返回空数组，页面会隐藏整个“接下来要处理”模块。不要从旧总结快照复制行动事项。
 
         insights 与 actions 必须互斥。insights 表示会影响判断的事实、风险、规律或已形成的共识，不要求用户立即执行；如果一条内容已经能写成明确行动，只放入 actions，不要在 insights 重复。insights 的 title 要直接写结论，不写“跨证据比较”“行为模式”或算法评分。
+
+        actions 只核查下方给出的候选，不得新增。逐个结合完整上下文判断主体是否为用户、是否已经完成/取消、是否只是助手提议；不成立就删除，允许全部删除。保留时原样返回 candidateID，title 可改写为自然完整的动作，detail 仅补充必要信息，不重复 title，不新增日期。insights 必须给出至少两条实际支撑结论的不同记忆编号 evidenceIndices；同一段文字的重复截图不算独立证据。缺少采集记录不等于项目没有进展，不能据此推断停滞。
 
         总长度控制在 1,200 个汉字以内。
 
