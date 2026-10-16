@@ -1508,23 +1508,13 @@ private struct DailySummaryItemsView: View {
                         Label(section.title, systemImage: section.systemImage)
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(color(for: section))
-                        ForEach(Array(sectionItems.enumerated()), id: \.element.id) { entry in
+                        ForEach(sectionItems) { item in
                             VStack(alignment: .leading, spacing: 4) {
-                                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                                    if section == .actions, entry.offset == 0 {
-                                        Text("建议先做")
-                                            .font(.caption2.weight(.semibold))
-                                            .foregroundStyle(.orange)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(Color.orange.opacity(0.1), in: Capsule())
-                                    }
-                                    Text(entry.element.title)
-                                        .font(.system(size: 15, weight: .semibold))
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                                if !entry.element.detail.isEmpty, entry.element.detail != entry.element.title {
-                                    Text(entry.element.detail)
+                                Text(item.title)
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if !item.detail.isEmpty, item.detail != item.title {
+                                    Text(item.detail)
                                         .font(.system(size: 15))
                                         .foregroundStyle(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)

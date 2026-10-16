@@ -2,23 +2,38 @@ import Foundation
 import UserNotifications
 
 public struct ReminderExtractor: Sendable {
+    public static let version = 2
     public init() {}
 
     public func candidates(
         from captures: [CaptureRecord],
         existing: [ReminderCandidate],
-        now: Date = .now
+        now: Date = .now,
+        resolutionCaptures: [CaptureRecord] = []
     ) -> [ReminderCandidate] {
+        guard !captures.isEmpty else { return [] }
         var result: [ReminderCandidate] = []
+        let resolutions = (captures + resolutionCaptures).flatMap { capture in
+            RecordedText.segments(in: capture).compactMap { segment -> Resolution? in
+                guard segment.speaker == .user, isResolution(segment.text) else { return nil }
+                return Resolution(captureID: capture.id, createdAt: capture.createdAt, segment: segment)
+            }
+        }
 
         for capture in captures.sorted(by: { $0.createdAt > $1.createdAt }) where !capture.ocrText.isEmpty {
-            for segment in segments(from: capture.ocrText) {
+            for segment in RecordedText.segments(in: capture) {
                 guard let analysis = analyze(segment, base: capture.createdAt) else { continue }
                 let semanticKey = fingerprint(analysis.title)
-                let recurrence = inferredRecurrence(in: segment)
+                let recurrence = inferredRecurrence(in: segment.text)
+                if recurrence == .none, resolutions.contains(where: {
+                    let isLater = $0.captureID == capture.id
+                        ? $0.segment.ordinal > segment.ordinal
+                        : $0.createdAt > capture.createdAt
+                    return isLater && resolves(title: analysis.title, with: $0.segment.text)
+                }) { continue }
                 let draft = ReminderCandidate(
                     title: analysis.title,
-                    detail: detail(for: capture, segment: segment, reason: analysis.reason),
+                    detail: detail(for: capture, segment: segment.text, reason: analysis.reason),
                     dueAt: analysis.dueAt,
                     sourceCaptureIDs: [capture.id],
                     confidence: analysis.confidence,
@@ -58,9 +73,15 @@ public struct ReminderExtractor: Sendable {
     public func merging(
         _ discovered: [ReminderCandidate],
         into existing: [ReminderCandidate],
-        now: Date = .now
+        now: Date = .now,
+        revalidatedCaptureIDs: Set<UUID> = []
     ) -> [ReminderCandidate] {
-        var merged = existing
+        var merged = existing.filter { reminder in
+            // 只重验未经用户确认的自动候选，不能改动已安排、手动创建或用户关闭的事项。
+            guard reminder.status == .proposed, reminder.origin == .discovered,
+                  !Set(reminder.sourceCaptureIDs).isDisjoint(with: revalidatedCaptureIDs) else { return true }
+            return discovered.contains { sameOccurrence(reminder, $0) }
+        }
         for candidate in discovered {
             guard let index = merged.firstIndex(where: { sameOccurrence($0, candidate) }) else {
                 merged.append(candidate)
@@ -68,7 +89,7 @@ public struct ReminderExtractor: Sendable {
             }
             var current = merged[index]
             var seenSourceIDs: Set<UUID> = []
-            current.sourceCaptureIDs = (current.sourceCaptureIDs + candidate.sourceCaptureIDs)
+            current.sourceCaptureIDs = (current.sourceCaptureIDs.filter { !revalidatedCaptureIDs.contains($0) } + candidate.sourceCaptureIDs)
                 .filter { seenSourceIDs.insert($0).inserted }
             current.confidence = max(current.confidence, candidate.confidence)
             current.updatedAt = max(current.updatedAt, candidate.updatedAt)
@@ -98,22 +119,18 @@ public struct ReminderExtractor: Sendable {
         let reason: String
     }
 
-    private func analyze(_ rawText: String, base: Date) -> Analysis? {
-        let role = rawText.hasPrefix("[聊天·对方]") ? "other" : (rawText.hasPrefix("[聊天·角色未知]") ? "unknown" : "self")
-        let compact = rawText
-            .replacingOccurrences(of: #"^\[聊天·(?:自己|对方|角色未知)\]\s*"#, with: "", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    private func analyze(_ segment: RecordedText.Segment, base: Date) -> Analysis? {
+        let compact = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = compact.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
         guard compact.count >= 5, compact.count <= 300 else { return nil }
         guard !looksLikeNoise(lower), !looksLikeQuestion(compact), !looksLikeQuotedAdvice(compact), !looksCompleted(lower) else { return nil }
         // 左侧聊天内容是对方的陈述，不等于用户的待办；仅接受明确向用户发出的请求。
-        if role == "unknown" || (role == "other" && !isDirectRequestToUser(lower)) { return nil }
+        if segment.speaker == .unknown || (segment.speaker == .other && !isDirectRequestToUser(lower)) { return nil }
 
-        let reminderMarkers = ["记得", "别忘", "务必", "提醒我"]
         let actionVerbs = [
             "回复", "提交", "完成", "跟进", "处理", "联系", "确认", "预约", "支付", "续费",
             "更新", "发送", "整理", "准备", "参加", "取消", "购买", "缴纳", "检查", "修复",
-            "发布", "交付", "申请", "撰写", "写一", "follow up", "send", "submit", "finish",
+            "发布", "交付", "申请", "撰写", "写一", "练习", "复盘", "follow up", "send", "submit", "finish",
             "call", "email", "pay", "renew", "schedule"
         ]
         let timeMarkers = [
@@ -128,18 +145,21 @@ public struct ReminderExtractor: Sendable {
             of: #"(?i)^\s*【?(?:待办|任务|todo|action\s*item)】?\s*[:：\-]"#,
             options: .regularExpression
         ) != nil
-        let hasReminderMarker = reminderMarkers.contains(where: { lower.contains($0) })
-        let hasFirstPersonCommitment = ["我需要", "我要", "我计划", "我准备", "我打算"].contains(where: { lower.contains($0) })
+        let hasReminderMarker = lower.range(of: #"^(?:请)?(?:记得|别忘|务必|提醒我)"#, options: .regularExpression) != nil
+        let hasFirstPersonCommitment = ["我需要", "我要", "我计划", "我准备", "我打算", "我会"].contains(where: { lower.contains($0) })
         let hasLeadingDirective = lower.range(
             of: #"^(?:需要|应该|应当|必须|请|计划|准备|要在|需在|下一步)"#,
             options: .regularExpression
         ) != nil
-        let isOtherPartyRequest = role == "other" && isDirectRequestToUser(lower)
+        let isOtherPartyRequest = segment.speaker == .other && isDirectRequestToUser(lower)
         let hasStructuredRequirement = startsWithAnyAction(in: lower, verbs: actionVerbs)
             && ["需要包含", "要求包含", "需要完成", "需完成"].contains(where: { lower.contains($0) })
         let hasExplicitMarker = hasTaskLabel || hasReminderMarker
+        // 无标记 OCR 只能提供明确写下的待办/提醒线索，不能把动词开头的网页、AI 回复当成自己的任务。
+        guard segment.speaker == .user || isOtherPartyRequest || hasExplicitMarker else { return nil }
         let hasDirective = hasFirstPersonCommitment || hasLeadingDirective || isOtherPartyRequest
         let hasTime = timeMarkers.contains(where: { lower.contains($0) }) || containsExplicitDate(lower)
+        let hasOwnedTimedAction = segment.speaker == .user && hasTime
         let matchedActionVerb = actionVerbs.first(where: { lower.contains($0) })
         let deadlineStateMarkers = ["到期", "过期", "还款日", "续费日", "缴费日", "生日", "纪念日", "会议时间", "预约时间"]
         // “24 小时过期”“每天最多登录一次”属于产品规则，不是次日的个人期限。
@@ -153,7 +173,7 @@ public struct ReminderExtractor: Sendable {
         let startsWithAction = actionVerbs.contains { title.localizedCaseInsensitiveContains($0) && title.lowercased().hasPrefix($0.lowercased()) }
 
         guard hasAction,
-              hasExplicitMarker || hasDirective || hasStructuredRequirement || startsWithAction || hasDeadlineState || hasRecurringAction else { return nil }
+              hasExplicitMarker || hasDirective || hasStructuredRequirement || startsWithAction || hasDeadlineState || hasRecurringAction || hasOwnedTimedAction else { return nil }
         if looksLikeTechnicalPolicy(lower) && !hasExplicitMarker && !hasFirstPersonCommitment && !isOtherPartyRequest {
             return nil
         }
@@ -164,6 +184,7 @@ public struct ReminderExtractor: Sendable {
         var confidence = 0.18
         if hasExplicitMarker { confidence += 0.34 }
         if hasDirective { confidence += 0.20 }
+        if hasOwnedTimedAction { confidence += 0.20 }
         if hasAction { confidence += 0.24 }
         if startsWithAction { confidence += 0.18 }
         if hasTime { confidence += 0.10 }
@@ -178,7 +199,9 @@ public struct ReminderExtractor: Sendable {
         confidence = min(confidence, 0.96)
         guard confidence >= 0.60 else { return nil }
         let reason: String
-        if lower.contains("提醒我") || lower.contains("别忘") || lower.contains("记得") {
+        if isOtherPartyRequest {
+            reason = "对方请求"
+        } else if lower.contains("提醒我") || lower.contains("别忘") || lower.contains("记得") {
             reason = "明确提醒"
         } else if hasDeadlineState {
             reason = "期限事项"
@@ -206,13 +229,31 @@ public struct ReminderExtractor: Sendable {
         text.range(of: #"\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}[日号]?|\d{1,2}月\d{1,2}[日号]?"#, options: .regularExpression) != nil
     }
 
-    private func segments(from text: String) -> [String] {
-        text.split { character in
-            character.isNewline || "。！？!?；;".contains(character)
+    private struct Resolution {
+        let captureID: UUID
+        let createdAt: Date
+        let segment: RecordedText.Segment
+    }
+
+    private func isResolution(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        if ["未完成", "尚未", "还没", "没有", "待完成", "如果", "假如", "计划", "准备", "明天", "需要"].contains(where: lower.contains) { return false }
+        return looksCompleted(lower) || ["已取消", "不再需要", "不用再", "取消了"].contains(where: lower.contains)
+    }
+
+    private func resolves(title: String, with resolution: String) -> Bool {
+        // 只认同一具体对象的明确完成/取消，不用“完成了”或模糊相似度关闭其他任务。
+        let verbs = ["回复", "提交", "完成", "跟进", "处理", "联系", "确认", "预约", "支付", "续费", "发送", "整理", "准备", "检查", "修复", "发布", "交付", "申请", "撰写"]
+        let cancellation = ["已取消", "不再需要", "不用再", "取消了"].contains(where: resolution.contains)
+        let completeTask = ["已完成", "完成了", "已经完成"].contains(where: resolution.contains)
+        let requiredVerbs = verbs.filter { title.contains($0) }
+        guard cancellation || completeTask || (!requiredVerbs.isEmpty && requiredVerbs.allSatisfy(resolution.contains)) else { return false }
+        var object = title.replacingOccurrences(of: #"(?:今天|明天|后天|本周|这周|下周|每天|每日|每周|每月|(?:下|本|这)?(?:周|星期)[一二三四五六日天])|(?:\d{4}[-/年])?\d{1,2}[-/月]\d{1,2}[日号]?|(?:上午|下午|晚上|早上)?[零一二三四五六七八九十两\d]+(?:[:：点时][零一二三四五六七八九十两\d]*分?半?)"#, with: "", options: .regularExpression)
+        for prefix in ["待办", "任务", "提醒我", "我计划", "我需要", "我准备", "我要", "我会", "请你", "麻烦你"] + verbs {
+            object = object.replacingOccurrences(of: prefix, with: "")
         }
-        .map(String.init)
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty }
+        object = fingerprint(object)
+        return object.count >= 4 && fingerprint(resolution).contains(object)
     }
 
     private func looksLikeNoise(_ text: String) -> Bool {
@@ -234,7 +275,7 @@ public struct ReminderExtractor: Sendable {
     }
 
     private func looksLikeQuestion(_ text: String) -> Bool {
-        let compact = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let compact = text.trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n。；;"))
         let uncertaintyMarkers = ["是不是", "是否", "能否", "要不要", "可不可以", "可能", "好像", "我记得"]
         let assistantPrompts = ["你想怎么处理", "您想怎么处理", "问下你", "请告诉我", "你希望我", "您希望我", "需要我怎么", "还有什么需要处理"]
         let questionEndings = ["吗", "呢", "吧", "么", "？", "?"]
@@ -287,7 +328,12 @@ public struct ReminderExtractor: Sendable {
                 break
             }
         }
-        return String(title.prefix(96)).trimmingCharacters(in: .whitespacesAndNewlines)
+        // 不通过字符截取制造半句；无法形成完整标题的候选由质量门拒绝。
+        title = title.trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n。；;"))
+        if title.hasPrefix("完成"), source.range(of: #"^(?:待办|任务|todo)\s*[:：]|^(?:提醒我|记得|别忘)"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            title = "待" + title
+        }
+        return title
     }
 
     private func isSemanticallyEquivalent(_ lhs: String, _ rhs: String) -> Bool {
@@ -455,7 +501,7 @@ public struct ReminderExtractor: Sendable {
 
     private func detail(for capture: CaptureRecord, segment: String, reason: String) -> String {
         let source = capture.sourceAppName ?? capture.eventTemplate.title
-        let excerpt = String(segment.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        let excerpt = segment.trimmingCharacters(in: .whitespacesAndNewlines)
         return "\(reason) · \(source)\n\(excerpt)"
     }
 

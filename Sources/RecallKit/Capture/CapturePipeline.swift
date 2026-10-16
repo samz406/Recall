@@ -247,7 +247,8 @@ public final class CapturePipeline {
             isRedacted: redactedText != extractedText,
             ocrText: redactedText,
             summary: LocalSummary.make(from: redactedText),
-            tags: LocalSummary.tags(from: redactedText)
+            tags: LocalSummary.tags(from: redactedText),
+            textOrigin: userText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? .userInput : .screenOCR
         )
         try await store.addCapture(record)
         return record

@@ -457,9 +457,17 @@ final class RecallAppModel: ObservableObject {
             participatingTemplates.contains($0.eventTemplate) && $0.createdAt >= oldestRelevantDate
         }
         let checkpoint = state.reminderDiscoveryCheckpoint
-        let captures = force ? eligibleCaptures : eligibleCaptures.filter {
+        let rescanAll = force || checkpoint.extractorVersion != ReminderExtractor.version
+        let changed = rescanAll ? eligibleCaptures : eligibleCaptures.filter {
             checkpoint.processedCaptureHashes[$0.id.uuidString] != $0.contentHash
         }
+        // 新证据可能完成/取消旧候选；把未确认候选的来源一并复核，已安排提醒不参与自动改写。
+        let pendingSourceIDs = Set(state.reminders.filter { $0.status == .proposed && $0.origin == .discovered }.flatMap(\.sourceCaptureIDs))
+        let changedIDs = Set(changed.map(\.id))
+        let captures = rescanAll || !changed.isEmpty
+            ? eligibleCaptures.filter { rescanAll || changedIDs.contains($0.id) || pendingSourceIDs.contains($0.id) }
+            : []
+        let revalidatedIDs = rescanAll ? pendingSourceIDs.union(captures.map(\.id)) : Set(captures.map(\.id))
         reminderDiscoveryStatus = .searching(
             eligibleRecordCount: eligibleCaptures.count,
             analyzingRecordCount: captures.count
@@ -470,12 +478,14 @@ final class RecallAppModel: ObservableObject {
             let extractor = reminderExtractor
             let blockingHistory = state.reminders.filter { $0.status != .proposed }
             let extractedCandidates = await Task.detached(priority: .userInitiated) {
-                extractor.candidates(from: captures, existing: blockingHistory)
+                extractor.candidates(from: captures, existing: blockingHistory, resolutionCaptures: eligibleCaptures)
             }.value
             let completedAt = Date.now
             do {
                 let learningProfile = state.reminderLearningProfile
+                let availableIDs = Set(state.captures.map(\.id))
                 let newCandidates = extractedCandidates.compactMap { candidate -> ReminderCandidate? in
+                    guard candidate.sourceCaptureIDs.allSatisfy(availableIDs.contains) else { return nil }
                     var adjusted = candidate
                     adjusted.confidence = min(
                         max(candidate.confidence + learningProfile.confidenceAdjustment(for: reminderSemanticKey(candidate)), 0),
@@ -484,7 +494,7 @@ final class RecallAppModel: ObservableObject {
                     let isExplicit = candidate.detail.hasPrefix("明确提醒") || candidate.detail.hasPrefix("明确待办")
                     return adjusted.confidence >= 0.62 || isExplicit ? adjusted : nil
                 }
-                let merged = extractor.merging(newCandidates, into: state.reminders, now: completedAt)
+                let merged = extractor.merging(newCandidates, into: state.reminders, now: completedAt, revalidatedCaptureIDs: revalidatedIDs)
                 let retained = merged.filter { reminder in
                     switch reminder.status {
                     case .dismissed:
@@ -501,6 +511,7 @@ final class RecallAppModel: ObservableObject {
                 nextCheckpoint.eligibleRecordCount = eligibleCaptures.count
                 nextCheckpoint.analyzedRecordCount = captures.count
                 nextCheckpoint.discoveredCount = newCandidates.count
+                nextCheckpoint.extractorVersion = ReminderExtractor.version
                 try await store.commitReminderDiscovery(reminders: retained, checkpoint: nextCheckpoint)
                 await refresh()
                 reminderDiscoveryStatus = .completed(
@@ -850,6 +861,7 @@ final class RecallAppModel: ObservableObject {
                     previousInsights: state.insights,
                     feedback: state.insightFeedback,
                     existingRoutines: state.learnedRoutines,
+                    existingReminders: state.reminders,
                     responder: responder
                 )
                 let summary = DailySummary(
