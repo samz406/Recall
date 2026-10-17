@@ -80,6 +80,7 @@ public struct MatterMemoryEngine: Sendable {
         let safe = state.correctedForAnalysis()
         let available = Set(safe.captures.map(\.id))
         let captured = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
+        let analysisCaptures = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id, $0) })
         // Rebuild missing days locally; no model calls, no capture or external effects.
         let existingIDs = Set(safe.episodes.flatMap(\.evidenceIDs))
         let missing = Dictionary(grouping: safe.captures.filter { !existingIDs.contains($0.id) }) { calendar.startOfDay(for: $0.createdAt) }
@@ -98,7 +99,10 @@ public struct MatterMemoryEngine: Sendable {
                 name = separated.text
             }
             guard name.count >= 3, name.count <= 100 else { continue }
-            let detail = episode.outcome ?? episode.action
+            let records = ids.compactMap { analysisCaptures[$0] }.sorted { $0.createdAt < $1.createdAt }
+            let owned = records.flatMap { RecordedText.segments(in: $0).filter { $0.speaker == .user }.map(\.text) }
+            let suggestedDetail = episode.outcome ?? episode.action
+            let detail = owned.last(where: { $0.hasPrefix(suggestedDetail) || suggestedDetail.hasPrefix($0) }) ?? suggestedDetail
             guard detail.count >= 6 else { continue }
             let signature = key + ":" + normalized(detail)
             guard seen.insert(signature).inserted else { continue }
@@ -108,7 +112,7 @@ public struct MatterMemoryEngine: Sendable {
             let event = MatterEvent(id: ids.sorted { $0.uuidString < $1.uuidString }[0], title: name,
                 detail: completed ? "用户已标记完成：\(name)" : detail,
                 recordedAt: recordedAt, eventAt: eventDate,
-                status: completed ? .completed : episode.status, evidenceIDs: ids)
+                status: completed ? .completed : supportedStatus(owned, records: records), evidenceIDs: ids)
             groups[key, default: []].append(event)
             names[key] = name
         }
@@ -156,6 +160,24 @@ public struct MatterMemoryEngine: Sendable {
             } else if word.count >= 3 { terms.insert(String(word)) }
         }
         return terms
+    }
+
+    /// Old episode labels may have been inferred from a visible article or an assistant offer.
+    /// Only explicit self-authored evidence may promote a matter into progress/results.
+    private func supportedStatus(_ statements: [String], records: [CaptureRecord]) -> WorkEpisodeStatus {
+        var status: WorkEpisodeStatus = .explored
+        for text in statements {
+            if ["如果", "假如", "例如", "比如", "计划", "准备", "明天", "将会", "需要", "待完成", "尚未", "未完成", "还没"].contains(where: text.contains) { continue }
+            if ["已完成", "完成了", "验证通过", "测试通过", "已合并", "已发布", "已解决"].contains(where: text.contains) {
+                status = .completed
+            } else if ["仍失败", "仍然失败", "被阻塞", "卡住了"].contains(where: text.contains) {
+                status = .blocked
+            } else if ["正在", "已定位", "已修改", "推进了", "修复了", "实现了"].contains(where: text.contains) {
+                status = .progressed
+            }
+        }
+        if status == .explored && !ReminderExtractor().candidates(from: records, existing: []).isEmpty { return .pending }
+        return status
     }
 
     private func normalized(_ text: String) -> String {

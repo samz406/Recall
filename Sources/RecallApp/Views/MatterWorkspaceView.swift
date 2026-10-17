@@ -47,7 +47,7 @@ struct MatterWorkspaceView: View {
                             fileCard(file, resume: true)
                         }
                         more(total: resumeFiles.count)
-                        Toggle("在这里提示相关的历史经验", isOn: Binding(get: { model.state.experienceHintsEnabled }, set: model.setExperienceHints))
+                        Toggle("在这里提示相关的历史经验", isOn: Binding(get: { model.state.experienceHintsEnabled }, set: { model.setExperienceHints($0) }))
                             .padding(.top, 8)
                         Text("开启后，每次最多显示一条有独立来源的相关结果。仅在本页显示，不发送系统通知。")
                             .font(.caption).foregroundStyle(.secondary)
