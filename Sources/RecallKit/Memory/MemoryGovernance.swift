@@ -129,6 +129,7 @@ public struct RecentlyDeletedMemory: Identifiable, Codable, Sendable {
     public var previousConversationSummary: String?
     public var previousConversationSummaryCoveredMessageCount: Int?
     public var addedSuppressionRuleIDs: [UUID]
+    public var matterCorrections: [MatterCorrection]?
 
     public init(
         id: UUID = UUID(),
@@ -172,6 +173,7 @@ public struct RecentlyDeletedMemory: Identifiable, Codable, Sendable {
         self.previousConversationSummary = previousConversationSummary
         self.previousConversationSummaryCoveredMessageCount = previousConversationSummaryCoveredMessageCount
         self.addedSuppressionRuleIDs = addedSuppressionRuleIDs
+        self.matterCorrections = nil
     }
 
     public var screenshotPaths: [String] { captures.compactMap(\.imageRelativePath) }

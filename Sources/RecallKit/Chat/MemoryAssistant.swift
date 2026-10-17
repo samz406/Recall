@@ -28,21 +28,32 @@ public final class MemoryAssistant {
         userMessage: ConversationMessage? = nil,
         onUserMessageSaved: (@MainActor @Sendable () async -> Void)? = nil
     ) async throws -> ConversationMessage {
-        let state = await store.snapshot()
+        let originalState = await store.snapshot()
+        let state = originalState.correctedForAnalysis()
         let userMessage = userMessage ?? ConversationMessage(role: .user, content: question)
         try await store.addMessage(userMessage)
         await onUserMessageSaved?()
 
         let recordsAllowedInChat = state.captures.filter { capture in
             state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
+        }.map { capture in
+            var copy = capture
+            let originalDate = originalState.captures.first { $0.id == capture.id }?.createdAt ?? capture.createdAt
+            let explicitDate = originalState.matterCorrections.last { $0.kind == .eventDate && $0.evidenceIDs.contains(capture.id) }?.eventAt
+            let dateNote = explicitDate.map { "用户确认发生时间：\($0.formatted())" } ?? "实际发生时间未确认，不能把记录时间当作发生时间。"
+            copy.ocrText = "记录时间：\(originalDate.formatted())；\(dateNote)\n" + copy.ocrText
+            return copy
         }
         let retrievalText = retrievalText(for: question, history: state.messages)
         let timeRange = timeRangeResolver.resolve(retrievalText)
-        let summaryEvidence = state.dailySummaries.map(makeSearchableEvidence)
-        let episodeEvidence = state.episodes.map(makeSearchableEvidence)
+        let allowedIDs = Set(recordsAllowedInChat.map(\.id))
+        let summaryEvidence = state.dailySummaries.filter {
+            !$0.sourceCaptureIDs.isEmpty && Set($0.sourceCaptureIDs).isSubset(of: allowedIDs)
+        }.map(makeSearchableEvidence)
+        let episodeEvidence = state.episodes.filter { !$0.evidenceIDs.isEmpty && Set($0.evidenceIDs).isSubset(of: allowedIDs) }.map(makeSearchableEvidence)
         let durableMemoryEvidence = state.userMemories
             .filter { memory in
-                memory.status == .confirmed || (memory.status == .proposed && memory.confidence >= 0.75)
+                !memory.evidenceIDs.isEmpty && Set(memory.evidenceIDs).isSubset(of: allowedIDs) && (memory.status == .confirmed || (memory.status == .proposed && memory.confidence >= 0.75))
             }
             .map(makeSearchableEvidence)
         let searchableEvidence = recordsAllowedInChat + summaryEvidence + episodeEvidence + (timeRange == nil ? durableMemoryEvidence : [])
@@ -53,7 +64,7 @@ public final class MemoryAssistant {
         )
         // 多日问题必须先看到范围内的全部候选，再做按天覆盖；若提前截断，
         // 高频的今天记录仍会把较早日期挤出候选集。
-        let searchLimit = timeRange == nil ? 8 : max(searchableEvidence.count, 1)
+        let searchLimit = timeRange == nil ? 64 : max(searchableEvidence.count, 1)
         let results = searchEngine.search(query, in: searchableEvidence, limit: searchLimit)
         let indexedIDs = timeRange == nil ? await store.indexedCaptureIDs(matching: retrievalText, limit: 8) : []
         let indexed = indexedIDs.compactMap { id in recordsAllowedInChat.first(where: { $0.id == id }) }
@@ -65,7 +76,7 @@ public final class MemoryAssistant {
                 limit: min(max(timeRange.requestedDayCount * 2, 8), contextManager.maxEvidenceRecords)
             )
         } else {
-            Array(ranked.prefix(8))
+            MemoryEvidenceSelector().select(ranked, question: retrievalText, limit: 12)
         }
         let plan = contextManager.plan(
             history: state.messages,

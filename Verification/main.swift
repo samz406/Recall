@@ -5,6 +5,9 @@ import RecallKit
 struct RecallVerifier {
     static func main() async {
         do {
+            try verifyMatterFilesAndReview()
+            try verifyExperienceAndQuestionSelection()
+            try await verifyMatterCorrectionPersistence()
             try verifyDefaultEventTemplates()
             try await verifyEventRuleMigration()
             try verifyPrivacy()
@@ -50,14 +53,93 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 43 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 46 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 42 integration checks.")
+                print("PASS: RecallVerifier completed 45 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
             Foundation.exit(1)
         }
+    }
+
+    private static func verifyMatterFilesAndReview() throws {
+        let now = Date.now
+        let old = Calendar.current.date(byAdding: .day, value: -12, to: now)!
+        let first = CaptureRecord(eventTemplate: .manualMoment, createdAt: old, contentHash: "matter-a", ocrText: "[聊天·自己] 账单导出问题已定位，需要检查分页边界。")
+        let second = CaptureRecord(eventTemplate: .manualMoment, createdAt: now, contentHash: "matter-b", ocrText: "[聊天·自己] 账单导出修复已验证通过。")
+        func episode(_ record: CaptureRecord, status: WorkEpisodeStatus) -> WorkEpisode {
+            WorkEpisode(day: record.createdAt, startedAt: record.createdAt, endedAt: record.createdAt,
+                projectKey: "billing-export", projectName: "账单导出修复", title: "账单导出修复",
+                intent: "修复分页边界", action: record.ocrText, outcome: status == .completed ? "账单导出修复已验证通过" : nil,
+                status: status, importance: 0.8, confidence: 0.9, sourceApps: ["测试应用"], evidenceIDs: [record.id])
+        }
+        var state = RecallState(captures: [first, second], episodes: [episode(first, status: .progressed), episode(second, status: .completed)])
+        let engine = MatterMemoryEngine()
+        let files = engine.files(in: state)
+        try expect(files.count == 1 && files[0].events.count == 2, "事情档案应跨天串联同一具体主题")
+        try expect(files[0].latest.status == .completed && files[0].latest.eventAt == nil, "不得默认将采集时间确认为发生时间")
+        let weekly = engine.weeklyReview(files: files, endingAt: now)
+        try expect(weekly.count == 1 && weekly[0].previous != nil && weekly[0].changes.count == 1, "周回顾应对照更早状态，且只展示本周变化")
+        state.matterCorrections = [MatterCorrection(evidenceIDs: [second.id], kind: .separate, text: "另一份报表修复")]
+        try expect(engine.files(in: state).count == 2, "用户拆分应优先于自动归类")
+        state.matterCorrections = [MatterCorrection(evidenceIDs: [second.id], kind: .eventDate, eventAt: old)]
+        try expect(engine.weeklyReview(files: engine.files(in: state), endingAt: now).isEmpty, "发生时间更正应影响周回顾")
+        state.matterCorrections = []
+        state.captures.removeAll { $0.id == second.id }
+        try expect(engine.files(in: state).first?.events.count == 1, "已删除来源不得继续出现在档案")
+        state.captures = []
+        try expect(engine.files(in: state).isEmpty, "没有证据时不得生成档案或回顾")
+    }
+
+    private static func verifyExperienceAndQuestionSelection() throws {
+        let old = CaptureRecord(eventTemplate: .manualMoment, createdAt: Date.now.addingTimeInterval(-86400 * 15), contentHash: "old-method", ocrText: "账单导出：分页边界修复验证通过", summary: "账单导出")
+        let latest = CaptureRecord(eventTemplate: .manualMoment, createdAt: .now, contentHash: "new-state", ocrText: "账单导出新格式仍在验证", summary: "账单导出")
+        var duplicate = old
+        duplicate.id = UUID()
+        let selected = MemoryEvidenceSelector().select([latest, duplicate, old], question: "账单导出后来进展怎样", limit: 5)
+        try expect(selected.count == 2, "相同截图文本不得挤占检索证据")
+        try expect(selected.first?.ocrText == old.ocrText && selected.last?.id == latest.id, "状态问题需要同时保留早期和最新来源")
+        try expect(MemoryQuestionIntent(question: "上次怎么解决账单导出") == .solution, "问题意图应区分历史经验")
+        try expect(MemoryQuestionIntent(question: "最近七天做了哪些事情") == .overview, "问题意图应识别跨日回顾")
+        let past = MatterEvent(id: old.id, title: "账单导出", detail: old.ocrText, recordedAt: old.createdAt, status: .completed, evidenceIDs: [old.id])
+        let current = MatterEvent(id: latest.id, title: "账单导出", detail: latest.ocrText, recordedAt: latest.createdAt, status: .progressed, evidenceIDs: [latest.id])
+        let file = MatterFile(id: "export", title: "账单导出", events: [past, current])
+        let hints = MatterMemoryEngine().experiences(for: file, in: [file])
+        try expect(hints.count == 1 && hints[0].past.id == old.id, "经验提示必须回到独立的历史结果")
+        let unrelated = MatterFile(id: "travel", title: "旅行住宿", events: [current])
+        try expect(MatterMemoryEngine().experiences(for: unrelated, in: [file]).isEmpty, "无具体共同主题不得强行联想")
+    }
+
+    private static func verifyMatterCorrectionPersistence() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("Recall-Matter-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        let record = CaptureRecord(eventTemplate: .taskCommitment, contentHash: "correction-test", ocrText: "[聊天·自己] 提醒我明天提交账单导出修复。")
+        try await store.addCapture(record)
+        let reminder = ReminderCandidate(title: "提交账单导出修复", detail: "测试", dueAt: .now, sourceCaptureIDs: [record.id], confidence: 0.9)
+        try await store.updateReminder(reminder)
+        let correction = MatterCorrection(evidenceIDs: [record.id], kind: .completed, text: "账单导出修复")
+        try await store.saveMatterCorrection(correction)
+        try await store.setExperienceHints(enabled: true)
+        try await store.dismissExperience(id: "test-hint")
+        let reloaded = try FileMemoryStore(storage: storage)
+        let state = await reloaded.snapshot()
+        try expect(state.captures.first?.ocrText == record.ocrText, "纠错不能改写原始证据")
+        try expect(state.reminders.first?.status == .completed, "用户标记完成应同步关闭关联提醒")
+        try expect(state.experienceHintsEnabled && state.dismissedExperienceIDs == ["test-hint"], "经验提示开关和忽略必须持久化")
+        let projected = state.correctedForAnalysis()
+        try expect(projected.captures.first?.ocrText.contains("已完成") == true, "重新分析应使用用户完成更正")
+        try expect(ReminderExtractor().candidates(from: projected.captures).isEmpty, "已完成来源不能重新生成待办")
+        try await reloaded.saveMatterCorrection(MatterCorrection(evidenceIDs: [record.id], kind: .notMine))
+        let excluded = await reloaded.snapshot().correctedForAnalysis()
+        try expect(excluded.captures.isEmpty, "错归属来源应停止进入推断和检索")
+        try await reloaded.clearAllMemoryData()
+        let cleared = await reloaded.snapshot()
+        try expect(cleared.matterCorrections.isEmpty && cleared.dismissedExperienceIDs.isEmpty, "清空记忆不能残留纠错内容")
+        let legacy = try JSONDecoder().decode(RecallState.self, from: Data("{}".utf8))
+        try expect(legacy.matterCorrections.isEmpty && !legacy.experienceHintsEnabled, "旧数据应安全迁移且默认不主动提示")
     }
 
     private static func verifyDefaultEventTemplates() throws {

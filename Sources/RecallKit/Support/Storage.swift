@@ -102,6 +102,9 @@ public struct RecallState: Codable, Sendable {
     public var learnedRoutines: [LearnedRoutine]
     public var recentlyDeletedMemories: [RecentlyDeletedMemory]
     public var memorySuppressionRules: [MemorySuppressionRule]
+    public var matterCorrections: [MatterCorrection]
+    public var dismissedExperienceIDs: [String]
+    public var experienceHintsEnabled: Bool
 
     public init(
         rules: [EventRule] = EventRule.defaults(),
@@ -123,7 +126,10 @@ public struct RecallState: Codable, Sendable {
         insightFeedback: [InsightFeedback] = [],
         learnedRoutines: [LearnedRoutine] = [],
         recentlyDeletedMemories: [RecentlyDeletedMemory] = [],
-        memorySuppressionRules: [MemorySuppressionRule] = []
+        memorySuppressionRules: [MemorySuppressionRule] = [],
+        matterCorrections: [MatterCorrection] = [],
+        dismissedExperienceIDs: [String] = [],
+        experienceHintsEnabled: Bool = false
     ) {
         self.rules = rules
         self.captures = captures
@@ -145,13 +151,16 @@ public struct RecallState: Codable, Sendable {
         self.learnedRoutines = learnedRoutines
         self.recentlyDeletedMemories = recentlyDeletedMemories
         self.memorySuppressionRules = memorySuppressionRules
+        self.matterCorrections = matterCorrections
+        self.dismissedExperienceIDs = dismissedExperienceIDs
+        self.experienceHintsEnabled = experienceHintsEnabled
     }
 
     private enum CodingKeys: String, CodingKey {
         case rules, captures, messages, reminders, reminderDiscoveryCheckpoint, reminderLearningProfile, dailySummaries, dailySummarySettings
         case privacy, llmConfiguration, conversationSummary, conversationSummaryCoveredMessageCount
         case episodes, projects, userMemories, insights, insightFeedback, learnedRoutines
-        case recentlyDeletedMemories, memorySuppressionRules
+        case recentlyDeletedMemories, memorySuppressionRules, matterCorrections, dismissedExperienceIDs, experienceHintsEnabled
     }
 
     public init(from decoder: Decoder) throws {
@@ -176,6 +185,9 @@ public struct RecallState: Codable, Sendable {
         learnedRoutines = try container.decodeIfPresent([LearnedRoutine].self, forKey: .learnedRoutines) ?? []
         recentlyDeletedMemories = try container.decodeIfPresent([RecentlyDeletedMemory].self, forKey: .recentlyDeletedMemories) ?? []
         memorySuppressionRules = try container.decodeIfPresent([MemorySuppressionRule].self, forKey: .memorySuppressionRules) ?? []
+        matterCorrections = try container.decodeIfPresent([MatterCorrection].self, forKey: .matterCorrections) ?? []
+        dismissedExperienceIDs = try container.decodeIfPresent([String].self, forKey: .dismissedExperienceIDs) ?? []
+        experienceHintsEnabled = try container.decodeIfPresent(Bool.self, forKey: .experienceHintsEnabled) ?? false
     }
 }
 
@@ -228,6 +240,46 @@ public actor FileMemoryStore {
     }
 
     public func snapshot() -> RecallState { state }
+
+    public func saveMatterCorrection(_ correction: MatterCorrection) throws {
+        let available = Set(state.captures.map(\.id))
+        var correction = correction
+        correction.evidenceIDs = correction.evidenceIDs.filter(available.contains)
+        guard !correction.evidenceIDs.isEmpty else { return }
+        state.matterCorrections.append(correction)
+        // Prevent old assistant conclusions from surviving a correction via conversation compression.
+        state.conversationSummary = nil
+        state.conversationSummaryCoveredMessageCount = state.messages.count
+        if correction.kind == .completed || correction.kind == .notMine || correction.kind == .inaccurate {
+            for i in state.reminders.indices {
+                guard !Set(state.reminders[i].sourceCaptureIDs).isDisjoint(with: correction.evidenceIDs) else { continue }
+                if correction.kind == .completed {
+                    state.reminders[i].status = .completed
+                    state.reminders[i].completedAt = correction.createdAt
+                } else if state.reminders[i].origin == .discovered && state.reminders[i].status == .proposed {
+                    state.reminders[i].status = .dismissed
+                }
+                state.reminders[i].updatedAt = correction.createdAt
+            }
+        }
+        state.reminderDiscoveryCheckpoint = ReminderDiscoveryCheckpoint()
+        try persist()
+    }
+
+    public func removeMatterCorrection(id: UUID) throws {
+        state.matterCorrections.removeAll { $0.id == id }
+        try persist()
+    }
+
+    public func setExperienceHints(enabled: Bool) throws {
+        state.experienceHintsEnabled = enabled
+        try persist()
+    }
+
+    public func dismissExperience(id: String) throws {
+        if !state.dismissedExperienceIDs.contains(id) { state.dismissedExperienceIDs.append(id) }
+        try persist()
+    }
 
     public func isIntelligenceIndexAvailable() -> Bool { intelligenceIndex != nil }
 
@@ -360,7 +412,7 @@ public actor FileMemoryStore {
         let days = Set(removedCaptures.map { calendar.startOfDay(for: $0.createdAt) })
             .union(Set(removedSummaries.map { calendar.startOfDay(for: $0.day) }))
             .sorted()
-        let transaction = RecentlyDeletedMemory(
+        var transaction = RecentlyDeletedMemory(
             label: removedCaptures.count == 1 ? (removedCaptures[0].summary ?? "1 条记忆") : "\(removedCaptures.count) 条记忆",
             reason: reason,
             expiresAt: calendar.date(byAdding: .day, value: MemoryGovernance.retentionDays, to: now) ?? now,
@@ -380,6 +432,8 @@ public actor FileMemoryStore {
             previousConversationSummaryCoveredMessageCount: state.conversationSummaryCoveredMessageCount,
             addedSuppressionRuleIDs: addedRules.map(\.id)
         )
+        transaction.matterCorrections = state.matterCorrections.filter { !Set($0.evidenceIDs).isDisjoint(with: actualIDs) }
+        state.matterCorrections.removeAll { !Set($0.evidenceIDs).isDisjoint(with: actualIDs) }
         state.captures.removeAll { actualIDs.contains($0.id) }
         state.dailySummaries.removeAll { summary in removedSummaries.contains(where: { $0.id == summary.id }) }
         state.messages.removeAll { message in removedMessages.contains(where: { $0.id == message.id }) }
@@ -480,6 +534,7 @@ public actor FileMemoryStore {
         let calendar = Calendar.current
         state.episodes.removeAll { episode in transaction.affectedDays.contains(where: { calendar.isDate(episode.day, inSameDayAs: $0) }) }
         Self.restoreUnique(transaction.episodes, to: &state.episodes, id: \.id)
+        Self.restoreUnique(transaction.matterCorrections ?? [], to: &state.matterCorrections, id: \.id)
         for project in transaction.projects {
             state.projects.removeAll { $0.projectKey == project.projectKey }
             state.projects.append(project)
@@ -576,6 +631,8 @@ public actor FileMemoryStore {
         state.learnedRoutines = []
         state.recentlyDeletedMemories = []
         state.memorySuppressionRules = []
+        state.matterCorrections = []
+        state.dismissedExperienceIDs = []
         try persist()
         for path in activePaths { try? storage.deleteScreenshot(relativePath: path) }
         for path in deletedPaths { try? storage.permanentlyDeleteRecentlyDeletedScreenshot(relativePath: path) }
@@ -601,6 +658,7 @@ public actor FileMemoryStore {
     private func removeCaptureState(id: UUID) -> CaptureRecord? {
         guard let index = state.captures.firstIndex(where: { $0.id == id }) else { return nil }
         let removed = state.captures.remove(at: index)
+        state.matterCorrections.removeAll { $0.evidenceIDs.contains(id) }
         // 总结正文可能包含这条记录的内容；删除来源时一并删除受影响总结，避免残留可识别文本。
         state.dailySummaries.removeAll { $0.sourceCaptureIDs.contains(id) }
         state.episodes.removeAll { $0.evidenceIDs.contains(id) }

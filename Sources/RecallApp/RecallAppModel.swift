@@ -16,6 +16,9 @@ extension Notification.Name {
 @MainActor
 final class RecallAppModel: ObservableObject {
     @Published var state = RecallState()
+    @Published private(set) var matterFiles: [MatterFile] = []
+    @Published private(set) var isBuildingMatters = false
+    private var matterBuildTask: Task<Void, Never>?
     @Published var isRecording = false
     @Published var isThinking = false
     @Published private(set) var typingMessageID: UUID?
@@ -77,10 +80,68 @@ final class RecallAppModel: ObservableObject {
 
     func refresh() async {
         state = await store.snapshot()
+        rebuildMatterFiles()
         updateEnterKeyRecorder()
         await refreshReminderDeliveryStates()
         armDailySummaryTimer()
         generateMissedDailySummaryIfNeeded()
+    }
+
+    private func rebuildMatterFiles() {
+        matterBuildTask?.cancel()
+        let snapshot = state
+        isBuildingMatters = true
+        matterBuildTask = Task {
+            let files = await Task.detached(priority: .utility) { MatterMemoryEngine().files(in: snapshot) }.value
+            guard !Task.isCancelled else { return }
+            matterFiles = files
+            isBuildingMatters = false
+        }
+    }
+
+    var experienceHint: ExperienceHint? {
+        guard state.experienceHintsEnabled else { return nil }
+        for file in matterFiles.prefix(3) where file.latest.status != .completed {
+            if let hint = MatterMemoryEngine().experiences(for: file, in: matterFiles)
+                .first(where: { !state.dismissedExperienceIDs.contains($0.id) }) { return hint }
+        }
+        return nil
+    }
+
+    func correctMatter(_ correction: MatterCorrection) {
+        Task {
+            do {
+                try await store.saveMatterCorrection(correction)
+                if correction.kind == .completed {
+                    for reminder in state.reminders where !Set(reminder.sourceCaptureIDs).isDisjoint(with: correction.evidenceIDs) {
+                        notificationScheduler.cancel(reminder)
+                    }
+                }
+                await refresh()
+                noticeMessage = "已更正；原始记录仍然保留。"
+            } catch { recordError(error, source: "Memory", message: "保存纠错失败") }
+        }
+    }
+
+    func removeMatterCorrection(_ id: UUID) {
+        Task {
+            do { try await store.removeMatterCorrection(id: id); await refresh() }
+            catch { recordError(error, source: "Memory", message: "删除纠错失败") }
+        }
+    }
+
+    func setExperienceHints(_ enabled: Bool) {
+        Task {
+            do { try await store.setExperienceHints(enabled: enabled); await refresh() }
+            catch { recordError(error, source: "Memory", message: "保存经验提示设置失败") }
+        }
+    }
+
+    func dismissExperience(_ id: String) {
+        Task {
+            do { try await store.dismissExperience(id: id); await refresh() }
+            catch { recordError(error, source: "Memory", message: "关闭经验提示失败") }
+        }
     }
 
     /// 前台运行期间周期性处理新增记录；内容哈希检查点保证未变化的记录不会被重复分析。
@@ -453,7 +514,7 @@ final class RecallAppModel: ObservableObject {
                 .map(\.template)
         )
         let oldestRelevantDate = Calendar.current.date(byAdding: .day, value: -90, to: .now) ?? .distantPast
-        let eligibleCaptures = state.captures.filter {
+        let eligibleCaptures = state.correctedForAnalysis().captures.filter {
             participatingTemplates.contains($0.eventTemplate) && $0.createdAt >= oldestRelevantDate
         }
         let checkpoint = state.reminderDiscoveryCheckpoint
@@ -841,8 +902,9 @@ final class RecallAppModel: ObservableObject {
         }
         isGeneratingDailySummary = true
         isThinking = true
-        let captures = state.captures
-        let previousSummaries = state.dailySummaries
+        let analysisState = state.correctedForAnalysis()
+        let captures = analysisState.captures
+        let previousSummaries = analysisState.dailySummaries
         let responder = dailySummaryResponder()
         Task {
             defer {
@@ -855,13 +917,13 @@ final class RecallAppModel: ObservableObject {
                     day: day,
                     from: captures,
                     previousSummaries: previousSummaries,
-                    existingEpisodes: state.episodes,
-                    previousProjects: state.projects,
-                    existingMemories: state.userMemories,
-                    previousInsights: state.insights,
-                    feedback: state.insightFeedback,
-                    existingRoutines: state.learnedRoutines,
-                    existingReminders: state.reminders,
+                    existingEpisodes: analysisState.episodes,
+                    previousProjects: analysisState.projects,
+                    existingMemories: analysisState.userMemories,
+                    previousInsights: analysisState.insights,
+                    feedback: analysisState.insightFeedback,
+                    existingRoutines: analysisState.learnedRoutines,
+                    existingReminders: analysisState.reminders,
                     responder: responder
                 )
                 let summary = DailySummary(

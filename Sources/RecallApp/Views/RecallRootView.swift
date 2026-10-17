@@ -5,7 +5,7 @@ import AppKit
 
 struct RecallRootView: View {
     @EnvironmentObject private var model: RecallAppModel
-    @State private var section: SidebarSection? = .timeline
+    @State private var section: SidebarSection? = .matters
     @State private var showingRecordSheet = false
     @State private var noticeDismissal: Task<Void, Never>?
 
@@ -13,6 +13,7 @@ struct RecallRootView: View {
         NavigationSplitView {
             List(selection: $section) {
                 Section("记忆") {
+                    Label("我的事情", systemImage: "square.stack.3d.up").tag(SidebarSection.matters)
                     Label("每日总结", systemImage: "calendar.badge.clock")
                         .badge(highPrioritySummaryTodoCount)
                         .tag(SidebarSection.dailySummaries)
@@ -36,6 +37,10 @@ struct RecallRootView: View {
         } detail: {
             Group {
                 switch section ?? .timeline {
+                case .matters: MatterWorkspaceView { question in
+                    section = .chat
+                    model.ask(question)
+                }
                 case .timeline: TimelineView()
                 case .chat: ChatView()
                 case .dailySummaries: DailySummariesView()
@@ -137,7 +142,7 @@ private struct DeletionUndoBanner: View {
 }
 
 private enum SidebarSection: Hashable {
-    case timeline, chat, dailySummaries, reminders, rules, privacy
+    case matters, timeline, chat, dailySummaries, reminders, rules, privacy
 }
 
 private struct NoticeBanner: View {
