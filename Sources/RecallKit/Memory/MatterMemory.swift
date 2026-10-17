@@ -81,16 +81,15 @@ public struct MatterMemoryEngine: Sendable {
         let available = Set(safe.captures.map(\.id))
         let captured = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
         // Rebuild missing days locally; no model calls, no capture or external effects.
-        let existingDays = Set(safe.episodes.map { calendar.startOfDay(for: $0.day) })
-        let missing = Dictionary(grouping: safe.captures) { calendar.startOfDay(for: $0.createdAt) }
-            .filter { !existingDays.contains($0.key) }
+        let existingIDs = Set(safe.episodes.flatMap(\.evidenceIDs))
+        let missing = Dictionary(grouping: safe.captures.filter { !existingIDs.contains($0.id) }) { calendar.startOfDay(for: $0.createdAt) }
         let rebuilt = missing.flatMap { PersonalIntelligenceEngine().buildEpisodes(day: $0.key, records: $0.value, calendar: calendar) }
         var groups: [String: [MatterEvent]] = [:]
         var names: [String: String] = [:]
         var seen: Set<String> = []
         for episode in safe.episodes + rebuilt {
             let ids = episode.evidenceIDs.filter(available.contains)
-            guard !ids.isEmpty, !episode.projectKey.hasPrefix("app:"), !episode.projectKey.hasPrefix("unresolved:") else { continue }
+            guard !ids.isEmpty, ids.count == episode.evidenceIDs.count, !episode.projectKey.hasPrefix("app:"), !episode.projectKey.hasPrefix("unresolved:") else { continue }
             var key = episode.projectKey
             var name = episode.projectName
             let corrections = state.matterCorrections.filter { !Set($0.evidenceIDs).isDisjoint(with: ids) }
@@ -173,15 +172,19 @@ public extension RecallState {
         if !matterCorrections.isEmpty {
             let cutoff = matterCorrections.map(\.createdAt).max() ?? .distantPast
             result.messages.removeAll { $0.createdAt <= cutoff }
-            result.conversationSummary = nil
-            result.conversationSummaryCoveredMessageCount = 0
+            let removedCount = messages.count - result.messages.count
+            result.conversationSummaryCoveredMessageCount = max(0, (conversationSummaryCoveredMessageCount ?? 0) - removedCount)
         }
         result.captures.removeAll { invalid.contains($0.id) }
         result.episodes.removeAll { !Set($0.evidenceIDs).isDisjoint(with: invalid) }
         result.projects.removeAll { !Set($0.evidenceIDs).isDisjoint(with: touched) }
         result.userMemories.removeAll { !Set($0.evidenceIDs).isDisjoint(with: touched) }
         result.insights.removeAll { !Set($0.evidenceIDs).isDisjoint(with: touched) }
-        result.dailySummaries.removeAll { !Set($0.sourceCaptureIDs).isDisjoint(with: touched) }
+        result.dailySummaries.removeAll { summary in
+            matterCorrections.contains { correction in
+                correction.createdAt >= summary.createdAt && !Set(summary.sourceCaptureIDs).isDisjoint(with: correction.evidenceIDs)
+            }
+        }
         for i in result.captures.indices {
             let corrections = matterCorrections.filter { $0.evidenceIDs.contains(result.captures[i].id) }
             if let eventDate = corrections.last(where: { $0.kind == .eventDate })?.eventAt {
@@ -201,6 +204,11 @@ public extension RecallState {
                 result.episodes[i].startedAt = eventDate
                 result.episodes[i].endedAt = eventDate
                 result.episodes[i].day = Calendar.current.startOfDay(for: eventDate)
+            }
+            if let separated = corrections.last(where: { $0.kind == .separate }), !separated.text.isEmpty {
+                result.episodes[i].projectKey = "user:" + separated.text.lowercased().filter { $0.isLetter || $0.isNumber }
+                result.episodes[i].projectName = separated.text
+                result.episodes[i].title = separated.text
             }
             if corrections.contains(where: { $0.kind == .completed }) {
                 result.episodes[i].status = .completed

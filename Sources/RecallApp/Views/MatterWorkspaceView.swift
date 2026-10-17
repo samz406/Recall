@@ -15,7 +15,7 @@ struct MatterWorkspaceView: View {
     private var files: [MatterFile] {
         model.matterFiles.filter { search.isEmpty || ($0.title + $0.latest.detail).localizedCaseInsensitiveContains(search) }
     }
-    private var resumeFiles: [MatterFile] { files.filter { $0.latest.status != .completed } }
+    private var resumeFiles: [MatterFile] { files.filter { [.progressed, .pending, .blocked].contains($0.latest.status) } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

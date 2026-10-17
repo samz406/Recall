@@ -268,6 +268,8 @@ public actor FileMemoryStore {
 
     public func removeMatterCorrection(id: UUID) throws {
         state.matterCorrections.removeAll { $0.id == id }
+        state.conversationSummary = nil
+        state.conversationSummaryCoveredMessageCount = 0
         try persist()
     }
 

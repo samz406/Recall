@@ -69,7 +69,11 @@ public final class MemoryAssistant {
         let indexedIDs = timeRange == nil ? await store.indexedCaptureIDs(matching: retrievalText, limit: 8) : []
         let indexed = indexedIDs.compactMap { id in recordsAllowedInChat.first(where: { $0.id == id }) }
         var seen: Set<UUID> = []
-        let ranked = (indexed + results.map(\.capture)).filter { seen.insert($0.id).inserted }
+        let intent = MemoryQuestionIntent(question: question)
+        let relevantResults = timeRange != nil && intent != .overview
+            ? results.filter { !$0.matchedTerms.isEmpty }
+            : results
+        let ranked = (indexed + relevantResults.map(\.capture)).filter { seen.insert($0.id).inserted }
         let retrieved = if let timeRange {
             selectTemporalEvidence(
                 from: ranked,
@@ -85,7 +89,7 @@ public final class MemoryAssistant {
             retrievedEvidence: retrieved
         )
         if plan.rollingSummary != state.conversationSummary || plan.coveredMessageCount != (state.conversationSummaryCoveredMessageCount ?? 0) {
-            try await store.updateConversationSummary(plan.rollingSummary, coveredMessageCount: plan.coveredMessageCount)
+            try await store.updateConversationSummary(plan.rollingSummary, coveredMessageCount: plan.coveredMessageCount + originalState.messages.count - state.messages.count)
         }
 
         // 对时间范围概览问题，当前检索到的时间线是唯一事实来源。
@@ -129,6 +133,11 @@ public final class MemoryAssistant {
                 : cloudAnswer
         }
 
+        let latestState = await store.snapshot()
+        guard latestState.matterCorrections.map(\.id) == originalState.matterCorrections.map(\.id),
+              Set(state.captures.map(\.id)).isSubset(of: Set(latestState.captures.map(\.id))) else {
+            throw LLMError.serviceError("记忆已更正或删除，请重新提问以使用最新内容。")
+        }
         let formattedContent = ChatResponseFormatter().format(response.content)
         let assistantMessage = ConversationMessage(role: .assistant, content: formattedContent, citations: response.citedCaptureIDs)
         try await store.addMessage(assistantMessage)

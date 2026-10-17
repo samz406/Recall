@@ -935,6 +935,12 @@ final class RecallAppModel: ObservableObject {
                     briefing: generation.briefing,
                     items: generation.items
                 )
+                let current = await store.snapshot()
+                guard current.matterCorrections.map(\.id) == analysisState.matterCorrections.map(\.id),
+                      Set(summary.sourceCaptureIDs).isSubset(of: Set(current.captures.map(\.id))) else {
+                    pendingDailySummaries.append((day, reason))
+                    return
+                }
                 try await store.commitDailySummary(summary, consolidation: generation.consolidation)
                 await refresh()
                 if state.dailySummarySettings.notifyWhenReady == true {
