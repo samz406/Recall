@@ -48,7 +48,7 @@ public final class MemoryAssistant {
         let timeRange = timeRangeResolver.resolve(retrievalText)
         let allowedIDs = Set(recordsAllowedInChat.map(\.id))
         let summaryEvidence = state.dailySummaries.filter {
-            !$0.sourceCaptureIDs.isEmpty && Set($0.sourceCaptureIDs).isSubset(of: allowedIDs)
+            ($0.sourceCaptureIDs.isEmpty && state.matterCorrections.isEmpty) || (!$0.sourceCaptureIDs.isEmpty && Set($0.sourceCaptureIDs).isSubset(of: allowedIDs))
         }.map(makeSearchableEvidence)
         let episodeEvidence = state.episodes.filter { !$0.evidenceIDs.isEmpty && Set($0.evidenceIDs).isSubset(of: allowedIDs) }.map(makeSearchableEvidence)
         let durableMemoryEvidence = state.userMemories
@@ -156,7 +156,8 @@ public final class MemoryAssistant {
     private func makeSearchableEvidence(from summary: DailySummary) -> CaptureRecord {
         let todoText = summary.todos.map { "\($0.title)：\($0.detail)" }.joined(separator: "\n")
         let governedContent = summary.items.isEmpty ? summary.content : DailySummaryItemParser.markdown(from: summary.items)
-        let text = [governedContent, todoText].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let provenance = summary.sourceCaptureIDs.isEmpty ? "历史总结（未关联原始来源，内容仍需核实）" : "每日总结（派生内容，可查原始来源）"
+        let text = [provenance, governedContent, todoText].filter { !$0.isEmpty }.joined(separator: "\n\n")
         return CaptureRecord(
             id: summary.id,
             eventTemplate: .dailyReview,
