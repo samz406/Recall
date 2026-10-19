@@ -20,6 +20,7 @@ struct RecallVerifier {
             try ConversationLayoutVerification.runGeometry()
             try ConversationLayoutVerification.runEvidence()
             try await ConversationLayoutVerification.runVision()
+            try await ConversationLayoutVerification.runChannel()
             try verifySearch()
             try verifyChineseNaturalLanguageSearch()
             try verifyNaturalLanguageTimeRanges()
@@ -61,9 +62,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 53 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 54 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 52 integration checks.")
+                print("PASS: RecallVerifier completed 53 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)

@@ -89,8 +89,10 @@ public enum LocalSummary {
     }
 
     private static func cleanLine(_ line: String) -> String {
+        if line.contains("[内容·系统]") || line.contains("[内容·片段]") { return "" }
         var result = line.replacingOccurrences(of: #"\[聊天\s*[·・]\s*(?:对方|自己|角色未知)\]"#, with: "", options: .regularExpression)
-        result = result.replacingOccurrences(of: #"\[内容·(?:资料|附件)\]\s*"#, with: "", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"\[内容·(?:资料|附件|系统|片段)\]\s*"#, with: "", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"\[(?:频道|发言者|时间)·[^\]]*\]\s*"#, with: "", options: .regularExpression)
         // Remove URL tokens rather than discard a useful sentence containing a link.
         result = result.replacingOccurrences(
             of: #"(?i)(?:https?://|www\.)[^\s，。；！？<>\[\]]+|\b(?:[a-z0-9-]+\.)+(?:com|org|net|ai|io|cn|dev|app|site)(?:/[^\s，。；！？<>\[\]]*)?\b"#,
