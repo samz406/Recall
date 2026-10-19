@@ -22,6 +22,12 @@ public enum MemoryDeletionReason: String, Codable, CaseIterable, Identifiable, S
     }
 }
 
+public enum RecentlyDeletedRestoreError: Error, LocalizedError {
+    case expired
+
+    public var errorDescription: String? { "恢复期限已过，无法恢复这条记忆。" }
+}
+
 public struct MemorySuppressionRule: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var phrase: String
