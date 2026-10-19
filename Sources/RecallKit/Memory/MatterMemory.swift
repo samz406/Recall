@@ -55,7 +55,19 @@ public struct MatterFile: Identifiable, Sendable {
     }
     public var evidenceIDs: [UUID] { Array(Set(events.flatMap(\.evidenceIDs))).sorted { $0.uuidString < $1.uuidString } }
     public var resumeText: String {
-        latest.status == .completed ? "最近记录为已完成；可回看过程与结果。" : "上次记录：\(latest.detail)\n此后是否完成，尚未获知。"
+        latest.status == .completed ? "最近记录为已完成；可回看过程与结果。" : "\(latest.detail)"
+    }
+}
+
+public extension WorkEpisodeStatus {
+    var matterLabel: String {
+        switch self {
+        case .completed: "记录为已完成"
+        case .progressed: "正在推进"
+        case .pending: "明确待办"
+        case .blocked: "遇到阻碍"
+        case .explored: "相关资料"
+        }
     }
 }
 
@@ -81,52 +93,58 @@ public struct MatterMemoryEngine: Sendable {
         let available = Set(safe.captures.map(\.id))
         let captured = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
         let analysisCaptures = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id, $0) })
-        // Rebuild missing days locally; no model calls, no capture or external effects.
         let existingIDs = Set(safe.episodes.flatMap(\.evidenceIDs))
         let missing = Dictionary(grouping: safe.captures.filter { !existingIDs.contains($0.id) }) { calendar.startOfDay(for: $0.createdAt) }
         let rebuilt = missing.flatMap { PersonalIntelligenceEngine().buildEpisodes(day: $0.key, records: $0.value, calendar: calendar) }
         var groups: [String: [MatterEvent]] = [:]
         var names: [String: String] = [:]
         var seen: Set<String> = []
+        // Old episodes are topic hints only. Their clipped action/outcome and inferred status
+        // must never bypass the same evidence gate applied to newly captured records.
         for episode in safe.episodes + rebuilt {
             let ids = episode.evidenceIDs.filter(available.contains)
-            guard !ids.isEmpty, ids.count == episode.evidenceIDs.count, !episode.projectKey.hasPrefix("app:"), !episode.projectKey.hasPrefix("unresolved:") else { continue }
-            var key = episode.projectKey
-            var name = episode.projectName
-            let corrections = state.matterCorrections.filter { !Set($0.evidenceIDs).isDisjoint(with: ids) }
-            if let separated = corrections.last(where: { $0.kind == .separate }), !separated.text.isEmpty {
-                key = "user:" + normalized(separated.text)
-                name = separated.text
+            guard !ids.isEmpty, ids.count == episode.evidenceIDs.count else { continue }
+            for id in ids {
+                guard let record = analysisCaptures[id] else { continue }
+                let corrections = state.matterCorrections.filter { $0.evidenceIDs.contains(id) }
+                let separated = corrections.last { $0.kind == .separate && !$0.text.isEmpty }
+                guard let entry = MatterEvidence.entry(in: record,
+                    proposedTitle: separated?.text ?? episode.projectName, userNamed: separated != nil) else { continue }
+                let key = (separated == nil ? "topic:" : "user:") + MatterEvidence.key(entry.title)
+                guard seen.insert(key + ":" + id.uuidString).inserted else { continue }
+                let eventDate = corrections.last(where: { $0.kind == .eventDate })?.eventAt
+                let recordedAt = captured[id]?.createdAt ?? record.createdAt
+                let completed = corrections.contains { $0.kind == .completed }
+                let event = MatterEvent(id: id, title: entry.title,
+                    detail: completed ? "用户已标记完成：\(entry.title)" : entry.detail,
+                    recordedAt: recordedAt, eventAt: eventDate,
+                    status: completed ? .completed : entry.status, evidenceIDs: [id])
+                groups[key, default: []].append(event)
+                names[key] = entry.title
             }
-            guard name.count >= 3, name.count <= 100 else { continue }
-            let records = ids.compactMap { analysisCaptures[$0] }.sorted { $0.createdAt < $1.createdAt }
-            let owned = records.flatMap { RecordedText.segments(in: $0).filter { $0.speaker == .user }.map(\.text) }
-            let suggestedDetail = episode.outcome ?? episode.action
-            let detail = owned.last(where: { $0.hasPrefix(suggestedDetail) || suggestedDetail.hasPrefix($0) }) ?? suggestedDetail
-            guard detail.count >= 6 else { continue }
-            let signature = key + ":" + normalized(detail)
-            guard seen.insert(signature).inserted else { continue }
-            let eventDate = corrections.last(where: { $0.kind == .eventDate })?.eventAt
-            let recordedAt = ids.compactMap { captured[$0]?.createdAt }.max() ?? episode.endedAt
-            let completed = corrections.contains { $0.kind == .completed }
-            let event = MatterEvent(id: ids.sorted { $0.uuidString < $1.uuidString }[0], title: name,
-                detail: completed ? "用户已标记完成：\(name)" : detail,
-                recordedAt: recordedAt, eventAt: eventDate,
-                status: completed ? .completed : supportedStatus(owned, records: records), evidenceIDs: ids)
-            groups[key, default: []].append(event)
-            names[key] = name
         }
         return groups.map { key, events in
-            MatterFile(id: key, title: names[key] ?? key, events: events.sorted {
+            let ordered = events.sorted {
                 $0.date == $1.date ? $0.id.uuidString < $1.id.uuidString : $0.date < $1.date
-            })
+            }
+            var changes: [MatterEvent] = []
+            for event in ordered {
+                // Repeated screenshots add sources, not progress. Preserve the first occurrence
+                // so rereading an old result doesn't manufacture a change in this week's review.
+                if let last = changes.last, last.status == event.status,
+                   MatterEvidence.key(last.detail) == MatterEvidence.key(event.detail) {
+                    changes[changes.count - 1].evidenceIDs = Array(Set(last.evidenceIDs + event.evidenceIDs))
+                        .sorted { $0.uuidString < $1.uuidString }
+                } else { changes.append(event) }
+            }
+            return MatterFile(id: key, title: names[key] ?? key, events: changes)
         }.sorted { $0.latest.date == $1.latest.date ? $0.id < $1.id : $0.latest.date > $1.latest.date }
     }
 
     public func weeklyReview(files: [MatterFile], endingAt end: Date = .now, calendar: Calendar = .current) -> [MatterReview] {
         let start = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: end)) ?? end
         return files.compactMap { file in
-            let changes = file.events.filter { $0.date >= start && $0.date <= end }
+            let changes = file.events.filter { $0.date >= start && $0.date <= end && $0.status != .explored }
             guard !changes.isEmpty else { return nil }
             return MatterReview(matter: file, previous: file.events.last { $0.date < start }, changes: changes)
         }
@@ -162,27 +180,7 @@ public struct MatterMemoryEngine: Sendable {
         return terms
     }
 
-    /// Old episode labels may have been inferred from a visible article or an assistant offer.
-    /// Only explicit self-authored evidence may promote a matter into progress/results.
-    private func supportedStatus(_ statements: [String], records: [CaptureRecord]) -> WorkEpisodeStatus {
-        var status: WorkEpisodeStatus = .explored
-        for text in statements {
-            if ["如果", "假如", "例如", "比如", "计划", "准备", "明天", "将会", "需要", "待完成", "尚未", "未完成", "还没"].contains(where: text.contains) { continue }
-            if ["已完成", "完成了", "验证通过", "测试通过", "已合并", "已发布", "已解决"].contains(where: text.contains) {
-                status = .completed
-            } else if ["仍失败", "仍然失败", "被阻塞", "卡住了"].contains(where: text.contains) {
-                status = .blocked
-            } else if ["正在", "已定位", "已修改", "推进了", "修复了", "实现了"].contains(where: text.contains) {
-                status = .progressed
-            }
-        }
-        if status == .explored && !ReminderExtractor().candidates(from: records, existing: []).isEmpty { return .pending }
-        return status
-    }
 
-    private func normalized(_ text: String) -> String {
-        text.lowercased().filter { $0.isLetter || $0.isNumber }
-    }
 }
 
 public extension RecallState {

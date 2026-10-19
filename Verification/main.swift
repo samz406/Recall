@@ -6,6 +6,7 @@ struct RecallVerifier {
     static func main() async {
         do {
             try verifyMatterFilesAndReview()
+            try verifyMatterEvidenceQuality()
             try verifyExperienceAndQuestionSelection()
             try await verifyMatterCorrectionPersistence()
             try verifyDefaultEventTemplates()
@@ -53,9 +54,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 46 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 47 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 45 integration checks.")
+                print("PASS: RecallVerifier completed 46 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -90,6 +91,68 @@ struct RecallVerifier {
         try expect(engine.files(in: state).first?.events.count == 1, "已删除来源不得继续出现在档案")
         state.captures = []
         try expect(engine.files(in: state).isEmpty, "没有证据时不得生成档案或回顾")
+    }
+
+    private static func verifyMatterEvidenceQuality() throws {
+        let engine = MatterMemoryEngine()
+        let now = Date.now
+        let old = now.addingTimeInterval(-86400 * 12)
+        func capture(_ text: String, at date: Date? = nil, title: String = "账单导出修复", owned: Bool = false) -> CaptureRecord {
+            CaptureRecord(eventTemplate: .manualMoment, createdAt: date ?? now, sourceAppName: "测试浏览器", windowTitle: title,
+                contentHash: UUID().uuidString, ocrText: text, summary: "过期摘要；错误片段与旧状态", textOrigin: owned ? .userInput : .screenOCR)
+        }
+        func episode(_ record: CaptureRecord, name: String = "账单导出修复") -> WorkEpisode {
+            WorkEpisode(day: record.createdAt, startedAt: record.createdAt, endedAt: record.createdAt,
+                projectKey: "window:" + name, projectName: name, title: name, intent: "旧主题推断",
+                action: "xx|旧摘要", outcome: "完成更新", nextAction: "下一步是修复", status: .completed,
+                importance: 0.9, confidence: 0.9, sourceApps: [], evidenceIDs: [record.id])
+        }
+        let noise = [
+            capture("xx | 标签页 × 完成更新", title: "Google"),
+            capture("https://example.test/search?q=sample&lang=zh\n有新版浏览器可用", title: "搜索结果"),
+            capture("已定位原因，正在实施修复。", title: "某工具的开发者和应用"),
+            capture("[聊天·对方] 账单导出修复已验证通过。"),
+            capture("[聊天·角色未知] 账单导出修复已验证通过。"),
+            capture("教程：完成账单导出修复后，可以返回应用。"),
+            capture("[聊天·自己] 如果账单导出修复测试通过，就可以发布。"),
+            capture("[聊天·自己] 下一步是修复。"),
+            capture("[聊天·自己] public func fixExport() { return result }")
+        ]
+        let bad = RecallState(captures: noise, episodes: noise.map { episode($0, name: $0.windowTitle!) })
+        try expect(engine.files(in: bad).isEmpty, "工具网页、文章、未知角色、助手结果、条件句、代码和泛指修复不能变成我的事项")
+
+        let working = capture("[聊天·自己] 账单导出修复正在验证分页边界。", at: old)
+        let done = capture("[聊天·自己] 账单导出修复已验证通过，分页边界也通过了回归测试。\n[聊天·自己] 库存同步仍然失败。")
+        let state = RecallState(captures: [working, done], episodes: [episode(working), episode(done)])
+        let files = engine.files(in: state)
+        try expect(files.count == 1 && files[0].events.count == 2, "可归属的具体工作应保留完整过程")
+        try expect(files[0].latest.detail == "账单导出修复已验证通过，分页边界也通过了回归测试。", "摘要必须取原始完整句，不沿用旧截断摘要或拼接无关句子")
+        try expect(files[0].latest.status == .completed, "同一截图里其他事情失败，不能污染当前事情状态")
+        try expect(engine.weeklyReview(files: files, endingAt: now).first?.previous?.status == .progressed, "周回顾应展示正确的先前状态")
+
+        let recovered = capture("[聊天·自己] 账单导出修复已验证通过。", title: "Google")
+        let repaired = engine.files(in: RecallState(captures: [recovered], episodes: [episode(recovered, name: "Google")]))
+        try expect(repaired.first?.title == "账单导出修复", "旧工具标题应从清晰原文重新识别具体事项")
+        let fresh = engine.files(in: RecallState(captures: [recovered]))
+        try expect(fresh.first?.title == repaired.first?.title, "新旧记录必须经过同一质量校验")
+
+        let before = capture("[聊天·自己] 账单导出修复已验证通过。", at: old)
+        let repeatCapture = capture(before.ocrText)
+        let repeated = engine.files(in: RecallState(captures: [repeatCapture, before], episodes: [episode(repeatCapture), episode(before)]))
+        try expect(repeated.first?.events.count == 1 && repeated.first?.evidenceIDs.count == 2, "重复截图合并来源，不重复创建进展")
+        try expect(engine.weeklyReview(files: repeated, endingAt: now).isEmpty, "重看旧结果不应算成本周新变化")
+        let reopened = capture("[聊天·自己] 账单导出修复仍然失败。", at: now.addingTimeInterval(10))
+        let history = engine.files(in: RecallState(captures: [before, reopened], episodes: [episode(before), episode(reopened)]))
+        try expect(history.first?.latest.status == .blocked, "后续明确失败应替代旧的已完成状态")
+
+        let input = capture("明天需要提交账单导出修复。", owned: true)
+        let pending = engine.files(in: RecallState(captures: [input], episodes: [episode(input)]))
+        try expect(pending.first?.latest.status == .pending, "明确的用户输入待办应保留")
+        var corrected = bad
+        corrected.matterCorrections = [MatterCorrection(evidenceIDs: [noise[3].id], kind: .separate, text: "账单导出参考方案")]
+        let neutral = engine.files(in: corrected)
+        try expect(neutral.count == 1 && neutral[0].latest.status == .explored, "用户主动归档的他人资料不能升级为本人已完成")
+        try expect(engine.weeklyReview(files: neutral, endingAt: now).isEmpty, "归档参考资料不能伪装成本周工作进展")
     }
 
     private static func verifyExperienceAndQuestionSelection() throws {
