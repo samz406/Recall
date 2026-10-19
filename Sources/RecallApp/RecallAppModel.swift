@@ -1,6 +1,7 @@
 import Foundation
 import RecallKit
 import SwiftUI
+import AppKit
 
 enum ReminderDiscoveryStatus: Equatable {
     case idle
@@ -40,10 +41,14 @@ final class RecallAppModel: ObservableObject {
     private let enterKeyRecorder = GlobalEnterKeyRecorder()
     private var dailySummaryTimer: Timer?
     private var reminderDiscoveryTimer: Timer?
+    private var recentlyDeletedTimer: Timer?
+    private var recentlyDeletedRetryAfter: Date?
+    private var isPurgingRecentlyDeleted = false
     private var isGeneratingDailySummary = false
     private var pendingDailySummaries: [(day: Date, reason: DailySummaryReason)] = []
     private let diagnosticLog: RecallDiagnosticLogStore
     private var reminderActionObserver: NSObjectProtocol?
+    private var appActiveObserver: NSObjectProtocol?
 
     init() {
         do {
@@ -65,8 +70,15 @@ final class RecallAppModel: ObservableObject {
                       let action = notification.userInfo?["action"] as? String else { return }
                 Task { @MainActor [weak self] in self?.handleReminderNotificationAction(id: id, action: action) }
             }
+            appActiveObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in await self?.cleanupExpiredRecentlyDeleted() }
+            }
             Task {
-                _ = try? await store.purgeExpiredRecentlyDeleted()
+                await cleanupExpiredRecentlyDeleted()
                 await refresh()
                 try? notificationScheduler.configureReminderActions()
                 discoverReminders(force: false, announce: false)
@@ -84,7 +96,41 @@ final class RecallAppModel: ObservableObject {
         updateEnterKeyRecorder()
         await refreshReminderDeliveryStates()
         armDailySummaryTimer()
+        armRecentlyDeletedTimer()
         generateMissedDailySummaryIfNeeded()
+    }
+
+    /// 到期时间触发清理；睡眠或应用不在前台时错过的触发在重新激活时补跑。
+    private func armRecentlyDeletedTimer() {
+        recentlyDeletedTimer?.invalidate()
+        recentlyDeletedTimer = nil
+        guard let expiry = state.recentlyDeletedMemories.map(\.expiresAt).min() else { return }
+        let now = Date.now
+        let nextAttempt = expiry <= now ? max(now, recentlyDeletedRetryAfter ?? now) : expiry
+        recentlyDeletedTimer = Timer.scheduledTimer(withTimeInterval: max(1, nextAttempt.timeIntervalSince(now)), repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.cleanupExpiredRecentlyDeleted() }
+        }
+    }
+
+    private func cleanupExpiredRecentlyDeleted() async {
+        guard !isPurgingRecentlyDeleted else { return }
+        isPurgingRecentlyDeleted = true
+        defer {
+            isPurgingRecentlyDeleted = false
+            armRecentlyDeletedTimer()
+        }
+        do {
+            let count = try await store.purgeExpiredRecentlyDeleted()
+            recentlyDeletedRetryAfter = nil
+            if count > 0 {
+                state = await store.snapshot()
+                if let undo = deletionUndoNotice, undo.expiresAt <= .now { deletionUndoNotice = nil }
+                recordDiagnostic(.info, source: "MemoryGovernance", message: "到期内容已永久清理", metadata: ["count": String(count)])
+            }
+        } catch {
+            recentlyDeletedRetryAfter = Date.now.addingTimeInterval(15 * 60)
+            recordError(error, source: "MemoryGovernance", message: "到期内容清理失败，将自动重试")
+        }
     }
 
     private func rebuildMatterFiles() {
@@ -416,6 +462,9 @@ final class RecallAppModel: ObservableObject {
                     try? await notificationScheduler.schedule(reminder)
                 }
                 noticeMessage = "已恢复“\(restored.label)”。"
+            } catch RecentlyDeletedRestoreError.expired {
+                await cleanupExpiredRecentlyDeleted()
+                noticeMessage = "已超过 7 天恢复期限，无法恢复。"
             } catch {
                 recordError(error, source: "MemoryGovernance", message: "恢复删除内容失败")
             }

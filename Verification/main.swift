@@ -761,7 +761,16 @@ struct RecallVerifier {
         try expect(FileManager.default.fileExists(atPath: storage.screenshotURL(relativePath: screenshotPath).path), "撤销没有恢复截图")
 
         let expiredAt = Date.now.addingTimeInterval(-8 * 86_400)
-        _ = try await store.moveCapturesToRecentlyDeleted(ids: [capture.id], reason: .noLongerNeeded, suppressSimilar: false, now: expiredAt)
+        guard let expired = try await store.moveCapturesToRecentlyDeleted(ids: [capture.id], reason: .noLongerNeeded, suppressSimilar: false, now: expiredAt) else {
+            throw VerificationError.failed("无法准备过期删除快照")
+        }
+        do {
+            _ = try await store.restoreRecentlyDeleted(id: expired.id, now: expired.expiresAt)
+            throw VerificationError.failed("到期的最近删除内容仍可恢复")
+        } catch RecentlyDeletedRestoreError.expired {
+            let unchanged = await store.snapshot()
+            try expect(unchanged.captures.isEmpty && unchanged.recentlyDeletedMemories.count == 1, "拒绝到期恢复时修改了原始状态")
+        }
         let purged = try await store.purgeExpiredRecentlyDeleted(now: .now)
         let afterPurge = await store.snapshot()
         try expect(purged == 1 && afterPurge.recentlyDeletedMemories.isEmpty, "过期的最近删除内容没有永久清理")

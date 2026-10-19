@@ -3046,6 +3046,7 @@ private struct PrivacyAndModelView: View {
     @State private var itemPendingPermanentDeletion: RecentlyDeletedMemory?
     @State private var isConfirmingPermanentDeletion = false
     @State private var isConfirmingClearAll = false
+    @State private var showsAllRecentlyDeleted = false
 
     var body: some View {
         ScrollView {
@@ -3224,7 +3225,7 @@ private struct PrivacyAndModelView: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
             }
-            Text("删除的内容会立即退出搜索、问一问、总结和派生提醒；你仍可在保留期内恢复。忽略规则只保存在本机，并在采集时生效。")
+            Text("删除的内容会立即退出搜索、问一问、总结和派生提醒；7 天内可恢复。到期时运行中的应用会自动清理，应用关闭时将在下次启动后清理。忽略规则只保存在本机，并在采集时生效。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -3240,27 +3241,47 @@ private struct PrivacyAndModelView: View {
             } else {
                 if !model.state.recentlyDeletedMemories.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("最近删除").font(.headline)
-                        ForEach(model.state.recentlyDeletedMemories.prefix(8)) { item in
-                            HStack(spacing: 12) {
-                                Image(systemName: "trash.circle")
-                                    .foregroundStyle(.orange)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(item.label).font(.subheadline.weight(.medium)).lineLimit(1)
-                                    Text("\(item.reason.title) · \(item.expiresAt.formatted(.relative(presentation: .named)))永久删除")
-                                        .font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Text("最近删除").font(.headline)
+                            Text("\(model.state.recentlyDeletedMemories.count) 条")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            if model.state.recentlyDeletedMemories.count > 8 {
+                                Button(showsAllRecentlyDeleted ? "收起" : "查看全部") {
+                                    showsAllRecentlyDeleted.toggle()
                                 }
-                                Spacer()
-                                Button("恢复") { model.restoreRecentlyDeleted(item) }
-                                    .buttonStyle(.bordered)
-                                Button("永久删除", role: .destructive) {
-                                    itemPendingPermanentDeletion = item
-                                    isConfirmingPermanentDeletion = true
-                                }
-                                    .buttonStyle(.borderless)
+                                .buttonStyle(.borderless)
                             }
-                            .padding(12)
-                            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+                        }
+                        LazyVStack(spacing: 10) {
+                            ForEach(model.state.recentlyDeletedMemories
+                                .sorted { $0.deletedAt > $1.deletedAt }
+                                .prefix(showsAllRecentlyDeleted ? model.state.recentlyDeletedMemories.count : 8)) { item in
+                                HStack(spacing: 12) {
+                                    Image(systemName: "trash.circle")
+                                        .foregroundStyle(.orange)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(item.label).font(.subheadline.weight(.medium)).lineLimit(1)
+                                        Text(item.reason.title)
+                                            .font(.caption).foregroundStyle(.secondary)
+                                        Text(item.expiresAt <= .now
+                                             ? "已到期，等待永久清理"
+                                             : "将于 \(item.expiresAt.formatted(date: .abbreviated, time: .shortened)) 永久删除")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Button("恢复") { model.restoreRecentlyDeleted(item) }
+                                        .buttonStyle(.bordered)
+                                        .disabled(item.expiresAt <= .now)
+                                    Button("永久删除", role: .destructive) {
+                                        itemPendingPermanentDeletion = item
+                                        isConfirmingPermanentDeletion = true
+                                    }
+                                        .buttonStyle(.borderless)
+                                }
+                                .padding(12)
+                                .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+                            }
                         }
                     }
                 }

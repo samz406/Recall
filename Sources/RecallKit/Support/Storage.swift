@@ -417,6 +417,7 @@ public actor FileMemoryStore {
         var transaction = RecentlyDeletedMemory(
             label: removedCaptures.count == 1 ? (removedCaptures[0].summary ?? "1 条记忆") : "\(removedCaptures.count) 条记忆",
             reason: reason,
+            deletedAt: now,
             expiresAt: calendar.date(byAdding: .day, value: MemoryGovernance.retentionDays, to: now) ?? now,
             captures: removedCaptures,
             summaries: removedSummaries,
@@ -476,6 +477,7 @@ public actor FileMemoryStore {
         let transaction = RecentlyDeletedMemory(
             label: summary.day.formatted(date: .abbreviated, time: .omitted) + " 的每日总结",
             reason: reason,
+            deletedAt: now,
             expiresAt: Calendar.current.date(byAdding: .day, value: MemoryGovernance.retentionDays, to: now) ?? now,
             summaries: [summary],
             affectedDays: [summary.day]
@@ -499,6 +501,7 @@ public actor FileMemoryStore {
         let transaction = RecentlyDeletedMemory(
             label: item.title,
             reason: reason,
+            deletedAt: now,
             expiresAt: Calendar.current.date(byAdding: .day, value: MemoryGovernance.retentionDays, to: now) ?? now,
             summaries: [original],
             affectedDays: [original.day]
@@ -517,9 +520,12 @@ public actor FileMemoryStore {
     }
 
     @discardableResult
-    public func restoreRecentlyDeleted(id: UUID) throws -> RecentlyDeletedMemory? {
+    public func restoreRecentlyDeleted(id: UUID, now: Date = .now) throws -> RecentlyDeletedMemory? {
         let previousState = state
         guard let index = state.recentlyDeletedMemories.firstIndex(where: { $0.id == id }) else { return nil }
+        guard state.recentlyDeletedMemories[index].expiresAt > now else {
+            throw RecentlyDeletedRestoreError.expired
+        }
         let transaction = state.recentlyDeletedMemories.remove(at: index)
         let captureIDs = Set(transaction.captures.map(\.id))
         state.captures.removeAll { captureIDs.contains($0.id) }
@@ -571,19 +577,22 @@ public actor FileMemoryStore {
     public func purgeRecentlyDeleted(id: UUID) throws {
         guard let item = state.recentlyDeletedMemories.first(where: { $0.id == id }) else { return }
         for path in item.screenshotPaths { try storage.permanentlyDeleteRecentlyDeletedScreenshot(relativePath: path) }
+        let previousState = state
         state.recentlyDeletedMemories.removeAll { $0.id == id }
-        try persist()
+        do { try persist() } catch { state = previousState; throw error }
     }
 
     @discardableResult
     public func purgeExpiredRecentlyDeleted(now: Date = .now) throws -> Int {
         let expired = state.recentlyDeletedMemories.filter { $0.expiresAt <= now }
+        guard !expired.isEmpty else { return 0 }
         for item in expired {
             for path in item.screenshotPaths { try storage.permanentlyDeleteRecentlyDeletedScreenshot(relativePath: path) }
         }
+        let previousState = state
         let ids = Set(expired.map(\.id))
         state.recentlyDeletedMemories.removeAll { ids.contains($0.id) }
-        if !expired.isEmpty { try persist() }
+        do { try persist() } catch { state = previousState; throw error }
         return expired.count
     }
 
