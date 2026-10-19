@@ -21,6 +21,9 @@ struct RecordedText: Sendable {
             else if line.hasPrefix("[聊天·角色未知]") { speaker = .unknown }
             else { speaker = record.textOrigin == .userInput ? .user : .unattributed }
             line = line.replacingOccurrences(of: #"^\[聊天·(?:自己|对方|角色未知)\]\s*"#, with: "", options: .regularExpression)
+            // Saved/forwarded material and file cards remain searchable evidence,
+            // but cannot create personal facts, work completion or user reminders.
+            if line.hasPrefix("[内容·资料]") || line.hasPrefix("[内容·附件]") { continue }
             var buffer = ""
             var closing: [Character] = []
             let pairs: [Character: Character] = ["（": "）", "(": ")", "【": "】", "[": "]", "“": "”", "‘": "’", "「": "」", "《": "》"]

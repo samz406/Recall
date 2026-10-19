@@ -119,7 +119,7 @@ public final class VisionTextRecognizer: TextRecognizing, @unchecked Sendable {
                     guard let text = observation.topCandidates(1).first?.string else { return nil }
                     return PositionedTextLine(text: text, boundingBox: observation.boundingBox)
                 }
-                let layout = context == .messaging ? ConversationImageLayout.detect(in: cgImage) : nil
+                let layout = context.layoutStyle.flatMap { ConversationImageLayout.detect(in: cgImage, style: $0, lines: lines) }
                 let text = ConversationOCRFormatter.format(lines, context: context, layout: layout)
                 continuation.resume(returning: text)
             }
@@ -225,20 +225,8 @@ public final class CapturePipeline {
     }
 
     private static func recognitionContext(for payload: CapturePayload, scope: CaptureScope) -> TextRecognitionContext {
-        let identity = [payload.sourceAppName, payload.sourceBundleIdentifier, payload.windowTitle]
-            .compactMap { $0 }
-            .joined(separator: " ")
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            .lowercased()
-        let appIdentity = [payload.sourceAppName, payload.sourceBundleIdentifier].compactMap { $0 }.joined(separator: " ").lowercased()
-        let bubbleMessengers = ["微信", "企业微信", "wechat", "wework", "wecom", "imessage", "com.apple.ichat", "飞书", "lark", "钉钉", "dingtalk", "telegram", "whatsapp"]
-        if scope == .selectedWindow, bubbleMessengers.contains(where: appIdentity.contains) { return .messaging }
-        let conversationSurfaces = [
-            "微信", "企业微信", "wechat", "wework", "wecom", "messages", "imessage",
-            "slack", "teams", "飞书", "lark", "钉钉", "dingtalk", "telegram", "whatsapp",
-            "discord", "chatgpt", "claude", "gemini", "perplexity"
-        ]
-        return conversationSurfaces.contains(where: identity.contains) ? .conversation : .document
+        TextRecognitionContext.resolve(appName: payload.sourceAppName, bundleIdentifier: payload.sourceBundleIdentifier,
+            windowTitle: payload.windowTitle, scope: scope)
     }
 
     public func removeCapture(_ record: CaptureRecord) async throws {
