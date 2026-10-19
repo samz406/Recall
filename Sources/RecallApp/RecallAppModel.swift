@@ -149,7 +149,7 @@ final class RecallAppModel: ObservableObject {
         do {
             try await store.addManualMatter(note)
             await refresh()
-            matterBuildMessage = "已保存。相同名称的后续记录会串联在同一份档案中。"
+            matterBuildMessage = "记录已保存，同名主题的相关内容会串联在一起。"
             return true
         } catch {
             recordError(error, source: "Memory", message: "手动记录事情失败")
@@ -168,11 +168,11 @@ final class RecallAppModel: ObservableObject {
             isBuildingMatters = false
             if announce {
                 if snapshot.captures.isEmpty {
-                    matterBuildMessage = "还没有保存的记录。可以先记一件事，或在记忆时间线添加记录。"
+                    matterBuildMessage = "还没有保存的记录。补充一条记录，从这里开始。"
                 } else if files.isEmpty {
-                    matterBuildMessage = "已检查 \(snapshot.captures.count) 条记录，暂未找到归属和具体事情都明确的内容。可以手动补记；原始记录仍在记忆时间线。"
+                    matterBuildMessage = "已检查 \(snapshot.captures.count) 条记录，暂未找到能明确归属的具体主题。你可以补充记录；原始内容仍可在时间线查看。"
                 } else {
-                    matterBuildMessage = "已检查 \(snapshot.captures.count) 条记录，整理出 \(files.count) 件事情。重复记录已合并，不会调用云端模型。"
+                    matterBuildMessage = "已检查 \(snapshot.captures.count) 条记录，整理出 \(files.count) 个主题，重复记录已合并。"
                 }
             }
         }
