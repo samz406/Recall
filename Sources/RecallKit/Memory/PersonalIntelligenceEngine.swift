@@ -537,22 +537,13 @@ public struct PersonalIntelligenceEngine: Sendable {
         return min(score, 1)
     }
 
-    /// 普通文档沿用原摘要；聊天截图只允许右侧“自己”的话参与用户进展、结果和长期记忆推断。
+    /// 普通文档沿用原摘要；聊天截图只允许已归属“自己”的话参与用户进展、结果和长期记忆推断。
     /// 对方提出的请求仍可由 ReminderExtractor 识别为待处理动作，但不会被写成“用户已决定/已完成”。
     private func userOwnedText(_ record: CaptureRecord) -> String {
         guard record.ocrText.contains("[聊天·") else {
             return record.summary?.nonEmpty ?? record.ocrText
         }
-        return record.ocrText
-            .components(separatedBy: .newlines)
-            .compactMap { line -> String? in
-                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard trimmed.hasPrefix("[聊天·自己]") else { return nil }
-                return trimmed.replacingOccurrences(of: "[聊天·自己]", with: "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
+        return RecordedText.segments(in: record).filter { $0.speaker == .user }.map(\.text).joined(separator: "\n")
     }
 
     private func novelty(of kind: PersonalInsightKind, comparedWith previous: [PersonalInsight]) -> Double {

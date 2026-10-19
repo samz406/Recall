@@ -17,6 +17,9 @@ struct RecallVerifier {
             try verifyCapturePresentation()
             try verifyConversationRoleRecognition()
             try verifyConversationRegionRecognition()
+            try ConversationLayoutVerification.runGeometry()
+            try ConversationLayoutVerification.runEvidence()
+            try await ConversationLayoutVerification.runVision()
             try verifySearch()
             try verifyChineseNaturalLanguageSearch()
             try verifyNaturalLanguageTimeRanges()
@@ -58,9 +61,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 50 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 53 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 49 integration checks.")
+                print("PASS: RecallVerifier completed 52 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -311,7 +314,11 @@ struct RecallVerifier {
             PositionedTextLine(text: "好的，我上午处理", boundingBox: CGRect(x: 0.47, y: 0.5, width: 0.49, height: 0.08)),
             PositionedTextLine(text: "昨天 18:30", boundingBox: CGRect(x: 0.46, y: 0.4, width: 0.08, height: 0.04))
         ]
-        let conversation = ConversationOCRFormatter.format(lines, context: .conversation)
+        let roleLayout = ConversationOCRLayout(contentBounds: CGRect(x: 0, y: 0, width: 1, height: 1), bubbles: [
+            ConversationBubble(bounds: lines[0].boundingBox, speaker: .other),
+            ConversationBubble(bounds: lines[1].boundingBox, speaker: .user)
+        ])
+        let conversation = ConversationOCRFormatter.format(lines, context: .messaging, layout: roleLayout)
         try expect(conversation.contains("[聊天·对方] 请明天回复报价"), "聊天左侧内容没有标记为对方")
         try expect(conversation.contains("[聊天·自己] 好的，我上午处理"), "聊天右侧内容没有标记为自己")
         try expect(conversation.contains("[聊天·角色未知] 昨天 18:30"), "聊天中部内容不应强行归属角色")
