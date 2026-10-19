@@ -231,6 +231,7 @@ private struct TimelineView: View {
     @State private var searchText = ""
     @State private var expandedDayIDs: Set<Date> = []
     @State private var selectedDay = Calendar.current.startOfDay(for: .now)
+    @State private var showsCalendar = false
     @State private var isManaging = false
     @State private var selectedCaptureIDs: Set<UUID> = []
     @State private var deletionRequest: TimelineDeletionRequest?
@@ -470,17 +471,27 @@ private struct TimelineView: View {
                 .buttonStyle(.bordered)
                 .help("前一天")
 
-                DatePicker(
-                    "选择日期",
-                    selection: Binding(
-                        get: { selectedDay },
-                        set: { selectDay($0) }
-                    ),
-                    in: ...Date.now,
-                    displayedComponents: .date
-                )
-                .labelsHidden()
-                .datePickerStyle(.compact)
+                Button {
+                    showsCalendar.toggle()
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(selectedDay.formatted(.dateTime.year().month().day()))
+                            .fontWeight(.medium)
+                        Image(systemName: "chevron.down")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .help("选择日期")
+                .accessibilityLabel("选择日期")
+                .accessibilityValue(selectedDay.formatted(date: .complete, time: .omitted))
+                .popover(isPresented: $showsCalendar, arrowEdge: .top) {
+                    TimelineCalendarPopover(selectedDay: selectedDay) { day in
+                        selectDay(day)
+                        showsCalendar = false
+                    }
+                }
 
                 Button { moveSelectedDay(by: 1) } label: {
                     Image(systemName: "chevron.right")
