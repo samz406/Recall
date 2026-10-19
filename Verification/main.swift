@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import RecallKit
 
@@ -15,6 +16,7 @@ struct RecallVerifier {
             try verifyLocalSummaryNoiseFiltering()
             try verifyCapturePresentation()
             try verifyConversationRoleRecognition()
+            try verifyConversationRegionRecognition()
             try verifySearch()
             try verifyChineseNaturalLanguageSearch()
             try verifyNaturalLanguageTimeRanges()
@@ -56,9 +58,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 49 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 50 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 48 integration checks.")
+                print("PASS: RecallVerifier completed 49 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -322,6 +324,98 @@ struct RecallVerifier {
         let memories = consolidation.memories.map(\.content).joined(separator: "\n")
         try expect(!memories.contains("我喜欢每天开会"), "对方的话被错误写入用户长期记忆")
         try expect(memories.contains("我不喜欢没有结论的会议"), "用户自己说的话没有进入长期记忆")
+    }
+
+    private static func verifyConversationRegionRecognition() throws {
+        // Only synthetic pixels and invented text. Coordinates below are top-left pixels;
+        // Vision's observations and the production layout use normalized bottom-left bounds.
+        let width = 800, height = 600, right = 780
+        func box(_ x: Int, _ y: Int, _ w: Int, _ h: Int) -> CGRect {
+            CGRect(x: Double(x) / Double(width), y: 1 - Double(y + h) / Double(height),
+                   width: Double(w) / Double(width), height: Double(h) / Double(height))
+        }
+        func line(_ text: String, _ x: Int, _ y: Int, _ w: Int = 120, _ h: Int = 16) -> PositionedTextLine {
+            PositionedTextLine(text: text, boundingBox: box(x, y, w, h))
+        }
+        for dark in [true, false] {
+            for left in [0, 240, 330] {
+                let background: UInt8 = dark ? 32 : 238
+                var pixels = [UInt8](repeating: 255, count: width * height * 4)
+                func fill(_ x: Int, _ y: Int, _ w: Int, _ h: Int, _ color: [UInt8]) {
+                    for row in y..<(y + h) {
+                        for column in x..<(x + w) {
+                            let index = (row * width + column) * 4
+                            pixels[index] = color[0]; pixels[index + 1] = color[1]; pixels[index + 2] = color[2]
+                        }
+                    }
+                }
+                fill(0, 0, width, height, [background, background, background])
+                if left > 0 {
+                    fill(0, 0, left, height, dark ? [20, 20, 20] : [210, 210, 210])
+                    fill(left - 1, 0, 1, height, [100, 100, 100])
+                    fill(15, 150, left - 35, 25, [150, 150, 150]) // sidebar preview
+                }
+                fill(right, 0, width - right, height, dark ? [12, 12, 12] : [255, 255, 255])
+                fill(left, 60, right - left, 1, [100, 100, 100])
+                fill(left, 440, right - left, 1, [100, 100, 100])
+                let otherX = left + max(40, (right - left) / 12)
+                fill(otherX, 125, 320, 70, dark ? [66, 66, 66] : [255, 255, 255])
+                let selfX = left + (right - left) / 6
+                fill(selfX, 270, right - 40 - selfX, 70, [30, 125, 220])
+                fill(right - 70, 355, 30, 25, [30, 125, 220])
+                fill(left + 8, 125, 24, 24, [180, 90, 70]) // other avatar
+                fill(right - 30, 270, 24, 24, [180, 90, 70]) // self avatar
+                guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+                      let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                        bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+                        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
+                      let layout = ConversationImageLayout.detect(in: image) else {
+                    throw VerificationError.failed("未识别合成聊天正文区，深色=\(dark)，侧栏=\(left)")
+                }
+                try expect(abs(layout.contentBounds.minX - CGFloat(left) / CGFloat(width)) < 0.01,
+                           "聊天正文边界未适应不同侧栏宽度")
+                try expect(layout.contentBounds.maxY < 0.91 && layout.contentBounds.minY > 0.25,
+                           "聊天正文未排除标题和输入区，或上下坐标翻转")
+                var lines = [
+                    line("窗口标题", left + 100, 25),
+                    line("明天会议确认后回复", otherX + 10, 135, 240),
+                    line("待办已核对", otherX + 10, 165, 180),
+                    line("昨天 18:30", left + (right - left) / 2 - 40, 225, 80),
+                    line("我已完成账单导出", selfX + 10, 280, 200),
+                    line("分页验证也通过了", selfX + 10, 310, 200),
+                    line("好", right - 65, 360, 18),
+                    line("未找到气泡的正文", left + 90, 400),
+                    line("快速会议", left + 100, 500)
+                ]
+                if left > 0 { lines += [line("邮件 工作台 通讯录", 15, 155, left - 35)] }
+                // Shuffle observations: ordering is based on bubble/line geometry.
+                let text = ConversationOCRFormatter.format(Array(lines.reversed()), context: .messaging, layout: layout)
+                try expect(!text.contains("工作台") && !text.contains("窗口标题") && !text.contains("快速会议"),
+                           "侧栏、标题或输入区仍进入聊天 OCR")
+                try expect(text.contains("[聊天·对方] 明天会议确认后回复 待办已核对"),
+                           "对方长气泡未保持角色，或误删了正文中的菜单同名词")
+                try expect(text.contains("[聊天·自己] 我已完成账单导出 分页验证也通过了"),
+                           "跨越中线的自己长气泡或换行归属错误")
+                try expect(text.contains("[聊天·自己] 好"), "短消息气泡被遗漏")
+                try expect(text.contains("[聊天·角色未知] 昨天 18:30"), "聊天时间未作为中立上下文保留")
+                try expect(text.contains("[聊天·角色未知] 未找到气泡的正文"), "未识别气泡的正文应保留且角色未知")
+                try expect(text.range(of: "明天会议")!.lowerBound < text.range(of: "我已完成")!.lowerBound,
+                           "消息未按上下顺序排列")
+            }
+        }
+        let uncertain = [line("需要处理报告", 450, 120)]
+        let fallback = ConversationOCRFormatter.format(uncertain, context: .messaging)
+        try expect(fallback == "[聊天·角色未知] 需要处理报告", "无法定位原生聊天区时不应按整图中线猜角色")
+        try expect(ConversationOCRFormatter.format(uncertain, context: .document) == "需要处理报告", "文档模式受到聊天过滤影响")
+        var flatPixels = [UInt8](repeating: 238, count: width * height * 4)
+        for index in stride(from: 3, to: flatPixels.count, by: 4) { flatPixels[index] = 255 }
+        let provider = CGDataProvider(data: Data(flatPixels) as CFData)!
+        let flat = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue), provider: provider,
+            decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+        try expect(ConversationImageLayout.detect(in: flat) == nil, "没有结构证据的图像不应猜测聊天裁剪区")
     }
 
     private static func verifySearch() throws {
