@@ -28,11 +28,26 @@ public final class MemoryAssistant {
         userMessage: ConversationMessage? = nil,
         onUserMessageSaved: (@MainActor @Sendable () async -> Void)? = nil
     ) async throws -> ConversationMessage {
-        let originalState = await store.snapshot()
+        try Task.checkCancellation()
+        if ChatCommand.parse(question) == .clear {
+            let result = try await store.clearConversation()
+            await onUserMessageSaved?()
+            return result
+        }
+        let conversation = await store.conversationSnapshot()
+        try Task.checkCancellation()
+        let originalState = conversation.state
+        if ChatCommand.isCommandInput(question) {
+            let result = ConversationMessage(role: .system, content: "未识别的命令或参数。输入 / 查看可用命令；清空会话请发送 /clear。")
+            try await store.addMessage(result, inConversation: conversation.id)
+            await onUserMessageSaved?()
+            return result
+        }
         let state = originalState.correctedForAnalysis()
         let userMessage = userMessage ?? ConversationMessage(role: .user, content: question)
-        try await store.addMessage(userMessage)
+        try await store.addMessage(userMessage, inConversation: conversation.id)
         await onUserMessageSaved?()
+        try Task.checkCancellation()
 
         let recordsAllowedInChat = state.captures.filter { capture in
             state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
@@ -89,8 +104,9 @@ public final class MemoryAssistant {
             retrievedEvidence: retrieved
         )
         if plan.rollingSummary != state.conversationSummary || plan.coveredMessageCount != (state.conversationSummaryCoveredMessageCount ?? 0) {
-            try await store.updateConversationSummary(plan.rollingSummary, coveredMessageCount: plan.coveredMessageCount + originalState.messages.count - state.messages.count)
+            try await store.updateConversationSummary(plan.rollingSummary, coveredMessageCount: plan.coveredMessageCount + originalState.messages.count - state.messages.count, inConversation: conversation.id)
         }
+        try Task.checkCancellation()
 
         // 对时间范围概览问题，当前检索到的时间线是唯一事实来源。
         // 不带入先前助手的结论，避免旧的“没有记忆”回答被模型机械复述。
@@ -140,7 +156,8 @@ public final class MemoryAssistant {
         }
         let formattedContent = ChatResponseFormatter().format(response.content)
         let assistantMessage = ConversationMessage(role: .assistant, content: formattedContent, citations: response.citedCaptureIDs)
-        try await store.addMessage(assistantMessage)
+        try Task.checkCancellation()
+        try await store.addMessage(assistantMessage, inConversation: conversation.id)
         return assistantMessage
     }
 

@@ -24,6 +24,8 @@ final class RecallAppModel: ObservableObject {
     @Published var isThinking = false
     @Published private(set) var typingMessageID: UUID?
     @Published private(set) var typingMessageContent = ""
+    private var chatTask: Task<Void, Never>?
+    private var chatRequestID = UUID()
     @Published var noticeMessage: String?
     @Published private(set) var deletionUndoNotice: RecentlyDeletedMemory?
     @Published private(set) var enterKeyMonitorStatus: GlobalEnterKeyRecorderStatus = .disabled
@@ -517,24 +519,46 @@ final class RecallAppModel: ObservableObject {
     }
 
     func ask(_ question: String) {
-        guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else { return }
+        let isClear = ChatCommand.parse(question) == .clear
+        guard isClear || (!isThinking && typingMessageID == nil) else { return }
+        chatTask?.cancel()
+        let requestID = UUID()
+        chatRequestID = requestID
+        typingMessageID = nil
+        typingMessageContent = ""
         let userMessage = ConversationMessage(role: .user, content: question)
-        state.messages.append(userMessage)
+        let isCommand = ChatCommand.isCommandInput(question)
+        if !isCommand { state.messages.append(userMessage) }
         isThinking = true
-        Task {
+        chatTask = Task {
             do {
                 let answer = try await assistant.ask(question, userMessage: userMessage) { [weak self] in
                     guard let self else { return }
-                    self.state = await self.store.snapshot()
+                    let snapshot = await self.store.snapshot()
+                    guard !Task.isCancelled, self.chatRequestID == requestID else { return }
+                    self.state = snapshot
                 }
+                let snapshot = await store.snapshot()
+                guard !Task.isCancelled, chatRequestID == requestID else { return }
                 isThinking = false
-                typingMessageID = answer.id
-                typingMessageContent = ""
-                await refresh()
-                await revealAssistantMessage(answer)
+                if answer.role == .assistant { typingMessageID = answer.id }
+                state = snapshot
+                if answer.role == .assistant { await revealAssistantMessage(answer) }
+                if chatRequestID == requestID { chatTask = nil }
+            } catch is CancellationError {
+                guard chatRequestID == requestID else { return }
+                isThinking = false
+                chatTask = nil
             } catch {
+                guard !Task.isCancelled, chatRequestID == requestID else { return }
                 isThinking = false
+                chatTask = nil
                 recordDiagnostic(.error, source: "Chat", message: "问一问请求失败", metadata: ["error": recallSafeErrorCode(error)])
+                if isCommand {
+                    state.messages.append(ConversationMessage(role: .system, content: "命令执行失败，请重试。"))
+                }
             }
         }
     }

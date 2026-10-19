@@ -50,13 +50,15 @@ struct RecallVerifier {
             try await verifyTodayQuestionUsesTimeline()
             try await verifySevenDayOverviewCoverage()
             try await verifyDailySummaryQuestionRetrieval()
+            try await verifyChatCommands()
+            try await verifyConversationClearRace()
             try await verifyQuestionPersistsBeforeModelFailure()
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 47 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 49 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 46 integration checks.")
+                print("PASS: RecallVerifier completed 48 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -1455,6 +1457,92 @@ struct RecallVerifier {
         let followUp = try await assistant.ask("你看下之前内容")
         try expect(followUp.citations == [summary.id], "连续追问没有沿用上一轮检索主题")
         try expect(followUp.content.contains("妙妙"), "连续追问丢失了上一轮人物语境")
+    }
+
+    @MainActor
+    private static func verifyChatCommands() async throws {
+        try expect(ChatCommand.suggestions(for: "/") == [.clear], "输入斜杠应提示可用命令")
+        try expect(ChatCommand.suggestions(for: "/cl") == [.clear], "命令列表应按前缀筛选")
+        try expect(ChatCommand.suggestions(for: "正文 /clear").isEmpty && ChatCommand.suggestions(for: "/clear\n正文").isEmpty, "正文与多行输入不应误开命令菜单")
+        try expect(ChatCommand.parse("  /clear  ") == .clear && ChatCommand.parse("/clear more") == nil, "清空必须匹配完整命令，不能接受参数")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("Recall-Commands-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        let capture = makeCapture(text: "测试记忆：项目预算周五评审", app: "测试笔记")
+        try await store.addCapture(capture)
+        let reminder = ReminderCandidate(title: "提交预算评审", detail: "测试提醒", dueAt: .now, sourceCaptureIDs: [capture.id], confidence: 0.9)
+        try await store.updateReminder(reminder)
+        let summary = DailySummary(day: .now, content: "## 今天推进了什么\n- 整理预算评审资料", sourceCaptureIDs: [capture.id], todos: [], generationKind: .localFallback)
+        try await store.upsertDailySummary(summary)
+        try await store.addMessage(ConversationMessage(role: .user, content: "旧会话问题"))
+        try await store.addMessage(ConversationMessage(role: .assistant, content: "旧会话回答"))
+        try await store.updateConversationSummary("不能留在新会话中的旧摘要", coveredMessageCount: 2)
+        try await store.updatePrivacy(PrivacySettings(cloudUseEnabled: true))
+        try await store.updateLLMConfiguration(LLMConfiguration(provider: .openAICompatible, apiKey: ""))
+        let assistant = MemoryAssistant(store: store)
+        let result = try await assistant.ask("/clear")
+        let cleared = await store.snapshot()
+        try expect(result.role == .system && result.content.contains("已清空"), "命令应本地返回实际执行结果，无模型密钥也能工作")
+        try expect(cleared.messages.map(\.id) == [result.id] && cleared.conversationSummary == nil && cleared.conversationSummaryCoveredMessageCount == 0, "清空应移除全部聊天历史及压缩上下文，只留下命令结果")
+        try expect(cleared.captures.map(\.id) == [capture.id] && cleared.reminders.map(\.id) == [reminder.id] && cleared.dailySummaries.map(\.id) == [summary.id], "清会话不能删除采集、提醒和每日总结")
+        let reloaded = try FileMemoryStore(storage: storage)
+        let persisted = await reloaded.snapshot()
+        try expect(persisted.messages.map(\.id) == [result.id] && persisted.conversationSummary == nil, "重启后不能恢复已清空的会话和摘要")
+        let unknown = try await assistant.ask("/unknown")
+        try expect(unknown.role == .system && unknown.content.contains("未识别"), "未知命令不能发送大模型或伪报成功")
+        let beforeInvalid = await store.conversationSnapshot()
+        let invalid = try await assistant.ask("/clear extra")
+        let afterInvalid = await store.conversationSnapshot()
+        try expect(invalid.role == .system && afterInvalid.id == beforeInvalid.id && afterInvalid.state.messages.contains(where: { $0.id == result.id }), "错误参数不能清空当前会话")
+        _ = try await assistant.ask("/clear")
+        try await store.addMessage(ConversationMessage(role: .user, content: "保存失败时应保留的消息"))
+        try await store.updateConversationSummary("保存失败时应保留的上下文", coveredMessageCount: 1)
+        let beforeFailure = await store.conversationSnapshot()
+        let backup = root.appendingPathComponent("state-backup.json")
+        do {
+            try FileManager.default.moveItem(at: storage.stateURL, to: backup)
+            defer {
+                try? FileManager.default.removeItem(at: storage.stateURL)
+                try? FileManager.default.moveItem(at: backup, to: storage.stateURL)
+            }
+            try FileManager.default.createDirectory(at: storage.stateURL, withIntermediateDirectories: false)
+            var didFail = false
+            do { _ = try await store.clearConversation() } catch { didFail = true }
+            let failed = await store.conversationSnapshot()
+            try expect(didFail && failed.id == beforeFailure.id && failed.state.messages == beforeFailure.state.messages && failed.state.conversationSummary == beforeFailure.state.conversationSummary, "落盘失败应恢复原会话和身份，不得返回清空成功")
+        }
+    }
+
+    @MainActor
+    private static func verifyConversationClearRace() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("Recall-Clear-Race-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        try await store.addCapture(makeCapture(text: "测试项目：上周完成预算方案", app: "测试笔记"))
+        let old = await store.conversationSnapshot()
+        let assistant = MemoryAssistant(store: store)
+        do {
+            _ = try await assistant.ask("上次做了什么？", onUserMessageSaved: {
+                // Deterministically clear while an earlier request is suspended after saving.
+                _ = try? await store.clearConversation()
+            })
+            throw VerificationError.failed("旧会话回答不应写回已清空的会话")
+        } catch is CancellationError {}
+        let fresh = await store.snapshot()
+        try expect(fresh.messages.count == 1 && fresh.messages.first?.role == .system, "清空期间的旧请求不能重新填入问答")
+        do {
+            try await store.updateConversationSummary("延迟返回的旧摘要", coveredMessageCount: 1, inConversation: old.id)
+            throw VerificationError.failed("旧摘要不应写入新会话")
+        } catch is CancellationError {}
+        do {
+            try await store.addMessage(ConversationMessage(role: .assistant, content: "延迟返回的旧回答"), inConversation: old.id)
+            throw VerificationError.failed("旧回答不应写入新会话")
+        } catch is CancellationError {}
+        let answer = try await assistant.ask("之前内容是什么？")
+        let after = await store.snapshot()
+        try expect(answer.role == .assistant && after.messages.count == 3 && after.conversationSummary == nil, "清空后新问题应正常开始，不带回旧上下文")
     }
 
     @MainActor

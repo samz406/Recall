@@ -910,6 +910,7 @@ private struct ChatView: View {
                     isSending: model.isThinking || model.typingMessageID != nil,
                     onSend: send
                 )
+                .zIndex(1)
             }
         }
     }
@@ -1089,7 +1090,15 @@ private struct RecallMessageCard: View {
 
     var body: some View {
         Group {
-            if message.role == .user {
+            if message.role == .system {
+                Label(displayedContent, systemImage: "terminal")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityLabel("命令执行结果：" + displayedContent)
+            } else if message.role == .user {
                 HStack(alignment: .top) {
                     Spacer(minLength: 24)
                     messageBody
@@ -1193,6 +1202,12 @@ private struct ChatComposer: View {
     let isSending: Bool
     let onSend: () -> Void
     @FocusState private var isFocused: Bool
+    @State private var dismissedCommandQuery: String?
+
+    private var commandSuggestions: [ChatCommand] {
+        guard isFocused, dismissedCommandQuery != question else { return [] }
+        return ChatCommand.suggestions(for: question)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1206,6 +1221,17 @@ private struct ChatComposer: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .submitLabel(.send)
                     .onKeyPress { keyPress in
+                        if !commandSuggestions.isEmpty {
+                            if keyPress.key == .escape {
+                                dismissedCommandQuery = question
+                                return .handled
+                            }
+                            if keyPress.key == .tab || (keyPress.key == .return && !keyPress.modifiers.contains(.shift)) {
+                                if let command = commandSuggestions.first { insertCommand(command) }
+                                return .handled
+                            }
+                            if keyPress.key == .upArrow || keyPress.key == .downArrow { return .handled }
+                        }
                         guard keyPress.key == .return else { return .ignored }
                         if keyPress.modifiers.contains(.shift) {
                             return .ignored
@@ -1218,7 +1244,7 @@ private struct ChatComposer: View {
             HStack {
                 Spacer()
                 Button(action: submit) {
-                    Image(systemName: isSending ? "ellipsis" : "arrow.up")
+                    Image(systemName: isSending && ChatCommand.parse(question) != .clear ? "ellipsis" : "arrow.up")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
                         .frame(width: 44, height: 44)
@@ -1242,13 +1268,68 @@ private struct ChatComposer: View {
         .shadow(color: .black.opacity(isFocused ? 0.09 : 0.055), radius: isFocused ? 20 : 14, y: 6)
         .animation(.easeOut(duration: 0.16), value: isFocused)
         .frame(maxWidth: 780)
+        .overlay(alignment: .top) {
+            if !commandSuggestions.isEmpty {
+                commandMenu
+                    .alignmentGuide(.top) { $0[.bottom] + 10 }
+            }
+        }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 32)
         .padding(.vertical, 16)
+        .onChange(of: question) { _, value in
+            if value != dismissedCommandQuery { dismissedCommandQuery = nil }
+        }
     }
 
     private var canSend: Bool {
-        !isSending && !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        (!isSending || ChatCommand.parse(question) == .clear)
+            && !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var commandMenu: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(commandSuggestions) { command in
+                Button { insertCommand(command) } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: command.symbol)
+                            .font(.system(size: 19))
+                            .frame(width: 28)
+                        Text(command.rawValue)
+                            .font(.system(size: 16, weight: .semibold, design: .monospaced))
+                        Text(command.detail)
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        Image(systemName: "arrow.turn.down.left")
+                            .foregroundStyle(.tertiary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .background(.quaternary.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
+                    .contentShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(command.rawValue + "，" + command.title)
+                .focusable(false)
+                .help("填入命令后，发送才会执行")
+            }
+            Text("点击或按 Tab / 回车填入，发送后执行")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 4)
+        }
+        .padding(8)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 1))
+        .shadow(color: .black.opacity(0.12), radius: 18, y: 6)
+    }
+
+    private func insertCommand(_ command: ChatCommand) {
+        dismissedCommandQuery = command.rawValue
+        question = command.rawValue
+        isFocused = true
     }
 
     private var sendButtonColor: Color {
