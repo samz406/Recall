@@ -23,14 +23,14 @@ struct MatterEvidence {
             guard status != .explored || userNamed else { continue }
             let name: String
             if userNamed, !title.isEmpty { name = title }
-            else if usableTitle(title, app: record.sourceAppName), relates(title, to: text) { name = title }
+            else if let object = subject(in: text), usableTitle(title, app: record.sourceAppName), relates(title, to: object) { name = title }
             else if let subject = subject(in: text), usableTitle(subject, app: record.sourceAppName) { name = subject }
             else { continue }
             entries.append((Entry(title: name, detail: text, status: status), segment.ordinal))
         }
         // Prefer the proposed topic only when the actual sentence supports it. Within that
         // topic use the last statement, so "still failing" cannot be overwritten by old success.
-        let related = entries.filter { relates(title, to: $0.entry.detail) }
+        let related = entries.filter { key($0.entry.title) == key(title) }
         return (related.isEmpty ? entries : related).max { $0.ordinal < $1.ordinal }?.entry
     }
 
