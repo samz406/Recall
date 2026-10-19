@@ -97,37 +97,6 @@ public extension TextRecognizing {
     }
 }
 
-public enum TextRecognitionContext: Sendable, Equatable {
-    case document
-    case conversation
-}
-
-public struct PositionedTextLine: Sendable, Equatable {
-    public var text: String
-    public var boundingBox: CGRect
-
-    public init(text: String, boundingBox: CGRect) {
-        self.text = text
-        self.boundingBox = boundingBox
-    }
-}
-
-/// 聊天截图中的左右位置是角色证据：左侧通常是对方，右侧通常是用户自己。
-/// 中间区域保持未知，宁可不归属，也不把对方的话误记成用户事实。
-public enum ConversationOCRFormatter {
-    public static func format(_ lines: [PositionedTextLine], context: TextRecognitionContext) -> String {
-        lines.compactMap { line in
-            let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return nil }
-            guard context == .conversation else { return text }
-            let centerX = line.boundingBox.midX
-            if centerX <= 0.44 { return "[聊天·对方] \(text)" }
-            if centerX >= 0.56 { return "[聊天·自己] \(text)" }
-            return "[聊天·角色未知] \(text)"
-        }.joined(separator: "\n")
-    }
-}
-
 public final class VisionTextRecognizer: TextRecognizing, @unchecked Sendable {
     public init() {}
 
@@ -150,7 +119,8 @@ public final class VisionTextRecognizer: TextRecognizing, @unchecked Sendable {
                     guard let text = observation.topCandidates(1).first?.string else { return nil }
                     return PositionedTextLine(text: text, boundingBox: observation.boundingBox)
                 }
-                let text = ConversationOCRFormatter.format(lines, context: context)
+                let layout = context == .messaging ? ConversationImageLayout.detect(in: cgImage) : nil
+                let text = ConversationOCRFormatter.format(lines, context: context, layout: layout)
                 continuation.resume(returning: text)
             }
             request.recognitionLevel = .accurate
@@ -213,7 +183,7 @@ public final class CapturePipeline {
         } else if let imageData = payload.imageData {
             extractedText = try await recognizer.recognizeText(
                 in: imageData,
-                context: Self.recognitionContext(for: payload)
+                context: Self.recognitionContext(for: payload, scope: rule.scope)
             )
         } else {
             extractedText = ""
@@ -254,12 +224,15 @@ public final class CapturePipeline {
         return record
     }
 
-    private static func recognitionContext(for payload: CapturePayload) -> TextRecognitionContext {
+    private static func recognitionContext(for payload: CapturePayload, scope: CaptureScope) -> TextRecognitionContext {
         let identity = [payload.sourceAppName, payload.sourceBundleIdentifier, payload.windowTitle]
             .compactMap { $0 }
             .joined(separator: " ")
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .lowercased()
+        let appIdentity = [payload.sourceAppName, payload.sourceBundleIdentifier].compactMap { $0 }.joined(separator: " ").lowercased()
+        let bubbleMessengers = ["微信", "企业微信", "wechat", "wework", "wecom", "imessage", "com.apple.ichat", "飞书", "lark", "钉钉", "dingtalk", "telegram", "whatsapp"]
+        if scope == .selectedWindow, bubbleMessengers.contains(where: appIdentity.contains) { return .messaging }
         let conversationSurfaces = [
             "微信", "企业微信", "wechat", "wework", "wecom", "messages", "imessage",
             "slack", "teams", "飞书", "lark", "钉钉", "dingtalk", "telegram", "whatsapp",
