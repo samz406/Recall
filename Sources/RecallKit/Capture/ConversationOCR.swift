@@ -186,7 +186,13 @@ public enum ConversationImageLayout {
             // Borderless or two-level headers: a short title beside the contact avatar, above messages.
             let titleLines = lines.filter { line in
                 let r = raster.pixels(line.boundingBox)
-                return r.x >= left + paneWidth / 40 && r.x < left + paneWidth * 35 / 100
+                let besideHeaderAvatar = surfaces.contains { avatar in
+                    abs(avatar.w - avatar.h) < max(4, avatar.h / 5) && avatar.h >= font * 2 && avatar.h <= font * 5
+                        && avatar.x >= left && avatar.x < left + paneWidth * 12 / 100 && avatar.y < height * 8 / 100
+                        && r.x >= avatar.maxX && r.x - avatar.maxX < paneWidth * 15 / 100
+                        && r.y >= avatar.y && r.maxY <= avatar.maxY + font / 2
+                }
+                return besideHeaderAvatar && r.x >= left + paneWidth / 40 && r.x < left + paneWidth * 35 / 100
                     && r.y >= 0 && r.maxY < height * 12 / 100
                     && !surfaces.contains { $0.contains(r) && $0.h > r.h * 3 / 2 }
             }
@@ -215,10 +221,12 @@ public enum ConversationImageLayout {
                 else if leading >= 0.015 && leading <= 0.24 && trailing < 0.92 { speaker = .other }
                 else { continue }
             case .leftAligned:
-                guard leading >= 0.04 && leading <= 0.24 else { continue }
+                let onLeft = leading >= 0.04 && leading <= 0.24
+                let onRight = leading >= 0.1 && trailing >= 0.78 && trailing <= 0.975
+                guard onLeft || onRight else { continue }
                 let tint = raster.medianColor(in: rect)
                 if tint[2] - tint[0] >= 15 && tint[2] - tint[1] >= 4 { speaker = .user }
-                else if abs(tint[0] - tint[1]) < 7 && abs(tint[1] - tint[2]) < 7 { speaker = .other }
+                else if onLeft && abs(tint[0] - tint[1]) < 7 && abs(tint[1] - tint[2]) < 7 { speaker = .other }
                 else { speaker = .unknown }
             }
             bubbles.append(ConversationBubble(bounds: raster.normalized(rect.padded(2, within: body)), speaker: speaker))
