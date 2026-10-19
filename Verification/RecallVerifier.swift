@@ -246,7 +246,10 @@ struct RecallVerifier {
         try expect(files.count == 2, "手动记录应立即进入档案，无需先生成每日总结")
         let file = files.first { $0.title == "账单导出修复" }!
         try expect(file.events.count == 2 && file.latest.status == .completed, "同名手动记录应跨日期串联并使用用户明确状态")
-        try expect(file.events.first?.eventAt == yesterday && file.events.first?.recordedAt == now, "补记应区分发生时间与记录时间")
+        // The store's ISO8601 representation preserves seconds, not subsecond precision.
+        let firstEvent = file.events[0]
+        try expect(abs((firstEvent.eventAt ?? .distantPast).timeIntervalSince(yesterday)) < 1
+            && abs(firstEvent.recordedAt.timeIntervalSince(now)) < 1, "补记应区分发生时间与记录时间")
         try expect(file.latest.detail == "已交付验收结果。" && file.latest.evidenceIDs == [second.id], "手动原文和可追溯来源应完整保留")
         try expect(engine.weeklyReview(files: files, endingAt: now.addingTimeInterval(2)).count == 1, "仅作记录不应虚构进行中事项或周进展")
         try expect(state.reminders.isEmpty && first.imageRelativePath == nil && state.matterCorrections.isEmpty, "手动补记不应截图、创建通知或冒充用户纠错")
