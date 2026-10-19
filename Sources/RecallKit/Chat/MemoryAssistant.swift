@@ -107,6 +107,7 @@ public final class MemoryAssistant {
             try await store.updateConversationSummary(plan.rollingSummary, coveredMessageCount: plan.coveredMessageCount + originalState.messages.count - state.messages.count, inConversation: conversation.id)
         }
         try Task.checkCancellation()
+        guard await store.conversationSnapshot().id == conversation.id else { throw CancellationError() }
 
         // 对时间范围概览问题，当前检索到的时间线是唯一事实来源。
         // 不带入先前助手的结论，避免旧的“没有记忆”回答被模型机械复述。

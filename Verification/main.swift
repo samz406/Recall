@@ -1540,6 +1540,7 @@ struct RecallVerifier {
             try await store.addMessage(ConversationMessage(role: .assistant, content: "延迟返回的旧回答"), inConversation: old.id)
             throw VerificationError.failed("旧回答不应写入新会话")
         } catch is CancellationError {}
+        try await store.updateLLMConfiguration(LLMConfiguration(provider: .localOnly))
         let answer = try await assistant.ask("之前内容是什么？")
         let after = await store.snapshot()
         try expect(answer.role == .assistant && after.messages.count == 3 && after.conversationSummary == nil, "清空后新问题应正常开始，不带回旧上下文")
