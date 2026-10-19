@@ -888,6 +888,22 @@ private struct ChatView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var question = ""
     @State private var scrollRequest = 0
+    @State private var messageContentFrame: CGRect = .zero
+    @State private var messageViewportHeight: CGFloat = 0
+
+    private var hasChatMessages: Bool {
+        model.state.messages.contains { $0.role != .system }
+    }
+
+    private var isAtLatestMessage: Bool {
+        messageContentFrame.maxY <= messageViewportHeight + 48
+    }
+
+    private var showsLatestButton: Bool {
+        hasChatMessages && messageViewportHeight > 0
+            && messageContentFrame.height > messageViewportHeight + 2
+            && !isAtLatestMessage
+    }
 
     private var isCloudModel: Bool {
         model.state.llmConfiguration.provider != .localOnly && model.state.privacy.cloudUseEnabled
@@ -950,55 +966,80 @@ private struct ChatView: View {
     }
 
     private var messageTimeline: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(spacing: 16) {
-                    ForEach(model.state.messages) { message in
-                        RecallMessageCard(
-                            message: message,
-                            displayedContent: message.id == model.typingMessageID ? model.typingMessageContent : message.content,
-                            isTyping: message.id == model.typingMessageID
-                        )
-                        .id(message.id)
+        GeometryReader { viewport in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 16) {
+                        ForEach(model.state.messages) { message in
+                            RecallMessageCard(
+                                message: message,
+                                displayedContent: message.id == model.typingMessageID ? model.typingMessageContent : message.content,
+                                isTyping: message.id == model.typingMessageID
+                            )
+                            .id(message.id)
+                        }
+                        if model.isThinking {
+                            ThinkingCard()
+                        }
+                        Color.clear
+                            .frame(height: 1)
+                            .id(ChatScrollAnchor.bottom)
                     }
-                    if model.isThinking {
-                        ThinkingCard()
+                    .frame(maxWidth: 860)
+                    .padding(.horizontal, 32)
+                    .padding(.vertical, 30)
+                    .background {
+                        GeometryReader { content in
+                            Color.clear.preference(
+                                key: ChatContentFrameKey.self,
+                                value: content.frame(in: .named(ChatScrollAnchor.viewport))
+                            )
+                        }
                     }
-                    Color.clear
-                        .frame(height: 1)
-                        .id(ChatScrollAnchor.bottom)
                 }
-                .frame(maxWidth: 860)
-                .padding(.horizontal, 32)
-                .padding(.vertical, 30)
-            }
-            .overlay(alignment: .bottomTrailing) {
-                Button {
-                    scrollToLatest(using: proxy)
-                } label: {
-                    Label("最新", systemImage: "arrow.down.to.line.compact")
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
+                .coordinateSpace(name: ChatScrollAnchor.viewport)
+                .onPreferenceChange(ChatContentFrameKey.self) { messageContentFrame = $0 }
+                .overlay(alignment: .bottomTrailing) {
+                    if showsLatestButton {
+                        Button {
+                            scrollToLatest(using: proxy)
+                        } label: {
+                            Image(systemName: "arrow.down")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundStyle(.indigo)
+                                .frame(width: 36, height: 36)
+                                .background(Color(nsColor: .controlBackgroundColor), in: Circle())
+                                .overlay(Circle().stroke(Color(nsColor: .separatorColor).opacity(0.65), lineWidth: 1))
+                                .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(18)
+                        .help("跳到最新消息")
+                        .accessibilityLabel("跳到最新消息")
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .padding(18)
-                .help("滚动到最新消息")
-            }
-            .onAppear {
-                scrollToLatest(using: proxy, animated: false)
-            }
-            .onChange(of: model.state.messages.last?.id) { _, _ in
-                scrollToLatest(using: proxy)
-            }
-            .onChange(of: model.isThinking) { _, _ in
-                scrollToLatest(using: proxy)
-            }
-            .onChange(of: model.typingMessageContent) { _, _ in
-                scrollToLatest(using: proxy, animated: false)
-            }
-            .onChange(of: scrollRequest) { _, _ in
-                scrollToLatest(using: proxy, animated: false)
+                .onAppear {
+                    messageViewportHeight = viewport.size.height
+                    scrollToLatest(using: proxy, animated: false)
+                }
+                .onChange(of: viewport.size.height) { _, height in
+                    messageViewportHeight = height
+                }
+                .onChange(of: model.state.messages.last?.id) { _, _ in
+                    if isAtLatestMessage || model.state.messages.last?.role == .user || !hasChatMessages {
+                        scrollToLatest(using: proxy)
+                    }
+                }
+                .onChange(of: model.isThinking) { _, _ in
+                    if isAtLatestMessage { scrollToLatest(using: proxy) }
+                }
+                .onChange(of: model.typingMessageContent) { _, _ in
+                    if isAtLatestMessage { scrollToLatest(using: proxy, animated: false) }
+                }
+                .onChange(of: scrollRequest) { _, _ in
+                    scrollToLatest(using: proxy, animated: false)
+                }
             }
         }
     }
@@ -1026,6 +1067,12 @@ private struct ChatView: View {
 
 private enum ChatScrollAnchor {
     static let bottom = "chat-scroll-bottom"
+    static let viewport = "chat-scroll-viewport"
+}
+
+private struct ChatContentFrameKey: PreferenceKey {
+    static let defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
 }
 
 private struct ChatWelcomeView: View {
