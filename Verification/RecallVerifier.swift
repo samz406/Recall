@@ -10,6 +10,7 @@ struct RecallVerifier {
             try verifyMatterEvidenceQuality()
             try verifyExperienceAndQuestionSelection()
             try await verifyMatterCorrectionPersistence()
+            try await verifyManualMatterLifecycle()
             try verifyDefaultEventTemplates()
             try await verifyEventRuleMigration()
             try verifyPrivacy()
@@ -62,9 +63,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 54 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 55 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 53 integration checks.")
+                print("PASS: RecallVerifier completed 54 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -223,6 +224,68 @@ struct RecallVerifier {
         try expect(cleared.matterCorrections.isEmpty && cleared.dismissedExperienceIDs.isEmpty, "清空记忆不能残留纠错内容")
         let legacy = try JSONDecoder().decode(RecallState.self, from: Data("{}".utf8))
         try expect(legacy.matterCorrections.isEmpty && !legacy.experienceHintsEnabled, "旧数据应安全迁移且默认不主动提示")
+    }
+
+    private static func verifyManualMatterLifecycle() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("Recall-ManualMatter-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = try RecallStorage(rootURL: root)
+        let store = try FileMemoryStore(storage: storage)
+        let now = Date.now
+        let yesterday = now.addingTimeInterval(-86400)
+        let first = try await store.addManualMatter(ManualMatterNote(title: "  账单导出修复  ",
+            detail: "等待联调环境。", status: .blocked, eventAt: yesterday), now: now)
+        let second = try await store.addManualMatter(ManualMatterNote(title: "账单导出修复",
+            detail: "已交付验收结果。", status: .completed, eventAt: now), now: now.addingTimeInterval(1))
+        let neutral = try await store.addManualMatter(ManualMatterNote(title: "周末旅行备忘",
+            detail: "湖边路线", status: .explored, eventAt: now), now: now)
+        let reloaded = try FileMemoryStore(storage: storage)
+        let state = await reloaded.snapshot()
+        let engine = MatterMemoryEngine()
+        let files = engine.files(in: state)
+        try expect(files.count == 2, "手动记录应立即进入档案，无需先生成每日总结")
+        let file = files.first { $0.title == "账单导出修复" }!
+        try expect(file.events.count == 2 && file.latest.status == .completed, "同名手动记录应跨日期串联并使用用户明确状态")
+        // The store's ISO8601 representation preserves seconds, not subsecond precision.
+        let firstEvent = file.events[0]
+        try expect(abs((firstEvent.eventAt ?? .distantPast).timeIntervalSince(yesterday)) < 1
+            && abs(firstEvent.recordedAt.timeIntervalSince(now)) < 1, "补记应区分发生时间与记录时间")
+        try expect(file.latest.detail == "已交付验收结果。" && file.latest.evidenceIDs == [second.id], "手动原文和可追溯来源应完整保留")
+        try expect(engine.weeklyReview(files: files, endingAt: now.addingTimeInterval(2)).count == 1, "仅作记录不应虚构进行中事项或周进展")
+        try expect(state.reminders.isEmpty && first.imageRelativePath == nil && state.matterCorrections.isEmpty, "手动补记不应截图、创建通知或冒充用户纠错")
+        let invalid = ManualMatterNote(title: "!!!", detail: "", status: .pending, eventAt: now)
+        do {
+            _ = try await reloaded.addManualMatter(invalid, now: now)
+            throw VerificationError.failed("无效输入不应保存")
+        } catch is VerificationError { throw VerificationError.failed("无效输入不应保存") }
+        catch { }
+        do {
+            _ = try await reloaded.addManualMatter(ManualMatterNote(title: "未来时间测试", detail: "备忘", status: .explored, eventAt: now.addingTimeInterval(3600)), now: now)
+            throw VerificationError.failed("不能补记未来发生的进展")
+        } catch is VerificationError { throw VerificationError.failed("不能补记未来发生的进展") }
+        catch { }
+        let afterInvalid = await reloaded.snapshot()
+        try expect(afterInvalid.captures.count == 3, "校验失败不应留下半条记录")
+        try await reloaded.saveMatterCorrection(MatterCorrection(evidenceIDs: [first.id], kind: .inaccurate))
+        let afterInaccurate = await reloaded.snapshot()
+        try expect(engine.files(in: afterInaccurate).first { $0.title == file.title }?.events.count == 1, "手动补记也必须遵守内容纠错排除")
+        try await reloaded.saveMatterCorrection(MatterCorrection(evidenceIDs: [neutral.id], kind: .completed, text: "周末旅行备忘"))
+        let afterCompleted = await reloaded.snapshot()
+        try expect(engine.files(in: afterCompleted).first { $0.title == "周末旅行备忘" }?.latest.status == .completed, "用户完成更正应覆盖手动初始状态")
+        let deleted = try await reloaded.moveCapturesToRecentlyDeleted(ids: [first.id, second.id], reason: .noLongerNeeded, suppressSimilar: false, now: now)
+        let afterDeleted = await reloaded.snapshot()
+        try expect(!engine.files(in: afterDeleted).contains { $0.title == file.title }, "删除来源应同步移除手动档案")
+        if let deleted { _ = try await reloaded.restoreRecentlyDeleted(id: deleted.id, now: now.addingTimeInterval(1)) }
+        let afterRestored = await reloaded.snapshot()
+        try expect(engine.files(in: afterRestored).contains { $0.title == file.title }, "期限内恢复来源应恢复手动档案")
+        let data = try JSONEncoder().encode(first)
+        var legacy = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        legacy.removeValue(forKey: "manualMatter")
+        let old = try JSONDecoder().decode(CaptureRecord.self, from: JSONSerialization.data(withJSONObject: legacy))
+        try expect(old.manualMatter == nil, "旧采集记录缺少手动事项字段时仍应可读取")
+        var settings = PrivacySettings()
+        settings.cloudUseEnabled = true
+        try expect(PrivacyEngine().cloudContext(from: [first], settings: settings).first?.manualMatter == nil, "云端上下文不能保留未经脱敏的手动记录副本")
     }
 
     private static func verifyDefaultEventTemplates() throws {
