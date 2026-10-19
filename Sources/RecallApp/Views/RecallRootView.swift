@@ -220,6 +220,12 @@ private struct TimelineDayOption: Identifiable {
     var id: Date { day }
 }
 
+private struct TimelineDeletionRequest: Identifiable {
+    let id = UUID()
+    let captures: [CaptureRecord]
+    let impact: MemoryDeletionImpact
+}
+
 private struct TimelineView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var searchText = ""
@@ -227,8 +233,7 @@ private struct TimelineView: View {
     @State private var selectedDay = Calendar.current.startOfDay(for: .now)
     @State private var isManaging = false
     @State private var selectedCaptureIDs: Set<UUID> = []
-    @State private var capturesPendingDeletion: [CaptureRecord] = []
-    @State private var isShowingDeletionSheet = false
+    @State private var deletionRequest: TimelineDeletionRequest?
     @State private var captureShowingDetail: CaptureRecord?
 
     private var availableDayOptions: [TimelineDayOption] {
@@ -317,14 +322,13 @@ private struct TimelineView: View {
                 captureShowingDetail = nil
             }
         }
-        .sheet(isPresented: $isShowingDeletionSheet) {
+        .sheet(item: $deletionRequest) { request in
             CaptureDeletionSheet(
-                captures: capturesPendingDeletion,
-                impact: model.deletionImpact(for: capturesPendingDeletion)
+                captures: request.captures,
+                impact: request.impact
             ) { reason, suppressSimilar in
-                model.deleteCaptures(capturesPendingDeletion, reason: reason, suppressSimilar: suppressSimilar)
-                selectedCaptureIDs.subtract(capturesPendingDeletion.map(\.id))
-                capturesPendingDeletion = []
+                model.deleteCaptures(request.captures, reason: reason, suppressSimilar: suppressSimilar)
+                selectedCaptureIDs.subtract(request.captures.map(\.id))
                 if selectedCaptureIDs.isEmpty { isManaging = false }
             }
         }
@@ -592,8 +596,15 @@ private struct TimelineView: View {
     }
 
     private func requestDeletion(_ capture: CaptureRecord) {
-        capturesPendingDeletion = [capture]
-        isShowingDeletionSheet = true
+        requestDeletion([capture])
+    }
+
+    private func requestDeletion(_ requestedCaptures: [CaptureRecord]) {
+        guard !requestedCaptures.isEmpty else { return }
+        deletionRequest = TimelineDeletionRequest(
+            captures: requestedCaptures,
+            impact: model.deletionImpact(for: requestedCaptures)
+        )
     }
 
     private var selectionBar: some View {
@@ -611,8 +622,7 @@ private struct TimelineView: View {
                 .font(.subheadline.weight(.medium))
             Spacer()
             Button("移到最近删除", role: .destructive) {
-                capturesPendingDeletion = model.state.captures.filter { selectedCaptureIDs.contains($0.id) }
-                isShowingDeletionSheet = true
+                requestDeletion(model.state.captures.filter { selectedCaptureIDs.contains($0.id) })
             }
             .buttonStyle(.borderedProminent)
             .disabled(selectedCaptureIDs.isEmpty)
@@ -832,6 +842,7 @@ private struct CaptureDeletionSheet: View {
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(captures.isEmpty)
             }
         }
         .padding(26)
