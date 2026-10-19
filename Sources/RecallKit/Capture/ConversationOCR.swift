@@ -2,18 +2,20 @@ import CoreGraphics
 import Foundation
 
 public enum TextRecognitionContext: Sendable, Equatable {
-    case document, conversation, messaging, leftAlignedMessaging
+    case document, conversation, messaging, leftAlignedMessaging, channelMessaging
 
     public var layoutStyle: ConversationLayoutStyle? {
         switch self {
         case .messaging: .alternating
         case .leftAlignedMessaging: .leftAligned
+        case .channelMessaging: .channel
         default: nil
         }
     }
 
     public static func resolve(appName: String?, bundleIdentifier: String?, windowTitle: String?, scope: CaptureScope) -> Self {
         let app = [appName, bundleIdentifier].compactMap { $0 }.joined(separator: " ").lowercased()
+        if scope == .selectedWindow, app.contains("slack") { return .channelMessaging }
         let native = ["微信", "wechat", "wework", "wecom", "imessage", "com.apple.ichat", "飞书", "lark", "feishu", "钉钉", "dingtalk", "telegram", "whatsapp", "signal", "beeper"]
         if scope == .selectedWindow, native.contains(where: app.contains) {
             return ["飞书", "lark", "feishu"].contains(where: app.contains) ? .leftAlignedMessaging : .messaging
@@ -24,7 +26,7 @@ public enum TextRecognitionContext: Sendable, Equatable {
     }
 }
 
-public enum ConversationLayoutStyle: Sendable, Equatable { case alternating, leftAligned }
+public enum ConversationLayoutStyle: Sendable, Equatable { case alternating, leftAligned, channel }
 public enum ConversationSpeaker: Sendable { case user, other, unknown }
 public enum ConversationContentKind: Sendable { case message, reference, attachment }
 
@@ -67,6 +69,7 @@ public enum ConversationContentClassifier {
 
 public enum ConversationOCRFormatter {
     public static func format(_ lines: [PositionedTextLine], context: TextRecognitionContext, layout: ConversationOCRLayout? = nil) -> String {
+        if context == .channelMessaging { return ChannelOCRFormatter.format(lines, layout: layout) }
         if context == .document { return lines.map(\.text).map(trim).filter { !$0.isEmpty }.joined(separator: "\n") }
         guard let layout else {
             return lines.map { trim($0.text) }.filter { !$0.isEmpty }.map { marker(.unknown) + $0 }.joined(separator: "\n")
@@ -143,6 +146,14 @@ public enum ConversationImageLayout {
         guard bottom - top > 50 else { return nil }
         let fontHeights = lines.map { Int($0.boundingBox.height * CGFloat(height)) }.filter { $0 >= 4 && $0 < height / 12 }.sorted()
         let font = fontHeights.isEmpty ? 8 : fontHeights[fontHeights.count / 2]
+        if style == .channel {
+            // Slack has unboxed, left-aligned messages, not alternating bubbles.
+            // Only crop when the column, tabs/header and composer all agree.
+            guard !splits.isEmpty, header != nil, composer != nil else { return nil }
+            let pane = CGRect(x: Double(left) / Double(width), y: 1 - Double(bottom) / Double(height),
+                width: Double(paneWidth) / Double(width), height: Double(bottom - top) / Double(height))
+            return ConversationOCRLayout(contentBounds: pane, bubbles: [])
+        }
         // Sample empty gutters, not the whole chat area (which may be one huge colored bubble).
         var samples = [[Int]](repeating: [], count: 3)
         let gutters = [left + max(2, paneWidth / 80)..<left + max(4, paneWidth / 40), right - max(4, paneWidth / 40)..<right - max(2, paneWidth / 80)]
@@ -220,6 +231,7 @@ public enum ConversationImageLayout {
                 if trailing >= 0.78 && trailing <= 0.975 && leading >= 0.1 { speaker = .user }
                 else if leading >= 0.015 && leading <= 0.24 && trailing < 0.92 { speaker = .other }
                 else { continue }
+            case .channel: continue
             case .leftAligned:
                 let onLeft = leading >= 0.04 && leading <= 0.24
                 let onRight = leading >= 0.1 && trailing >= 0.78 && trailing <= 0.975

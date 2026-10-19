@@ -158,6 +158,61 @@ enum ConversationLayoutVerification {
         try require(!text.contains("CONTACTS") && !text.contains("Send to assistant"), "真实 Vision 的侧栏或输入框未过滤")
     }
 
+    static func runChannel() async throws {
+        for dark in [false, true] {
+            let background: [UInt8] = dark ? [26, 29, 32] : [252, 252, 252]
+            var fixture = Fixture(background: background, header: 100, composer: 800)
+            fixture.line("#test-project", 310, 30, 240)
+            fixture.line("CONTACTS", 20, 250)
+            fixture.line("草稿和已发送", 20, 350)
+            fixture.line("October 12", 600, 140, 140)
+            fixture.line("Casey has joined #test-project. 10:10 AM", 340, 190, 560)
+            // Simulate Vision observations splitting name and time at the same baseline.
+            fixture.line("Casey", 350, 300, 80)
+            fixture.line("10:15 AM", 440, 300, 100)
+            fixture.line("AB", 300, 320, 26, 16) // avatar initials, not message text
+            fixture.line("Please review the invoice export.", 350, 330, 510)
+            fixture.line("1 reply", 400, 365, 110)
+            fixture.line("Morgan 10:19 AM", 350, 450, 250)
+            fixture.line("I have completed the paging checks.", 350, 480, 560)
+            fixture.line("Send message #test-project", 310, 840, 500)
+            let layout = try fixture.layout(.channel)
+            let text = ConversationOCRFormatter.format(Array(fixture.lines.reversed()), context: .channelMessaging, layout: layout)
+            try require(text.contains("[频道·#test-project]") && text.contains("[时间·October 12 10:15 AM]"), "频道或聊天日期时间没有保留")
+            try require(text.contains("[发言者·Casey]") && text.contains("[发言者·Morgan]"), "Slack 姓名与时间未正确组合")
+            try require(text.contains("Please review the invoice export.") && text.contains("I have completed the paging checks."), "Slack 可见消息正文丢失")
+            try require(text.contains("[内容·系统]") && !text.contains("[发言者·Casey has joined"), "系统事件误当发言人")
+            try require(!text.contains("AB") && !text.contains("CONTACTS") && !text.contains("草稿") && !text.contains("Send message") && !text.contains("1 reply"), "Slack 侧栏、输入区或线程按钮混入正文")
+            try require(!text.contains("[聊天·自己]") && !text.contains("[聊天·对方]"), "仅凭频道姓名不能判断当前用户身份")
+            let capture = CaptureRecord(eventTemplate: .manualMoment, createdAt: .now, sourceAppName: "Slack", contentHash: "synthetic-channel", ocrText: text, textOrigin: .screenOCR)
+            try require(ReminderExtractor().candidates(from: [capture], existing: []).isEmpty, "身份未知的频道发言生成用户待办")
+            let preview = CapturePresentation(capture: capture)
+            try require(!preview.summary.contains("发言者·") && !preview.summary.contains("joined") && !preview.summary.contains("频道·"), "频道元信息或系统事件污染摘要预览")
+            if !dark {
+                guard let png = NSBitmapImageRep(cgImage: fixture.image(drawText: true)).representation(using: .png, properties: [:]) else {
+                    throw VerificationError.failed("无法生成 Slack 合成窗口")
+                }
+                let actual = try await VisionTextRecognizer().recognizeText(in: png, context: .channelMessaging)
+                try require(actual.contains("[发言者·Casey]") && actual.contains("[发言者·Morgan]"), "真实 Vision 没有识别 Slack 作者分组")
+                try require(actual.contains("invoice export") && actual.contains("paging checks"), "真实 Vision 丢失频道正文")
+                try require(!actual.contains("AB") && !actual.contains("CONTACTS") && !actual.contains("Send message") && !actual.contains("1 reply"), "真实 Vision 的 Slack 界面过滤失败")
+            }
+        }
+        try require(TextRecognitionContext.resolve(appName: "Slack", bundleIdentifier: "example.slack", windowTitle: nil, scope: .selectedWindow) == .channelMessaging, "Slack 未启用频道解析")
+        try require(TextRecognitionContext.resolve(appName: "Slack", bundleIdentifier: nil, windowTitle: nil, scope: .activeDisplay).layoutStyle == nil, "Slack 整屏误裁剪")
+        var partial = Fixture(background: [252, 252, 252], header: 100, composer: 800)
+        partial.line("上半条消息没有显示作者", 350, 115, 350)
+        partial.line("测试成员 晚上 8:19", 350, 230, 300)
+        partial.line("我准备明天提交导出验收报告。", 350, 260, 500)
+        partial.line("天明 1 条回复", 400, 300, 200)
+        let text = ConversationOCRFormatter.format(partial.lines, context: .channelMessaging, layout: try partial.layout(.channel))
+        try require(text.contains("[内容·片段] 上半条消息没有显示作者"), "顶部截断内容没有保留为未知片段")
+        try require(text.contains("[发言者·测试成员]") && text.contains("晚上 8:19"), "中文姓名和晚上时间未识别")
+        try require(!text.contains("1 条回复"), "带头像文字的线程按钮混入正文")
+        let fallback = ConversationOCRFormatter.format(partial.lines, context: .channelMessaging)
+        try require(fallback.contains("上半条消息") && !fallback.contains("[聊天·自己]"), "Slack 无可靠边界时没有保守回退")
+    }
+
     static func runEvidence() throws {
         let text = "[聊天·自己] [内容·资料] 转发：我喜欢每天安排复盘。明天记得提交验收报告。\n[聊天·自己] [内容·附件] report.zip 2.5 MB\n[聊天·自己] 我不喜欢没有结论的会议。\n[聊天·自己] 我会明天回复账单导出验收结果。"
         let capture = CaptureRecord(eventTemplate: .manualMoment, createdAt: .now, sourceAppName: "测试聊天工具", contentHash: "synthetic-reference", ocrText: text, textOrigin: .screenOCR)
