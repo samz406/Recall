@@ -13,7 +13,7 @@ struct MatterWorkspaceView: View {
     let continueChat: (String) -> Void
 
     private var files: [MatterFile] {
-        model.matterFiles.filter { search.isEmpty || ($0.title + $0.latest.detail).localizedCaseInsensitiveContains(search) }
+        model.matterFiles.filter { search.isEmpty || ($0.title + $0.events.map(\.detail).joined(separator: " ")).localizedCaseInsensitiveContains(search) }
     }
     private var resumeFiles: [MatterFile] { files.filter { [.progressed, .pending, .blocked].contains($0.latest.status) } }
 
@@ -42,7 +42,7 @@ struct MatterWorkspaceView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     if tab == 0 {
-                        if resumeFiles.isEmpty { empty("暂时没有可以继续的事情", detail: "记录具体事情后，这里会整理上次的进展；不会把浏览内容强行变成待办。") }
+                        if resumeFiles.isEmpty { empty("暂时没有可以继续的事情", detail: "有明确归属和具体行动时，这里会整理上次的进展。无法确认的内容仍可在记忆时间线查看。") }
                         ForEach(Array(resumeFiles.prefix(visibleCount))) { file in
                             fileCard(file, resume: true)
                         }
@@ -74,18 +74,25 @@ struct MatterWorkspaceView: View {
                         if reviews.isEmpty { empty("这七天还没有可回顾的事情", detail: "没有记录不代表没有进展。") }
                         ForEach(Array(reviews.prefix(visibleCount))) { review in
                             VStack(alignment: .leading, spacing: 12) {
-                                Text(review.matter.title).font(.title3.bold())
+                                HStack(alignment: .top) {
+                                    Text(review.matter.title).font(.title3.bold()).fixedSize(horizontal: false, vertical: true)
+                                    Spacer()
+                                    Text(review.changes.last?.status.matterLabel ?? "相关记录")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Text("本周 \(review.changes.count) 次不同记录 · 重复截图已合并")
+                                    .font(.caption).foregroundStyle(.secondary)
                                 if let previous = review.previous {
-                                    Text("更早的记录").font(.caption).foregroundStyle(.secondary)
+                                    Text("本周之前").font(.caption).foregroundStyle(.secondary)
                                     Text(previous.detail)
                                 } else { Text("这次首次记录到").font(.caption).foregroundStyle(.secondary) }
-                                ForEach(review.changes) { change in
+                                ForEach(Array(review.changes.suffix(3).reversed())) { change in
                                     VStack(alignment: .leading, spacing: 5) {
-                                        Text(change.date.formatted(date: .abbreviated, time: .omitted)).font(.caption).foregroundStyle(.secondary)
+                                        Text(change.date.formatted(date: .abbreviated, time: .omitted) + " · " + change.status.matterLabel).font(.caption).foregroundStyle(.secondary)
                                         Text(change.detail).textSelection(.enabled)
                                     }
                                 }
-                                Button("查看事情档案") { selected = review.matter }
+                                Button(review.changes.count > 3 ? "查看全部变化与来源" : "查看事情档案与来源") { selected = review.matter }
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
                                 .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 18))
                         }
@@ -162,14 +169,14 @@ struct MatterWorkspaceView: View {
 
     private func fileCard(_ file: MatterFile, resume: Bool) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(file.title).font(.title3.bold())
+            HStack(alignment: .top) {
+                Text(file.title).font(.title3.bold()).fixedSize(horizontal: false, vertical: true)
                 Spacer()
-                Text(file.latest.status == .completed ? "记录为已完成" : "上次进展")
+                Text(file.latest.status.matterLabel)
                     .font(.caption).foregroundStyle(.secondary)
             }
             Text(resume ? file.resumeText : file.latest.detail).textSelection(.enabled)
-            Text("最近记录 \(file.latest.recordedAt.formatted(date: .abbreviated, time: .omitted)) · \(file.events.count) 段进展")
+            Text("最近变化记录于 \(file.latest.date.formatted(date: .abbreviated, time: .omitted)) · \(file.events.count) 次不同记录")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("查看档案") { selected = file }
