@@ -10,6 +10,7 @@ struct MatterWorkspaceView: View {
     @State private var selected: MatterFile?
     @State private var source: CaptureRecord?
     @State private var correctionEvent: MatterEvent?
+    @State private var showsNewMatter = false
     let continueChat: (String) -> Void
 
     private var files: [MatterFile] {
@@ -27,6 +28,12 @@ struct MatterWorkspaceView: View {
                 }
                 Spacer()
                 if model.isBuildingMatters { ProgressView().controlSize(.small) }
+                Button { model.organizeExistingMatters() } label: {
+                    Label("整理已有记录", systemImage: "arrow.clockwise")
+                }.disabled(model.isBuildingMatters)
+                Button { showsNewMatter = true } label: {
+                    Label("记一件事", systemImage: "plus")
+                }.buttonStyle(.borderedProminent)
             }.padding(24)
             HStack {
                 Picker("查看", selection: $tab) {
@@ -41,8 +48,17 @@ struct MatterWorkspaceView: View {
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
+                    if let message = model.matterBuildMessage {
+                        Label(message, systemImage: "info.circle")
+                            .foregroundStyle(.secondary).padding(16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
+                    }
                     if tab == 0 {
-                        if resumeFiles.isEmpty { empty("暂时没有可以继续的事情", detail: "有明确归属和具体行动时，这里会整理上次的进展。无法确认的内容仍可在记忆时间线查看。") }
+                        if resumeFiles.isEmpty {
+                            empty(search.isEmpty ? "暂时没有可以继续的事情" : "没有找到匹配的进行中事项",
+                                detail: search.isEmpty ? "仅显示待处理、正在推进和遇到阻碍的事情。已完成或仅作记录的内容可在‘事情档案’查看。" : "换个关键词，或清空搜索后查看全部事情。")
+                        }
                         ForEach(Array(resumeFiles.prefix(visibleCount))) { file in
                             fileCard(file, resume: true)
                         }
@@ -64,7 +80,10 @@ struct MatterWorkspaceView: View {
                             }.padding(20).background(.purple.opacity(0.06), in: RoundedRectangle(cornerRadius: 18))
                         }
                     } else if tab == 1 {
-                        if files.isEmpty { empty("还没有匹配的事情档案", detail: "仅将有具体主题和来源的记录串联；原始内容仍可在时间线查看。") }
+                        if files.isEmpty {
+                            empty(search.isEmpty ? "还没有事情档案" : "没有找到匹配的事情",
+                                detail: search.isEmpty ? "保存记录后会自动整理，不需要等到每日总结。只有归属和具体事情明确的内容才会生成档案；你也可以直接补记一件事。" : "换个关键词，或清空搜索后查看全部事情。")
+                        }
                         ForEach(Array(files.prefix(visibleCount))) { file in fileCard(file, resume: false) }
                         more(total: files.count)
                     } else if tab == 2 {
@@ -116,6 +135,14 @@ struct MatterWorkspaceView: View {
         }
         .onChange(of: tab) { _, _ in visibleCount = 20 }
         .onChange(of: search) { _, _ in visibleCount = 20 }
+        .sheet(isPresented: $showsNewMatter) {
+            ManualMatterSheet { note in
+                guard await model.saveManualMatter(note) else { return false }
+                search = ""
+                tab = 1
+                return true
+            }
+        }
         .sheet(item: $selected) { file in
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
@@ -193,10 +220,79 @@ struct MatterWorkspaceView: View {
             Image(systemName: "tray").font(.largeTitle).foregroundStyle(.blue)
             Text(title).font(.title2.bold())
             Text(detail).foregroundStyle(.secondary)
+            if model.isBuildingMatters {
+                Text("正在检查已保存的记录…").font(.callout).foregroundStyle(.secondary)
+            } else if !search.isEmpty {
+                Button("清空搜索") { search = "" }
+            } else if tab != 3 {
+                HStack {
+                    Button("记一件事") { showsNewMatter = true }.buttonStyle(.borderedProminent)
+                    Button("整理已有记录") { model.organizeExistingMatters() }
+                }
+                Text("整理在本地进行，不新增截图、不调用模型。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }.padding(32).frame(maxWidth: .infinity, alignment: .leading)
     }
     @ViewBuilder private func more(total: Int) -> some View {
         if total > visibleCount { Button("再显示 20 条") { visibleCount += 20 } }
+    }
+}
+
+private struct ManualMatterSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let save: (ManualMatterNote) async -> Bool
+    @State private var title = ""
+    @State private var detail = ""
+    @State private var status: WorkEpisodeStatus = .explored
+    @State private var eventAt = Date.now
+    @State private var isSaving = false
+    @State private var saveError: String?
+    private var note: ManualMatterNote { ManualMatterNote(title: title, detail: detail, status: status, eventAt: eventAt) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("记一件事").font(.title2.bold())
+            Text("补记具体的事情与进展。后续使用相同名称，可以接着记录这件事。")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("事情名称").font(.headline)
+                TextField("例如：账单导出修复（3–80 字）", text: $title).textFieldStyle(.roundedBorder)
+            }
+            HStack {
+                Picker("当前状态", selection: $status) {
+                    ForEach([WorkEpisodeStatus.explored, .pending, .progressed, .blocked, .completed], id: \.self) {
+                        Text($0.manualMatterLabel).tag($0)
+                    }
+                }
+                DatePicker("发生时间", selection: $eventAt, in: ...Date.now)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("具体内容").font(.headline)
+                Text("记录做了什么、得到的结果，或还需要处理什么（最多 4000 字）。")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextEditor(text: $detail).frame(height: 160).padding(8)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(.secondary.opacity(0.25)))
+            }
+            Text("只保存文字到本机，不会截图或自动安排通知；原始记录可在记忆时间线查看和删除。")
+                .font(.caption).foregroundStyle(.secondary)
+            if let saveError { Text(saveError).foregroundStyle(.red).font(.callout) }
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }.disabled(isSaving)
+                Button(isSaving ? "正在保存…" : "保存到事情档案") {
+                    isSaving = true
+                    saveError = nil
+                    let submitted = note
+                    Task { @MainActor in
+                        if await save(submitted) { dismiss() }
+                        else { saveError = "未能保存，请重试。错误详情已记录到日志。" }
+                        isSaving = false
+                    }
+                }.buttonStyle(.borderedProminent).disabled(isSaving || !note.isValid)
+            }
+        }.padding(28).frame(width: 660).disabled(isSaving)
+            .interactiveDismissDisabled(isSaving)
     }
 }
 

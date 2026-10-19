@@ -172,6 +172,8 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
     public var tags: [String]
     /// 旧记录没有该字段时保持未知；手动触发截图不等于用户亲自写下文本。
     public var textOrigin: CaptureTextOrigin?
+    /// Explicitly entered by the user; never populated from OCR or model output.
+    public var manualMatter: ManualMatterNote?
 
     public init(
         id: UUID = UUID(),
@@ -186,7 +188,8 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
         ocrText: String,
         summary: String? = nil,
         tags: [String] = [],
-        textOrigin: CaptureTextOrigin? = nil
+        textOrigin: CaptureTextOrigin? = nil,
+        manualMatter: ManualMatterNote? = nil
     ) {
         self.id = id
         self.eventTemplate = eventTemplate
@@ -201,6 +204,7 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
         self.summary = summary
         self.tags = tags
         self.textOrigin = textOrigin
+        self.manualMatter = manualMatter
     }
 }
 

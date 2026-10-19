@@ -19,6 +19,7 @@ final class RecallAppModel: ObservableObject {
     @Published var state = RecallState()
     @Published private(set) var matterFiles: [MatterFile] = []
     @Published private(set) var isBuildingMatters = false
+    @Published private(set) var matterBuildMessage: String?
     private var matterBuildTask: Task<Void, Never>?
     @Published var isRecording = false
     @Published var isThinking = false
@@ -135,7 +136,28 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
-    private func rebuildMatterFiles() {
+    func organizeExistingMatters() {
+        guard !isBuildingMatters else { return }
+        matterBuildMessage = nil
+        Task {
+            state = await store.snapshot()
+            rebuildMatterFiles(announce: true)
+        }
+    }
+
+    func saveManualMatter(_ note: ManualMatterNote) async -> Bool {
+        do {
+            try await store.addManualMatter(note)
+            await refresh()
+            matterBuildMessage = "已保存。相同名称的后续记录会串联在同一份档案中。"
+            return true
+        } catch {
+            recordError(error, source: "Memory", message: "手动记录事情失败")
+            return false
+        }
+    }
+
+    private func rebuildMatterFiles(announce: Bool = false) {
         matterBuildTask?.cancel()
         let snapshot = state
         isBuildingMatters = true
@@ -144,6 +166,15 @@ final class RecallAppModel: ObservableObject {
             guard !Task.isCancelled else { return }
             matterFiles = files
             isBuildingMatters = false
+            if announce {
+                if snapshot.captures.isEmpty {
+                    matterBuildMessage = "还没有保存的记录。可以先记一件事，或在记忆时间线添加记录。"
+                } else if files.isEmpty {
+                    matterBuildMessage = "已检查 \(snapshot.captures.count) 条记录，暂未找到归属和具体事情都明确的内容。可以手动补记；原始记录仍在记忆时间线。"
+                } else {
+                    matterBuildMessage = "已检查 \(snapshot.captures.count) 条记录，整理出 \(files.count) 件事情。重复记录已合并，不会调用云端模型。"
+                }
+            }
         }
     }
 

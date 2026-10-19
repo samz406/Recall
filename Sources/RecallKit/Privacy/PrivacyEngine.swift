@@ -45,6 +45,8 @@ public struct PrivacyEngine: Sendable {
             var copy = record
             copy.ocrText = redact(record.ocrText)
             copy.imageRelativePath = nil
+            // The OCR text above already includes the note; never retain an unredacted copy.
+            copy.manualMatter = nil
             return copy
         }
     }

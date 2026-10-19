@@ -1,5 +1,51 @@
 import Foundation
 
+/// A user-authored update stored with its original, deletable source record.
+public struct ManualMatterNote: Codable, Hashable, Sendable {
+    public var title: String
+    public var detail: String
+    public var status: WorkEpisodeStatus
+    public var eventAt: Date
+
+    public init(title: String, detail: String, status: WorkEpisodeStatus, eventAt: Date) {
+        self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.detail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.status = status
+        self.eventAt = eventAt
+    }
+
+    public var isValid: Bool {
+        (3...80).contains(title.count) && title.filter { $0.isLetter || $0.isNumber }.count >= 2
+            && (1...4000).contains(detail.count)
+    }
+
+    public func capture(recordedAt: Date = .now) throws -> CaptureRecord {
+        guard isValid, eventAt <= recordedAt else { throw ValidationError.invalidNote }
+        return CaptureRecord(eventTemplate: .workCheckpoint, createdAt: recordedAt,
+            sourceAppName: "手动记录", sourceBundleIdentifier: "im.recall.app",
+            windowTitle: title, contentHash: UUID().uuidString,
+            ocrText: "事情：\(title)\n状态：\(status.manualMatterLabel)\n\(detail)",
+            textOrigin: .userInput, manualMatter: self)
+    }
+
+    private enum ValidationError: LocalizedError {
+        case invalidNote
+        var errorDescription: String? { "请输入 3–80 字的事情名称、1–4000 字的具体内容，发生时间不能晚于现在。" }
+    }
+}
+
+public extension WorkEpisodeStatus {
+    var manualMatterLabel: String {
+        switch self {
+        case .explored: "仅作记录"
+        case .progressed: "正在推进"
+        case .pending: "待处理"
+        case .blocked: "遇到阻碍"
+        case .completed: "已完成"
+        }
+    }
+}
+
 /// User corrections are separate from captured evidence: original screenshots/text stay inspectable.
 public enum MatterCorrectionKind: String, Codable, CaseIterable, Sendable {
     case notMine, completed, separate, inaccurate, eventDate
@@ -66,7 +112,7 @@ public extension WorkEpisodeStatus {
         case .progressed: "正在推进"
         case .pending: "明确待办"
         case .blocked: "遇到阻碍"
-        case .explored: "相关资料"
+        case .explored: "相关记录"
         }
     }
 }
@@ -99,6 +145,22 @@ public struct MatterMemoryEngine: Sendable {
         var groups: [String: [MatterEvent]] = [:]
         var names: [String: String] = [:]
         var seen: Set<String> = []
+        // Manual updates use the user's explicit subject and status, not action-word guesses.
+        // Apply the same exclusions and corrections as automatically extracted evidence.
+        for record in safe.captures {
+            guard record.textOrigin == .userInput, let note = record.manualMatter, note.isValid else { continue }
+            let corrections = state.matterCorrections.filter { $0.evidenceIDs.contains(record.id) }
+            let renamed = corrections.last { $0.kind == .separate && !$0.text.isEmpty }
+            let title = renamed?.text ?? note.title
+            let key = (renamed == nil ? "topic:" : "user:") + MatterEvidence.key(title)
+            let event = MatterEvent(id: record.id, title: title, detail: note.detail,
+                recordedAt: captured[record.id]?.createdAt ?? record.createdAt,
+                eventAt: corrections.last { $0.kind == .eventDate }?.eventAt ?? note.eventAt,
+                status: corrections.contains { $0.kind == .completed } ? .completed : note.status,
+                evidenceIDs: [record.id])
+            groups[key, default: []].append(event)
+            names[key] = title
+        }
         // Old episodes are topic hints only. Their clipped action/outcome and inferred status
         // must never bypass the same evidence gate applied to newly captured records.
         for episode in safe.episodes + rebuilt {
@@ -106,6 +168,7 @@ public struct MatterMemoryEngine: Sendable {
             guard !ids.isEmpty, ids.count == episode.evidenceIDs.count else { continue }
             for id in ids {
                 guard let record = analysisCaptures[id] else { continue }
+                if record.manualMatter != nil && record.textOrigin == .userInput { continue }
                 let corrections = state.matterCorrections.filter { $0.evidenceIDs.contains(id) }
                 let separated = corrections.last { $0.kind == .separate && !$0.text.isEmpty }
                 guard let entry = MatterEvidence.entry(in: record,

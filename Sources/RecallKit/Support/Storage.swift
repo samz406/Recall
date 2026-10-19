@@ -690,6 +690,20 @@ public actor FileMemoryStore {
         try persist()
     }
 
+    @discardableResult
+    public func addManualMatter(_ note: ManualMatterNote, now: Date = .now) throws -> CaptureRecord {
+        let record = try note.capture(recordedAt: now)
+        let previous = state
+        do {
+            state.captures.insert(record, at: 0)
+            try persist()
+        } catch {
+            state = previous
+            throw error
+        }
+        return record
+    }
+
     public func deleteCapture(id: UUID) throws -> CaptureRecord? {
         guard let removed = removeCaptureState(id: id) else { return nil }
         try persist()
