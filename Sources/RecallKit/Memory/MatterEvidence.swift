@@ -95,7 +95,11 @@ struct MatterEvidence {
         // The subject must be explicit in this sentence; generic "tests passed" is not enough.
         guard subject(in: text) != nil else { return .explored }
         if matches(text, #"仍然?失败|仍未解决|仍被阻塞|卡住了|被阻塞"#) { return .blocked }
-        let future = matches(text, #"计划|准备|明天|将会|需要|尚未|未完成|还没|请|待办|提醒我|我要|我会"#)
+        let mainClause = text.components(separatedBy: CharacterSet(charactersIn: "，,"))[0]
+        // "已定位，需要检查边界" contains real progress followed by a future action.
+        // Conversely "测试通过后提交" and "尚未测试通过" do not assert success.
+        let future = matches(mainClause, #"计划|准备|明天|将会|需要|尚未|未完成|还没|没有|请|待办|提醒我|我要|我会"#)
+            || matches(text, #"(?:完成|通过|发布|合并|解决)(?:后|以后|之后|的话|才|就)|未(?:测试|验证)通过"#)
         if !future, matches(text, #"已完成|完成了|已验证通过|验证通过|测试通过|已合并|已发布|已解决|已提交"#) { return .completed }
         if !future, matches(text, #"正在|已定位|已修改|推进了|修复了|实现了"#) { return .progressed }
         var isolated = record

@@ -116,7 +116,8 @@ struct RecallVerifier {
             capture("教程：完成账单导出修复后，可以返回应用。"),
             capture("[聊天·自己] 如果账单导出修复测试通过，就可以发布。"),
             capture("[聊天·自己] 下一步是修复。"),
-            capture("[聊天·自己] public func fixExport() { return result }")
+            capture("[聊天·自己] public func fixExport() { return result }"),
+            capture("[聊天·自己] 明天准备修复账单导出，测试通过后提交。")
         ]
         let bad = RecallState(captures: noise, episodes: noise.map { episode($0, name: $0.windowTitle!) })
         try expect(engine.files(in: bad).isEmpty, "工具网页、文章、未知角色、助手结果、条件句、代码和泛指修复不能变成我的事项")
@@ -129,6 +130,11 @@ struct RecallVerifier {
         try expect(files[0].latest.detail == "账单导出修复已验证通过，分页边界也通过了回归测试。", "摘要必须取原始完整句，不沿用旧截断摘要或拼接无关句子")
         try expect(files[0].latest.status == .completed, "同一截图里其他事情失败，不能污染当前事情状态")
         try expect(engine.weeklyReview(files: files, endingAt: now).first?.previous?.status == .progressed, "周回顾应展示正确的先前状态")
+
+        let longText = "账单导出修复已验证通过，" + String(repeating: "分页边界与空数据场景均有回归记录，", count: 14) + "结果已归档。"
+        let longCapture = capture("[聊天·自己] " + longText)
+        let full = engine.files(in: RecallState(captures: [longCapture], episodes: [episode(longCapture)]))
+        try expect(full.first?.latest.detail == longText, "正文超过旧摘要字数限制时仍应保留完整原句")
 
         let recovered = capture("[聊天·自己] 账单导出修复已验证通过。", title: "Google")
         let repaired = engine.files(in: RecallState(captures: [recovered], episodes: [episode(recovered, name: "Google")]))
