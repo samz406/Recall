@@ -14,7 +14,24 @@ public enum ChannelOCRFormatter {
                 .filter { !$0.isEmpty }.map { "[聊天·角色未知] " + $0 }.joined(separator: "\n")
         }
         let pane = layout.contentBounds
-        let body = rows(lines.filter { coverage($0.boundingBox, pane) >= 0.7 })
+        let visible = lines.filter { coverage($0.boundingBox, pane) >= 0.7 }
+        // Avatar initials sit left of the message text. Infer the text column from
+        // actual author/time headers so compact layouts don't lose their narrow margin.
+        var authorColumns = visible.compactMap { line -> CGFloat? in
+            senderHeader(line.text) == nil ? nil : line.boundingBox.minX
+        }
+        for time in visible where timestampOnly(time.text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            let preceding = visible.filter { candidate in
+                candidate.boundingBox.maxX <= time.boundingBox.minX
+                    && abs(candidate.boundingBox.midY - time.boundingBox.midY) < min(candidate.boundingBox.height, time.boundingBox.height) * 0.6
+            }.max { $0.boundingBox.maxX < $1.boundingBox.maxX }
+            if let preceding { authorColumns.append(preceding.boundingBox.minX) }
+        }
+        let authorColumn = authorColumns.min()
+        let body = rows(visible.filter { line in
+            guard let authorColumn else { return true }
+            return line.boundingBox.maxX >= authorColumn - line.boundingBox.height * 0.4
+        })
         let header = rows(lines.filter { $0.boundingBox.minX >= pane.minX && $0.boundingBox.minY >= pane.maxY })
         let channel = header.compactMap { row -> String? in
             guard let range = row.text.range(of: #"#[\s]*[\p{L}\p{N}_][\p{L}\p{N}_.\-]*"#, options: .regularExpression) else { return nil }

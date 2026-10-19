@@ -170,6 +170,7 @@ enum ConversationLayoutVerification {
             // Simulate Vision observations splitting name and time at the same baseline.
             fixture.line("Casey", 350, 300, 80)
             fixture.line("10:15 AM", 440, 300, 100)
+            fixture.line("AB", 300, 320, 26, 16) // avatar initials, not message text
             fixture.line("Please review the invoice export.", 350, 330, 510)
             fixture.line("1 reply", 400, 365, 110)
             fixture.line("Morgan 10:19 AM", 350, 450, 250)
@@ -181,7 +182,7 @@ enum ConversationLayoutVerification {
             try require(text.contains("[发言者·Casey]") && text.contains("[发言者·Morgan]"), "Slack 姓名与时间未正确组合")
             try require(text.contains("Please review the invoice export.") && text.contains("I have completed the paging checks."), "Slack 可见消息正文丢失")
             try require(text.contains("[内容·系统]") && !text.contains("[发言者·Casey has joined"), "系统事件误当发言人")
-            try require(!text.contains("CONTACTS") && !text.contains("草稿") && !text.contains("Send message") && !text.contains("1 reply"), "Slack 侧栏、输入区或线程按钮混入正文")
+            try require(!text.contains("AB") && !text.contains("CONTACTS") && !text.contains("草稿") && !text.contains("Send message") && !text.contains("1 reply"), "Slack 侧栏、输入区或线程按钮混入正文")
             try require(!text.contains("[聊天·自己]") && !text.contains("[聊天·对方]"), "仅凭频道姓名不能判断当前用户身份")
             let capture = CaptureRecord(eventTemplate: .manualMoment, createdAt: .now, sourceAppName: "Slack", contentHash: "synthetic-channel", ocrText: text, textOrigin: .screenOCR)
             try require(ReminderExtractor().candidates(from: [capture], existing: []).isEmpty, "身份未知的频道发言生成用户待办")
@@ -194,7 +195,7 @@ enum ConversationLayoutVerification {
                 let actual = try await VisionTextRecognizer().recognizeText(in: png, context: .channelMessaging)
                 try require(actual.contains("[发言者·Casey]") && actual.contains("[发言者·Morgan]"), "真实 Vision 没有识别 Slack 作者分组")
                 try require(actual.contains("invoice export") && actual.contains("paging checks"), "真实 Vision 丢失频道正文")
-                try require(!actual.contains("CONTACTS") && !actual.contains("Send message") && !actual.contains("1 reply"), "真实 Vision 的 Slack 界面过滤失败")
+                try require(!actual.contains("AB") && !actual.contains("CONTACTS") && !actual.contains("Send message") && !actual.contains("1 reply"), "真实 Vision 的 Slack 界面过滤失败")
             }
         }
         try require(TextRecognitionContext.resolve(appName: "Slack", bundleIdentifier: "example.slack", windowTitle: nil, scope: .selectedWindow) == .channelMessaging, "Slack 未启用频道解析")
