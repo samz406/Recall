@@ -269,11 +269,11 @@ private struct ChatRaster {
     func color(_ x: Int, _ y: Int) -> [Int] { let i = (y * width + x) * 4; return [Int(rgba[i]), Int(rgba[i + 1]), Int(rgba[i + 2])] }
     func distance(_ x: Int, _ y: Int, _ a: Int, _ b: Int) -> Int {
         let i = (y * width + x) * 4, j = (b * width + a) * 4
-        return (0..<3).map { abs(Int(rgba[i + $0]) - Int(rgba[j + $0])) }.max() ?? 0
+        return max(abs(Int(rgba[i]) - Int(rgba[j])), abs(Int(rgba[i + 1]) - Int(rgba[j + 1])), abs(Int(rgba[i + 2]) - Int(rgba[j + 2])))
     }
     func backgroundDistance(_ x: Int, _ y: Int, _ background: [Int]) -> Int {
         let i = (y * width + x) * 4
-        return (0..<3).map { abs(Int(rgba[i + $0]) - background[$0]) }.max() ?? 0
+        return max(abs(Int(rgba[i]) - background[0]), abs(Int(rgba[i + 1]) - background[1]), abs(Int(rgba[i + 2]) - background[2]))
     }
     func pixels(_ rect: CGRect) -> ChatPixelRect {
         ChatPixelRect(x: Int(rect.minX * CGFloat(width)), y: Int((1 - rect.maxY) * CGFloat(height)),
@@ -294,7 +294,9 @@ private struct ChatRaster {
         guard bounds.w > 2 && bounds.h > 2 else { return result }
         for y in bounds.y + 1..<bounds.maxY - 1 { for x in bounds.x + 1..<bounds.maxX - 1 {
             let p = y * width + x
-            if (-1...1).allSatisfy({ dy in (-1...1).allSatisfy { dx in mask[p + dy * width + dx] == 1 } }) { eroded[p] = 1 }
+            if mask[p] == 1 && mask[p - 1] == 1 && mask[p + 1] == 1
+                && mask[p - width - 1] == 1 && mask[p - width] == 1 && mask[p - width + 1] == 1
+                && mask[p + width - 1] == 1 && mask[p + width] == 1 && mask[p + width + 1] == 1 { eroded[p] = 1 }
         } }
         for y in bounds.y + 1..<bounds.maxY - 1 { for x in bounds.x + 1..<bounds.maxX - 1 {
             let p = y * width + x
