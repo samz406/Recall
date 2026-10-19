@@ -196,6 +196,8 @@ public actor FileMemoryStore {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private var state: RecallState
+    // Runtime identity prevents an in-flight answer from repopulating a cleared session.
+    private var conversationID = UUID()
     private let intelligenceIndex: SQLiteIntelligenceIndex?
 
     public init() throws {
@@ -240,6 +242,31 @@ public actor FileMemoryStore {
     }
 
     public func snapshot() -> RecallState { state }
+
+    public func conversationSnapshot() -> (id: UUID, state: RecallState) {
+        (conversationID, state)
+    }
+
+    @discardableResult
+    public func clearConversation() throws -> ConversationMessage {
+        try Task.checkCancellation()
+        let previous = state
+        let previousID = conversationID
+        let result = ConversationMessage(role: .system, content: "已清空当前会话，可以开始新的对话。")
+        state.messages = [result]
+        state.conversationSummary = nil
+        state.conversationSummaryCoveredMessageCount = 0
+        conversationID = UUID()
+        // Messages and their compression aren't indexed in SQLite. One atomic state write
+        // is sufficient, and avoids reporting failure after an unrelated index update.
+        do { try Self.write(state, encoder: encoder, to: storage.stateURL) }
+        catch {
+            state = previous
+            conversationID = previousID
+            throw error
+        }
+        return result
+    }
 
     public func saveMatterCorrection(_ correction: MatterCorrection) throws {
         let available = Set(state.captures.map(\.id))
@@ -645,11 +672,14 @@ public actor FileMemoryStore {
         state.matterCorrections = []
         state.dismissedExperienceIDs = []
         try persist()
+        conversationID = UUID()
         for path in activePaths { try? storage.deleteScreenshot(relativePath: path) }
         for path in deletedPaths { try? storage.permanentlyDeleteRecentlyDeletedScreenshot(relativePath: path) }
     }
 
-    public func updateConversationSummary(_ summary: String?, coveredMessageCount: Int) throws {
+    public func updateConversationSummary(_ summary: String?, coveredMessageCount: Int, inConversation expectedID: UUID? = nil) throws {
+        if expectedID != nil { try Task.checkCancellation() }
+        if let expectedID, expectedID != conversationID { throw CancellationError() }
         state.conversationSummary = summary
         state.conversationSummaryCoveredMessageCount = coveredMessageCount
         try persist()
@@ -691,7 +721,9 @@ public actor FileMemoryStore {
         return removed
     }
 
-    public func addMessage(_ message: ConversationMessage) throws {
+    public func addMessage(_ message: ConversationMessage, inConversation expectedID: UUID? = nil) throws {
+        if expectedID != nil { try Task.checkCancellation() }
+        if let expectedID, expectedID != conversationID { throw CancellationError() }
         state.messages.append(message)
         try persist()
     }
