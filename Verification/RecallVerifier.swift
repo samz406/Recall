@@ -244,6 +244,11 @@ struct RecallVerifier {
         let blocking = capture("[聊天·自己] Orion 发票导出卡住了，联调权限尚未开放。")
         try expect(engine.files(in: RecallState(captures: [blocking], episodes: [episode(blocking)])).first?.latest.status == .blocked,
             "有明确对象的真实阻碍不能与泛指重试步骤一起被过滤")
+        for title in ["文章翻译工作流", "返回按钮修复", "重试链路回滚"] {
+            let realWork = capture("[聊天·自己] " + title + "已验证通过。", title: title)
+            try expect(engine.files(in: RecallState(captures: [realWork], episodes: [episode(realWork)])).first?.latest.status == .completed,
+                "观点和操作词的过滤不能误删具体事项：" + title)
+        }
 
         let manualOld = try ManualMatterNote(title: "Orion 发票导出", detail: "等待联调排期。", status: .blocked, eventAt: old).capture(recordedAt: old)
         let manualNow = try ManualMatterNote(title: "Orion 发票导出", detail: "等待联调排期。", status: .blocked, eventAt: now).capture(recordedAt: now)
