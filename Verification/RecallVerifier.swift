@@ -8,6 +8,7 @@ struct RecallVerifier {
         do {
             try verifyMatterFilesAndReview()
             try verifyMatterEvidenceQuality()
+            try verifyMatterProgressQualityAndFreshness()
             try verifyExperienceAndQuestionSelection()
             try await verifyMatterCorrectionPersistence()
             try await verifyManualMatterLifecycle()
@@ -63,9 +64,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 55 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 56 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 54 integration checks.")
+                print("PASS: RecallVerifier completed 55 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -168,6 +169,89 @@ struct RecallVerifier {
         let neutral = engine.files(in: corrected)
         try expect(neutral.count == 1 && neutral[0].latest.status == .explored, "用户主动归档的他人资料不能升级为本人已完成")
         try expect(engine.weeklyReview(files: neutral, endingAt: now).isEmpty, "归档参考资料不能伪装成本周工作进展")
+    }
+
+    private static func verifyMatterProgressQualityAndFreshness() throws {
+        let engine = MatterMemoryEngine()
+        let now = Date.now
+        let old = now.addingTimeInterval(-20 * 86400)
+        let name = "Orion 发票导出"
+        func capture(_ text: String, title: String = "Orion 发票导出", at: Date? = nil) -> CaptureRecord {
+            CaptureRecord(eventTemplate: .manualMoment, createdAt: at ?? now, sourceAppName: "合成测试窗口",
+                windowTitle: title, contentHash: UUID().uuidString, ocrText: text, textOrigin: .screenOCR)
+        }
+        func episode(_ record: CaptureRecord) -> WorkEpisode {
+            WorkEpisode(day: record.createdAt, startedAt: record.createdAt, endedAt: record.createdAt,
+                projectKey: "synthetic-topic", projectName: record.windowTitle ?? name,
+                title: "旧的截断标题", intent: "旧状态不可信", action: "旧摘要", nextAction: "继续处理",
+                status: .pending, importance: 0.8, confidence: 0.9, sourceApps: [], evidenceIDs: [record.id])
+        }
+        // Entirely synthetic examples; no uploaded OCR or personal data in the verifier.
+        let noise = [
+            capture("[聊天·自己] 正在编写程序代码。", title: "程序代码"),
+            capture("[聊天·自己] 完成以前需要很多部门才能承担的工作。", title: "以前需要很多部门才能承担的工作"),
+            capture("[聊天·自己] ③再试两回仍然失败，然后重新登录。", title: "③再试两回"),
+            capture("[聊天·自己] 每个人都应该完成自己的计划。", title: "自己的计划"),
+            capture("[聊天·自己] 先打开 Orion 控制台，失败后重新启动。", title: "Orion 控制台"),
+            capture("[聊天·自己] 我准备开发 Orion 发票导出，验证通过后再发布。"),
+            capture("[聊天·自己] 文章案例：Orion 发票导出正在开发。"),
+            capture("[聊天·角色未知] Orion 发票导出已定位游标偏移。")
+        ]
+        try expect(engine.files(in: RecallState(captures: noise, episodes: noise.map(episode))).isEmpty,
+            "泛指代码、文章观点、编号操作步骤和未确认意向不能因关键词变成进行中事项")
+        try expect(engine.files(in: RecallState(captures: noise)).isEmpty, "新记录和历史 Episode 必须使用相同质量检查")
+
+        let progressText = "Orion 发票导出已定位游标偏移。"
+        let actionText = "明天需要修复 Orion 发票导出的页码换算。"
+        let context = capture("[聊天·自己] " + progressText + "\n[聊天·自己] " + actionText
+            + "\n[聊天·自己] Nova 图像压缩仍然失败。")
+        let combined = engine.files(in: RecallState(captures: [context], episodes: [episode(context)]))
+        try expect(combined.count == 1 && combined[0].title == name, "一个主题不能被同屏另一个主题的失败污染")
+        try expect(combined[0].latest.detail == progressText && combined[0].latest.nextAction == actionText,
+            "同一来源的进展与后续行动应分开保留，后面的待办不能覆盖前面的实际进展")
+        try expect(combined[0].latest.status == .progressed, "已定位的进展不能被后面的待办降为单纯待办")
+        try expect(combined[0].evidenceIDs == [context.id], "进展和行动必须有真实关联来源")
+
+        let first = capture("[聊天·自己] " + progressText, at: old)
+        let next = capture("[聊天·自己] " + actionText)
+        var state = RecallState(captures: [first, next], episodes: [episode(first), episode(next)])
+        let paired = engine.files(in: state)[0]
+        try expect(paired.resumeText == progressText && paired.resumeNextAction == actionText,
+            "跨记录接续应同时找回上次进展和最新明确行动")
+        try expect(!paired.needsStatusUpdate(at: now), "新行动应使主题回到近期接续列表")
+        state.captures.removeAll { $0.id == next.id }
+        let deletedAction = engine.files(in: state)[0]
+        try expect(deletedAction.resumeNextAction == nil && deletedAction.needsStatusUpdate(at: now),
+            "删除后续来源应撤掉对应行动，旧进展不能冒充近期更新")
+
+        let repeatCapture = capture(first.ocrText)
+        let repeated = engine.files(in: RecallState(captures: [first, repeatCapture], episodes: [episode(first), episode(repeatCapture)]))[0]
+        try expect(repeated.events.count == 1 && repeated.needsStatusUpdate(at: now), "重新截到同一旧进展不能刷新进行中状态")
+        let resultText = "Orion 发票导出已验证通过。"
+        let resultThenAction = capture("[聊天·自己] " + resultText + "\n[聊天·自己] " + actionText)
+        let open = engine.files(in: RecallState(captures: [resultThenAction], episodes: [episode(resultThenAction)]))[0]
+        try expect(open.latest.status == .pending && open.latest.detail == resultText && open.resumeNextAction == actionText,
+            "已经验证且仍有明确后续行动时，应保留结果和未闭环行动")
+        let done = capture("[聊天·自己] Orion 发票导出已发布。", at: now.addingTimeInterval(1))
+        let closed = engine.files(in: RecallState(captures: [resultThenAction, done], episodes: [episode(resultThenAction), episode(done)]))[0]
+        try expect(closed.latest.status == .completed && closed.resumeNextAction == nil, "新的完成证据应关闭历史行动")
+        let frontend = capture("[聊天·自己] 前端账单检索已定位缓存键冲突。", title: "前端账单检索")
+        try expect(engine.files(in: RecallState(captures: [frontend], episodes: [episode(frontend)])).first?.latest.status == .progressed,
+            "过滤不完整前后缀时不能误删真实的前端、后端主题")
+        let commitment = capture("[聊天·自己] 明天提交 Orion 发票导出回归报告。")
+        try expect(engine.files(in: RecallState(captures: [commitment], episodes: [episode(commitment)])).first?.latest.status == .pending,
+            "有具体对象的本人明确时间安排应保留")
+        let blocking = capture("[聊天·自己] Orion 发票导出卡住了，联调权限尚未开放。")
+        try expect(engine.files(in: RecallState(captures: [blocking], episodes: [episode(blocking)])).first?.latest.status == .blocked,
+            "有明确对象的真实阻碍不能与泛指重试步骤一起被过滤")
+
+        let manualOld = try ManualMatterNote(title: "Orion 发票导出", detail: "等待联调排期。", status: .blocked, eventAt: old).capture(recordedAt: old)
+        let manualNow = try ManualMatterNote(title: "Orion 发票导出", detail: "等待联调排期。", status: .blocked, eventAt: now).capture(recordedAt: now)
+        let reaffirmed = engine.files(in: RecallState(captures: [manualOld, manualNow]))[0]
+        try expect(reaffirmed.events.count == 2 && !reaffirmed.needsStatusUpdate(at: now),
+            "用户明确补记同一状态是新的确认，不能当作重复截图丢弃")
+        try expect(context.ocrText.contains(progressText) && first.ocrText == "[聊天·自己] " + progressText,
+            "重建摘要不能改写原始来源")
     }
 
     private static func verifyExperienceAndQuestionSelection() throws {

@@ -180,7 +180,7 @@ final class RecallAppModel: ObservableObject {
 
     var experienceHint: ExperienceHint? {
         guard state.experienceHintsEnabled else { return nil }
-        for file in matterFiles.prefix(3) where file.latest.status != .completed {
+        for file in matterFiles.filter({ $0.latest.status.isOpenMatter && !$0.needsStatusUpdate() }).prefix(3) {
             if let hint = MatterMemoryEngine().experiences(for: file, in: matterFiles)
                 .first(where: { !state.dismissedExperienceIDs.contains($0.id) }) { return hint }
         }
