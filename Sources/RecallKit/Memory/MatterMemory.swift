@@ -83,10 +83,12 @@ public struct MatterEvent: Identifiable, Sendable {
     public var eventAt: Date?
     public var status: WorkEpisodeStatus
     public var evidenceIDs: [UUID]
+    public var nextAction: String?
     public var date: Date { eventAt ?? recordedAt }
-    public init(id: UUID, title: String, detail: String, recordedAt: Date, eventAt: Date? = nil, status: WorkEpisodeStatus, evidenceIDs: [UUID]) {
+    public init(id: UUID, title: String, detail: String, recordedAt: Date, eventAt: Date? = nil, status: WorkEpisodeStatus, evidenceIDs: [UUID], nextAction: String? = nil) {
         self.id = id; self.title = title; self.detail = detail; self.recordedAt = recordedAt
         self.eventAt = eventAt; self.status = status; self.evidenceIDs = evidenceIDs
+        self.nextAction = nextAction
     }
 }
 
@@ -100,12 +102,30 @@ public struct MatterFile: Identifiable, Sendable {
         self.id = id; self.title = title; self.events = events
     }
     public var evidenceIDs: [UUID] { Array(Set(events.flatMap(\.evidenceIDs))).sorted { $0.uuidString < $1.uuidString } }
+    public var resumeProgress: MatterEvent {
+        if latest.status == .pending, latest.nextAction == nil,
+           let actual = events.last(where: { $0.status == .progressed || $0.status == .completed || $0.status == .blocked }) {
+            return actual
+        }
+        return latest
+    }
+    public var resumeNextAction: String? {
+        latest.nextAction ?? (latest.status == .pending && resumeProgress.id != latest.id ? latest.detail : nil)
+    }
     public var resumeText: String {
-        latest.status == .completed ? "最近记录为已完成；可回看过程与结果。" : "\(latest.detail)"
+        resumeProgress.detail
+    }
+    /// An old open record is not evidence that the user is still working on it today.
+    /// Retain its history while moving it out of the default recent-progress list.
+    public func needsStatusUpdate(at now: Date = .now, calendar: Calendar = .current) -> Bool {
+        let cutoff = calendar.date(byAdding: .day, value: -14, to: calendar.startOfDay(for: now)) ?? now
+        return latest.status.isOpenMatter && latest.date < cutoff
     }
 }
 
 public extension WorkEpisodeStatus {
+    var isOpenMatter: Bool { self == .progressed || self == .pending || self == .blocked }
+
     var matterLabel: String {
         switch self {
         case .completed: "记录为已完成"
@@ -181,7 +201,8 @@ public struct MatterMemoryEngine: Sendable {
                 let event = MatterEvent(id: id, title: entry.title,
                     detail: completed ? "用户已标记完成：\(entry.title)" : entry.detail,
                     recordedAt: recordedAt, eventAt: eventDate,
-                    status: completed ? .completed : entry.status, evidenceIDs: [id])
+                    status: completed ? .completed : entry.status, evidenceIDs: [id],
+                    nextAction: completed ? nil : entry.nextAction)
                 groups[key, default: []].append(event)
                 names[key] = entry.title
             }
@@ -195,7 +216,9 @@ public struct MatterMemoryEngine: Sendable {
                 // Repeated screenshots add sources, not progress. Preserve the first occurrence
                 // so rereading an old result doesn't manufacture a change in this week's review.
                 if let last = changes.last, last.status == event.status,
-                   MatterEvidence.key(last.detail) == MatterEvidence.key(event.detail) {
+                   MatterEvidence.key(last.detail) == MatterEvidence.key(event.detail),
+                   MatterEvidence.key(last.nextAction ?? "") == MatterEvidence.key(event.nextAction ?? ""),
+                   !event.evidenceIDs.contains(where: { captured[$0]?.manualMatter != nil }) {
                     changes[changes.count - 1].evidenceIDs = Array(Set(last.evidenceIDs + event.evidenceIDs))
                         .sorted { $0.uuidString < $1.uuidString }
                 } else { changes.append(event) }

@@ -13,17 +13,22 @@ struct MatterWorkspaceView: View {
     @State private var tab: MatterWorkspaceTab = .inProgress
     @State private var search = ""
     @State private var visibleCount = 20
+    @State private var olderVisibleCount = 20
+    @State private var showsOlderMatters = false
     @State private var selected: MatterFile?
     @State private var source: CaptureRecord?
     @State private var correctionEvent: MatterEvent?
     @State private var showsNewMatter = false
+    @State private var newMatterTitle = ""
     @State private var showsCorrections = false
     let continueChat: (String) -> Void
 
     private var files: [MatterFile] {
         model.matterFiles.filter { search.isEmpty || ($0.title + $0.events.map(\.detail).joined(separator: " ")).localizedCaseInsensitiveContains(search) }
     }
-    private var resumeFiles: [MatterFile] { files.filter { [.progressed, .pending, .blocked].contains($0.latest.status) } }
+    private var resumeFiles: [MatterFile] { files.filter { $0.latest.status.isOpenMatter } }
+    private var recentResumeFiles: [MatterFile] { resumeFiles.filter { !$0.needsStatusUpdate() } }
+    private var olderResumeFiles: [MatterFile] { resumeFiles.filter { $0.needsStatusUpdate() } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -63,10 +68,28 @@ struct MatterWorkspaceView: View {
                             empty(search.isEmpty ? (model.matterFiles.isEmpty ? "还没有整理出主题" : "暂时没有进行中的主题") : "没有找到匹配的进行中主题",
                                 detail: search.isEmpty ? (model.matterFiles.isEmpty ? "保存记录后，Recall 会把同一件事的相关内容串联起来。你也可以补充一条记录，从这里开始。" : "已完成或仅作记录的内容，可以在‘全部主题’中回看。") : "换个关键词，或清空搜索后查看。")
                         }
-                        ForEach(Array(resumeFiles.prefix(visibleCount))) { file in
+                        ForEach(Array(recentResumeFiles.prefix(visibleCount))) { file in
                             fileCard(file, resume: true)
                         }
-                        more(total: resumeFiles.count)
+                        more(total: recentResumeFiles.count)
+                        if !olderResumeFiles.isEmpty {
+                            DisclosureGroup(isExpanded: $showsOlderMatters) {
+                                VStack(alignment: .leading, spacing: 18) {
+                                    Text("这些主题超过两周没有新的进展记录，当前状态待更新。你可以回看来源，或补充最近的进展。")
+                                        .foregroundStyle(.secondary)
+                                    ForEach(Array(olderResumeFiles.prefix(olderVisibleCount))) { file in
+                                        fileCard(file, resume: true)
+                                    }
+                                    if olderResumeFiles.count > olderVisibleCount {
+                                        Button("再显示 20 条") { olderVisibleCount += 20 }
+                                    }
+                                }.padding(.top, 16)
+                            } label: {
+                                Label("较早的记录 · \(olderResumeFiles.count) 个主题待更新", systemImage: "clock")
+                                    .font(.headline).foregroundStyle(.secondary)
+                            }.padding(20)
+                                .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 18))
+                        }
                         if model.state.experienceHintsEnabled, let hint = model.experienceHint,
                            resumeFiles.contains(where: { $0.id == hint.currentID }) {
                             VStack(alignment: .leading, spacing: 12) {
@@ -113,6 +136,9 @@ struct MatterWorkspaceView: View {
                                     VStack(alignment: .leading, spacing: 5) {
                                         Text(change.date.formatted(date: .abbreviated, time: .omitted) + " · " + change.status.matterLabel).font(.caption).foregroundStyle(.secondary)
                                         Text(change.detail).textSelection(.enabled)
+                                        if let action = change.nextAction {
+                                            Text("后续行动：" + action).textSelection(.enabled)
+                                        }
                                     }
                                 }
                                 Button(review.changes.count > 3 ? "查看全部进展与来源" : "查看主题与来源") { selected = review.matter }
@@ -124,10 +150,14 @@ struct MatterWorkspaceView: View {
                 }.padding(24).frame(maxWidth: 1100).frame(maxWidth: .infinity)
             }.clipped()
         }
-        .onChange(of: tab) { _, _ in visibleCount = 20 }
-        .onChange(of: search) { _, _ in visibleCount = 20 }
+        .onChange(of: tab) { _, _ in visibleCount = 20; olderVisibleCount = 20 }
+        .onChange(of: search) { _, text in
+            visibleCount = 20
+            olderVisibleCount = 20
+            showsOlderMatters = !text.isEmpty
+        }
         .sheet(isPresented: $showsNewMatter) {
-            ManualMatterSheet { note in
+            ManualMatterSheet(title: newMatterTitle) { note in
                 guard await model.saveManualMatter(note) else { return false }
                 search = ""
                 tab = .allTopics
@@ -156,6 +186,10 @@ struct MatterWorkspaceView: View {
                                 Text((event.eventAt == nil ? "记录于 " : "发生于 ") + event.date.formatted())
                                     .font(.caption).foregroundStyle(.secondary)
                                 Text(event.detail).textSelection(.enabled)
+                                if let action = event.nextAction {
+                                    Text("记录中的后续行动").font(.caption).foregroundStyle(.secondary)
+                                    Text(action).textSelection(.enabled)
+                                }
                                 HStack {
                                     Menu("查看来源（\(event.evidenceIDs.count)）") {
                                         ForEach(model.state.captures.filter { event.evidenceIDs.contains($0.id) }) { capture in
@@ -203,7 +237,7 @@ struct MatterWorkspaceView: View {
                 Label("整理已有记录", systemImage: "arrow.clockwise")
             }.disabled(model.isBuildingMatters)
                 .help("在本地重新整理已保存的记录")
-            Button { showsNewMatter = true } label: {
+            Button { supplement() } label: {
                 Label("补充记录", systemImage: "plus")
             }.buttonStyle(.borderedProminent)
             Menu {
@@ -238,15 +272,38 @@ struct MatterWorkspaceView: View {
             HStack(alignment: .top) {
                 Text(file.title).font(.title3.bold()).fixedSize(horizontal: false, vertical: true)
                 Spacer()
-                Text(file.latest.status.matterLabel)
+                Text(file.needsStatusUpdate() ? "状态待更新" : file.latest.status.matterLabel)
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Text(resume ? file.resumeText : file.latest.detail).textSelection(.enabled)
-            Text("最近记录于 \(file.latest.date.formatted(date: .abbreviated, time: .omitted)) · \(file.events.count) 次不同记录")
+            if resume {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text((file.resumeProgress.status == .pending && file.resumeNextAction == nil ? "待处理事项" : "上次进展")
+                        + " · " + file.resumeProgress.date.formatted(date: .abbreviated, time: .omitted))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(file.resumeText).textSelection(.enabled)
+                }
+                if let action = file.resumeNextAction {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("记录中的后续行动").font(.caption).foregroundStyle(.secondary)
+                        Text(action).textSelection(.enabled)
+                    }
+                }
+            } else {
+                Text(file.latest.detail).textSelection(.enabled)
+                if let action = file.latest.nextAction {
+                    Text(action).textSelection(.enabled)
+                }
+            }
+            if file.needsStatusUpdate() {
+                Text("此后暂无新的进展记录，当前状态仍待确认。")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Text("最近记录于 \(file.latest.date.formatted(date: .abbreviated, time: .omitted)) · \(file.evidenceIDs.count) 条来源")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("查看脉络与来源") { selected = file }
                 if resume {
+                    Button("补充进展") { supplement(title: file.title) }
                     Button("接着问") { continueChat("关于\(file.title)，请找回上次的进展、已确认的结论和仍缺少的信息。") }
                         .buttonStyle(.borderedProminent)
                 }
@@ -265,7 +322,7 @@ struct MatterWorkspaceView: View {
                 Button("清空搜索") { search = "" }
             } else {
                 HStack {
-                    Button("补充记录") { showsNewMatter = true }.buttonStyle(.borderedProminent)
+                    Button("补充记录") { supplement() }.buttonStyle(.borderedProminent)
                     Button("整理已有记录") { model.organizeExistingMatters() }
                     if !model.matterFiles.isEmpty && tab != .allTopics {
                         Button("查看全部主题") { tab = .allTopics }
@@ -273,6 +330,10 @@ struct MatterWorkspaceView: View {
                 }
             }
         }.padding(32).frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func supplement(title: String = "") {
+        newMatterTitle = title
+        showsNewMatter = true
     }
     @ViewBuilder private func more(total: Int) -> some View {
         if total > visibleCount { Button("再显示 20 条") { visibleCount += 20 } }
@@ -353,6 +414,11 @@ private struct ManualMatterSheet: View {
     @State private var isSaving = false
     @State private var saveError: String?
     private var note: ManualMatterNote { ManualMatterNote(title: title, detail: detail, status: status, eventAt: eventAt) }
+
+    init(title: String = "", save: @escaping (ManualMatterNote) async -> Bool) {
+        _title = State(initialValue: title)
+        self.save = save
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
