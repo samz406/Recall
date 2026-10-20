@@ -1,16 +1,23 @@
 import SwiftUI
 import RecallKit
 
-/// Fixed header outside the clipped scroll view, shared by all three memory views.
+private enum MatterWorkspaceTab: String, CaseIterable {
+    case inProgress = "进行中"
+    case allTopics = "全部主题"
+    case weeklyReview = "一周回顾"
+}
+
+/// Topic-based memory browsing, with a fixed header outside the clipped scroll view.
 struct MatterWorkspaceView: View {
     @EnvironmentObject private var model: RecallAppModel
-    @State private var tab = 0
+    @State private var tab: MatterWorkspaceTab = .inProgress
     @State private var search = ""
     @State private var visibleCount = 20
     @State private var selected: MatterFile?
     @State private var source: CaptureRecord?
     @State private var correctionEvent: MatterEvent?
     @State private var showsNewMatter = false
+    @State private var showsCorrections = false
     let continueChat: (String) -> Void
 
     private var files: [MatterFile] {
@@ -20,30 +27,27 @@ struct MatterWorkspaceView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("我的事情").font(.largeTitle.bold())
-                    Text("找回上次的进展，看清这周的变化。所有内容都能回到原始记录。")
-                        .foregroundStyle(.secondary)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 24) {
+                    pageIntroduction
+                    Spacer(minLength: 16)
+                    pageActions
                 }
-                Spacer()
-                if model.isBuildingMatters { ProgressView().controlSize(.small) }
-                Button { model.organizeExistingMatters() } label: {
-                    Label("整理已有记录", systemImage: "arrow.clockwise")
-                }.disabled(model.isBuildingMatters)
-                Button { showsNewMatter = true } label: {
-                    Label("记一件事", systemImage: "plus")
-                }.buttonStyle(.borderedProminent)
+                VStack(alignment: .leading, spacing: 20) {
+                    pageIntroduction
+                    pageActions
+                }
             }.padding(24)
-            HStack {
-                Picker("查看", selection: $tab) {
-                    Text("接着上次做").tag(0)
-                    Text("事情档案").tag(1)
-                    Text("最近七天").tag(2)
-                    Text("纠错记录").tag(3)
-                }.pickerStyle(.segmented).frame(maxWidth: 560)
-                Spacer()
-                TextField("搜索事情", text: $search).textFieldStyle(.roundedBorder).frame(maxWidth: 260)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 24) {
+                    browsingTabs
+                    Spacer(minLength: 16)
+                    topicSearch
+                }
+                VStack(alignment: .leading, spacing: 14) {
+                    browsingTabs
+                    topicSearch
+                }
             }.padding(.horizontal, 24).padding(.bottom, 18)
             Divider()
             ScrollView {
@@ -54,20 +58,17 @@ struct MatterWorkspaceView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
                     }
-                    if tab == 0 {
+                    if tab == .inProgress {
                         if resumeFiles.isEmpty {
-                            empty(search.isEmpty ? "暂时没有可以继续的事情" : "没有找到匹配的进行中事项",
-                                detail: search.isEmpty ? "仅显示待处理、正在推进和遇到阻碍的事情。已完成或仅作记录的内容可在‘事情档案’查看。" : "换个关键词，或清空搜索后查看全部事情。")
+                            empty(search.isEmpty ? (model.matterFiles.isEmpty ? "还没有整理出主题" : "暂时没有进行中的主题") : "没有找到匹配的进行中主题",
+                                detail: search.isEmpty ? (model.matterFiles.isEmpty ? "保存记录后，Recall 会把同一件事的相关内容串联起来。你也可以补充一条记录，从这里开始。" : "已完成或仅作记录的内容，可以在‘全部主题’中回看。") : "换个关键词，或清空搜索后查看。")
                         }
                         ForEach(Array(resumeFiles.prefix(visibleCount))) { file in
                             fileCard(file, resume: true)
                         }
                         more(total: resumeFiles.count)
-                        Toggle("在这里提示相关的历史经验", isOn: Binding(get: { model.state.experienceHintsEnabled }, set: { model.setExperienceHints($0) }))
-                            .padding(.top, 8)
-                        Text("开启后，每次最多显示一条有独立来源的相关结果。仅在本页显示，不发送系统通知。")
-                            .font(.caption).foregroundStyle(.secondary)
-                        if model.state.experienceHintsEnabled, let hint = model.experienceHint {
+                        if model.state.experienceHintsEnabled, let hint = model.experienceHint,
+                           resumeFiles.contains(where: { $0.id == hint.currentID }) {
                             VStack(alignment: .leading, spacing: 12) {
                                 Label("以前的结果，也许能帮上忙", systemImage: "sparkles").font(.headline).foregroundStyle(.purple)
                                 Text(hint.past.detail).textSelection(.enabled)
@@ -79,18 +80,21 @@ struct MatterWorkspaceView: View {
                                 }
                             }.padding(20).background(.purple.opacity(0.06), in: RoundedRectangle(cornerRadius: 18))
                         }
-                    } else if tab == 1 {
+                    } else if tab == .allTopics {
                         if files.isEmpty {
-                            empty(search.isEmpty ? "还没有事情档案" : "没有找到匹配的事情",
-                                detail: search.isEmpty ? "保存记录后会自动整理，不需要等到每日总结。只有归属和具体事情明确的内容才会生成档案；你也可以直接补记一件事。" : "换个关键词，或清空搜索后查看全部事情。")
+                            empty(search.isEmpty ? "还没有整理出主题" : "没有找到匹配的主题",
+                                detail: search.isEmpty ? "保存记录后，Recall 会把同一件事的相关内容串联起来。你也可以补充一条记录，从这里开始。" : "换个关键词，或清空搜索后查看全部主题。")
                         }
                         ForEach(Array(files.prefix(visibleCount))) { file in fileCard(file, resume: false) }
                         more(total: files.count)
-                    } else if tab == 2 {
+                    } else if tab == .weeklyReview {
                         let reviews = MatterMemoryEngine().weeklyReview(files: files)
-                        Text("按事情比较最近七天与更早的记录；记录时间不一定是实际发生时间，可在档案中更正。")
+                        Text("回看最近七天，各个主题有哪些新进展。")
                             .foregroundStyle(.secondary)
-                        if reviews.isEmpty { empty("这七天还没有可回顾的事情", detail: "没有记录不代表没有进展。") }
+                        if reviews.isEmpty {
+                            empty(search.isEmpty ? "最近七天还没有可回顾的进展" : "最近七天没有匹配的进展",
+                                detail: search.isEmpty ? "补充一条进展，或到‘全部主题’回看更早的记录。" : "换个关键词，或清空搜索后查看。")
+                        }
                         ForEach(Array(reviews.prefix(visibleCount))) { review in
                             VStack(alignment: .leading, spacing: 12) {
                                 HStack(alignment: .top) {
@@ -99,10 +103,10 @@ struct MatterWorkspaceView: View {
                                     Text(review.changes.last?.status.matterLabel ?? "相关记录")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
-                                Text("本周 \(review.changes.count) 次不同记录 · 重复截图已合并")
+                                Text("近七天 \(review.changes.count) 次不同记录 · 重复记录已合并")
                                     .font(.caption).foregroundStyle(.secondary)
                                 if let previous = review.previous {
-                                    Text("本周之前").font(.caption).foregroundStyle(.secondary)
+                                    Text("更早的记录").font(.caption).foregroundStyle(.secondary)
                                     Text(previous.detail)
                                 } else { Text("这次首次记录到").font(.caption).foregroundStyle(.secondary) }
                                 ForEach(Array(review.changes.suffix(3).reversed())) { change in
@@ -111,24 +115,11 @@ struct MatterWorkspaceView: View {
                                         Text(change.detail).textSelection(.enabled)
                                     }
                                 }
-                                Button(review.changes.count > 3 ? "查看全部变化与来源" : "查看事情档案与来源") { selected = review.matter }
+                                Button(review.changes.count > 3 ? "查看全部进展与来源" : "查看主题与来源") { selected = review.matter }
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
                                 .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 18))
                         }
                         more(total: reviews.count)
-                    } else {
-                        if model.state.matterCorrections.isEmpty { empty("暂无纠错记录", detail: "在事情档案中查看来源后，可以更正归属、完成状态、分类或发生时间。") }
-                        ForEach(Array(model.state.matterCorrections.reversed().prefix(visibleCount))) { correction in
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text(correction.kind.title).font(.headline)
-                                if !correction.text.isEmpty { Text(correction.text) }
-                                Text("\(correction.createdAt.formatted()) · \(correction.evidenceIDs.count) 条来源").foregroundStyle(.secondary)
-                                Button("删除这条纠错记录") { model.removeMatterCorrection(correction.id) }
-                                Text("删除后将重新使用原始证据；已经完成的提醒不会自动恢复。")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }.padding(18)
-                        }
-                        more(total: model.state.matterCorrections.count)
                     }
                 }.padding(24).frame(maxWidth: 1100).frame(maxWidth: .infinity)
             }.clipped()
@@ -139,16 +130,19 @@ struct MatterWorkspaceView: View {
             ManualMatterSheet { note in
                 guard await model.saveManualMatter(note) else { return false }
                 search = ""
-                tab = 1
+                tab = .allTopics
                 return true
             }
+        }
+        .sheet(isPresented: $showsCorrections) {
+            MatterCorrectionHistorySheet().environmentObject(model)
         }
         .sheet(item: $selected) { file in
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(file.title).font(.title2.bold())
-                        Text("按记录串联；未明确说明的负责人和发生时间不作推测。")
+                        Text("沿着记录回看这件事的进展与来由。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -168,7 +162,7 @@ struct MatterWorkspaceView: View {
                                             Button((capture.sourceAppName ?? "记录") + " · " + capture.createdAt.formatted()) { source = capture }
                                         }
                                     }
-                                    Button("纠正这条内容") { correctionEvent = event }
+                                    Button("更正内容") { correctionEvent = event }
                                 }
                             }.frame(maxWidth: .infinity, alignment: .leading)
                             Divider()
@@ -194,6 +188,51 @@ struct MatterWorkspaceView: View {
         }
     }
 
+    private var pageIntroduction: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("记忆脉络").font(.largeTitle.bold())
+            Text("把零散的记录，串成可以接续的经历。")
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }.frame(minWidth: 300, alignment: .leading)
+    }
+
+    private var pageActions: some View {
+        HStack(spacing: 12) {
+            if model.isBuildingMatters { ProgressView().controlSize(.small).help("正在整理记录") }
+            Button { model.organizeExistingMatters() } label: {
+                Label("整理已有记录", systemImage: "arrow.clockwise")
+            }.disabled(model.isBuildingMatters)
+                .help("在本地重新整理已保存的记录")
+            Button { showsNewMatter = true } label: {
+                Label("补充记录", systemImage: "plus")
+            }.buttonStyle(.borderedProminent)
+            Menu {
+                Button { showsCorrections = true } label: {
+                    Label("更正记录", systemImage: "clock.arrow.circlepath")
+                }
+                Divider()
+                Toggle("显示历史经验提示", isOn: Binding(get: { model.state.experienceHintsEnabled }, set: { model.setExperienceHints($0) }))
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }.menuStyle(.borderlessButton)
+                .fixedSize().accessibilityLabel("更多选项").help("更多选项")
+        }.fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var browsingTabs: some View {
+        Picker("浏览记忆脉络", selection: $tab) {
+            ForEach(MatterWorkspaceTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+        }.pickerStyle(.segmented).labelsHidden()
+            .frame(minWidth: 320, maxWidth: 440)
+            .accessibilityLabel("浏览记忆脉络")
+    }
+
+    private var topicSearch: some View {
+        TextField("搜索主题或内容", text: $search).textFieldStyle(.roundedBorder)
+            .frame(minWidth: 200, maxWidth: 260)
+            .accessibilityLabel("搜索主题或内容")
+    }
+
     private func fileCard(_ file: MatterFile, resume: Bool) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top) {
@@ -203,10 +242,10 @@ struct MatterWorkspaceView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Text(resume ? file.resumeText : file.latest.detail).textSelection(.enabled)
-            Text("最近变化记录于 \(file.latest.date.formatted(date: .abbreviated, time: .omitted)) · \(file.events.count) 次不同记录")
+            Text("最近记录于 \(file.latest.date.formatted(date: .abbreviated, time: .omitted)) · \(file.events.count) 次不同记录")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
-                Button("查看档案") { selected = file }
+                Button("查看脉络与来源") { selected = file }
                 if resume {
                     Button("接着问") { continueChat("关于\(file.title)，请找回上次的进展、已确认的结论和仍缺少的信息。") }
                         .buttonStyle(.borderedProminent)
@@ -224,18 +263,83 @@ struct MatterWorkspaceView: View {
                 Text("正在检查已保存的记录…").font(.callout).foregroundStyle(.secondary)
             } else if !search.isEmpty {
                 Button("清空搜索") { search = "" }
-            } else if tab != 3 {
+            } else {
                 HStack {
-                    Button("记一件事") { showsNewMatter = true }.buttonStyle(.borderedProminent)
+                    Button("补充记录") { showsNewMatter = true }.buttonStyle(.borderedProminent)
                     Button("整理已有记录") { model.organizeExistingMatters() }
+                    if !model.matterFiles.isEmpty && tab != .allTopics {
+                        Button("查看全部主题") { tab = .allTopics }
+                    }
                 }
-                Text("整理在本地进行，不新增截图、不调用模型。")
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }.padding(32).frame(maxWidth: .infinity, alignment: .leading)
     }
     @ViewBuilder private func more(total: Int) -> some View {
         if total > visibleCount { Button("再显示 20 条") { visibleCount += 20 } }
+    }
+}
+
+private struct MatterCorrectionHistorySheet: View {
+    @EnvironmentObject private var model: RecallAppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var visibleCount = 20
+    @State private var source: CaptureRecord?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("更正记录").font(.title2.bold())
+                    Text("回看你对内容归属、状态、主题和发生时间的调整。")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
+            }.padding(24)
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    if model.state.matterCorrections.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Image(systemName: "checkmark.circle").font(.largeTitle).foregroundStyle(.blue)
+                            Text("暂无更正记录").font(.title3.bold())
+                            Text("查看主题的来源时，可以更正内容。原始记录会保留，所有调整都能在这里回看。")
+                                .foregroundStyle(.secondary)
+                        }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    ForEach(Array(model.state.matterCorrections.reversed().prefix(visibleCount))) { correction in
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Label(correction.kind.title, systemImage: "pencil.circle").font(.headline)
+                                Spacer()
+                                Text(correction.createdAt.formatted()).font(.caption).foregroundStyle(.secondary)
+                            }
+                            if !correction.text.isEmpty { Text(correction.text).textSelection(.enabled) }
+                            if correction.kind == .eventDate, let date = correction.eventAt {
+                                Text("发生时间改为 \(date.formatted())")
+                            }
+                            let sources = model.state.captures.filter { correction.evidenceIDs.contains($0.id) }
+                            HStack {
+                                Menu("查看来源（\(sources.count)）") {
+                                    ForEach(sources) { capture in
+                                        Button((capture.sourceAppName ?? "记录") + " · " + capture.createdAt.formatted()) { source = capture }
+                                    }
+                                }.disabled(sources.isEmpty)
+                                Spacer()
+                                Button("删除这条更正", role: .destructive) { model.removeMatterCorrection(correction.id) }
+                            }
+                            Text("删除更正后，会重新使用原始记录；已完成的提醒不会自动恢复。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 16))
+                    }
+                    if model.state.matterCorrections.count > visibleCount {
+                        Button("再显示 20 条") { visibleCount += 20 }
+                    }
+                }.padding(24)
+            }.clipped()
+        }.frame(minWidth: 640, idealWidth: 760, minHeight: 480, idealHeight: 640)
+            .sheet(item: $source) { CaptureDetailSheet(capture: $0).environmentObject(model) }
     }
 }
 
@@ -252,11 +356,11 @@ private struct ManualMatterSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("记一件事").font(.title2.bold())
-            Text("补记具体的事情与进展。后续使用相同名称，可以接着记录这件事。")
+            Text("补充记录").font(.title2.bold())
+            Text("记下一段进展或经历。使用已有主题名称，可以接着上次的记录。")
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 8) {
-                Text("事情名称").font(.headline)
+                Text("主题名称").font(.headline)
                 TextField("例如：账单导出修复（3–80 字）", text: $title).textFieldStyle(.roundedBorder)
             }
             HStack {
@@ -280,7 +384,7 @@ private struct ManualMatterSheet: View {
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }.disabled(isSaving)
-                Button(isSaving ? "正在保存…" : "保存到事情档案") {
+                Button(isSaving ? "正在保存…" : "保存记录") {
                     isSaving = true
                     saveError = nil
                     let submitted = note
@@ -305,12 +409,12 @@ private struct MatterCorrectionSheet: View {
     @State private var eventDate = Date.now
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("纠正这条内容").font(.title2.bold())
+            Text("更正内容").font(.title2.bold())
             Text(event.detail).lineLimit(5).foregroundStyle(.secondary)
             Picker("如何更正", selection: $kind) {
                 ForEach(MatterCorrectionKind.allCases, id: \.self) { Text($0.title).tag($0) }
             }
-            if kind == .separate { TextField("这件事的名称", text: $text).textFieldStyle(.roundedBorder) }
+            if kind == .separate { TextField("归入的主题名称", text: $text).textFieldStyle(.roundedBorder) }
             if kind == .eventDate { DatePicker("实际发生时间", selection: $eventDate) }
             Text("更正作用于这段内容关联的 \(event.evidenceIDs.count) 条来源。原始记录保留。“不是我说的”和“结论不准确”会停止用这些来源推断；已安排的提醒只有选择“已经完成”才会关闭。")
                 .font(.callout).foregroundStyle(.secondary)

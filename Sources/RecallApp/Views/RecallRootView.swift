@@ -13,7 +13,7 @@ struct RecallRootView: View {
         NavigationSplitView {
             List(selection: $section) {
                 Section("记忆") {
-                    Label("我的事情", systemImage: "square.stack.3d.up").tag(SidebarSection.matters)
+                    Label("记忆脉络", systemImage: "square.stack.3d.up").tag(SidebarSection.matters)
                     Label("每日总结", systemImage: "calendar.badge.clock")
                         .badge(highPrioritySummaryTodoCount)
                         .tag(SidebarSection.dailySummaries)
