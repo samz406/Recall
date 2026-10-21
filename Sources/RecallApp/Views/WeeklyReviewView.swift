@@ -139,9 +139,9 @@ struct WeeklyReviewView: View {
                 }
                 Spacer()
             }
-            Toggle("用已连接的模型辅助挑选重点", isOn: $useModel)
-                .font(.callout).disabled(!model.state.privacy.cloudUseEnabled)
-                .help("仅发送范围内经过脱敏的事实片段；关闭时在本地整理。模型不能新增事实或下一步。")
+            Toggle("按模板整理成文", isOn: $useModel)
+                .font(.callout).disabled(!model.state.privacy.cloudUseEnabled && !useModel)
+                .help("仅发送范围内经过脱敏的事实，按用途和篇幅整理正文，再核对来源；未通过的条目保留原始记录。关闭时完全在本地整理。")
             if !model.state.privacy.cloudUseEnabled {
                 Text("当前在本地整理；可在“隐私与模型”中开启模型文本使用。")
                     .font(.caption).foregroundStyle(.secondary)
@@ -215,9 +215,14 @@ struct WeeklyReviewView: View {
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 reportSections(report)
             }
-            Text("保存于 \(report.createdAt.formatted()) · \(report.modelAssisted ? "模型辅助选取重点" : "本地事实整理")")
+            Text("保存于 \(report.createdAt.formatted()) · \(report.modelAssisted ? "模型整理与来源核对" : "本地事实整理")")
                 .font(.caption).foregroundStyle(.secondary)
-            if report.refinementPending { Text("已保留可用的本地版本，模型整理待重试。") .font(.caption).foregroundStyle(.orange) }
+            if report.refinementPending {
+                Text(report.canRefine(at: .now) && report.scheduleID != nil
+                     ? "部分条目保留原始记录，将在一天内有限重试；不会影响下一期回顾。"
+                     : "部分条目保留原始记录，你可以使用模型重新整理。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }.padding(28).reviewSurface()
     }
     private func reportHeading(_ report: WeeklyReport) -> some View {
@@ -238,7 +243,7 @@ struct WeeklyReviewView: View {
             Menu {
                 Button(report.editedMarkdown == nil ? "更新这份回顾" : "保留修改，生成新版") {
                     model.generateWeeklyReview(period: report.period, template: report.template, scope: report.scope,
-                        useModel: useModel, replacing: report.editedMarkdown == nil ? report.id : nil)
+                        useModel: useModel || (model.state.privacy.cloudUseEnabled && (report.modelAssisted || report.refinementPending)), replacing: report.editedMarkdown == nil ? report.id : nil)
                 }.disabled(model.isGeneratingWeeklyReview)
                 Button("删除回顾", role: .destructive) { deleting = report }
             } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
@@ -260,17 +265,22 @@ struct WeeklyReviewView: View {
     }
     private func reviewItem(_ item: ReviewItem, report: WeeklyReport) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(item.title).font(.system(size: 18, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-            if let previous = item.previous {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("此前 · " + (previous.eventTimeKnown == true ? "发生于 " : "记录于 ") + stamp(previous.date, report: report)).font(.caption).foregroundStyle(.secondary)
-                    Text(previous.text).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
+            Text(item.displayTitle).font(.system(size: 18, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+            if let narrative = item.narrative {
+                Text(narrative.summary).fixedSize(horizontal: false, vertical: true)
             }
-            ForEach(item.featured(for: report.template.length)) { excerpt in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text((excerpt.eventTimeKnown == true ? "发生于 " : "记录于 ") + stamp(excerpt.date, report: report)).font(.caption).foregroundStyle(.secondary)
-                    Text(excerpt.text).fixedSize(horizontal: false, vertical: true)
+            if item.narrative == nil || report.template.length == .detailed {
+                if let previous = item.previous {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("此前 · " + (previous.eventTimeKnown == true ? "发生于 " : "记录于 ") + stamp(previous.date, report: report)).font(.caption).foregroundStyle(.secondary)
+                        Text(previous.text).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                ForEach(item.featured(for: report.template.length)) { excerpt in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text((excerpt.eventTimeKnown == true ? "发生于 " : "记录于 ") + stamp(excerpt.date, report: report)).font(.caption).foregroundStyle(.secondary)
+                        Text(excerpt.text).fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             if let action = item.nextAction {
@@ -643,7 +653,7 @@ private struct ReviewScheduleEditor: View {
             }
             Text("使用 \(schedule.timeZoneIdentifier) 时区。选择‘本周’时，只总结到计划生成时刻；需要完整周一至周日，可在周一生成‘上一个完整周’。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Toggle("使用已连接模型辅助挑选重点", isOn: $schedule.useModel).disabled(!model.state.privacy.cloudUseEnabled)
+            Toggle("使用模型按模板整理成文", isOn: $schedule.useModel).disabled(!model.state.privacy.cloudUseEnabled && !schedule.useModel)
             Toggle("生成后发送系统通知", isOn: $schedule.notifyWhenReady)
             Text("支持暂停或删除计划；失败会记录日志并重试，不自动发送周报或创建提醒。")
                 .font(.caption).foregroundStyle(.secondary)

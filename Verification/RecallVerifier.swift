@@ -67,7 +67,7 @@ struct RecallVerifier {
                 try await verifyLiveAnthropicCompatibility()
                 print("PASS: RecallVerifier completed 61 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 60 integration checks.")
+                print("PASS: RecallVerifier completed 65 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -137,10 +137,12 @@ struct RecallVerifier {
         let done = capture("[聊天·自己] 账单导出修复已验证通过，分页边界也通过了回归测试。\n[聊天·自己] 库存同步仍然失败。")
         let state = RecallState(captures: [working, done], episodes: [episode(working), episode(done)])
         let files = engine.files(in: state)
-        try expect(files.count == 1 && files[0].events.count == 2, "可归属的具体工作应保留完整过程")
-        try expect(files[0].latest.detail == "账单导出修复已验证通过，分页边界也通过了回归测试。", "摘要必须取原始完整句，不沿用旧截断摘要或拼接无关句子")
-        try expect(files[0].latest.status == .completed, "同一截图里其他事情失败，不能污染当前事情状态")
-        try expect(engine.weeklyReview(files: files, endingAt: now).first?.previous?.status == .progressed, "周回顾应展示正确的先前状态")
+        try expect(files.count == 2, "同一截图中的两个真实事项都必须保留")
+        let bill = files.first { $0.title == "账单导出修复" }!
+        try expect(bill.events.count == 2, "可归属的具体工作应保留完整过程")
+        try expect(bill.latest.detail == "账单导出修复已验证通过，分页边界也通过了回归测试。", "摘要必须取原始完整句，不沿用旧截断摘要或拼接无关句子")
+        try expect(bill.latest.status == .completed, "同一截图里其他事情失败，不能污染当前事情状态")
+        try expect(engine.weeklyReview(files: [bill], endingAt: now).first?.previous?.status == .progressed, "周回顾应展示正确的先前状态")
 
         let longText = "账单导出修复已验证通过，" + String(repeating: "分页边界与空数据场景均有回归记录，", count: 14) + "结果已归档。"
         let longCapture = capture("[聊天·自己] " + longText)
@@ -207,11 +209,12 @@ struct RecallVerifier {
         let context = capture("[聊天·自己] " + progressText + "\n[聊天·自己] " + actionText
             + "\n[聊天·自己] Nova 图像压缩仍然失败。")
         let combined = engine.files(in: RecallState(captures: [context], episodes: [episode(context)]))
-        try expect(combined.count == 1 && combined[0].title == name, "一个主题不能被同屏另一个主题的失败污染")
-        try expect(combined[0].latest.detail == progressText && combined[0].latest.nextAction == actionText,
+        try expect(combined.count == 2, "同屏不同主题必须分别保留")
+        let orion = combined.first { $0.title == name }!
+        try expect(orion.latest.detail == progressText && orion.latest.nextAction == actionText,
             "同一来源的进展与后续行动应分开保留，后面的待办不能覆盖前面的实际进展")
-        try expect(combined[0].latest.status == .progressed, "已定位的进展不能被后面的待办降为单纯待办")
-        try expect(combined[0].evidenceIDs == [context.id], "进展和行动必须有真实关联来源")
+        try expect(orion.latest.status == .progressed, "已定位的进展不能被后面的待办降为单纯待办")
+        try expect(orion.evidenceIDs == [context.id], "进展和行动必须有真实关联来源")
 
         let first = capture("[聊天·自己] " + progressText, at: old)
         let next = capture("[聊天·自己] " + actionText)
