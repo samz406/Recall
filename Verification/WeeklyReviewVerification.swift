@@ -99,6 +99,11 @@ enum WeeklyReviewVerification {
         let complete = ReviewPeriod.make(.previousWeek, at: now, calendar: calendar)
         try expect(complete.start == date(12, 0) && complete.end == date(19, 0), "完整自然周应以本地周一零点分界")
         try expect(!complete.contains(date(19, 0)) && complete.contains(date(18, 23)), "相邻周边界不能重复归属")
+        let monthEnd = calendar.date(byAdding: .day, value: 31, to: date(1, 0))!
+        let overLimit = calendar.date(byAdding: .day, value: 32, to: date(1, 0))!
+        try expect(ReviewPeriod(start: date(1, 0), end: monthEnd, timeZoneIdentifier: "Asia/Shanghai").isValid
+            && !ReviewPeriod(start: date(1, 0), end: overLimit, timeZoneIdentifier: "Asia/Shanghai").isValid,
+            "自选范围必须按本地自然日校验 31 天，不能放行 32 天")
         let recent = ReviewPeriod.make(.recentSeven, at: now, calendar: calendar)
         try expect(recent.start == date(15, 0) && recent.end == now, "最近七天应包含今天和前六个本地自然日")
         var plan = ReviewSchedule(template: ReviewTemplate(kind: .work))

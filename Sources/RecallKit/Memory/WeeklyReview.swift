@@ -110,7 +110,11 @@ public struct ReviewPeriod: Codable, Equatable, Sendable {
     public init(start: Date, end: Date, timeZoneIdentifier: String = TimeZone.current.identifier) {
         self.start = start; self.end = end; self.timeZoneIdentifier = timeZoneIdentifier
     }
-    public var isValid: Bool { start < end && end.timeIntervalSince(start) <= 32 * 86_400 }
+    public var isValid: Bool {
+        guard TimeZone(identifier: timeZoneIdentifier) != nil,
+              let limit = calendar.date(byAdding: .day, value: 31, to: start) else { return false }
+        return start < end && end <= limit
+    }
     public func contains(_ date: Date) -> Bool { date >= start && date < end }
     public var calendar: Calendar {
         var value = Calendar(identifier: .gregorian); value.firstWeekday = 2; value.minimumDaysInFirstWeek = 4
