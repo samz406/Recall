@@ -90,6 +90,10 @@ public struct RecallState: Codable, Sendable {
     public var reminderLearningProfile: ReminderLearningProfile
     public var dailySummaries: [DailySummary]
     public var dailySummarySettings: DailySummarySettings
+    public var weeklyReports: [WeeklyReport]
+    public var reviewTemplates: [ReviewTemplate]
+    public var reviewSchedules: [ReviewSchedule]
+    public var reviewCategories: [String: ReviewCategory]
     public var privacy: PrivacySettings
     public var llmConfiguration: LLMConfiguration
     public var conversationSummary: String?
@@ -129,7 +133,11 @@ public struct RecallState: Codable, Sendable {
         memorySuppressionRules: [MemorySuppressionRule] = [],
         matterCorrections: [MatterCorrection] = [],
         dismissedExperienceIDs: [String] = [],
-        experienceHintsEnabled: Bool = false
+        experienceHintsEnabled: Bool = false,
+        weeklyReports: [WeeklyReport] = [],
+        reviewTemplates: [ReviewTemplate] = [],
+        reviewSchedules: [ReviewSchedule] = [],
+        reviewCategories: [String: ReviewCategory] = [:]
     ) {
         self.rules = rules
         self.captures = captures
@@ -154,11 +162,16 @@ public struct RecallState: Codable, Sendable {
         self.matterCorrections = matterCorrections
         self.dismissedExperienceIDs = dismissedExperienceIDs
         self.experienceHintsEnabled = experienceHintsEnabled
+        self.weeklyReports = weeklyReports
+        self.reviewTemplates = reviewTemplates
+        self.reviewSchedules = reviewSchedules
+        self.reviewCategories = reviewCategories
     }
 
     private enum CodingKeys: String, CodingKey {
         case rules, captures, messages, reminders, reminderDiscoveryCheckpoint, reminderLearningProfile, dailySummaries, dailySummarySettings
         case privacy, llmConfiguration, conversationSummary, conversationSummaryCoveredMessageCount
+        case weeklyReports, reviewTemplates, reviewSchedules, reviewCategories
         case episodes, projects, userMemories, insights, insightFeedback, learnedRoutines
         case recentlyDeletedMemories, memorySuppressionRules, matterCorrections, dismissedExperienceIDs, experienceHintsEnabled
     }
@@ -188,6 +201,10 @@ public struct RecallState: Codable, Sendable {
         matterCorrections = try container.decodeIfPresent([MatterCorrection].self, forKey: .matterCorrections) ?? []
         dismissedExperienceIDs = try container.decodeIfPresent([String].self, forKey: .dismissedExperienceIDs) ?? []
         experienceHintsEnabled = try container.decodeIfPresent(Bool.self, forKey: .experienceHintsEnabled) ?? false
+        weeklyReports = try container.decodeIfPresent([WeeklyReport].self, forKey: .weeklyReports) ?? []
+        reviewTemplates = try container.decodeIfPresent([ReviewTemplate].self, forKey: .reviewTemplates) ?? []
+        reviewSchedules = try container.decodeIfPresent([ReviewSchedule].self, forKey: .reviewSchedules) ?? []
+        reviewCategories = try container.decodeIfPresent([String: ReviewCategory].self, forKey: .reviewCategories) ?? [:]
     }
 }
 
@@ -331,6 +348,142 @@ public actor FileMemoryStore {
         try persist()
     }
 
+    private func invalidateWeeklyReports() {
+        for i in state.weeklyReports.indices where state.weeklyReports[i].isReadable {
+            if !WeeklyReviewEngine.sourcesUnchanged(state.weeklyReports[i], in: state) { state.weeklyReports[i].invalidate() }
+        }
+        for i in state.recentlyDeletedMemories.indices {
+            guard var reports = state.recentlyDeletedMemories[i].weeklyReports else { continue }
+            // A source in this same deletion transaction can be restored together with its report.
+            var restorationState = state
+            let existing = Set(state.captures.map(\.id))
+            restorationState.captures += state.recentlyDeletedMemories[i].captures.filter { !existing.contains($0.id) }
+            restorationState.matterCorrections += state.recentlyDeletedMemories[i].matterCorrections ?? []
+            for j in reports.indices where reports[j].isReadable {
+                if !WeeklyReviewEngine.sourcesUnchanged(reports[j], in: restorationState) { reports[j].invalidate() }
+            }
+            state.recentlyDeletedMemories[i].weeklyReports = reports
+        }
+    }
+
+    public func saveReviewTemplate(_ template: ReviewTemplate) throws {
+        guard template.isValid else { throw WeeklyReviewError.invalidTemplate }
+        let before = state
+        state.reviewTemplates.removeAll { $0.id == template.id }
+        state.reviewTemplates.append(template)
+        do { try persist() } catch { state = before; throw error }
+    }
+
+    public func deleteReviewTemplate(id: String) throws {
+        let before = state
+        state.reviewTemplates.removeAll { $0.id == id }
+        do { try persist() } catch { state = before; throw error }
+    }
+
+    public func saveReviewCategory(topicID: String, category: ReviewCategory) throws {
+        let before = state
+        state.reviewCategories[topicID] = category
+        // A work/life boundary changed. Old exported drafts must be reviewed again.
+        for i in state.weeklyReports.indices where state.weeklyReports[i].items.contains(where: { $0.id == topicID }) {
+            state.weeklyReports[i].invalidate()
+        }
+        for i in state.recentlyDeletedMemories.indices {
+            guard var reports = state.recentlyDeletedMemories[i].weeklyReports else { continue }
+            for j in reports.indices where reports[j].items.contains(where: { $0.id == topicID }) { reports[j].invalidate() }
+            state.recentlyDeletedMemories[i].weeklyReports = reports
+        }
+        do { try persist() } catch { state = before; throw error }
+    }
+
+    public func saveReviewSchedule(_ schedule: ReviewSchedule, now: Date = .now) throws {
+        guard schedule.isValid else { throw WeeklyReviewError.invalidTemplate }
+        let before = state
+        var value = schedule
+        let old = state.reviewSchedules.first { $0.id == value.id }
+        if old != value || value.nextRunAt == nil {
+            value.nextRunAt = value.nextTrigger(after: now); value.retryAfter = nil
+            value.failureCount = 0; value.lastReportID = nil
+        }
+        state.reviewSchedules.removeAll { $0.id == value.id }; state.reviewSchedules.append(value)
+        do { try persist() } catch { state = before; throw error }
+    }
+
+    public func deleteReviewSchedule(id: UUID) throws {
+        let before = state
+        state.reviewSchedules.removeAll { $0.id == id }
+        do { try persist() } catch { state = before; throw error }
+    }
+
+    public func commitWeeklyReport(_ submitted: WeeklyReport, replacing id: UUID? = nil,
+                                   schedule expected: ReviewSchedule? = nil, categories: [String: ReviewCategory]? = nil,
+                                   now: Date = .now) throws -> WeeklyReport {
+        try Task.checkCancellation()
+        guard WeeklyReviewEngine.sourcesUnchanged(submitted, in: state),
+              categories == nil || categories == state.reviewCategories else { throw WeeklyReviewError.changedSources }
+        if let expected { guard state.reviewSchedules.contains(expected), expected.isEnabled else { throw WeeklyReviewError.changedSources } }
+        let before = state
+        var report = submitted
+        if let id, !state.weeklyReports.contains(where: { $0.id == id }) { throw WeeklyReviewError.changedSources }
+        if let id, let old = state.weeklyReports.first(where: { $0.id == id }) {
+            // Never silently overwrite an edited draft during a scheduled retry.
+            guard expected == nil || old.editedMarkdown == nil else { throw WeeklyReviewError.changedSources }
+            report.id = id; report.createdAt = old.createdAt
+        }
+        if let expected {
+            report.scheduleID = expected.id; report.scheduledFor = submitted.scheduledFor ?? expected.nextRunAt
+            guard let i = state.reviewSchedules.firstIndex(where: { $0.id == expected.id }) else { throw WeeklyReviewError.changedSources }
+            state.reviewSchedules[i].lastReportID = report.id
+            if report.refinementPending {
+                state.reviewSchedules[i].nextRunAt = report.scheduledFor
+                state.reviewSchedules[i].failureCount += 1
+                state.reviewSchedules[i].retryAfter = now.addingTimeInterval(min(3600, 60 * pow(2, Double(min(state.reviewSchedules[i].failureCount, 6)))))
+            } else {
+                state.reviewSchedules[i].nextRunAt = expected.nextTrigger(after: now)
+                state.reviewSchedules[i].retryAfter = nil; state.reviewSchedules[i].failureCount = 0
+            }
+        }
+        state.weeklyReports.removeAll { $0.id == report.id }; state.weeklyReports.insert(report, at: 0)
+        do { try persist() } catch { state = before; throw error }
+        return report
+    }
+
+    public func deferReviewSchedule(_ expected: ReviewSchedule, noEvidence: Bool, now: Date = .now) throws {
+        guard let i = state.reviewSchedules.firstIndex(where: { $0 == expected }) else { return }
+        let before = state
+        if noEvidence {
+            state.reviewSchedules[i].nextRunAt = expected.nextTrigger(after: now)
+            state.reviewSchedules[i].retryAfter = nil; state.reviewSchedules[i].failureCount = 0
+        } else {
+            state.reviewSchedules[i].failureCount += 1
+            state.reviewSchedules[i].retryAfter = now.addingTimeInterval(min(3600, 60 * pow(2, Double(min(state.reviewSchedules[i].failureCount, 6)))))
+        }
+        do { try persist() } catch { state = before; throw error }
+    }
+
+    public func editWeeklyReport(id: UUID, markdown: String?) throws {
+        guard let i = state.weeklyReports.firstIndex(where: { $0.id == id && $0.isReadable }) else { throw WeeklyReviewError.changedSources }
+        let before = state
+        if let markdown {
+            let text = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty && text.count <= 60_000 else { throw WeeklyReviewError.invalidTemplate }
+            state.weeklyReports[i].editedMarkdown = text
+        } else { state.weeklyReports[i].editedMarkdown = nil }
+        state.weeklyReports[i].updatedAt = .now
+        do { try persist() } catch { state = before; throw error }
+    }
+
+    @discardableResult
+    public func deleteWeeklyReport(id: UUID, now: Date = .now) throws -> RecentlyDeletedMemory? {
+        guard let report = state.weeklyReports.first(where: { $0.id == id }) else { return nil }
+        let before = state
+        var deleted = RecentlyDeletedMemory(label: report.template.name + " · " + report.period.label, reason: .noLongerNeeded,
+            deletedAt: now, expiresAt: Calendar.current.date(byAdding: .day, value: 7, to: now) ?? now)
+        deleted.weeklyReports = [report]
+        state.weeklyReports.removeAll { $0.id == id }; state.recentlyDeletedMemories.insert(deleted, at: 0)
+        do { try persist() } catch { state = before; throw error }
+        return deleted
+    }
+
     public func updateDailySummarySettings(_ settings: DailySummarySettings) throws {
         state.dailySummarySettings = settings
         try persist()
@@ -462,6 +615,7 @@ public actor FileMemoryStore {
             previousConversationSummaryCoveredMessageCount: state.conversationSummaryCoveredMessageCount,
             addedSuppressionRuleIDs: addedRules.map(\.id)
         )
+        transaction.weeklyReports = state.weeklyReports.filter { !$0.sourceIDs.isDisjoint(with: actualIDs) }
         transaction.matterCorrections = state.matterCorrections.filter { !Set($0.evidenceIDs).isDisjoint(with: actualIDs) }
         state.matterCorrections.removeAll { !Set($0.evidenceIDs).isDisjoint(with: actualIDs) }
         state.captures.removeAll { actualIDs.contains($0.id) }
@@ -563,6 +717,7 @@ public actor FileMemoryStore {
             state.dailySummaries.append(summary)
         }
         state.dailySummaries.sort { $0.day > $1.day }
+        Self.restoreUnique(transaction.weeklyReports ?? [], to: &state.weeklyReports, id: \.id)
         Self.restoreUnique(transaction.messages, to: &state.messages, id: \.id)
         state.messages.sort { $0.createdAt < $1.createdAt }
         Self.restoreUnique(transaction.reminders, to: &state.reminders, id: \.id)
@@ -659,6 +814,8 @@ public actor FileMemoryStore {
         state.reminderDiscoveryCheckpoint = ReminderDiscoveryCheckpoint()
         state.reminderLearningProfile = ReminderLearningProfile()
         state.dailySummaries = []
+        state.weeklyReports = []
+        state.reviewCategories = [:]
         state.conversationSummary = nil
         state.conversationSummaryCoveredMessageCount = 0
         state.episodes = []
@@ -841,6 +998,7 @@ public actor FileMemoryStore {
     }
 
     private func persist() throws {
+        invalidateWeeklyReports()
         try Self.write(state, encoder: encoder, to: storage.stateURL)
         try intelligenceIndex?.replace(with: state)
     }

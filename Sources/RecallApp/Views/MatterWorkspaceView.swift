@@ -47,17 +47,17 @@ struct MatterWorkspaceView: View {
                 HStack(spacing: 24) {
                     browsingTabs
                     Spacer(minLength: 16)
-                    topicSearch
+                    if tab != .weeklyReview { topicSearch }
                 }
                 VStack(alignment: .leading, spacing: 14) {
                     browsingTabs
-                    topicSearch
+                    if tab != .weeklyReview { topicSearch }
                 }
             }.padding(.horizontal, 24).padding(.bottom, 18)
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    if let message = model.matterBuildMessage {
+                    if tab != .weeklyReview, let message = model.matterBuildMessage {
                         Label(message, systemImage: "info.circle")
                             .foregroundStyle(.secondary).padding(16)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -111,45 +111,13 @@ struct MatterWorkspaceView: View {
                         ForEach(Array(files.prefix(visibleCount))) { file in fileCard(file, resume: false) }
                         more(total: files.count)
                     } else if tab == .weeklyReview {
-                        let reviews = MatterMemoryEngine().weeklyReview(files: files)
-                        Text("回看最近七天，各个主题有哪些新进展。")
-                            .foregroundStyle(.secondary)
-                        if reviews.isEmpty {
-                            empty(search.isEmpty ? "最近七天还没有可回顾的进展" : "最近七天没有匹配的进展",
-                                detail: search.isEmpty ? "补充一条进展，或到‘全部主题’回看更早的记录。" : "换个关键词，或清空搜索后查看。")
-                        }
-                        ForEach(Array(reviews.prefix(visibleCount))) { review in
-                            VStack(alignment: .leading, spacing: 12) {
-                                HStack(alignment: .top) {
-                                    Text(review.matter.title).font(.title3.bold()).fixedSize(horizontal: false, vertical: true)
-                                    Spacer()
-                                    Text(review.changes.last?.status.matterLabel ?? "相关记录")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                                Text("近七天 \(review.changes.count) 次不同记录 · 重复记录已合并")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                if let previous = review.previous {
-                                    Text("更早的记录").font(.caption).foregroundStyle(.secondary)
-                                    Text(previous.detail)
-                                } else { Text("这次首次记录到").font(.caption).foregroundStyle(.secondary) }
-                                ForEach(Array(review.changes.suffix(3).reversed())) { change in
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text(change.date.formatted(date: .abbreviated, time: .omitted) + " · " + change.status.matterLabel).font(.caption).foregroundStyle(.secondary)
-                                        Text(change.detail).textSelection(.enabled)
-                                        if let action = change.nextAction {
-                                            Text("后续行动：" + action).textSelection(.enabled)
-                                        }
-                                    }
-                                }
-                                Button(review.changes.count > 3 ? "查看全部进展与来源" : "查看主题与来源") { selected = review.matter }
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
-                                .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 18))
-                        }
-                        more(total: reviews.count)
+                        WeeklyReviewView().environmentObject(model)
                     }
                 }.padding(24).frame(maxWidth: 1100).frame(maxWidth: .infinity)
             }.clipped()
         }
+        .onAppear { if model.weeklyReportToOpen != nil { tab = .weeklyReview } }
+        .onChange(of: model.weeklyReportToOpen) { _, id in if id != nil { tab = .weeklyReview } }
         .onChange(of: tab) { _, _ in visibleCount = 20; olderVisibleCount = 20 }
         .onChange(of: search) { _, text in
             visibleCount = 20
@@ -410,10 +378,11 @@ private struct ManualMatterSheet: View {
     @State private var title = ""
     @State private var detail = ""
     @State private var status: WorkEpisodeStatus = .explored
+    @State private var category: ReviewCategory = .unclassified
     @State private var eventAt = Date.now
     @State private var isSaving = false
     @State private var saveError: String?
-    private var note: ManualMatterNote { ManualMatterNote(title: title, detail: detail, status: status, eventAt: eventAt) }
+    private var note: ManualMatterNote { ManualMatterNote(title: title, detail: detail, status: status, eventAt: eventAt, reviewCategory: category) }
 
     init(title: String = "", save: @escaping (ManualMatterNote) async -> Bool) {
         _title = State(initialValue: title)
@@ -428,6 +397,9 @@ private struct ManualMatterSheet: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("主题名称").font(.headline)
                 TextField("例如：账单导出修复（3–80 字）", text: $title).textFieldStyle(.roundedBorder)
+            }
+            Picker("回顾分类", selection: $category) {
+                ForEach(ReviewCategory.allCases) { Text($0.title).tag($0) }
             }
             HStack {
                 Picker("当前状态", selection: $status) {

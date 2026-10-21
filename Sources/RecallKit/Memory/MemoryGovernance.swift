@@ -136,6 +136,7 @@ public struct RecentlyDeletedMemory: Identifiable, Codable, Sendable {
     public var previousConversationSummaryCoveredMessageCount: Int?
     public var addedSuppressionRuleIDs: [UUID]
     public var matterCorrections: [MatterCorrection]?
+    public var weeklyReports: [WeeklyReport]?
 
     public init(
         id: UUID = UUID(),
@@ -180,6 +181,7 @@ public struct RecentlyDeletedMemory: Identifiable, Codable, Sendable {
         self.previousConversationSummaryCoveredMessageCount = previousConversationSummaryCoveredMessageCount
         self.addedSuppressionRuleIDs = addedSuppressionRuleIDs
         self.matterCorrections = nil
+        self.weeklyReports = nil
     }
 
     public var screenshotPaths: [String] { captures.compactMap(\.imageRelativePath) }
@@ -210,7 +212,7 @@ public enum MemoryGovernance {
         return MemoryDeletionImpact(
             captureCount: captures.count,
             screenshotCount: captures.filter { $0.imageRelativePath != nil }.count,
-            summaryCount: summaries.count,
+            summaryCount: summaries.count + state.weeklyReports.filter { !$0.sourceIDs.isDisjoint(with: captureIDs) }.count,
             summaryItemCount: summaryItems.count,
             reminderCount: reminders.count,
             conversationCount: messages.count,

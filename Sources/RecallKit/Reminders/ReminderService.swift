@@ -744,6 +744,25 @@ public final class LocalNotificationScheduler {
         }
     }
 
+    public func deliverWeeklyReview(_ report: WeeklyReport) async throws {
+        let center = try notificationCenter()
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+            throw ReminderNotificationError.authorizationRequired
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "你的\(report.template.name)已整理好"
+        content.body = "回看这段时间的变化与经历。"
+        content.sound = .default
+        content.userInfo = ["weeklyReportID": report.id.uuidString]
+        let identifier = "im.recall.app.weekly-review." + report.id.uuidString
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
+        do {
+            try await center.add(UNNotificationRequest(identifier: identifier, content: content,
+                trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)))
+        } catch { throw notificationError(from: error) }
+    }
+
     public func cancelDailyReview() {
         guard isNotificationHostAvailable else { return }
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["im.recall.app.daily-review"])
