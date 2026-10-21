@@ -240,6 +240,13 @@ enum MemoryKnowledgeVerification {
         let retrieval = MemoryRetrievalEngine().plan(question: "账单导出后来进展怎样", state: indexed, fallback: [])
         try expect(retrieval.evidence.contains { $0.ocrText.contains("已验证通过") }, "问一问未读取统一最新事实")
         try expect(retrieval.sourceIDs.values.allSatisfy { !$0.contains(other.id) }, "问一问把他人结果归给本人")
+        let (storage, store) = try fixture()
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        try await store.addCapture(owned)
+        try await store.saveMatterCorrection(MatterCorrection(evidenceIDs: [owned.id], kind: .eventDate, eventAt: now.addingTimeInterval(-86_400)))
+        try await store.updateLLMConfiguration(LLMConfiguration(provider: .localOnly))
+        let answer = try await MemoryAssistant(store: store).ask("账单导出后来进展怎样")
+        try expect(answer.citations.contains(owned.id), "更正发生日期后被误判为生成期间来源变化，无法正常回答")
     }
     static func experiences() throws {
         let old = capture("[聊天·自己] 账单导出分页仍然失败。", day: .now.addingTimeInterval(-86_400 * 3))

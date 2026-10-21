@@ -7,6 +7,7 @@ struct MemoryKnowledgeView: View {
     @State private var category = 0
     @State private var includeHistory = false
     @State private var visibleCount = 20
+    @State private var aliasVisibleCount = 20
     @State private var editing: MemoryClaim?
     @State private var adding = false
     @State private var source: CaptureRecord?
@@ -22,6 +23,9 @@ struct MemoryKnowledgeView: View {
                 && item.scope != .conversation
         }
     }
+    private var entities: [MemoryEntity] {
+        model.state.memoryKnowledge.entities.filter { search.isEmpty || ($0.name + $0.aliases.joined()).localizedCaseInsensitiveContains(search) }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             introduction
@@ -36,7 +40,7 @@ struct MemoryKnowledgeView: View {
             retentionSettings
         }
         .onChange(of: category) { _, _ in visibleCount = 20 }
-        .onChange(of: search) { _, _ in visibleCount = 20 }
+        .onChange(of: search) { _, _ in visibleCount = 20; aliasVisibleCount = 20 }
         .sheet(isPresented: $adding) {
             MemoryAgreementEditor(claim: nil, topics: model.state.memoryKnowledge.entities) { content, scope, scopeID, until in
                 await model.saveMemoryAgreement(content: content, scope: scope, scopeID: scopeID, validUntil: until)
@@ -145,7 +149,7 @@ struct MemoryKnowledgeView: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text("为常用简称或不同叫法建立关联，问一问会据此补查原始记录。")
                     .font(.callout).foregroundStyle(.secondary)
-                ForEach(Array(model.state.memoryKnowledge.entities.filter { search.isEmpty || ($0.name + $0.aliases.joined()).localizedCaseInsensitiveContains(search) }.prefix(visibleCount))) { entity in
+                ForEach(Array(entities.prefix(aliasVisibleCount))) { entity in
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(entity.name)
@@ -155,6 +159,7 @@ struct MemoryKnowledgeView: View {
                         Button("编辑别名") { aliases = entity }
                     }
                 }
+                if entities.count > aliasVisibleCount { Button("再显示 20 个主题") { aliasVisibleCount += 20 } }
             }.padding(.top, 16)
         }.padding(20).background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 16))
     }

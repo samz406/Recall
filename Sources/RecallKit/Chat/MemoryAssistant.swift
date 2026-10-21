@@ -197,7 +197,7 @@ public final class MemoryAssistant {
         let usedSourceIDs = Set(plan.evidence.flatMap { retrieval.sourceIDs[$0.id] ?? [$0.id] } + retrieval.preferenceSourceIDs)
         let legacyIDs = Set(state.dailySummaries.filter { $0.sourceCaptureIDs.isEmpty }.map(\.id)).intersection(usedSourceIDs)
         guard legacyIDs.isSubset(of: Set(latestState.dailySummaries.map(\.id))) else { throw LLMError.serviceError("历史回顾已更新，请重新提问。") }
-        let currentSources = Dictionary(uniqueKeysWithValues: latestState.captures.map { ($0.id, $0) })
+        let currentSources = Dictionary(uniqueKeysWithValues: latestState.correctedForAnalysis().captures.map { ($0.id, $0) })
         let changedSource = state.captures.contains { source in
             guard usedSourceIDs.contains(source.id) else { return false }
             guard let current = currentSources[source.id] else { return true }
@@ -207,7 +207,8 @@ public final class MemoryAssistant {
         let personalBefore = state.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }
         let personalAfter = latestState.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }
         guard !changedSource, Set(personalBefore.map(\.id)) == Set(personalAfter.map(\.id)),
-              state.memoryKnowledge.suppressedKeys == latestState.memoryKnowledge.suppressedKeys else {
+              state.memoryKnowledge.suppressedKeys == latestState.memoryKnowledge.suppressedKeys,
+              MemoryKnowledgeEngine().sourcesUsable(Set(retrieval.preferenceSourceIDs), in: latestState) else {
             throw LLMError.serviceError("记忆或约定已更新，请重新提问以使用最新内容。")
         }
         let formattedContent = ChatResponseFormatter().format(response.content)
