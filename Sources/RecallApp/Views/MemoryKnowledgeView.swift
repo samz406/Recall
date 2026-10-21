@@ -38,10 +38,14 @@ struct MemoryKnowledgeView: View {
         .onChange(of: category) { _, _ in visibleCount = 20 }
         .onChange(of: search) { _, _ in visibleCount = 20 }
         .sheet(isPresented: $adding) {
-            MemoryAgreementEditor(claim: nil) { content, scope in await model.saveMemoryAgreement(content: content, scope: scope) }
+            MemoryAgreementEditor(claim: nil, topics: model.state.memoryKnowledge.entities) { content, scope, scopeID, until in
+                await model.saveMemoryAgreement(content: content, scope: scope, scopeID: scopeID, validUntil: until)
+            }
         }
         .sheet(item: $editing) { claim in
-            MemoryAgreementEditor(claim: claim) { content, scope in await model.saveMemoryAgreement(content: content, scope: scope, replacing: claim) }
+            MemoryAgreementEditor(claim: claim, topics: model.state.memoryKnowledge.entities) { content, scope, scopeID, until in
+                await model.saveMemoryAgreement(content: content, scope: scope, scopeID: scopeID, validUntil: until, replacing: claim)
+            }
         }
         .sheet(item: $source) { CaptureDetailSheet(capture: $0).environmentObject(model) }
         .sheet(item: $aliases) { entity in
@@ -173,9 +177,13 @@ struct MemoryKnowledgeView: View {
 private struct MemoryAgreementEditor: View {
     @Environment(\.dismiss) private var dismiss
     let claim: MemoryClaim?
-    let save: (String, MemoryScope) async -> Bool
+    let topics: [MemoryEntity]
+    let save: (String, MemoryScope, String?, Date?) async -> Bool
     @State private var content = ""
     @State private var scope: MemoryScope = .global
+    @State private var subjectID = ""
+    @State private var expires = false
+    @State private var until = Date.now.addingTimeInterval(86_400 * 7)
     @State private var saving = false
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -185,18 +193,29 @@ private struct MemoryAgreementEditor: View {
             TextEditor(text: $content).font(.body).frame(height: 150).padding(10)
                 .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 12))
             Picker("适用范围", selection: $scope) {
-                ForEach(MemoryScope.allCases.filter { $0 != .conversation && $0 != .project }, id: \.self) { Text($0.title).tag($0) }
+                ForEach(MemoryScope.allCases.filter { $0 != .conversation }, id: \.self) { Text($0.title).tag($0) }
             }
+            if scope == .project {
+                Picker("适用主题", selection: $subjectID) {
+                    Text("选择主题").tag("")
+                    ForEach(topics) { Text($0.name).tag($0.id) }
+                }
+            }
+            Toggle("设置有效期", isOn: $expires)
+            if expires { DatePicker("有效至", selection: $until, in: Date.now...) }
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(saving ? "正在保存…" : "保存") {
                     saving = true
-                    Task { if await save(content, scope) { dismiss() }; saving = false }
-                }.buttonStyle(.borderedProminent).disabled(saving || content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || content.count > 800)
+                    Task { if await save(content, scope, scope == .project ? subjectID : nil, expires ? until : nil) { dismiss() }; saving = false }
+                }.buttonStyle(.borderedProminent).disabled(saving || content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || content.count > 800 || (scope == .project && subjectID.isEmpty))
             }
         }.padding(28).frame(width: 620).disabled(saving).interactiveDismissDisabled(saving)
-            .onAppear { content = claim?.content ?? ""; scope = claim?.scope == .project ? .global : (claim?.scope ?? .global) }
+            .onAppear {
+                content = claim?.content ?? ""; scope = claim?.scope ?? .global; subjectID = claim?.scopeID ?? ""
+                expires = claim?.validUntil != nil; until = claim?.validUntil ?? Date.now.addingTimeInterval(86_400 * 7)
+            }
     }
 }
 

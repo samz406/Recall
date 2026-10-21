@@ -282,6 +282,10 @@ public actor FileMemoryStore {
         let previousID = conversationID
         let result = ConversationMessage(role: .system, content: "已清空当前会话，可以开始新的对话。")
         state.messages = [result]
+        for i in state.memoryKnowledge.claims.indices where state.memoryKnowledge.claims[i].scope == .conversation {
+            state.memoryKnowledge.claims[i].state = .expired
+            state.memoryKnowledge.claims[i].validUntil = .now
+        }
         state.conversationSummary = nil
         state.conversationSummaryCoveredMessageCount = 0
         conversationID = UUID()
@@ -302,6 +306,7 @@ public actor FileMemoryStore {
         correction.evidenceIDs = correction.evidenceIDs.filter(available.contains)
         guard !correction.evidenceIDs.isEmpty else { return }
         state.matterCorrections.append(correction)
+        invalidateMemoryOutputs(sourceIDs: Set(correction.evidenceIDs))
         // Prevent old assistant conclusions from surviving a correction via conversation compression.
         state.conversationSummary = nil
         state.conversationSummaryCoveredMessageCount = state.messages.count
@@ -322,6 +327,8 @@ public actor FileMemoryStore {
     }
 
     public func removeMatterCorrection(id: UUID) throws {
+        let sourceIDs = Set(state.matterCorrections.filter { $0.id == id }.flatMap(\.evidenceIDs))
+        invalidateMemoryOutputs(sourceIDs: sourceIDs)
         state.matterCorrections.removeAll { $0.id == id }
         state.conversationSummary = nil
         state.conversationSummaryCoveredMessageCount = 0
@@ -339,6 +346,7 @@ public actor FileMemoryStore {
     }
 
     public func isIntelligenceIndexAvailable() -> Bool { intelligenceIndex != nil }
+    public func memoryIndexNeedsRebuild() -> Bool { indexNeedsRebuild || intelligenceIndex == nil }
 
     public func indexedCaptureIDs(matching query: String, limit: Int = 12) -> [UUID] {
         guard !indexNeedsRebuild else { return [] }
@@ -1028,6 +1036,7 @@ public actor FileMemoryStore {
         let previous = state
         var paths = Set(state.memoryKnowledge.pendingScreenshotDeletions)
         var expired: [UUID] = []
+        let durableIDs = Set(state.memoryKnowledge.claims.filter { $0.explicit && $0.usable(at: now) }.flatMap(\.sourceIDs))
         for i in state.captures.indices {
             let record = state.captures[i]
             guard let rule = state.rules.first(where: { $0.template == record.eventTemplate }) else { continue }
@@ -1038,7 +1047,7 @@ public actor FileMemoryStore {
             }
             guard age > Double(rule.retainTextDays) * 86_400 else { continue }
             if let directive = record.memoryDirective, state.memoryKnowledgeSettings.retainExplicitMemories,
-               directive.scope != .conversation {
+               directive.scope != .conversation, durableIDs.contains(record.id) {
                 if let path = record.imageRelativePath { paths.insert(path) }
                 // Keep only the user's explicit agreement and minimal attribution, not the original screen.
                 state.captures[i].ocrText = directive.content

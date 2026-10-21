@@ -44,7 +44,7 @@ extension FileMemoryStore {
         } catch { state = previous; throw error }
     }
 
-    public func correctMemory(id: UUID, content: String, scope: MemoryScope, scopeID: String? = nil) throws {
+    public func correctMemory(id: UUID, content: String, scope: MemoryScope, scopeID: String? = nil, validUntil: Date? = nil) throws {
         guard let claim = state.memoryKnowledge.claims.first(where: { $0.id == id }) else { return }
         let previous = state
         let oldDirective = state.captures.first { claim.sourceIDs.contains($0.id) }?.memoryDirective
@@ -52,7 +52,7 @@ extension FileMemoryStore {
             state.memoryKnowledge.suppressedKeys.append(claim.key)
             invalidateMemoryOutputs(sourceIDs: Set(claim.sourceIDs))
             let directive = MemoryDirective(content: content, key: oldDirective?.key ?? claim.key,
-                kind: claim.kind, scope: scope, scopeID: scopeID)
+                kind: claim.kind, scope: scope, scopeID: scopeID, validUntil: validUntil)
             _ = try remember(directive)
         } catch { state = previous; throw error }
     }
@@ -61,7 +61,7 @@ extension FileMemoryStore {
         guard let index = state.memoryKnowledge.entities.firstIndex(where: { $0.id == entityID }) else { return }
         let previous = state
         let safe = aliases.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { (2...60).contains($0.count) }.uniqued()
+            .filter { (2...60).contains($0.count) }.memoryUnique()
         state.memoryKnowledge.entities[index].aliases = Array(safe.prefix(12))
         do { try persist() } catch { state = previous; throw error }
     }

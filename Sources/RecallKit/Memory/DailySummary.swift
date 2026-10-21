@@ -945,6 +945,8 @@ public struct DailySummaryGenerator: Sendable {
         feedback: [InsightFeedback] = [],
         existingRoutines: [LearnedRoutine] = [],
         existingReminders: [ReminderCandidate] = [],
+        memoryKnowledge: MemoryKnowledge = MemoryKnowledge(),
+        memoryKnowledgeSettings: MemoryKnowledgeSettings = MemoryKnowledgeSettings(),
         responder: (any LLMResponding)? = nil,
         calendar: Calendar = .current
     ) async throws -> DailySummaryGeneration {
@@ -965,8 +967,8 @@ public struct DailySummaryGenerator: Sendable {
             calendar: calendar
         )
         var evidenceState = RecallState(captures: captures, episodes: existingEpisodes, projects: previousProjects,
-            userMemories: existingMemories)
-        evidenceState.memoryKnowledge = MemoryKnowledgeEngine().reconcile(evidenceState, force: true)
+            userMemories: existingMemories, memoryKnowledge: memoryKnowledge, memoryKnowledgeSettings: memoryKnowledgeSettings)
+        evidenceState.memoryKnowledge = MemoryKnowledgeEngine().reconcile(evidenceState)
         let consolidation = MemoryKnowledgeEngine().canonicalConsolidation(day: day, state: evidenceState,
             fallback: extractedConsolidation, calendar: calendar)
         guard !records.isEmpty else {

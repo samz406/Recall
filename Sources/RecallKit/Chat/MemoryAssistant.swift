@@ -62,7 +62,8 @@ public final class MemoryAssistant {
         state.messages.removeAll { $0.id == userMessage.id }
 
         let recordsAllowedInChat = state.captures.filter { capture in
-            state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
+            let participates = state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
+            return participates && !state.privacy.excludedBundleIdentifiers.contains(capture.sourceBundleIdentifier ?? "")
         }.map { capture in
             var copy = capture
             let originalDate = originalState.captures.first { $0.id == capture.id }?.createdAt ?? capture.createdAt
@@ -172,8 +173,22 @@ public final class MemoryAssistant {
               Set(state.captures.map(\.id)).isSubset(of: Set(latestState.captures.map(\.id))) else {
             throw LLMError.serviceError("记忆已更正或删除，请重新提问以使用最新内容。")
         }
+        let usedSourceIDs = Set(plan.evidence.flatMap { retrieval.sourceIDs[$0.id] ?? [$0.id] })
+        let currentSources = Dictionary(uniqueKeysWithValues: latestState.captures.map { ($0.id, $0) })
+        let changedSource = state.captures.contains { source in
+            guard usedSourceIDs.contains(source.id) else { return false }
+            guard let current = currentSources[source.id] else { return true }
+            return MemoryKnowledgeEngine.version(of: source, corrections: state.matterCorrections)
+                != MemoryKnowledgeEngine.version(of: current, corrections: latestState.matterCorrections)
+        }
+        let personalBefore = state.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }
+        let personalAfter = latestState.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }
+        guard !changedSource, Set(personalBefore.map(\.id)) == Set(personalAfter.map(\.id)),
+              state.memoryKnowledge.suppressedKeys == latestState.memoryKnowledge.suppressedKeys else {
+            throw LLMError.serviceError("记忆或约定已更新，请重新提问以使用最新内容。")
+        }
         let formattedContent = ChatResponseFormatter().format(response.content)
-        let citations = response.citedCaptureIDs.flatMap { id in retrieval.sourceIDs[id] ?? [id] }.uniqued()
+        let citations = response.citedCaptureIDs.flatMap { id in retrieval.sourceIDs[id] ?? [id] }.memoryUnique()
         let assistantMessage = ConversationMessage(role: .assistant, content: formattedContent, citations: citations)
         try Task.checkCancellation()
         try await store.addMessage(assistantMessage, inConversation: conversation.id)

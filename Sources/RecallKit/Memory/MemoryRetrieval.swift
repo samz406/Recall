@@ -15,7 +15,8 @@ public struct MemoryRetrievalEngine: Sendable {
                      limit: Int = 14, now: Date = .now) -> MemoryRetrievalPlan {
         let safe = state.correctedForAnalysis()
         let allowed = safe.captures.filter { record in
-            state.rules.first(where: { $0.template == record.eventTemplate })?.participatesInChat ?? true
+            let participates = state.rules.first(where: { $0.template == record.eventTemplate })?.participatesInChat ?? true
+            return participates && !state.privacy.excludedBundleIdentifiers.contains(record.sourceBundleIdentifier ?? "")
         }
         let byID = Dictionary(uniqueKeysWithValues: allowed.map { ($0.id, $0) })
         let allowedIDs = Set(byID.keys)
@@ -40,6 +41,7 @@ public struct MemoryRetrievalEngine: Sendable {
             return count * 4 + entity + purpose
         }
         let candidates = active.filter { claim in
+            if claim.scope == .conversation && claim.scopeID != conversationID?.uuidString { return false }
             if let time {
                 guard claim.date >= time.startDate && claim.date <= time.endDate else { return false }
                 return intent == .overview ? claim.kind == .event : relevance(claim) > 0

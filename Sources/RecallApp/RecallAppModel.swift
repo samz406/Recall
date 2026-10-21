@@ -146,6 +146,10 @@ final class RecallAppModel: ObservableObject {
             }
             if !cleaned.isEmpty { try await store.finishScreenshotCleanup(paths: cleaned) }
             let after = await store.snapshot()
+            if await store.memoryIndexNeedsRebuild() {
+                recordDiagnostic(.warning, source: "Memory", message: "本地索引暂不可用，已回退内存检索，将重建索引")
+                memoryMaintenanceAfter = Date.now.addingTimeInterval(60)
+            }
             let remaining = Set(after.reminders.map(\.id))
             for reminder in before.reminders where !remaining.contains(reminder.id) { notificationScheduler.cancel(reminder) }
             if failed { memoryMaintenanceAfter = Date.now.addingTimeInterval(60) }
@@ -169,10 +173,10 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
-    func saveMemoryAgreement(content: String, scope: MemoryScope, replacing: MemoryClaim? = nil) async -> Bool {
+    func saveMemoryAgreement(content: String, scope: MemoryScope, scopeID: String? = nil, validUntil: Date? = nil, replacing: MemoryClaim? = nil) async -> Bool {
         do {
-            if let replacing { try await store.correctMemory(id: replacing.id, content: content, scope: scope, scopeID: replacing.scopeID) }
-            else { _ = try await store.remember(MemoryDirective(content: content, key: "manual:" + UUID().uuidString, scope: scope)) }
+            if let replacing { try await store.correctMemory(id: replacing.id, content: content, scope: scope, scopeID: scopeID, validUntil: validUntil) }
+            else { _ = try await store.remember(MemoryDirective(content: content, key: "manual:" + UUID().uuidString, scope: scope, scopeID: scopeID, validUntil: validUntil)) }
             await refresh()
             return true
         } catch { recordError(error, source: "Memory", message: "保存记忆约定失败"); return false }
@@ -1289,6 +1293,8 @@ final class RecallAppModel: ObservableObject {
                     feedback: analysisState.insightFeedback,
                     existingRoutines: analysisState.learnedRoutines,
                     existingReminders: analysisState.reminders,
+                    memoryKnowledge: analysisState.memoryKnowledge,
+                    memoryKnowledgeSettings: analysisState.memoryKnowledgeSettings,
                     responder: responder
                 )
                 let summary = DailySummary(

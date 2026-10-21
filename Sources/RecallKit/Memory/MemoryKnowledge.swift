@@ -176,13 +176,13 @@ public struct MemoryKnowledgeEngine: Sendable {
         var result = fallback
         let files = MatterMemoryEngine().observedFiles(in: state)
         let sources = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
-        let episodes = files.flatMap { file in
+        let episodes: [WorkEpisode] = files.flatMap { file in
             file.events.filter { calendar.isDate($0.date, inSameDayAs: day) }.map { event in
                 WorkEpisode(id: event.id, day: day, startedAt: event.date, endedAt: event.date,
                     projectKey: file.id, projectName: file.title, title: file.title, intent: file.title,
                     action: event.detail, outcome: event.resultStatus == .completed || event.status == .completed ? event.detail : nil,
                     nextAction: event.nextAction, status: event.status, importance: event.status == .blocked ? 0.9 : 0.8,
-                    confidence: 0.8, sourceApps: event.evidenceIDs.compactMap { sources[$0]?.sourceAppName }.uniqued(), evidenceIDs: event.evidenceIDs)
+                    confidence: 0.8, sourceApps: event.evidenceIDs.compactMap { sources[$0]?.sourceAppName }.memoryUnique(), evidenceIDs: event.evidenceIDs)
             }
         }
         result.episodes = episodes
@@ -191,7 +191,7 @@ public struct MemoryKnowledgeEngine: Sendable {
                 nextAction: file.latest.nextAction, blockers: file.latest.status == .blocked ? [file.latest.detail] : [],
                 evidenceIDs: file.evidenceIDs, confidence: 0.8, lastActiveAt: file.latest.date)
         }
-        let knowledge = reconcile(state, force: true)
+        let knowledge = reconcile(state)
         result.memories = knowledge.claims.filter { $0.kind.isPersonal && $0.usable() }.map { claim in
             let kind: UserMemoryKind
             switch claim.kind {
@@ -301,6 +301,22 @@ public struct MemoryKnowledgeEngine: Sendable {
                 if let name = MemoryDirective.personName(in: text) { candidates[candidates.count - 1].subjectID = "person:" + MemoryDirective.normalized(name) }
             }
         }
+        // Incoming requests are candidates for the user to arrange, never confirmed personal commitments.
+        let actions = ReminderExtractor().candidates(from: safe.captures.filter { $0.memoryDirective == nil }, existing: [])
+        for action in actions {
+            let evidence = action.sourceCaptureIDs.compactMap { id -> MemoryEvidence? in
+                guard let source = sources[id], let segment = RecordedText.segments(in: source).first(where: {
+                    $0.text.localizedCaseInsensitiveContains(action.title) || action.title.localizedCaseInsensitiveContains($0.text)
+                }) else { return nil }
+                let speaker = segment.speaker == .user ? "自己" : "对方向本人提出的请求"
+                return proof(source, quote: segment.text, ordinal: segment.ordinal, speaker: speaker)
+            }
+            var proposed = claim(key: "action:" + action.semanticKey, subject: "action:" + action.semanticKey,
+                title: action.title, content: evidence.map(\.quote).joined(separator: "\n"), kind: .action,
+                evidence: evidence, status: .pending)
+            proposed.state = .tentative
+            candidates.append(proposed)
+        }
         // Repeated observations are one assertion with more sources, never independent confirmations.
         let grouped = Dictionary(grouping: candidates, by: \.key)
         var merged: [MemoryClaim] = grouped.values.compactMap { values in
@@ -342,7 +358,7 @@ public struct MemoryKnowledgeEngine: Sendable {
                   file.events.contains(where: { $0.id != resultEvent.id && ($0.status == .blocked || $0.status == .progressed) }) else { continue }
             let supporting = merged.filter { $0.subjectID == file.id && $0.kind == .event && $0.date <= resultEvent.date }
             var experience = claim(key: "experience:" + file.id, subject: file.id, title: file.title,
-                content: supporting.map(\.content).uniqued().joined(separator: "\n"), kind: .experience,
+                content: supporting.map(\.content).memoryUnique().joined(separator: "\n"), kind: .experience,
                 scope: .project, scopeID: file.id, evidence: supporting.flatMap(\.evidence), status: .completed)
             experience.dependencies = supporting.map(\.id).filter(activeIDs.contains)
             merged.append(experience)
@@ -361,7 +377,7 @@ public struct MemoryKnowledgeEngine: Sendable {
         for (key, items) in people {
             guard let first = items.first else { continue }
             result.entities.append(MemoryEntity(id: key, name: MemoryDirective.personName(in: first.content) ?? first.title,
-                aliases: oldEntities[key]?.aliases ?? [], kind: "person", sourceIDs: items.flatMap(\.sourceIDs).uniqued()))
+                aliases: oldEntities[key]?.aliases ?? [], kind: "person", sourceIDs: items.flatMap(\.sourceIDs).memoryUnique()))
         }
         result.sourceVersions = versions; result.updatedAt = now
         result.dependencies = dependencies(in: state, claims: result.claims)
@@ -374,10 +390,12 @@ public struct MemoryKnowledgeEngine: Sendable {
             return MemoryDependency(outputID: id, kind: kind, sourceIDs: sources,
                 claimIDs: claims.filter { !Set($0.sourceIDs).isDisjoint(with: ids) }.map(\.id))
         }
-        return state.dailySummaries.map { link($0.id, "daily", $0.sourceCaptureIDs) }
-            + state.weeklyReports.map { link($0.id, "weekly", Array($0.sourceIDs)) }
-            + state.reminders.map { link($0.id, "reminder", $0.sourceCaptureIDs) }
-            + state.messages.filter { $0.role == .assistant }.map { link($0.id, "answer", $0.citations) }
+        var links: [MemoryDependency] = []
+        for summary in state.dailySummaries { links.append(link(summary.id, "daily", summary.sourceCaptureIDs)) }
+        for report in state.weeklyReports { links.append(link(report.id, "weekly", Array(report.sourceIDs))) }
+        for reminder in state.reminders { links.append(link(reminder.id, "reminder", reminder.sourceCaptureIDs)) }
+        for message in state.messages where message.role == .assistant { links.append(link(message.id, "answer", message.citations)) }
+        return links
     }
 
     public func files(in state: RecallState) -> [MatterFile]? {
@@ -398,5 +416,13 @@ public struct MemoryKnowledgeEngine: Sendable {
             guard let last = events.last else { return nil }
             return MatterFile(id: key, title: last.title, events: events)
         }.sorted { $0.latest.date > $1.latest.date }
+    }
+}
+
+// Stable, order-preserving deduplication shared by the memory pipeline.
+extension Array where Element: Hashable {
+    func memoryUnique() -> [Element] {
+        var seen: Set<Element> = []
+        return filter { seen.insert($0).inserted }
     }
 }
