@@ -4,7 +4,7 @@ extension FileMemoryStore {
     public func organizeMemory(force: Bool = false, now: Date = .now) throws {
         let previous = state
         do {
-            state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state, force: force, now: now)
+            applyKnowledge(MemoryKnowledgeEngine().reconcile(state, force: force, now: now))
             try persist()
         } catch { state = previous; throw error }
     }
@@ -25,7 +25,12 @@ extension FileMemoryStore {
             ocrText: directive.content, textOrigin: .userInput, memoryDirective: directive)
         do {
             state.captures.insert(record, at: 0)
-            state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state, force: true, now: now)
+            var input = state
+            if !state.memoryKnowledgeSettings.automaticOrganization {
+                let knownIDs = Set(state.memoryKnowledge.sourceVersions.keys).union([record.id.uuidString])
+                input.captures = input.captures.filter { knownIDs.contains($0.id.uuidString) }
+            }
+            applyKnowledge(MemoryKnowledgeEngine().reconcile(input, force: true, now: now))
             state.conversationSummary = nil
             state.conversationSummaryCoveredMessageCount = state.messages.count
             try persist()
@@ -39,7 +44,7 @@ extension FileMemoryStore {
         do {
             state.memoryKnowledge.suppressedKeys.append(claim.key)
             invalidateMemoryOutputs(sourceIDs: Set(claim.sourceIDs))
-            state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state, force: true, now: now)
+            applyKnowledge(MemoryKnowledgeEngine().reconcile(state, force: true, now: now))
             try persist()
         } catch { state = previous; throw error }
     }
@@ -81,6 +86,15 @@ extension FileMemoryStore {
         }
         state.conversationSummary = nil
         state.conversationSummaryCoveredMessageCount = state.messages.count
+    }
+
+    func applyKnowledge(_ knowledge: MemoryKnowledge) {
+        let states = Dictionary(uniqueKeysWithValues: knowledge.claims.map { ($0.id, $0.state) })
+        let changedSources = Set(state.memoryKnowledge.claims.filter {
+            $0.state == .active && states[$0.id] != .active
+        }.flatMap(\.sourceIDs))
+        state.memoryKnowledge = knowledge
+        invalidateMemoryOutputs(sourceIDs: changedSources)
     }
 
     public func finishScreenshotCleanup(paths: [String]) throws {

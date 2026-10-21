@@ -112,7 +112,7 @@ public final class MemoryAssistant {
         }
         let retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: retrieved,
             conversationID: conversation.id, limit: contextManager.maxEvidenceRecords)
-        let selectedEvidence = retrieval.evidence.isEmpty ? retrieved : retrieval.evidence
+        let selectedEvidence = retrieval.evidence
         let plan = contextManager.plan(
             history: state.messages,
             existingSummary: state.conversationSummary,
@@ -173,7 +173,9 @@ public final class MemoryAssistant {
               Set(state.captures.map(\.id)).isSubset(of: Set(latestState.captures.map(\.id))) else {
             throw LLMError.serviceError("记忆已更正或删除，请重新提问以使用最新内容。")
         }
-        let usedSourceIDs = Set(plan.evidence.flatMap { retrieval.sourceIDs[$0.id] ?? [$0.id] })
+        let usedSourceIDs = Set(plan.evidence.flatMap { retrieval.sourceIDs[$0.id] ?? [$0.id] } + retrieval.preferenceSourceIDs)
+        let legacyIDs = Set(state.dailySummaries.filter { $0.sourceCaptureIDs.isEmpty }.map(\.id)).intersection(usedSourceIDs)
+        guard legacyIDs.isSubset(of: Set(latestState.dailySummaries.map(\.id))) else { throw LLMError.serviceError("历史回顾已更新，请重新提问。") }
         let currentSources = Dictionary(uniqueKeysWithValues: latestState.captures.map { ($0.id, $0) })
         let changedSource = state.captures.contains { source in
             guard usedSourceIDs.contains(source.id) else { return false }
@@ -188,7 +190,7 @@ public final class MemoryAssistant {
             throw LLMError.serviceError("记忆或约定已更新，请重新提问以使用最新内容。")
         }
         let formattedContent = ChatResponseFormatter().format(response.content)
-        let citations = response.citedCaptureIDs.flatMap { id in retrieval.sourceIDs[id] ?? [id] }.memoryUnique()
+        let citations = (response.citedCaptureIDs.flatMap { id in retrieval.sourceIDs[id] ?? [id] } + retrieval.preferenceSourceIDs).memoryUnique()
         let assistantMessage = ConversationMessage(role: .assistant, content: formattedContent, citations: citations)
         try Task.checkCancellation()
         try await store.addMessage(assistantMessage, inConversation: conversation.id)

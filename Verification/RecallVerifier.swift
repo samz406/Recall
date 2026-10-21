@@ -841,11 +841,12 @@ struct RecallVerifier {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
         let targetDay = calendar.date(from: DateComponents(year: 2026, month: 8, day: 23, hour: 12))!
-        let source = makeCapture(
+        var source = makeCapture(
             text: "待办：明天回复客户关于报价的邮件。今天完成了每日总结原型。",
             app: "Notes",
             createdAt: targetDay
         )
+        source.textOrigin = .userInput
         var unrelated = makeCapture(text: "前一天记录", app: "Notes", createdAt: targetDay.addingTimeInterval(-86_400))
         unrelated.eventTemplate = .dailyReview
 

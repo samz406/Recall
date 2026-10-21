@@ -66,7 +66,8 @@ enum MemoryKnowledgeVerification {
         try expect(here.contains("本次会话") && here.contains("详细"), "没有保留本次约定优先和任务范围")
         try expect(!elsewhere.contains("简洁") && !elsewhere.contains("工作周报"), "工作或本次约定污染了其他范围")
         try expect(MemoryDirective.parse("以后如何解决数据库死锁") == nil, "普通提问被误保存为长期约定")
-        _ = try await store.addCapture(capture("[聊天·自己] 我喜欢苹果。\n[聊天·自己] 我不喜欢苹果。"))
+        try await store.addCapture(capture("[聊天·自己] 我喜欢苹果。\n[聊天·自己] 我不喜欢苹果。"))
+        try await store.organizeMemory()
         state = await store.snapshot()
         try expect(state.memoryKnowledge.claims.filter { $0.kind == .preference && !$0.explicit }.allSatisfy { $0.state == .conflicted }, "矛盾偏好被静默合并为稳定结论")
         _ = try await assistant.ask("记住：妙妙的生日是九月十八日")
@@ -85,6 +86,7 @@ enum MemoryKnowledgeVerification {
             let record = capture("[聊天·自己] 账单导出第\(i)轮边界修复已验证通过。", day: day)
             records.append(record); try await store.addCapture(record)
         }
+        try await store.organizeMemory()
         var state = await store.snapshot()
         guard let entity = state.memoryKnowledge.entities.first else { throw Failure(text: "没有可维护别名的事项") }
         try await store.updateMemoryAliases(entityID: entity.id, aliases: ["报表下载", "账单下载"])

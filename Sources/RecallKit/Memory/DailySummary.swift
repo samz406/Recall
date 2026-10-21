@@ -1005,14 +1005,24 @@ public struct DailySummaryGenerator: Sendable {
 
         let sentEvidenceIDs = Set(records.map(\.id))
         let reviewableActions = Array(priorityTodos.filter { !Set($0.sourceCaptureIDs).isDisjoint(with: sentEvidenceIDs) }.prefix(12))
+        let activeProjectKeys = Set(consolidation.episodes.map(\.projectKey))
+        let scopeClaimIDs = Set(evidenceState.memoryKnowledge.claims.filter {
+            $0.usable() && ($0.scope == .global || ($0.scope == .project && activeProjectKeys.contains($0.scopeID ?? "")))
+        }.map(\.id))
+        let contextualMemories = Array(consolidation.memories.filter { scopeClaimIDs.contains($0.id) }.prefix(8))
+        let earliestContextDay = calendar.date(byAdding: .day, value: -14, to: calendar.startOfDay(for: day)) ?? day
+        let contextualProjects = Array(previousProjects.filter {
+            activeProjectKeys.contains($0.projectKey) && $0.lastActiveAt >= earliestContextDay && isUsableHistoricalProject($0)
+        }.prefix(8))
+        let contextualSourceIDs = Set(contextualMemories.flatMap(\.evidenceIDs) + contextualProjects.flatMap(\.evidenceIDs))
         let answer = try await responder.answer(to: LLMRequest(
             question: cloudPrompt(for: day, todos: reviewableActions),
             context: records,
             supplementaryContext: structuredContext(
                 targetDay: day,
-                activeProjectKeys: Set(consolidation.episodes.map(\.projectKey)),
-                previousProjects: previousProjects,
-                memories: consolidation.memories,
+                activeProjectKeys: activeProjectKeys,
+                previousProjects: contextualProjects,
+                memories: contextualMemories,
                 calendar: calendar
             )
         ))
@@ -1045,7 +1055,7 @@ public struct DailySummaryGenerator: Sendable {
         let finalItems = replacingActionItems(in: extractedItems, with: actions)
         return DailySummaryGeneration(
             content: DailySummaryItemParser.markdown(from: finalItems),
-            sourceCaptureIDs: records.map(\.id),
+            sourceCaptureIDs: Array(Set(records.map(\.id)).union(contextualSourceIDs)).sorted { $0.uuidString < $1.uuidString },
             todos: actions,
             items: finalItems,
             generationKind: hasValidModelResponse ? .cloud : .localFallback,

@@ -475,7 +475,13 @@ public struct WeeklyReviewEngine: Sendable {
                 template: template, responder: responder)
             items = composed.items; assisted = composed.assisted; pending = composed.pending
         }
-        let ids = Set(items.flatMap(\.sourceIDs))
+        var ids = Set(items.flatMap(\.sourceIDs))
+        if state.privacy.cloudUseEnabled && responder != nil {
+            let knowledge = MemoryKnowledgeEngine().reconcile(state)
+            let questionScope = template.kind == .work ? "工作周报" : (template.kind == .learning ? "学习回顾" : "个人回顾")
+            let context = MemoryRetrievalEngine().preferenceContext(question: questionScope, claims: knowledge.claims, conversationID: nil) ?? ""
+            for claim in knowledge.claims where claim.usable() && context.contains(claim.content) { ids.formUnion(claim.sourceIDs) }
+        }
         let versions = Dictionary(uniqueKeysWithValues: ids.compactMap { id in Self.sourceVersion(id: id, state: state).map { (id, $0) } })
         return WeeklyReport(createdAt: now, updatedAt: now, period: period, template: template, scope: scope,
             items: items, sourceVersions: versions, modelAssisted: assisted, refinementPending: pending)
@@ -504,6 +510,7 @@ public struct WeeklyReviewEngine: Sendable {
 
     public static func sourcesUnchanged(_ report: WeeklyReport, in state: RecallState) -> Bool {
         report.sourceVersions.allSatisfy { sourceVersion(id: $0.key, state: state) == $0.value }
+            && MemoryKnowledgeEngine().sourcesUsable(report.sourceIDs, in: state)
     }
 
     private func excerpt(_ event: MatterEvent) -> ReviewExcerpt {

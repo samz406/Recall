@@ -214,14 +214,27 @@ public struct MemoryKnowledgeEngine: Sendable {
         return result
     }
     public static func version(of capture: CaptureRecord, corrections: [MatterCorrection] = []) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
         let values = corrections.filter { $0.evidenceIDs.contains(capture.id) }.map { $0.id.uuidString }.joined()
-        let data = capture.ocrText + (capture.windowTitle ?? "") + (capture.manualMatter?.detail ?? "") + values
-        return SHA256.hash(data: Data(data.utf8)).map { String(format: "%02x", $0) }.joined()
+        let source = (try? encoder.encode(capture)) ?? Data(capture.ocrText.utf8)
+        return SHA256.hash(data: source + Data(values.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    public func sourcesUsable(_ ids: Set<UUID>, in state: RecallState) -> Bool {
+        let sources = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
+        let knowledge = reconcile(state)
+        let active = Set(knowledge.claims.filter { $0.usable() }.flatMap(\.sourceIDs))
+        return ids.allSatisfy { id in
+            guard let record = sources[id] else { return false }
+            return record.memoryDirective == nil || active.contains(id)
+        }
     }
     static func id(_ text: String) -> UUID { MatterEvidence.eventID(source: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, topic: text, ordinal: 0) }
 
     /// One source ledger for reviews, chat, and the topic browser. Explicit deletion is reconciled even while paused.
-    public func reconcile(_ state: RecallState, force: Bool = false, now: Date = .now) -> MemoryKnowledge {
+    public func reconcile(_ state: RecallState, force: Bool = false, now: Date = .now, allowNew: Bool = true) -> MemoryKnowledge {
         var result = state.memoryKnowledge
         let safe = state.correctedForAnalysis()
         let sources = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id, $0) })
@@ -236,7 +249,12 @@ public struct MemoryKnowledgeEngine: Sendable {
             if let until = claim.validUntil, until <= now { claim.state = .expired }
             return claim
         }
-        guard force || (state.memoryKnowledgeSettings.automaticOrganization && changed) else {
+        guard force || (allowNew && state.memoryKnowledgeSettings.automaticOrganization && changed) else {
+            result.entities = result.entities.compactMap { old in
+                var entity = old
+                entity.sourceIDs.removeAll { sources[$0] == nil }
+                return entity.sourceIDs.isEmpty ? nil : entity
+            }
             result.dependencies = dependencies(in: state, claims: result.claims)
             return result
         }
@@ -404,18 +422,25 @@ public struct MemoryKnowledgeEngine: Sendable {
                   ($0.id.uuidString, Self.version(of: $0, corrections: state.matterCorrections))
               }) else { return nil }
         let groups = Dictionary(grouping: state.memoryKnowledge.claims.filter { $0.kind == .event && $0.usable() }, by: \.subjectID)
-        return groups.compactMap { key, claims in
-            let events = claims.map { claim -> MatterEvent in
+        var files: [MatterFile] = []
+        for (key, claims) in groups {
+            var events: [MatterEvent] = []
+            for claim in claims {
+                let recordedAt = claim.evidence.map(\.recordedAt).min() ?? claim.validFrom
+                let eventAt = claim.evidence.compactMap(\.eventAt).min()
+                let status: WorkEpisodeStatus = claim.status ?? .explored
                 var event = MatterEvent(id: claim.id, title: claim.title, detail: claim.content,
-                    recordedAt: claim.evidence.map(\.recordedAt).min() ?? claim.validFrom,
-                    eventAt: claim.evidence.compactMap(\.eventAt).min(), status: claim.status ?? .explored,
+                    recordedAt: recordedAt, eventAt: eventAt, status: status,
                     evidenceIDs: claim.sourceIDs, nextAction: claim.nextAction)
-                event.resultStatus = claim.resultStatus; event.sequence = claim.evidence.first?.fragment ?? 0
-                return event
-            }.sorted { $0.date == $1.date ? $0.sequence < $1.sequence : $0.date < $1.date }
-            guard let last = events.last else { return nil }
-            return MatterFile(id: key, title: last.title, events: events)
-        }.sorted { $0.latest.date > $1.latest.date }
+                event.resultStatus = claim.resultStatus
+                event.sequence = claim.evidence.first?.fragment ?? 0
+                events.append(event)
+            }
+            events.sort { a, b in a.date == b.date ? a.sequence < b.sequence : a.date < b.date }
+            if let last = events.last { files.append(MatterFile(id: key, title: last.title, events: events)) }
+        }
+        files.sort { $0.latest.date > $1.latest.date }
+        return files
     }
 }
 

@@ -4,6 +4,7 @@ public struct MemoryRetrievalPlan: Sendable {
     public var evidence: [CaptureRecord]
     public var preferences: String?
     public var sourceIDs: [UUID: [UUID]]
+    public var preferenceSourceIDs: [UUID]
     public var passes: Int
 }
 
@@ -100,15 +101,22 @@ public struct MemoryRetrievalEngine: Sendable {
         for record in raw where evidence.count < limit {
             let ids: [UUID]
             if allowedIDs.contains(record.id) { ids = [record.id] }
-            else if let summary = safe.dailySummaries.first(where: { $0.id == record.id }) { ids = summary.sourceCaptureIDs }
+            else if let summary = safe.dailySummaries.first(where: { $0.id == record.id }) {
+                // Legacy reports remain labelled as unverified, deletable historical sources.
+                ids = summary.sourceCaptureIDs.isEmpty && state.matterCorrections.isEmpty && state.privacy.excludedBundleIdentifiers.isEmpty
+                    ? [summary.id] : summary.sourceCaptureIDs
+            }
             else if let episode = safe.episodes.first(where: { $0.id == record.id }) { ids = episode.evidenceIDs }
             else if let memory = safe.userMemories.first(where: { $0.id == record.id }) { ids = memory.evidenceIDs }
             else { continue }
-            guard !ids.isEmpty, Set(ids).isSubset(of: allowedIDs), Set(ids).isDisjoint(with: retiredSources) else { continue }
+            let legacy = ids == [record.id] && safe.dailySummaries.contains { $0.id == record.id && $0.sourceCaptureIDs.isEmpty }
+            guard !ids.isEmpty, legacy || Set(ids).isSubset(of: allowedIDs), Set(ids).isDisjoint(with: retiredSources) else { continue }
             evidence.append(record); sources[record.id] = ids
         }
         let preferences = preferenceContext(question: question, claims: active, conversationID: conversationID, entities: entityIDs)
+        let preferenceSources = active.filter { claim in preferences?.contains(claim.content) == true && claim.kind.isPersonal }.flatMap(\.sourceIDs).memoryUnique()
         return MemoryRetrievalPlan(evidence: evidence, preferences: preferences, sourceIDs: sources,
+            preferenceSourceIDs: preferenceSources,
             passes: selected.isEmpty && expanded.isEmpty ? 1 : 2)
     }
 

@@ -1308,7 +1308,8 @@ final class RecallAppModel: ObservableObject {
                 )
                 let current = await store.snapshot()
                 guard current.matterCorrections.map(\.id) == analysisState.matterCorrections.map(\.id),
-                      Set(summary.sourceCaptureIDs).isSubset(of: Set(current.captures.map(\.id))) else {
+                      Set(summary.sourceCaptureIDs).isSubset(of: Set(current.captures.map(\.id))),
+                      MemoryKnowledgeEngine().sourcesUsable(Set(summary.sourceCaptureIDs), in: current) else {
                     pendingDailySummaries.append((day, reason))
                     return
                 }

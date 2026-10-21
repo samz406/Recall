@@ -164,7 +164,6 @@ public struct MatterMemoryEngine: Sendable {
 
     func observedFiles(in state: RecallState, calendar: Calendar = .current) -> [MatterFile] {
         let safe = state.correctedForAnalysis()
-        let available = Set(safe.captures.map(\.id))
         let captured = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
         var groups: [String: [MatterEvent]] = [:]
         var names: [String: String] = [:]

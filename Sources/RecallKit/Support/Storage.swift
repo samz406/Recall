@@ -598,6 +598,7 @@ public actor FileMemoryStore {
     }
 
     public func deleteDailySummary(id: UUID) throws {
+        invalidateMemoryOutputs(sourceIDs: [id])
         state.dailySummaries.removeAll { $0.id == id }
         try persist()
     }
@@ -1069,7 +1070,8 @@ public actor FileMemoryStore {
 
     func persist() throws {
         invalidateWeeklyReports()
-        state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state)
+        applyKnowledge(MemoryKnowledgeEngine().reconcile(state, allowNew: false))
+        state.memoryKnowledge.dependencies = MemoryKnowledgeEngine().dependencies(in: state, claims: state.memoryKnowledge.claims)
         try Self.write(state, encoder: encoder, to: storage.stateURL)
         do {
             if indexNeedsRebuild { try intelligenceIndex?.replace(with: state) }
