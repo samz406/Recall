@@ -835,6 +835,8 @@ final class RecallAppModel: ObservableObject {
                     let snapshot = await self.store.snapshot()
                     guard !Task.isCancelled, self.chatRequestID == requestID else { return }
                     self.state = snapshot
+                } onRetrievalWarning: { [weak self] in
+                    self?.recordDiagnostic(.warning, source: "Memory", message: "语义补查未完成，已使用本地检索结果")
                 }
                 let snapshot = await store.snapshot()
                 guard !Task.isCancelled, chatRequestID == requestID else { return }

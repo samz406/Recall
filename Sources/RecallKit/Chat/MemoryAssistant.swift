@@ -26,7 +26,8 @@ public final class MemoryAssistant {
     public func ask(
         _ question: String,
         userMessage: ConversationMessage? = nil,
-        onUserMessageSaved: (@MainActor @Sendable () async -> Void)? = nil
+        onUserMessageSaved: (@MainActor @Sendable () async -> Void)? = nil,
+        onRetrievalWarning: (@MainActor @Sendable () -> Void)? = nil
     ) async throws -> ConversationMessage {
         try Task.checkCancellation()
         if ChatCommand.parse(question) == .clear {
@@ -110,8 +111,20 @@ public final class MemoryAssistant {
         } else {
             MemoryEvidenceSelector().select(ranked, question: retrievalText, limit: 12)
         }
-        let retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: retrieved,
+        var retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: retrieved,
             conversationID: conversation.id, limit: contextManager.maxEvidenceRecords)
+        if retrieval.needsSemanticLookup, state.privacy.cloudUseEnabled,
+           state.llmConfiguration.provider != .localOnly, !state.llmConfiguration.apiKey.isEmpty {
+            do {
+                let responder = CompatibleLLM(configuration: state.llmConfiguration, apiKey: state.llmConfiguration.apiKey)
+                let ids = try await MemorySemanticLookup().topics(for: retrievalText, in: state, responder: responder)
+                if !ids.isEmpty {
+                    retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: retrieved,
+                        conversationID: conversation.id, limit: contextManager.maxEvidenceRecords, resolvedEntityIDs: ids)
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch { onRetrievalWarning?() }
+        }
         let selectedEvidence = retrieval.evidence
         let plan = contextManager.plan(
             history: state.messages,
@@ -141,8 +154,15 @@ public final class MemoryAssistant {
         case .localOnly:
             response = try await ExtractiveMemoryResponder().answer(to: request)
         case .openAICompatible, .anthropicCompatible:
-            guard state.privacy.cloudUseEnabled else {
+            let beforeCloud = await store.snapshot()
+            guard state.privacy.cloudUseEnabled, beforeCloud.privacy.cloudUseEnabled else {
                 throw LLMError.serviceError("请先在隐私设置中明确开启云端模型使用。")
+            }
+            guard beforeCloud.privacy.excludedBundleIdentifiers == state.privacy.excludedBundleIdentifiers,
+                  Set(state.captures.map(\.id)).isSubset(of: Set(beforeCloud.captures.map(\.id))),
+                  beforeCloud.matterCorrections.map(\.id) == state.matterCorrections.map(\.id),
+                  beforeCloud.memoryKnowledge.suppressedKeys == state.memoryKnowledge.suppressedKeys else {
+                throw LLMError.serviceError("记忆或隐私设置已更新，请重新提问。")
             }
             let key = state.llmConfiguration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty else { throw LLMError.missingAPIKey }

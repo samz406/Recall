@@ -5,6 +5,7 @@ public struct MemoryRetrievalPlan: Sendable {
     public var preferences: String?
     public var sourceIDs: [UUID: [UUID]]
     public var preferenceSourceIDs: [UUID]
+    public var needsSemanticLookup: Bool
     public var passes: Int
 }
 
@@ -13,7 +14,7 @@ public struct MemoryRetrievalPlan: Sendable {
 public struct MemoryRetrievalEngine: Sendable {
     public init() {}
     public func plan(question: String, state: RecallState, fallback: [CaptureRecord], conversationID: UUID? = nil,
-                     limit: Int = 14, now: Date = .now) -> MemoryRetrievalPlan {
+                     limit: Int = 14, now: Date = .now, resolvedEntityIDs: Set<String> = []) -> MemoryRetrievalPlan {
         let safe = state.correctedForAnalysis()
         let allowed = safe.captures.filter { record in
             let participates = state.rules.first(where: { $0.template == record.eventTemplate })?.participatesInChat ?? true
@@ -30,7 +31,7 @@ public struct MemoryRetrievalEngine: Sendable {
         let intent = MemoryQuestionIntent(question: question)
         var terms = MatterMemoryEngine.subjectTerms(question)
         let entities = ledger.entities.filter { entity in
-            ([entity.name] + entity.aliases).contains { !$0.isEmpty && question.localizedCaseInsensitiveContains($0) }
+            resolvedEntityIDs.contains(entity.id) || ([entity.name] + entity.aliases).contains { !$0.isEmpty && question.localizedCaseInsensitiveContains($0) }
         }
         for entity in entities { terms.formUnion(MatterMemoryEngine.subjectTerms(entity.name)) }
         let entityIDs = Set(entities.map(\.id))
@@ -124,6 +125,7 @@ public struct MemoryRetrievalEngine: Sendable {
         let preferenceSources = active.filter { claim in preferences?.contains(claim.content) == true && claim.kind.isPersonal }.flatMap(\.sourceIDs).memoryUnique()
         return MemoryRetrievalPlan(evidence: evidence, preferences: preferences, sourceIDs: sources,
             preferenceSourceIDs: preferenceSources,
+            needsSemanticLookup: selected.isEmpty && intent != .overview,
             passes: selected.isEmpty && expanded.isEmpty ? 1 : 2)
     }
 

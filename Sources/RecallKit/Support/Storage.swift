@@ -265,11 +265,12 @@ public actor FileMemoryStore {
             try Self.write(state, encoder: encoder, to: storage.stateURL)
         }
         state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state)
-        for i in state.weeklyReports.indices where state.weeklyReports[i].isReadable {
-            let report = state.weeklyReports[i]
-            if WeeklyReviewEngine.sourcesUnchanged(report, in: state) {
+        let migrationState = state
+        for i in migrationState.weeklyReports.indices where migrationState.weeklyReports[i].isReadable {
+            let report = migrationState.weeklyReports[i]
+            if WeeklyReviewEngine.sourcesUnchanged(report, in: migrationState) {
                 state.weeklyReports[i].sourceVersions = Dictionary(uniqueKeysWithValues: report.sourceIDs.compactMap { id in
-                    WeeklyReviewEngine.sourceVersion(id: id, state: state).map { (id, $0) }
+                    WeeklyReviewEngine.sourceVersion(id: id, state: migrationState).map { (id, $0) }
                 })
             }
         }
@@ -684,6 +685,12 @@ public actor FileMemoryStore {
             previousConversationSummaryCoveredMessageCount: state.conversationSummaryCoveredMessageCount,
             addedSuppressionRuleIDs: addedRules.map(\.id)
         )
+        var knowledgeSnapshot = MemoryKnowledge()
+        knowledgeSnapshot.claims = state.memoryKnowledge.claims.filter { !Set($0.sourceIDs).isDisjoint(with: actualIDs) }
+        knowledgeSnapshot.entities = state.memoryKnowledge.entities.filter { !Set($0.sourceIDs).isDisjoint(with: actualIDs) }
+        let affectedKeys = Set(knowledgeSnapshot.claims.map(\.key))
+        knowledgeSnapshot.suppressedKeys = state.memoryKnowledge.suppressedKeys.filter(affectedKeys.contains)
+        transaction.memoryKnowledge = knowledgeSnapshot
         transaction.weeklyReports = state.weeklyReports.filter { !$0.sourceIDs.isDisjoint(with: actualIDs) }
         transaction.matterCorrections = state.matterCorrections.filter { !Set($0.evidenceIDs).isDisjoint(with: actualIDs) }
         state.matterCorrections.removeAll { !Set($0.evidenceIDs).isDisjoint(with: actualIDs) }
@@ -812,6 +819,13 @@ public actor FileMemoryStore {
         }
         let addedRuleIDs = Set(transaction.addedSuppressionRuleIDs)
         state.memorySuppressionRules.removeAll { addedRuleIDs.contains($0.id) }
+        if let knowledge = transaction.memoryKnowledge {
+            Self.restoreUnique(knowledge.claims, to: &state.memoryKnowledge.claims, id: \.id)
+            let currentEntityIDs = Set(state.memoryKnowledge.entities.map(\.id))
+            state.memoryKnowledge.entities += knowledge.entities.filter { !currentEntityIDs.contains($0.id) }
+            state.memoryKnowledge.suppressedKeys = (state.memoryKnowledge.suppressedKeys + knowledge.suppressedKeys).memoryUnique()
+        }
+        if !transaction.captures.isEmpty { applyKnowledge(MemoryKnowledgeEngine().reconcile(state, force: true)) }
         do {
             for path in transaction.screenshotPaths { try storage.restoreScreenshot(relativePath: path) }
             try persist()
@@ -874,7 +888,7 @@ public actor FileMemoryStore {
 
     /// 永久清除全部记忆内容，但保留用户的事件、隐私、模型与定时设置。
     public func clearAllMemoryData() throws {
-        let activePaths = state.captures.compactMap(\.imageRelativePath)
+        let activePaths = (state.captures.compactMap(\.imageRelativePath) + state.memoryKnowledge.pendingScreenshotDeletions).memoryUnique()
         let deletedPaths = state.recentlyDeletedMemories.flatMap(\.screenshotPaths)
         state.captures = []
         state.messages = []

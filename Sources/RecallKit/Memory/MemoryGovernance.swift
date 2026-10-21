@@ -137,6 +137,7 @@ public struct RecentlyDeletedMemory: Identifiable, Codable, Sendable {
     public var addedSuppressionRuleIDs: [UUID]
     public var matterCorrections: [MatterCorrection]?
     public var weeklyReports: [WeeklyReport]?
+    public var memoryKnowledge: MemoryKnowledge?
 
     public init(
         id: UUID = UUID(),
@@ -182,6 +183,7 @@ public struct RecentlyDeletedMemory: Identifiable, Codable, Sendable {
         self.addedSuppressionRuleIDs = addedSuppressionRuleIDs
         self.matterCorrections = nil
         self.weeklyReports = nil
+        self.memoryKnowledge = nil
     }
 
     public var screenshotPaths: [String] { captures.compactMap(\.imageRelativePath) }

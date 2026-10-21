@@ -103,7 +103,37 @@ enum MemoryKnowledgeVerification {
         try expect(days.count == 7, "统一事实检索丢失跨日覆盖")
         state.privacy.excludedBundleIdentifiers = ["test.memory"]
         try expect(reader.plan(question: "报表下载", state: state, fallback: records).evidence.isEmpty, "被排除的来源经派生事实或补查重新进入上下文")
+        guard let deleted = try await store.moveCapturesToRecentlyDeleted(ids: Set(records.map(\.id)), reason: .noLongerNeeded, suppressSimilar: false) else {
+            throw Failure(text: "未创建记忆删除快照")
+        }
+        _ = try await store.restoreRecentlyDeleted(id: deleted.id)
+        let restored = await store.snapshot()
+        try expect(restored.memoryKnowledge.entities.contains { $0.aliases.contains("报表下载") }, "恢复原始记录后丢失用户提供的别名")
+        try expect(!reader.plan(question: "报表下载", state: restored, fallback: []).evidence.isEmpty, "恢复后统一记忆没有立即重新可读")
+        var cloudState = restored
+        cloudState.privacy.cloudUseEnabled = true
+        let semantic = try await MemorySemanticLookup().topics(for: "上次那个表格取不下来是怎么解决的", in: cloudState,
+            responder: TopicProbe(name: entity.name))
+        try expect(semantic == [entity.id], "语义补查没有限定为真实主题 ID")
+        let semanticPlan = reader.plan(question: "上次那个表格取不下来是怎么解决的", state: cloudState,
+            fallback: [], resolvedEntityIDs: semantic)
+        try expect(!semanticPlan.evidence.isEmpty, "语义定位后没有回到本地证据")
+        let invalid = try await MemorySemanticLookup().topics(for: "表格下载", in: cloudState,
+            responder: TopicProbe(name: "不存在的主题"))
+        try expect(invalid.isEmpty, "模型编造的主题进入检索")
     }
+    struct TopicProbe: LLMResponding {
+        let name: String
+        func answer(to request: LLMRequest) async throws -> LLMAnswer {
+            guard request.purpose == .memoryLookup && request.outputTokenLimit == 600 else { throw Failure(text: "语义定位没有采用专用协议和预算") }
+            let text = request.context.map(\.ocrText).joined()
+            guard !text.contains("已验证通过") else { throw Failure(text: "语义定位外发了不必要的原始记录") }
+            let rows = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [[String: Any]] ?? []
+            let id = rows.first { $0["name"] as? String == name }?["id"] as? String ?? "invalid-topic"
+            return LLMAnswer(content: "{\"topicIDs\":[\"\(id)\"]}", citedCaptureIDs: [])
+        }
+    }
+
     static func organizationLifecycle() async throws {
         let (storage, store) = try fixture()
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
