@@ -953,7 +953,7 @@ public struct DailySummaryGenerator: Sendable {
             $0.eventTemplate != .dailyReview && calendar.isDate($0.createdAt, inSameDayAs: day)
         }
         let priorityTodos = todos(from: originalDayRecords, existingReminders: existingReminders)
-        let consolidation = intelligenceEngine.consolidate(
+        let extractedConsolidation = intelligenceEngine.consolidate(
             day: day,
             records: captures,
             existingEpisodes: existingEpisodes,
@@ -964,6 +964,11 @@ public struct DailySummaryGenerator: Sendable {
             existingRoutines: existingRoutines,
             calendar: calendar
         )
+        var evidenceState = RecallState(captures: captures, episodes: existingEpisodes, projects: previousProjects,
+            userMemories: existingMemories)
+        evidenceState.memoryKnowledge = MemoryKnowledgeEngine().reconcile(evidenceState, force: true)
+        let consolidation = MemoryKnowledgeEngine().canonicalConsolidation(day: day, state: evidenceState,
+            fallback: extractedConsolidation, calendar: calendar)
         guard !records.isEmpty else {
             let content = emptyDaySummary(for: day)
             return DailySummaryGeneration(

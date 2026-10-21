@@ -109,6 +109,8 @@ public struct RecallState: Codable, Sendable {
     public var matterCorrections: [MatterCorrection]
     public var dismissedExperienceIDs: [String]
     public var experienceHintsEnabled: Bool
+    public var memoryKnowledge: MemoryKnowledge
+    public var memoryKnowledgeSettings: MemoryKnowledgeSettings
 
     public init(
         rules: [EventRule] = EventRule.defaults(),
@@ -137,7 +139,9 @@ public struct RecallState: Codable, Sendable {
         weeklyReports: [WeeklyReport] = [],
         reviewTemplates: [ReviewTemplate] = [],
         reviewSchedules: [ReviewSchedule] = [],
-        reviewCategories: [String: ReviewCategory] = [:]
+        reviewCategories: [String: ReviewCategory] = [:],
+        memoryKnowledge: MemoryKnowledge = MemoryKnowledge(),
+        memoryKnowledgeSettings: MemoryKnowledgeSettings = MemoryKnowledgeSettings()
     ) {
         self.rules = rules
         self.captures = captures
@@ -166,12 +170,14 @@ public struct RecallState: Codable, Sendable {
         self.reviewTemplates = reviewTemplates
         self.reviewSchedules = reviewSchedules
         self.reviewCategories = reviewCategories
+        self.memoryKnowledge = memoryKnowledge
+        self.memoryKnowledgeSettings = memoryKnowledgeSettings
     }
 
     private enum CodingKeys: String, CodingKey {
         case rules, captures, messages, reminders, reminderDiscoveryCheckpoint, reminderLearningProfile, dailySummaries, dailySummarySettings
         case privacy, llmConfiguration, conversationSummary, conversationSummaryCoveredMessageCount
-        case weeklyReports, reviewTemplates, reviewSchedules, reviewCategories
+        case weeklyReports, reviewTemplates, reviewSchedules, reviewCategories, memoryKnowledge, memoryKnowledgeSettings
         case episodes, projects, userMemories, insights, insightFeedback, learnedRoutines
         case recentlyDeletedMemories, memorySuppressionRules, matterCorrections, dismissedExperienceIDs, experienceHintsEnabled
     }
@@ -205,17 +211,20 @@ public struct RecallState: Codable, Sendable {
         reviewTemplates = try container.decodeIfPresent([ReviewTemplate].self, forKey: .reviewTemplates) ?? []
         reviewSchedules = try container.decodeIfPresent([ReviewSchedule].self, forKey: .reviewSchedules) ?? []
         reviewCategories = try container.decodeIfPresent([String: ReviewCategory].self, forKey: .reviewCategories) ?? [:]
+        memoryKnowledge = try container.decodeIfPresent(MemoryKnowledge.self, forKey: .memoryKnowledge) ?? MemoryKnowledge()
+        memoryKnowledgeSettings = try container.decodeIfPresent(MemoryKnowledgeSettings.self, forKey: .memoryKnowledgeSettings) ?? MemoryKnowledgeSettings()
     }
 }
 
 public actor FileMemoryStore {
-    private let storage: RecallStorage
+    let storage: RecallStorage
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
-    private var state: RecallState
+    var state: RecallState
     // Runtime identity prevents an in-flight answer from repopulating a cleared session.
     private var conversationID = UUID()
     private let intelligenceIndex: SQLiteIntelligenceIndex?
+    private var indexNeedsRebuild = false
 
     public init() throws {
         try self.init(storage: RecallStorage())
@@ -255,7 +264,9 @@ public actor FileMemoryStore {
             state = RecallState()
             try Self.write(state, encoder: encoder, to: storage.stateURL)
         }
-        try? intelligenceIndex?.replace(with: state)
+        state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state)
+        try Self.write(state, encoder: encoder, to: storage.stateURL)
+        do { try intelligenceIndex?.replace(with: state) } catch { indexNeedsRebuild = true }
     }
 
     public func snapshot() -> RecallState { state }
@@ -330,7 +341,8 @@ public actor FileMemoryStore {
     public func isIntelligenceIndexAvailable() -> Bool { intelligenceIndex != nil }
 
     public func indexedCaptureIDs(matching query: String, limit: Int = 12) -> [UUID] {
-        (try? intelligenceIndex?.searchCaptureIDs(matching: query, limit: limit)) ?? []
+        guard !indexNeedsRebuild else { return [] }
+        return (try? intelligenceIndex?.searchCaptureIDs(matching: query, limit: limit)) ?? []
     }
 
     public func updateRules(_ rules: [EventRule]) throws {
@@ -659,9 +671,7 @@ public actor FileMemoryStore {
         state.episodes.removeAll { episode in removedEpisodes.contains(where: { $0.id == episode.id }) }
         state.projects = state.projects.compactMap { project in
             guard actualIDs.contains(where: project.evidenceIDs.contains) else { return project }
-            var updated = project
-            updated.evidenceIDs.removeAll(where: actualIDs.contains)
-            return updated.evidenceIDs.isEmpty ? nil : updated
+            return nil
         }
         state.userMemories.removeAll { memory in removedMemories.contains(where: { $0.id == memory.id }) }
         state.insights.removeAll { insight in removedInsights.contains(where: { $0.id == insight.id }) }
@@ -829,6 +839,7 @@ public actor FileMemoryStore {
     }
 
     public func clearPersonalIntelligence() throws {
+        state.memoryKnowledge = MemoryKnowledge()
         state.episodes = []
         state.projects = []
         state.userMemories = []
@@ -852,6 +863,7 @@ public actor FileMemoryStore {
         state.reviewCategories = [:]
         state.conversationSummary = nil
         state.conversationSummaryCoveredMessageCount = 0
+        state.memoryKnowledge = MemoryKnowledge()
         state.episodes = []
         state.projects = []
         state.userMemories = []
@@ -919,9 +931,7 @@ public actor FileMemoryStore {
         state.conversationSummaryCoveredMessageCount = 0
         state.reminderDiscoveryCheckpoint.processedCaptureHashes.removeValue(forKey: id.uuidString)
         state.projects = state.projects.compactMap { project in
-            var updated = project
-            updated.evidenceIDs.removeAll { $0 == id }
-            return updated.evidenceIDs.isEmpty ? nil : updated
+            return project.evidenceIDs.contains(id) ? nil : project
         }
         return removed
     }
@@ -1015,26 +1025,48 @@ public actor FileMemoryStore {
     }
 
     public func prune(now: Date = .now) throws -> [String] {
-        var pathsToDelete: [String] = []
-        let retained = state.captures.filter { record in
-            guard let rule = state.rules.first(where: { $0.template == record.eventTemplate }) else { return true }
-            if let imagePath = record.imageRelativePath,
-               now.timeIntervalSince(record.createdAt) > Double(rule.retainImageDays) * 86_400 {
-                pathsToDelete.append(imagePath)
+        let previous = state
+        var paths = Set(state.memoryKnowledge.pendingScreenshotDeletions)
+        var expired: [UUID] = []
+        for i in state.captures.indices {
+            let record = state.captures[i]
+            guard let rule = state.rules.first(where: { $0.template == record.eventTemplate }) else { continue }
+            let age = now.timeIntervalSince(record.createdAt)
+            if let path = record.imageRelativePath, age > Double(rule.retainImageDays) * 86_400 {
+                paths.insert(path)
+                state.captures[i].imageRelativePath = nil
             }
-            return now.timeIntervalSince(record.createdAt) <= Double(rule.retainTextDays) * 86_400
+            guard age > Double(rule.retainTextDays) * 86_400 else { continue }
+            if let directive = record.memoryDirective, state.memoryKnowledgeSettings.retainExplicitMemories,
+               directive.scope != .conversation {
+                if let path = record.imageRelativePath { paths.insert(path) }
+                // Keep only the user's explicit agreement and minimal attribution, not the original screen.
+                state.captures[i].ocrText = directive.content
+                state.captures[i].summary = nil
+                state.captures[i].windowTitle = nil
+                state.captures[i].tags = []
+                state.captures[i].imageRelativePath = nil
+                state.captures[i].isMemoryEvidenceArchive = true
+            } else {
+                if let path = record.imageRelativePath { paths.insert(path) }
+                expired.append(record.id)
+            }
         }
-        let retainedIDs = Set(retained.map(\.id))
-        let expiredIDs = state.captures.map(\.id).filter { !retainedIDs.contains($0) }
-        for id in expiredIDs { _ = removeCaptureState(id: id) }
-        try persist()
-        return pathsToDelete
+        for id in expired { _ = removeCaptureState(id: id) }
+        state.memoryKnowledge.pendingScreenshotDeletions = Array(paths).sorted()
+        do { try persist() } catch { state = previous; throw error }
+        return Array(paths).sorted()
     }
 
-    private func persist() throws {
+    func persist() throws {
         invalidateWeeklyReports()
+        state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state)
         try Self.write(state, encoder: encoder, to: storage.stateURL)
-        try intelligenceIndex?.replace(with: state)
+        do {
+            if indexNeedsRebuild { try intelligenceIndex?.replace(with: state) }
+            else { try intelligenceIndex?.synchronize(with: state) }
+            indexNeedsRebuild = false
+        } catch { indexNeedsRebuild = true }
     }
 
     private static func write(_ state: RecallState, encoder: JSONEncoder, to url: URL) throws {

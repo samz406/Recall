@@ -43,11 +43,23 @@ public final class MemoryAssistant {
             await onUserMessageSaved?()
             return result
         }
-        let state = originalState.correctedForAnalysis()
         let userMessage = userMessage ?? ConversationMessage(role: .user, content: question)
         try await store.addMessage(userMessage, inConversation: conversation.id)
         await onUserMessageSaved?()
         try Task.checkCancellation()
+        if let directive = MemoryDirective.parse(question, conversationID: conversation.id) {
+            let record = try await store.remember(directive)
+            if directive.scope != .conversation {
+            let answer = ConversationMessage(role: .assistant,
+                content: "已记住：" + directive.content + "\n适用范围：" + directive.scope.title + "。你可以在‘记忆脉络 → 记忆与约定’中修改或忘记。",
+                citations: [record.id])
+            try await store.addMessage(answer, inConversation: conversation.id)
+            return answer
+            }
+        }
+        try await store.organizeMemory()
+        var state = (await store.snapshot()).correctedForAnalysis()
+        state.messages.removeAll { $0.id == userMessage.id }
 
         let recordsAllowedInChat = state.captures.filter { capture in
             state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
@@ -97,11 +109,14 @@ public final class MemoryAssistant {
         } else {
             MemoryEvidenceSelector().select(ranked, question: retrievalText, limit: 12)
         }
+        let retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: retrieved,
+            conversationID: conversation.id, limit: contextManager.maxEvidenceRecords)
+        let selectedEvidence = retrieval.evidence.isEmpty ? retrieved : retrieval.evidence
         let plan = contextManager.plan(
             history: state.messages,
             existingSummary: state.conversationSummary,
             coveredMessageCount: state.conversationSummaryCoveredMessageCount ?? 0,
-            retrievedEvidence: retrieved
+            retrievedEvidence: selectedEvidence
         )
         if plan.rollingSummary != state.conversationSummary || plan.coveredMessageCount != (state.conversationSummaryCoveredMessageCount ?? 0) {
             try await store.updateConversationSummary(plan.rollingSummary, coveredMessageCount: plan.coveredMessageCount + originalState.messages.count - state.messages.count, inConversation: conversation.id)
@@ -116,6 +131,7 @@ public final class MemoryAssistant {
             question: question,
             context: plan.evidence,
             conversationSummary: requiresFreshEvidenceTurn ? nil : plan.rollingSummary,
+            supplementaryContext: retrieval.preferences,
             recentMessages: requiresFreshEvidenceTurn ? [] : plan.recentMessages
         )
         let response: LLMAnswer
@@ -140,6 +156,7 @@ public final class MemoryAssistant {
                 question: question,
                 context: safeContext,
                 conversationSummary: safeSummary,
+                supplementaryContext: request.supplementaryContext.map(privacyEngine.redact),
                 recentMessages: safeRecentMessages
             )
             let cloudAnswer = try await CompatibleLLM(configuration: state.llmConfiguration, apiKey: key).answer(to: cloudRequest)
@@ -156,7 +173,8 @@ public final class MemoryAssistant {
             throw LLMError.serviceError("记忆已更正或删除，请重新提问以使用最新内容。")
         }
         let formattedContent = ChatResponseFormatter().format(response.content)
-        let assistantMessage = ConversationMessage(role: .assistant, content: formattedContent, citations: response.citedCaptureIDs)
+        let citations = response.citedCaptureIDs.flatMap { id in retrieval.sourceIDs[id] ?? [id] }.uniqued()
+        let assistantMessage = ConversationMessage(role: .assistant, content: formattedContent, citations: citations)
         try Task.checkCancellation()
         try await store.addMessage(assistantMessage, inConversation: conversation.id)
         return assistantMessage

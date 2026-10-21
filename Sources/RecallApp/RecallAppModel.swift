@@ -27,6 +27,10 @@ final class RecallAppModel: ObservableObject {
     private var weeklyScheduleTimer: Timer?
     private var weeklyWakeObserver: NSObjectProtocol?
     @Published private(set) var isBuildingMatters = false
+    @Published private(set) var isOrganizingMemory = false
+    @Published var memoryMaintenanceMessage: String?
+    private var memoryMaintenanceTimer: Timer?
+    private var memoryMaintenanceAfter: Date = .distantPast
     @Published private(set) var matterBuildMessage: String?
     private var matterBuildTask: Task<Void, Never>?
     @Published var isRecording = false
@@ -108,6 +112,7 @@ final class RecallAppModel: ObservableObject {
 
 
     func refresh() async {
+        await maintainMemory()
         state = await store.snapshot()
         rebuildMatterFiles()
         updateEnterKeyRecorder()
@@ -117,6 +122,74 @@ final class RecallAppModel: ObservableObject {
         generateMissedDailySummaryIfNeeded()
         armWeeklySchedules()
         runDueWeeklySchedule()
+        if memoryMaintenanceTimer == nil {
+            memoryMaintenanceTimer = Timer.scheduledTimer(withTimeInterval: 5 * 60, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in await self?.refresh() }
+            }
+        }
+    }
+
+    func maintainMemory(force: Bool = false) async {
+        guard !isOrganizingMemory, force || Date.now >= memoryMaintenanceAfter else { return }
+        isOrganizingMemory = true
+        defer { isOrganizingMemory = false }
+        memoryMaintenanceAfter = Date.now.addingTimeInterval(5 * 60)
+        do {
+            let before = await store.snapshot()
+            try await store.organizeMemory(force: force)
+            let paths = try await store.prune()
+            var cleaned: [String] = []
+            var failed = false
+            for path in paths {
+                do { try storage.deleteScreenshot(relativePath: path); cleaned.append(path) }
+                catch { failed = true; recordError(error, source: "Memory", message: "到期截图清理失败，将重试") }
+            }
+            if !cleaned.isEmpty { try await store.finishScreenshotCleanup(paths: cleaned) }
+            let after = await store.snapshot()
+            let remaining = Set(after.reminders.map(\.id))
+            for reminder in before.reminders where !remaining.contains(reminder.id) { notificationScheduler.cancel(reminder) }
+            if failed { memoryMaintenanceAfter = Date.now.addingTimeInterval(60) }
+            if force { memoryMaintenanceMessage = "已整理有效事实、约定和历史经验，重复来源已合并。" }
+            state = after
+        } catch {
+            memoryMaintenanceAfter = Date.now.addingTimeInterval(60)
+            recordError(error, source: "Memory", message: "记忆整理或到期清理失败，将重试")
+            memoryMaintenanceMessage = "暂未完成整理，稍后会自动重试。"
+        }
+    }
+
+    func organizeMemoryNow() {
+        Task { await maintainMemory(force: true); await refresh() }
+    }
+
+    func updateMemorySettings(_ settings: MemoryKnowledgeSettings) {
+        Task {
+            do { try await store.updateMemoryKnowledgeSettings(settings); await refresh() }
+            catch { recordError(error, source: "Memory", message: "保存记忆设置失败") }
+        }
+    }
+
+    func saveMemoryAgreement(content: String, scope: MemoryScope, replacing: MemoryClaim? = nil) async -> Bool {
+        do {
+            if let replacing { try await store.correctMemory(id: replacing.id, content: content, scope: scope, scopeID: replacing.scopeID) }
+            else { _ = try await store.remember(MemoryDirective(content: content, key: "manual:" + UUID().uuidString, scope: scope)) }
+            await refresh()
+            return true
+        } catch { recordError(error, source: "Memory", message: "保存记忆约定失败"); return false }
+    }
+
+    func retireMemory(_ claim: MemoryClaim) {
+        Task {
+            do { try await store.retireMemory(id: claim.id); await refresh() }
+            catch { recordError(error, source: "Memory", message: "停用记忆失败") }
+        }
+    }
+
+    func saveMemoryAliases(entity: MemoryEntity, text: String) async -> Bool {
+        do {
+            try await store.updateMemoryAliases(entityID: entity.id, aliases: text.components(separatedBy: CharacterSet(charactersIn: "，,\n")))
+            await refresh(); return true
+        } catch { recordError(error, source: "Memory", message: "保存主题别名失败"); return false }
     }
 
     /// 到期时间触发清理；睡眠或应用不在前台时错过的触发在重新激活时补跑。
