@@ -79,7 +79,7 @@ public struct MemoryRetrievalEngine: Sendable {
             let timeNote = claim.evidence.contains { $0.eventAt != nil } ? "用户提供了发生时间" : "仅知首次记录时间，不保证发生于当日"
             let history: String
             if claim.kind == .event, let latest = active.filter({ $0.kind == .event && $0.subjectID == claim.subjectID }).max(by: { $0.date < $1.date }), latest.id != claim.id {
-                history = "历史记录，当前最新记录为：\(latest.content)"
+                history = "历史记录，不能当作当前状态；需结合同主题的后续依据"
             } else { history = "有效记录" }
             let text = "主题：\(claim.title)\n\(history)；\(timeNote)\n原文：\(claim.content)" + (claim.nextAction.map { "\n明确后续行动：\($0)" } ?? "")
             let record = CaptureRecord(id: claim.id, eventTemplate: .manualMoment, createdAt: claim.date,
@@ -106,12 +106,14 @@ public struct MemoryRetrievalEngine: Sendable {
             if let time { return record.createdAt >= time.startDate && record.createdAt <= time.endDate }
             return true
         }
-        for record in raw where evidence.count < limit {
+        let poolLimit = time != nil && intent == .overview ? limit * 4 : limit
+        for record in raw where evidence.count < poolLimit {
             let ids: [UUID]
             if allowedIDs.contains(record.id) { ids = [record.id] }
             else if let summary = safe.dailySummaries.first(where: { $0.id == record.id }) {
                 // Legacy reports remain labelled as unverified, deletable historical sources.
-                ids = summary.sourceCaptureIDs.isEmpty && state.matterCorrections.isEmpty && state.privacy.excludedBundleIdentifiers.isEmpty
+                ids = summary.sourceCaptureIDs.isEmpty && state.matterCorrections.isEmpty
+                    && !state.privacy.excludedBundleIdentifiers.contains("im.recall.daily-summary")
                     ? [summary.id] : summary.sourceCaptureIDs
             }
             else if let episode = safe.episodes.first(where: { $0.id == record.id }) { ids = episode.evidenceIDs }
@@ -121,12 +123,34 @@ public struct MemoryRetrievalEngine: Sendable {
             guard !ids.isEmpty, legacy || Set(ids).isSubset(of: allowedIDs), Set(ids).isDisjoint(with: retiredSources) else { continue }
             evidence.append(record); sources[record.id] = ids
         }
+        if time != nil && intent == .overview { evidence = temporalCoverage(evidence, limit: limit) }
         let preferences = preferenceContext(question: question, claims: active, conversationID: conversationID, entities: entityIDs)
         let preferenceSources = active.filter { claim in preferences?.contains(claim.content) == true && claim.kind.isPersonal }.flatMap(\.sourceIDs).memoryUnique()
         return MemoryRetrievalPlan(evidence: evidence, preferences: preferences, sourceIDs: sources,
             preferenceSourceIDs: preferenceSources,
             needsSemanticLookup: selected.isEmpty && intent != .overview,
             passes: selected.isEmpty && expanded.isEmpty ? 1 : 2)
+    }
+
+    private func temporalCoverage(_ records: [CaptureRecord], limit: Int) -> [CaptureRecord] {
+        guard limit > 0 else { return [] }
+        let calendar = Calendar.current
+        let groups = Dictionary(grouping: records) { calendar.startOfDay(for: $0.createdAt) }
+        let days = groups.keys.sorted()
+        let count = min(days.count, limit)
+        var result: [CaptureRecord] = []
+        var seen: Set<UUID> = []
+        for index in 0..<count {
+            let offset = count <= 1 ? 0 : Int((Double(index) * Double(days.count - 1) / Double(count - 1)).rounded())
+            let dayRecords = groups[days[offset]] ?? []
+            if let first = dayRecords.first(where: { $0.eventTemplate == .dailyReview }) ?? dayRecords.first {
+                result.append(first); seen.insert(first.id)
+            }
+        }
+        for record in records where result.count < limit {
+            if seen.insert(record.id).inserted { result.append(record) }
+        }
+        return result
     }
 
     public func preferenceContext(question: String, claims: [MemoryClaim], conversationID: UUID?, entities: Set<String> = []) -> String? {

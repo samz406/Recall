@@ -176,7 +176,11 @@ final class RecallAppModel: ObservableObject {
     func saveMemoryAgreement(content: String, scope: MemoryScope, scopeID: String? = nil, validUntil: Date? = nil, replacing: MemoryClaim? = nil) async -> Bool {
         do {
             if let replacing { try await store.correctMemory(id: replacing.id, content: content, scope: scope, scopeID: scopeID, validUntil: validUntil) }
-            else { _ = try await store.remember(MemoryDirective(content: content, key: "manual:" + UUID().uuidString, scope: scope, scopeID: scopeID, validUntil: validUntil)) }
+            else {
+                var directive = MemoryDirective.parse("记住：" + content) ?? MemoryDirective(content: content, key: "manual:" + UUID().uuidString)
+                directive.scope = scope; directive.scopeID = scopeID; directive.validUntil = validUntil
+                _ = try await store.remember(directive)
+            }
             await refresh()
             return true
         } catch { recordError(error, source: "Memory", message: "保存记忆约定失败"); return false }

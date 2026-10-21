@@ -176,7 +176,8 @@ public struct MatterMemoryEngine: Sendable {
             let renamed = corrections.last { $0.kind == .separate && !$0.text.isEmpty }
             let title = renamed?.text ?? note.title
             let key = (renamed == nil ? "topic:" : "user:") + MatterEvidence.key(title)
-            let event = MatterEvent(id: record.id, title: title, detail: note.detail,
+            let detail = corrections.contains { $0.kind == .completed } ? "用户已标记完成：\(title)" : note.detail
+            let event = MatterEvent(id: record.id, title: title, detail: detail,
                 recordedAt: captured[record.id]?.createdAt ?? record.createdAt,
                 eventAt: corrections.last { $0.kind == .eventDate }?.eventAt ?? note.eventAt,
                 status: corrections.contains { $0.kind == .completed } ? .completed : note.status,

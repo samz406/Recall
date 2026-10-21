@@ -50,7 +50,8 @@ public final class MemoryAssistant {
         try Task.checkCancellation()
         if let directive = MemoryDirective.parse(question, conversationID: conversation.id) {
             let record = try await store.remember(directive)
-            if directive.scope != .conversation {
+            let includesTask = ["解释", "分析", "总结", "写一", "帮我", "告诉", "查一下", "看看", "怎么", "什么", "聊聊"].contains(where: question.contains)
+            if directive.scope != .conversation || !includesTask {
             let answer = ConversationMessage(role: .assistant,
                 content: "已记住：" + directive.content + "\n适用范围：" + directive.scope.title + "。你可以在‘记忆脉络 → 记忆与约定’中修改或忘记。",
                 citations: [record.id])

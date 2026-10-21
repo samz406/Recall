@@ -1684,7 +1684,7 @@ struct RecallVerifier {
         }
         // 模拟今天记录很多的真实场景，验证它们不会挤掉前六天。
         for index in 0..<10 {
-            try await store.addCapture(makeCapture(text: "今天的高频工作记录 \(index)", app: "Xcode", createdAt: .now.addingTimeInterval(Double(-index))))
+            try await store.addCapture(makeCapture(text: "[聊天·自己] 账单导出第\(index)阶段已验证通过。", app: "Xcode", createdAt: .now.addingTimeInterval(Double(-index))))
         }
         try await store.updateLLMConfiguration(LLMConfiguration(provider: .localOnly))
 

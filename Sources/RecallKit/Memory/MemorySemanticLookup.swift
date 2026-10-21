@@ -26,17 +26,18 @@ public struct MemorySemanticLookup: Sendable {
         let privacy = PrivacyEngine()
         var mapping: [String: String] = [:]
         var topics: [Topic] = []
-        var budget = 0
+        var budget = 2
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         for candidate in candidates.prefix(60) {
             let name = privacy.redact(candidate.name)
             let aliases = Array(candidate.aliases.prefix(2)).map(privacy.redact)
-            let cost = name.count + aliases.joined().count + 40
-            guard budget + cost <= 3_000 else { continue }
             let id = MemoryKnowledgeEngine.id(candidate.id).uuidString
-            mapping[id] = candidate.id; topics.append(Topic(id: id, name: name, aliases: aliases)); budget += cost
+            let topic = Topic(id: id, name: name, aliases: aliases)
+            let cost = String(decoding: try encoder.encode(topic), as: UTF8.self).count + 1
+            guard budget + cost <= 3_000 else { continue }
+            mapping[id] = candidate.id; topics.append(topic); budget += cost
         }
         guard !topics.isEmpty else { return [] }
-        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let json = String(decoding: try encoder.encode(topics), as: UTF8.self)
         let context = CaptureRecord(eventTemplate: .manualMoment, sourceAppName: "可检索主题名称",
             contentHash: "memory-map", ocrText: json)

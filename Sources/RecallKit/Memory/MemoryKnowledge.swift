@@ -77,6 +77,8 @@ public struct MemoryDirective: Codable, Hashable, Sendable {
         let key: String
         let kind: MemoryClaimKind
         if let name = personName(in: content) { key = "person:" + normalized(name) + (content.contains("生日") ? ":birthday" : ":relationship"); kind = .person }
+        else if ["我的目标", "我要成为", "我希望"].contains(where: content.contains) { key = "goal:" + normalized(content); kind = .goal }
+        else if ["我每天", "我每周", "我通常", "我习惯"].contains(where: content.contains) { key = "habit:" + normalized(content); kind = .habit }
         else if ["私人", "生活内容", "工作内容", "只写工作", "个人内容"].contains(where: content.contains) { key = "review-content"; kind = .constraint }
         else if ["简洁", "详细", "篇幅", "少换行", "精简", "简短"].contains(where: content.contains) { key = "response-length"; kind = .preference }
         else if ["正式", "自然", "语气", "口吻"].contains(where: content.contains) { key = "response-tone"; kind = .preference }
@@ -110,6 +112,7 @@ public struct MemoryEvidence: Codable, Hashable, Sendable {
     public var eventAt: Date?
     public var sourceApp: String?
     public var sourceBundle: String?
+    public var correctedBy: UUID? = nil
 }
 
 public struct MemoryClaim: Identifiable, Codable, Hashable, Sendable {
@@ -303,7 +306,13 @@ public struct MemoryKnowledgeEngine: Sendable {
                 let evidence = event.evidenceIDs.compactMap { sourceID -> MemoryEvidence? in
                     guard let source = sources[sourceID] else { return nil }
                     let ordinal = RecordedText.segments(in: source).first { $0.text == event.detail }?.ordinal ?? event.sequence
-                    return proof(source, quote: event.detail, ordinal: ordinal, speaker: "自己", eventAt: event.eventAt)
+                    var evidence = proof(source, quote: event.detail, ordinal: ordinal, speaker: "自己", eventAt: event.eventAt)
+                    if let correction = state.matterCorrections.last(where: { $0.kind == .completed && $0.evidenceIDs.contains(sourceID) }) {
+                        evidence.correctedBy = correction.id
+                        evidence.speaker = "用户更正"
+                        evidence.quote = correction.text.isEmpty ? "用户已标记完成" : correction.text
+                    }
+                    return evidence
                 }
                 let key = "event:" + file.id + ":" + event.id.uuidString
                 candidates.append(claim(key: key, subject: file.id, title: file.title, content: event.detail,
@@ -326,6 +335,7 @@ public struct MemoryKnowledgeEngine: Sendable {
                     evidence: [proof(source, quote: directive.content, ordinal: 0, speaker: "本人明确要求")], explicit: true))
                 candidates[candidates.count - 1].validUntil = directive.validUntil
                 if let name = MemoryDirective.personName(in: directive.content) { candidates[candidates.count - 1].subjectID = "person:" + MemoryDirective.normalized(name) }
+                else if directive.kind == .person { candidates[candidates.count - 1].subjectID = "person-record:" + source.id.uuidString }
                 continue
             }
             for segment in RecordedText.segments(in: source) where segment.speaker == .user {
@@ -377,6 +387,7 @@ public struct MemoryKnowledgeEngine: Sendable {
         }
         for records in directives.values {
             guard let latest = records.max(by: { $0.createdAt < $1.createdAt }) else { continue }
+            guard latest.memoryDirective?.replacesPrevious == true else { continue }
             let olderIDs = Set(records.filter { $0.id != latest.id }.map(\.id))
             let oldClaims = merged.filter { !$0.sourceIDs.allSatisfy({ !olderIDs.contains($0) }) && !$0.sourceIDs.contains(latest.id) }
             for i in merged.indices where merged[i].explicit {

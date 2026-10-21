@@ -46,6 +46,10 @@ enum MemoryKnowledgeVerification {
         try expect(Set(second.claims.map(\.id)) == Set(knowledge.claims.map(\.id)), "重复整理改变事实标识")
         state.matterCorrections = [MatterCorrection(evidenceIDs: [first.id, repeated.id], kind: .notMine)]
         try expect(engine.reconcile(state).claims.isEmpty, "归属更正没有撤回衍生事实")
+        let correction = MatterCorrection(evidenceIDs: [first.id, repeated.id], kind: .completed, text: "账单导出")
+        state.matterCorrections = [correction]
+        let corrected = engine.reconcile(state, force: true)
+        try expect(corrected.claims.contains { $0.evidence.contains { $0.correctedBy == correction.id } }, "用户更正被冒充为截图原话，缺少更正来源")
     }
     static func scopedAgreements() async throws {
         let (storage, store) = try fixture()
@@ -76,6 +80,11 @@ enum MemoryKnowledgeVerification {
         _ = try await assistant.ask("记住：妙妙的生日是九月十八日")
         state = await store.snapshot()
         try expect(state.memoryKnowledge.entities.contains { $0.kind == "person" && $0.name == "妙妙" }, "明确人物事实没有形成可检索人物")
+        let acknowledgement = try await assistant.ask("这次简洁一点")
+        try expect(acknowledgement.content.contains("本次会话"), "本次表达约定没有本地返回执行结果")
+        _ = try await assistant.ask("/clear")
+        let cleared = await store.snapshot()
+        try expect(cleared.memoryKnowledge.claims.filter { $0.scope == .conversation }.allSatisfy { $0.state == .expired }, "清空会话后本次偏好仍有效")
     }
     static func aliasRetrieval() async throws {
         let (storage, store) = try fixture()
