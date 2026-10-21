@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import RecallKit
 
 @MainActor
@@ -143,6 +144,24 @@ enum MemoryKnowledgeVerification {
         _ = try await store.prune()
         state = await store.snapshot()
         try expect(state.captures.isEmpty && state.memoryKnowledge.claims.isEmpty, "关闭独立保留后仍有到期记忆残留")
+
+        var recent = capture("[聊天·自己] 账单导出修复已验证通过。", day: .now.addingTimeInterval(-8 * 86_400))
+        recent.imageRelativePath = try storage.saveScreenshot(Data([3, 4, 5]), captureID: recent.id)
+        try await store.addCapture(recent)
+        try await store.organizeMemory(force: true)
+        state = await store.snapshot()
+        let period = ReviewPeriod(start: .now.addingTimeInterval(-9 * 86_400), end: .now)
+        var report = try await WeeklyReviewEngine().generate(in: state, period: period, template: ReviewTemplate(kind: .personal))
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+        let oldVersion = SHA256.hash(data: try encoder.encode(recent) + encoder.encode([MatterCorrection]())).map { String(format: "%02x", $0) }.joined()
+        report.sourceVersions = [recent.id: oldVersion]
+        state.weeklyReports = [report]
+        try encoder.encode(state).write(to: storage.stateURL, options: .atomic)
+        let reloaded = try FileMemoryStore(storage: storage)
+        _ = try await reloaded.prune()
+        let pruned = await reloaded.snapshot()
+        try expect(pruned.captures.first?.imageRelativePath == nil && pruned.memoryKnowledge.claims.contains { $0.kind == .event && $0.usable() }, "截图到期误删了仍有效的文字事实")
+        try expect(pruned.weeklyReports.first?.isReadable == true && pruned.weeklyReports.first?.sourceVersions.values.allSatisfy { $0.hasPrefix("memory2:") } == true, "截图到期或版本升级使旧周回顾失效")
     }
     static func dependencyRetraction() async throws {
         let (storage, store) = try fixture()

@@ -170,6 +170,16 @@ public struct MemoryKnowledgeSettings: Codable, Hashable, Sendable {
 }
 
 public struct MemoryKnowledgeEngine: Sendable {
+    private struct SourceSnapshot: Encodable {
+        var text: String
+        var recordedAt: Date
+        var title: String?
+        var origin: CaptureTextOrigin?
+        var app: String?
+        var bundle: String?
+        var note: ManualMatterNote?
+        var directive: MemoryDirective?
+    }
     public init() {}
     public func canonicalConsolidation(day: Date, state: RecallState, fallback: IntelligenceConsolidation,
                                        calendar: Calendar = .current) -> IntelligenceConsolidation {
@@ -219,9 +229,12 @@ public struct MemoryKnowledgeEngine: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        let values = corrections.filter { $0.evidenceIDs.contains(capture.id) }.map { $0.id.uuidString }.joined()
-        let source = (try? encoder.encode(capture)) ?? Data(capture.ocrText.utf8)
-        return SHA256.hash(data: source + Data(values.utf8)).map { String(format: "%02x", $0) }.joined()
+        let snapshot = SourceSnapshot(text: capture.ocrText, recordedAt: capture.createdAt, title: capture.windowTitle,
+            origin: capture.textOrigin, app: capture.sourceAppName, bundle: capture.sourceBundleIdentifier,
+            note: capture.manualMatter, directive: capture.memoryDirective)
+        let source = (try? encoder.encode(snapshot)) ?? Data(capture.ocrText.utf8)
+        let changes = (try? encoder.encode(corrections.filter { $0.evidenceIDs.contains(capture.id) })) ?? Data()
+        return SHA256.hash(data: source + changes).map { String(format: "%02x", $0) }.joined()
     }
 
     public func sourcesUsable(_ ids: Set<UUID>, in state: RecallState) -> Bool {
@@ -232,6 +245,12 @@ public struct MemoryKnowledgeEngine: Sendable {
             guard let record = sources[id] else { return false }
             return record.memoryDirective == nil || active.contains(id)
         }
+    }
+    public func cloudEligibleClaims(in state: RecallState) -> [MemoryClaim] {
+        let allowed = Set(state.captures.filter {
+            !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "")
+        }.map(\.id))
+        return reconcile(state).claims.filter { $0.usable() && !$0.sourceIDs.isEmpty && Set($0.sourceIDs).isSubset(of: allowed) }
     }
     static func id(_ text: String) -> UUID { MatterEvidence.eventID(source: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, topic: text, ordinal: 0) }
 

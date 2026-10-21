@@ -89,12 +89,19 @@ public struct MemoryRetrievalEngine: Sendable {
         // Second pass expands the located topic and aliases to original records, not just the initial keyword hits.
         let sourceAnchorIDs = Set(selected.flatMap(\.sourceIDs))
         let aliasText = entities.map(\.name).joined(separator: " ")
+        func mentionsEntity(_ record: CaptureRecord) -> Bool {
+            entities.contains { entity in
+                ([entity.name] + entity.aliases).contains { record.ocrText.localizedCaseInsensitiveContains($0) }
+            }
+        }
         let expanded = aliasText.isEmpty ? [] : MemorySearchEngine().search(MemorySearchQuery(text: aliasText,
-            startDate: time?.startDate, endDate: time?.endDate), in: allowed, limit: 24).map(\.capture)
+            startDate: time?.startDate, endDate: time?.endDate), in: allowed, limit: 24).map(\.capture).filter(mentionsEntity)
         var raw = allowed.filter { sourceAnchorIDs.contains($0.id) } + expanded + fallback
         var seen = Set(evidence.map(\.id))
         raw = raw.filter { record in
             guard !retiredSources.contains(record.id), seen.insert(record.id).inserted else { return false }
+            if !entities.isEmpty, [.status, .change, .decision, .solution].contains(intent),
+               !sourceAnchorIDs.contains(record.id), !mentionsEntity(record) { return false }
             if let time { return record.createdAt >= time.startDate && record.createdAt <= time.endDate }
             return true
         }

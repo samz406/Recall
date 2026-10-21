@@ -265,6 +265,14 @@ public actor FileMemoryStore {
             try Self.write(state, encoder: encoder, to: storage.stateURL)
         }
         state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state)
+        for i in state.weeklyReports.indices where state.weeklyReports[i].isReadable {
+            let report = state.weeklyReports[i]
+            if WeeklyReviewEngine.sourcesUnchanged(report, in: state) {
+                state.weeklyReports[i].sourceVersions = Dictionary(uniqueKeysWithValues: report.sourceIDs.compactMap { id in
+                    WeeklyReviewEngine.sourceVersion(id: id, state: state).map { (id, $0) }
+                })
+            }
+        }
         try Self.write(state, encoder: encoder, to: storage.stateURL)
         do { try intelligenceIndex?.replace(with: state) } catch { indexNeedsRebuild = true }
     }
@@ -371,6 +379,12 @@ public actor FileMemoryStore {
     private func invalidateWeeklyReports() {
         for i in state.weeklyReports.indices where state.weeklyReports[i].isReadable {
             if !WeeklyReviewEngine.sourcesUnchanged(state.weeklyReports[i], in: state) { state.weeklyReports[i].invalidate() }
+            else {
+                let ids = state.weeklyReports[i].sourceIDs
+                state.weeklyReports[i].sourceVersions = Dictionary(uniqueKeysWithValues: ids.compactMap { id in
+                    WeeklyReviewEngine.sourceVersion(id: id, state: state).map { (id, $0) }
+                })
+            }
         }
         for i in state.recentlyDeletedMemories.indices {
             guard var reports = state.recentlyDeletedMemories[i].weeklyReports else { continue }

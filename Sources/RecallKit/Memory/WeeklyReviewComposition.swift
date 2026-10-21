@@ -93,9 +93,9 @@ struct WeeklyReviewComposition: Sendable {
                     CaptureRecord(eventTemplate: .manualMoment, createdAt: period.end, sourceAppName: "周回顾证据",
                         contentHash: topic.topicID, ocrText: try encode(topic), textOrigin: .userInput)
                 }
-                let knowledge = MemoryKnowledgeEngine().reconcile(state)
-                let questionScope = template.kind == .work ? "工作周报" : (template.kind == .learning ? "学习回顾" : "个人回顾")
-                let preferences = MemoryRetrievalEngine().preferenceContext(question: questionScope, claims: knowledge.claims, conversationID: nil)
+                let preferenceClaims = MemoryKnowledgeEngine().cloudEligibleClaims(in: state)
+                let questionScope = template.kind.requiresWorkScope ? "工作周报" : (template.kind == .learning ? "学习回顾" : "个人回顾")
+                let preferences = MemoryRetrievalEngine().preferenceContext(question: questionScope, claims: preferenceClaims, conversationID: nil, entities: Set(items.map(\.id)))
                 let question = prompt(template, period: period) + (preferences.map { "\n本次模板的明确设置优先，其余表达参考：\n" + privacy.redact($0) } ?? "")
                 let response = try await responder.answer(to: LLMRequest(question: question,
                     context: context, purpose: .weeklyComposition, outputTokenLimit: template.length == .detailed ? 6_000 : 4_000))

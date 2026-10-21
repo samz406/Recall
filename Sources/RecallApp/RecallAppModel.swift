@@ -1272,7 +1272,10 @@ final class RecallAppModel: ObservableObject {
         isGeneratingDailySummary = true
         isThinking = true
         let analysisState = state.correctedForAnalysis()
-        let captures = analysisState.captures
+        let captures = analysisState.captures.filter {
+            !analysisState.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "")
+        }
+        let allowedSourceIDs = Set(captures.map(\.id))
         let previousSummaries = analysisState.dailySummaries
         let responder = dailySummaryResponder()
         Task {
@@ -1287,8 +1290,8 @@ final class RecallAppModel: ObservableObject {
                     from: captures,
                     previousSummaries: previousSummaries,
                     existingEpisodes: analysisState.episodes,
-                    previousProjects: analysisState.projects,
-                    existingMemories: analysisState.userMemories,
+                    previousProjects: analysisState.projects.filter { Set($0.evidenceIDs).isSubset(of: allowedSourceIDs) },
+                    existingMemories: analysisState.userMemories.filter { Set($0.evidenceIDs).isSubset(of: allowedSourceIDs) },
                     previousInsights: analysisState.insights,
                     feedback: analysisState.insightFeedback,
                     existingRoutines: analysisState.learnedRoutines,
