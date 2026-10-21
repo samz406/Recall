@@ -41,6 +41,9 @@ enum WeeklyReviewVerification {
         let state = RecallState(captures: [work, life, learning, other, unknown, article, personal])
         let engine = WeeklyReviewEngine(), period = ReviewPeriod.make(.currentWeek, at: date(21, 20), calendar: calendar)
         let general = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .personal), now: date(21, 20))
+        try expect(general.items.first(where: { $0.sourceIDs.contains(personal.id) })?.excerpts.first?.eventTimeKnown == false
+            && general.items.first(where: { $0.sourceIDs.contains(work.id) })?.excerpts.first?.eventTimeKnown == true,
+            "截图采集时间和用户明确提供的发生时间必须区分，不能把采集时间默认为真实发生时间")
         try expect(general.items.count == 4, "个人周回顾应保留工作、学习和生活，不收录对方、未知角色或文章观点")
         try expect(!general.markdown.contains("人生") && !general.markdown.contains("生产发布已完成"), "周回顾不能借用文章观点或未知角色完成信息")
         let workReport = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .work), now: date(21, 20))

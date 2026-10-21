@@ -157,6 +157,7 @@ public struct ReviewExcerpt: Codable, Identifiable, Equatable, Sendable {
     public var text: String
     public var status: WorkEpisodeStatus
     public var sourceIDs: [UUID]
+    public var eventTimeKnown: Bool?
 }
 
 public struct ReviewItem: Codable, Identifiable, Equatable, Sendable {
@@ -230,7 +231,8 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
                     let formatter = DateFormatter(); formatter.timeZone = period.calendar.timeZone
                     formatter.locale = Locale(identifier: "zh_CN"); formatter.dateFormat = "M月d日"
                     let stamp = formatter.string(from: excerpt.date)
-                    let prefix = template.tone == .formal ? stamp + "：" : stamp + " · "
+                    let dated = (excerpt.eventTimeKnown == true ? "发生于 " : "记录于 ") + stamp
+                    let prefix = template.tone == .formal ? dated + "：" : dated + " · "
                     lines += [prefix + excerpt.text, ""]
                 }
                 if let action = item.nextAction { lines += ["记录中的后续安排：" + action, ""] }
@@ -324,7 +326,8 @@ public struct WeeklyReviewEngine: Sendable {
                 let key = "life:" + MatterEvidence.key(pair.0)
                 let event = MatterEvent(id: record.id, title: pair.0, detail: text,
                     recordedAt: state.captures.first { $0.id == record.id }?.createdAt ?? record.createdAt,
-                    eventAt: record.createdAt, status: .explored, evidenceIDs: [record.id])
+                    eventAt: state.matterCorrections.last(where: { $0.kind == .eventDate && $0.evidenceIDs.contains(record.id) })?.eventAt,
+                    status: .explored, evidenceIDs: [record.id])
                 if let i = files.firstIndex(where: { $0.id == key }) {
                     if !files[i].events.contains(where: { MatterEvidence.key($0.detail) == MatterEvidence.key(text) }) { files[i].events.append(event) }
                 } else { files.append(MatterFile(id: key, title: pair.0, events: [event])) }
@@ -466,7 +469,8 @@ public struct WeeklyReviewEngine: Sendable {
     }
 
     private func excerpt(_ event: MatterEvent) -> ReviewExcerpt {
-        ReviewExcerpt(id: event.id, date: event.date, text: clean(event.detail), status: event.status, sourceIDs: event.evidenceIDs)
+        ReviewExcerpt(id: event.id, date: event.date, text: clean(event.detail), status: event.status,
+            sourceIDs: event.evidenceIDs, eventTimeKnown: event.eventAt != nil)
     }
     private func clean(_ text: String) -> String {
         DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: DailySummaryContentFormatter.removingCitationMarkers(from: text))

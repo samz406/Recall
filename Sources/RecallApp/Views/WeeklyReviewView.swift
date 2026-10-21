@@ -263,13 +263,13 @@ struct WeeklyReviewView: View {
             Text(item.title).font(.system(size: 18, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
             if let previous = item.previous {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("此前 · " + stamp(previous.date, report: report)).font(.caption).foregroundStyle(.secondary)
+                    Text("此前 · " + (previous.eventTimeKnown == true ? "发生于 " : "记录于 ") + stamp(previous.date, report: report)).font(.caption).foregroundStyle(.secondary)
                     Text(previous.text).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
             ForEach(item.featured(for: report.template.length)) { excerpt in
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(stamp(excerpt.date, report: report)).font(.caption).foregroundStyle(.secondary)
+                    Text((excerpt.eventTimeKnown == true ? "发生于 " : "记录于 ") + stamp(excerpt.date, report: report)).font(.caption).foregroundStyle(.secondary)
                     Text(excerpt.text).fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -533,7 +533,7 @@ private struct ReviewSourcesSheet: View {
                     else {
                         ForEach((item.previous.map { [$0] } ?? []) + item.excerpts) { entry in
                             VStack(alignment: .leading, spacing: 10) {
-                                Text(entry.date.formatted()).font(.caption).foregroundStyle(.secondary)
+                                Text((entry.eventTimeKnown == true ? "发生于 " : "记录于 ") + entry.date.formatted()).font(.caption).foregroundStyle(.secondary)
                                 Text(entry.text).textSelection(.enabled)
                                 ForEach(model.state.captures.filter { entry.sourceIDs.contains($0.id) }) { capture in
                                     Button("查看原记录 · " + (capture.sourceAppName ?? "已保存记录")) { source = capture }
