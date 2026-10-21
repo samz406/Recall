@@ -228,7 +228,7 @@ public struct MatterMemoryEngine: Sendable {
                        $0.status == event.status && $0.resultStatus == event.resultStatus
                            && MatterEvidence.key($0.detail) == MatterEvidence.key(event.detail)
                            && MatterEvidence.key($0.nextAction ?? "") == MatterEvidence.key(event.nextAction ?? "")
-                           && ($0.eventAt == nil || event.eventAt == nil || $0.eventAt == event.eventAt)
+                           && $0.eventAt == event.eventAt
                    }) {
                     changes[index].evidenceIDs = Array(Set(changes[index].evidenceIDs + event.evidenceIDs))
                         .sorted { $0.uuidString < $1.uuidString }

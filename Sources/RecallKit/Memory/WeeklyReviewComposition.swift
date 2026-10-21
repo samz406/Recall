@@ -180,7 +180,8 @@ struct WeeklyReviewComposition: Sendable {
         guard !text.contains("**"), !text.contains("```"),
               text.range(of: #"\[\s*\d+(?:\s*[,，-]\s*\d+)*\s*\]|https?://"#, options: .regularExpression) == nil else { return false }
         // Deterministic numeric gate supplements (does not replace) the semantic audit.
-        let evidence = topic.facts.filter { ids.contains($0.id) }.map(\.text).joined(separator: " ") + (topic.previous?.text ?? "")
+        let evidence = topic.facts.filter { ids.contains($0.id) }.map { $0.text + " " + $0.date }.joined(separator: " ")
+            + (topic.previous.map { $0.text + " " + $0.date } ?? "")
         return numbers(text).isSubset(of: numbers(evidence))
     }
     private func numbers(_ text: String) -> Set<String> {

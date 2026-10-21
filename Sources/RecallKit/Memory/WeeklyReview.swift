@@ -390,7 +390,7 @@ public struct WeeklyReviewEngine: Sendable {
                 if let i = files.firstIndex(where: { $0.id == key }) {
                     if let j = files[i].events.firstIndex(where: {
                         MatterEvidence.key($0.detail) == MatterEvidence.key(text)
-                            && ($0.eventAt == nil || event.eventAt == nil || $0.eventAt == event.eventAt)
+                            && $0.eventAt == event.eventAt
                     }) {
                         files[i].events[j].evidenceIDs = Array(Set(files[i].events[j].evidenceIDs + [record.id])).sorted { $0.uuidString < $1.uuidString }
                     } else { files[i].events.append(event) }

@@ -249,7 +249,7 @@ enum WeeklyReviewVerification {
 }
 
 private actor WeeklyProbe: LLMResponding {
-    enum Mode { case valid, invented, failure, inventedNumber, stateDrift, missingOutcome }
+    enum Mode { case valid, invented, failure, inventedNumber, stateDrift, missingOutcome, supportedDate }
     let mode: Mode
     var requests: [LLMRequest] = []
     init(mode: Mode) { self.mode = mode }
@@ -272,6 +272,7 @@ private actor WeeklyProbe: LLMResponding {
                 var ids = topic["requiredEvidenceIDs"] as! [String]
                 var summary = facts.map { $0["text"] as! String }.joined(separator: " ")
                 if (topic["title"] as? String) == "Orion 联系测试" { summary = "联络表已完成核对，测试地址保留在来源记录中。" }
+                if mode == .supportedDate { summary = "10月20日完成了联络表核对，测试地址保留在来源记录中。" }
                 if mode == .inventedNumber { summary = "联络表已完成核对，带来了 99999 元收益。" }
                 if mode == .stateDrift { summary = "联络表已完成上线，全部相关问题均已解决。" }
                 if mode == .missingOutcome { ids = Array(ids.prefix(1)) }
@@ -311,6 +312,9 @@ private extension WeeklyReviewVerification {
         let old = CaptureRecord(eventTemplate: .manualMoment, createdAt: date(15), contentHash: "synthetic-old-learning",
             ocrText: "[聊天·自己] 我学习了木刻基础技法，尝试了两种握刀方式。\n[聊天·自己] 我参加了城市植物观察活动，记录了三种叶片。")
         var repeated = old; repeated.id = UUID(); repeated.createdAt = date(20)
+        let correctedState = RecallState(captures: [old, repeated], matterCorrections: [MatterCorrection(evidenceIDs: [repeated.id], kind: .eventDate, eventAt: date(20))])
+        try expect(engine.topics(in: correctedState).allSatisfy { $0.events.count == 2 },
+            "用户明确更正的另一次发生时间必须保留，不能被截图去重覆盖")
         for records in [[repeated, old], [old, repeated]] {
             let topics = engine.topics(in: RecallState(captures: records))
             try expect(topics.count == 2 && topics.allSatisfy { $0.latest.date == date(15) && Set($0.evidenceIDs) == [old.id, repeated.id] },
@@ -354,6 +358,8 @@ private extension WeeklyReviewVerification {
                 && !report.markdown.contains("99999") && !report.markdown.contains("全部相关问题均已解决"),
                 "新数字/收益和虚构上线结论必须被本地校验或独立核对拒绝")
         }
+        let dated = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .work), responder: WeeklyProbe(mode: .supportedDate), now: date(21, 20))
+        try expect(dated.modelAssisted && !dated.refinementPending, "来源明确的发生日期可以进入正文，不能误报为新数字")
         for kind in ReviewTemplateKind.allCases {
             var template = ReviewTemplate(kind: kind); template.length = .brief
             let probe = WeeklyProbe(mode: .valid)
