@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// A matter is a concrete, attributed action, not a window title or an old OCR summary.
 /// Re-evaluated for historical captures as well as new ones; original evidence is never edited.
@@ -8,9 +9,11 @@ struct MatterEvidence {
         var detail: String
         var status: WorkEpisodeStatus
         var nextAction: String? = nil
+        var ordinal: Int = 0
+        var resultStatus: WorkEpisodeStatus? = nil
     }
 
-    static func entry(in record: CaptureRecord, proposedTitle: String, userNamed: Bool = false) -> Entry? {
+    static func entries(in record: CaptureRecord, proposedTitle: String, userNamed: Bool = false) -> [Entry] {
         let title = clean(proposedTitle)
         let segments = RecordedText.segments(in: record)
         var entries: [(entry: Entry, ordinal: Int)] = []
@@ -31,21 +34,35 @@ struct MatterEvidence {
         }
         // A later todo is a next action, not a replacement for a concrete progress/result.
         // Keep separate topics separate, and never fill missing content from an old summary.
-        let related = entries.filter { key($0.entry.title) == key(title) }
-        let pool = related.isEmpty ? entries : related
-        guard let last = pool.max(by: { $0.ordinal < $1.ordinal }) else { return nil }
-        let topic = pool.filter { key($0.entry.title) == key(last.entry.title) }
-        let actual = topic.filter { $0.entry.status != .pending }
-            .max { $0.ordinal < $1.ordinal }
-        guard let actual else { return last.entry }
-        var result = actual.entry
-        if let action = topic.filter({ $0.entry.status == .pending && $0.ordinal > actual.ordinal })
-            .max(by: { $0.ordinal < $1.ordinal }) {
-            result.nextAction = action.entry.detail
-            // A verified result followed by an explicit follow-up still has an open action.
-            if result.status == .completed { result.status = .pending }
-        }
-        return result
+        let topics = Dictionary(grouping: entries) { key($0.entry.title) }
+        return topics.values.flatMap { topic -> [Entry] in
+            let ordered = topic.sorted { $0.ordinal < $1.ordinal }
+            guard let last = ordered.last else { return [] }
+            let actual = ordered.filter { $0.entry.status != .pending }
+            guard let latest = actual.last else {
+                var result = last.entry; result.ordinal = last.ordinal
+                return [result]
+            }
+            // Keep every observed change, including other topics in the same screenshot.
+            var result = actual.map { row -> Entry in
+                var value = row.entry; value.ordinal = row.ordinal; return value
+            }
+            if let action = ordered.last(where: { $0.entry.status == .pending && $0.ordinal > latest.ordinal }) {
+                result[result.count - 1].nextAction = action.entry.detail
+                if result[result.count - 1].status == .completed {
+                    result[result.count - 1].resultStatus = .completed
+                    result[result.count - 1].status = .pending
+                }
+            }
+            return result
+        }.sorted { $0.ordinal < $1.ordinal }
+    }
+
+    /// Stable event identity is separate from the shared screenshot/source identity.
+    static func eventID(source: UUID, topic: String, ordinal: Int) -> UUID {
+        let bytes = Array(SHA256.hash(data: Data("\(source.uuidString):\(topic):\(ordinal)".utf8)).prefix(16))
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                           bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
     }
 
     static func key(_ text: String) -> String {

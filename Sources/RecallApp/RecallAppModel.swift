@@ -159,6 +159,7 @@ final class RecallAppModel: ObservableObject {
         weeklyReviewMessage = nil
         let snapshot = state
         let responder = useModel ? dailySummaryResponder() : nil
+        let scheduledTrigger = schedule?.effectiveTrigger(at: .now)
         weeklyReviewTask = Task {
             defer { isGeneratingWeeklyReview = false; weeklyReviewTask = nil }
             do {
@@ -168,7 +169,7 @@ final class RecallAppModel: ObservableObject {
                 var report = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
                 try Task.checkCancellation()
                 if useModel && responder == nil { report.refinementPending = true }
-                if let schedule { report.scheduledFor = schedule.effectiveTrigger(at: .now) }
+                report.scheduledFor = scheduledTrigger
                 let current = await store.snapshot()
                 guard current.privacy.cloudUseEnabled == snapshot.privacy.cloudUseEnabled,
                       current.privacy.excludedBundleIdentifiers == snapshot.privacy.excludedBundleIdentifiers else { throw WeeklyReviewError.changedSources }
@@ -176,7 +177,7 @@ final class RecallAppModel: ObservableObject {
                 state = await store.snapshot()
                 if schedule == nil { weeklyReportToOpen = saved.id }
                 weeklyReviewMessage = saved.refinementPending
-                    ? "已保存本地整理版本。模型暂不可用，你可以阅读和编辑，或稍后重试；定时任务会自动重试。"
+                    ? "已保存可阅读的版本，未通过模型核对的条目保留原始记录。你可以稍后更新；定时计划最多在一天内重试三次，不影响下一期。"
                     : "回顾已保存。你可以查看依据、调整内容或导出。"
                 if saved.refinementPending {
                     recordDiagnostic(.warning, source: "WeeklyReview", message: "模型整理失败或不可用，已保存本地版本", metadata: ["scheduled": schedule == nil ? "false" : "true"])
@@ -191,7 +192,7 @@ final class RecallAppModel: ObservableObject {
                 weeklyReviewMessage = error.localizedDescription
                 recordError(error, source: "WeeklyReview", message: "一周回顾生成失败")
                 if let schedule {
-                    let skip = (error as? WeeklyReviewError) == .noEvidence || (error as? WeeklyReviewError) == .noWorkScope
+                    let skip = (error as? WeeklyReviewError) == .noEvidence || (error as? WeeklyReviewError) == .noWorkScope || (error as? WeeklyReviewError) == .invalidPeriod
                     do { try await store.deferReviewSchedule(schedule, noEvidence: skip); state = await store.snapshot() }
                     catch { recordError(error, source: "WeeklyReview", message: "保存回顾重试状态失败") }
                 }
@@ -269,21 +270,54 @@ final class RecallAppModel: ObservableObject {
 
     private func runDueWeeklySchedule() {
         guard !isGeneratingWeeklyReview,
-              let schedule = state.reviewSchedules.filter({ $0.isDue(at: .now) }).sorted(by: { ($0.nextRunAt ?? .distantFuture) < ($1.nextRunAt ?? .distantFuture) }).first,
-              let trigger = schedule.effectiveTrigger(at: .now) else { return }
-        // Missed runs use the scheduled cutoff, never the time at which the app reopened.
-        // Coalesce older missed weeks into one due report; don't flood users with backfill.
-        let report = schedule.lastReportID.flatMap { id in state.weeklyReports.first { $0.id == id && $0.scheduledFor == trigger } }
-        if report?.editedMarkdown != nil {
-            Task {
-                do { try await store.deferReviewSchedule(schedule, noEvidence: true); state = await store.snapshot() }
-                catch { recordError(error, source: "WeeklyReview", message: "更新已编辑回顾的计划状态失败") }
+              let work = WeeklyReviewWork.next(in: state, at: .now, modelAvailable: dailySummaryResponder() != nil) else { return }
+        switch work {
+        case .generate(let schedule, let trigger):
+            // Coalesce missed runs using the scheduled cutoff, never app reopen time.
+            let report = schedule.lastReportID.flatMap { id in state.weeklyReports.first { $0.id == id && $0.scheduledFor == trigger } }
+            if report?.editedMarkdown != nil {
+                Task {
+                    do { try await store.deferReviewSchedule(schedule, noEvidence: true); state = await store.snapshot() }
+                    catch { recordError(error, source: "WeeklyReview", message: "更新已编辑回顾的计划状态失败") }
+                }
+                return
             }
-            return
+            generateWeeklyReview(period: schedule.period(at: trigger), template: schedule.template, scope: schedule.scope,
+                useModel: schedule.useModel, replacing: report?.id, schedule: schedule)
+        case .refine(let report, let schedule):
+            refineWeeklyReport(report, schedule: schedule)
         }
-        let period = ReviewPeriod.make(schedule.periodKind, at: trigger, calendar: schedule.calendar)
-        generateWeeklyReview(period: period, template: schedule.template, scope: schedule.scope,
-            useModel: schedule.useModel, replacing: report?.id, schedule: schedule)
+    }
+
+    private func refineWeeklyReport(_ original: WeeklyReport, schedule: ReviewSchedule) {
+        guard !isGeneratingWeeklyReview, let responder = dailySummaryResponder() else { return }
+        let snapshot = state
+        isGeneratingWeeklyReview = true
+        weeklyReviewTask = Task {
+            defer { isGeneratingWeeklyReview = false; weeklyReviewTask = nil }
+            do {
+                let job = Task.detached(priority: .utility) {
+                    try await WeeklyReviewEngine().refine(original, in: snapshot, responder: responder)
+                }
+                let report = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
+                let current = await store.snapshot()
+                guard current.privacy.cloudUseEnabled == snapshot.privacy.cloudUseEnabled,
+                      current.privacy.excludedBundleIdentifiers == snapshot.privacy.excludedBundleIdentifiers else { throw WeeklyReviewError.changedSources }
+                let saved = try await store.commitWeeklyRefinement(report, expected: original, schedule: schedule, categories: snapshot.reviewCategories)
+                state = await store.snapshot()
+                if saved.refinementPending {
+                    recordDiagnostic(.warning, source: "WeeklyReview", message: "回顾正文核对未通过，保留来源事实", metadata: [:])
+                } else if schedule.notifyWhenReady {
+                    do { try await notificationScheduler.deliverWeeklyReview(saved) }
+                    catch { recordError(error, source: "WeeklyReview", message: "回顾整理完成，通知投递失败") }
+                }
+            } catch is CancellationError { }
+            catch {
+                recordError(error, source: "WeeklyReview", message: "回顾正文重试失败")
+                do { try await store.deferWeeklyRefinement(original, schedule: schedule); state = await store.snapshot() }
+                catch { recordError(error, source: "WeeklyReview", message: "保存正文重试状态失败") }
+            }
+        }
     }
 
     func organizeExistingMatters() {

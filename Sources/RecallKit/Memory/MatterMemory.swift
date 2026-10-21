@@ -86,6 +86,8 @@ public struct MatterEvent: Identifiable, Sendable {
     public var status: WorkEpisodeStatus
     public var evidenceIDs: [UUID]
     public var nextAction: String?
+    public var sequence: Int = 0
+    public var resultStatus: WorkEpisodeStatus? = nil
     public var date: Date { eventAt ?? recordedAt }
     public init(id: UUID, title: String, detail: String, recordedAt: Date, eventAt: Date? = nil, status: WorkEpisodeStatus, evidenceIDs: [UUID], nextAction: String? = nil) {
         self.id = id; self.title = title; self.detail = detail; self.recordedAt = recordedAt
@@ -193,35 +195,42 @@ public struct MatterMemoryEngine: Sendable {
                 if record.manualMatter != nil && record.textOrigin == .userInput { continue }
                 let corrections = state.matterCorrections.filter { $0.evidenceIDs.contains(id) }
                 let separated = corrections.last { $0.kind == .separate && !$0.text.isEmpty }
-                guard let entry = MatterEvidence.entry(in: record,
-                    proposedTitle: separated?.text ?? episode.projectName, userNamed: separated != nil) else { continue }
-                let key = (separated == nil ? "topic:" : "user:") + MatterEvidence.key(entry.title)
-                guard seen.insert(key + ":" + id.uuidString).inserted else { continue }
-                let eventDate = corrections.last(where: { $0.kind == .eventDate })?.eventAt
-                let recordedAt = captured[id]?.createdAt ?? record.createdAt
-                let completed = corrections.contains { $0.kind == .completed }
-                let event = MatterEvent(id: id, title: entry.title,
-                    detail: completed ? "用户已标记完成：\(entry.title)" : entry.detail,
-                    recordedAt: recordedAt, eventAt: eventDate,
-                    status: completed ? .completed : entry.status, evidenceIDs: [id],
-                    nextAction: completed ? nil : entry.nextAction)
-                groups[key, default: []].append(event)
-                names[key] = entry.title
+                for entry in MatterEvidence.entries(in: record,
+                    proposedTitle: separated?.text ?? episode.projectName, userNamed: separated != nil) {
+                    let key = (separated == nil ? "topic:" : "user:") + MatterEvidence.key(entry.title)
+                    guard seen.insert(key + ":" + id.uuidString + ":" + String(entry.ordinal)).inserted else { continue }
+                    let eventDate = corrections.last(where: { $0.kind == .eventDate })?.eventAt
+                    let recordedAt = captured[id]?.createdAt ?? record.createdAt
+                    let completed = corrections.contains { $0.kind == .completed }
+                    var event = MatterEvent(id: MatterEvidence.eventID(source: id, topic: key, ordinal: entry.ordinal), title: entry.title,
+                        detail: completed ? "用户已标记完成：\(entry.title)" : entry.detail,
+                        recordedAt: recordedAt, eventAt: eventDate,
+                        status: completed ? .completed : entry.status, evidenceIDs: [id],
+                        nextAction: completed ? nil : entry.nextAction)
+                    event.sequence = entry.ordinal; event.resultStatus = entry.resultStatus
+                    groups[key, default: []].append(event)
+                    names[key] = entry.title
+                }
             }
         }
         return groups.map { key, events in
             let ordered = events.sorted {
-                $0.date == $1.date ? $0.id.uuidString < $1.id.uuidString : $0.date < $1.date
+                if $0.date != $1.date { return $0.date < $1.date }
+                if $0.recordedAt != $1.recordedAt { return $0.recordedAt < $1.recordedAt }
+                return $0.sequence == $1.sequence ? $0.id.uuidString < $1.id.uuidString : $0.sequence < $1.sequence
             }
             var changes: [MatterEvent] = []
             for event in ordered {
                 // Repeated screenshots add sources, not progress. Preserve the first occurrence
                 // so rereading an old result doesn't manufacture a change in this week's review.
-                if let last = changes.last, last.status == event.status,
-                   MatterEvidence.key(last.detail) == MatterEvidence.key(event.detail),
-                   MatterEvidence.key(last.nextAction ?? "") == MatterEvidence.key(event.nextAction ?? ""),
-                   !event.evidenceIDs.contains(where: { captured[$0]?.manualMatter != nil }) {
-                    changes[changes.count - 1].evidenceIDs = Array(Set(last.evidenceIDs + event.evidenceIDs))
+                if !event.evidenceIDs.contains(where: { captured[$0]?.manualMatter != nil }),
+                   let index = changes.firstIndex(where: {
+                       $0.status == event.status && $0.resultStatus == event.resultStatus
+                           && MatterEvidence.key($0.detail) == MatterEvidence.key(event.detail)
+                           && MatterEvidence.key($0.nextAction ?? "") == MatterEvidence.key(event.nextAction ?? "")
+                           && ($0.eventAt == nil || event.eventAt == nil || $0.eventAt == event.eventAt)
+                   }) {
+                    changes[index].evidenceIDs = Array(Set(changes[index].evidenceIDs + event.evidenceIDs))
                         .sorted { $0.uuidString < $1.uuidString }
                 } else { changes.append(event) }
             }

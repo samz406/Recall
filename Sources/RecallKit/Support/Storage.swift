@@ -423,7 +423,7 @@ public actor FileMemoryStore {
         if let expected {
             guard state.reviewSchedules.contains(expected), expected.isDue(at: now),
                   let trigger = submitted.scheduledFor ?? expected.effectiveTrigger(at: now),
-                  submitted.period == ReviewPeriod.make(expected.periodKind, at: trigger, calendar: expected.calendar),
+                  submitted.period == expected.period(at: trigger),
                   submitted.template == expected.template, submitted.scope == expected.scope else { throw WeeklyReviewError.changedSources }
         }
         let before = state
@@ -438,18 +438,41 @@ public actor FileMemoryStore {
             report.scheduleID = expected.id; report.scheduledFor = submitted.scheduledFor ?? expected.nextRunAt
             guard let i = state.reviewSchedules.firstIndex(where: { $0.id == expected.id }) else { throw WeeklyReviewError.changedSources }
             state.reviewSchedules[i].lastReportID = report.id
-            if report.refinementPending {
-                state.reviewSchedules[i].nextRunAt = report.scheduledFor
-                state.reviewSchedules[i].failureCount += 1
-                state.reviewSchedules[i].retryAfter = now.addingTimeInterval(min(3600, 60 * pow(2, Double(min(state.reviewSchedules[i].failureCount, 6)))))
-            } else {
-                state.reviewSchedules[i].nextRunAt = expected.nextTrigger(after: now)
-                state.reviewSchedules[i].retryAfter = nil; state.reviewSchedules[i].failureCount = 0
-            }
+            // A readable local report completes this period even if the optional model failed.
+            state.reviewSchedules[i].nextRunAt = expected.nextTrigger(after: now)
+            state.reviewSchedules[i].retryAfter = nil; state.reviewSchedules[i].failureCount = 0
+            if report.refinementPending { report.recordRefinementAttempt(at: now) }
         }
+
         state.weeklyReports.removeAll { $0.id == report.id }; state.weeklyReports.insert(report, at: 0)
         do { try persist() } catch { state = before; throw error }
         return report
+    }
+
+    public func commitWeeklyRefinement(_ submitted: WeeklyReport, expected original: WeeklyReport,
+                                       schedule: ReviewSchedule, categories: [String: ReviewCategory]? = nil,
+                                       now: Date = .now) throws -> WeeklyReport {
+        try Task.checkCancellation()
+        guard state.weeklyReports.contains(original), original.canRefine(at: now),
+              state.reviewSchedules.contains(schedule), schedule.isEnabled, schedule.useModel,
+              schedule.id == original.scheduleID, schedule.lastReportID == original.id,
+              schedule.template == original.template, schedule.scope == original.scope,
+              submitted.id == original.id, submitted.period == original.period,
+              submitted.template == original.template, submitted.scope == original.scope,
+              submitted.sourceVersions == original.sourceVersions,
+              WeeklyReviewEngine.sourcesUnchanged(submitted, in: state),
+              categories == nil || categories == state.reviewCategories else { throw WeeklyReviewError.changedSources }
+        let before = state
+        var report = submitted
+        report.recordRefinementAttempt(at: now)
+        state.weeklyReports.removeAll { $0.id == original.id }; state.weeklyReports.insert(report, at: 0)
+        do { try persist() } catch { state = before; throw error }
+        return report
+    }
+
+    public func deferWeeklyRefinement(_ original: WeeklyReport, schedule: ReviewSchedule, now: Date = .now) throws {
+        var deferred = original; deferred.updatedAt = now; deferred.refinementPending = true
+        _ = try commitWeeklyRefinement(deferred, expected: original, schedule: schedule, now: now)
     }
 
     public func deferReviewSchedule(_ expected: ReviewSchedule, noEvidence: Bool, now: Date = .now) throws {
@@ -472,6 +495,7 @@ public actor FileMemoryStore {
             let text = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty && text.count <= 60_000 else { throw WeeklyReviewError.invalidTemplate }
             state.weeklyReports[i].editedMarkdown = text
+            state.weeklyReports[i].refinementPending = false
         } else { state.weeklyReports[i].editedMarkdown = nil }
         state.weeklyReports[i].updatedAt = .now
         do { try persist() } catch { state = before; throw error }
