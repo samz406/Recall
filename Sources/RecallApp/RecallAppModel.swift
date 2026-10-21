@@ -12,12 +12,20 @@ enum ReminderDiscoveryStatus: Equatable {
 extension Notification.Name {
     static let recallReminderAction = Notification.Name("im.recall.app.reminder-action")
     static let recallOpenReminders = Notification.Name("im.recall.app.open-reminders")
+    static let recallOpenWeeklyReview = Notification.Name("im.recall.app.open-weekly-review")
 }
 
 @MainActor
 final class RecallAppModel: ObservableObject {
     @Published var state = RecallState()
     @Published private(set) var matterFiles: [MatterFile] = []
+    @Published private(set) var reviewTopics: [MatterFile] = []
+    @Published private(set) var isGeneratingWeeklyReview = false
+    @Published var weeklyReviewMessage: String?
+    @Published var weeklyReportToOpen: UUID?
+    private var weeklyReviewTask: Task<Void, Never>?
+    private var weeklyScheduleTimer: Timer?
+    private var weeklyWakeObserver: NSObjectProtocol?
     @Published private(set) var isBuildingMatters = false
     @Published private(set) var matterBuildMessage: String?
     private var matterBuildTask: Task<Void, Never>?
@@ -78,7 +86,13 @@ final class RecallAppModel: ObservableObject {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor [weak self] in await self?.cleanupExpiredRecentlyDeleted() }
+                Task { @MainActor [weak self] in
+                    await self?.cleanupExpiredRecentlyDeleted()
+                    await self?.refresh()
+                }
+            }
+            weeklyWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in await self?.refresh() }
             }
             Task {
                 await cleanupExpiredRecentlyDeleted()
@@ -101,6 +115,8 @@ final class RecallAppModel: ObservableObject {
         armDailySummaryTimer()
         armRecentlyDeletedTimer()
         generateMissedDailySummaryIfNeeded()
+        armWeeklySchedules()
+        runDueWeeklySchedule()
     }
 
     /// 到期时间触发清理；睡眠或应用不在前台时错过的触发在重新激活时补跑。
@@ -136,6 +152,140 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
+    func generateWeeklyReview(period: ReviewPeriod, template: ReviewTemplate, scope: ReviewScope,
+                              useModel: Bool, replacing: UUID? = nil, schedule: ReviewSchedule? = nil) {
+        guard !isGeneratingWeeklyReview else { return }
+        isGeneratingWeeklyReview = true
+        weeklyReviewMessage = nil
+        let snapshot = state
+        let responder = useModel ? dailySummaryResponder() : nil
+        weeklyReviewTask = Task {
+            defer { isGeneratingWeeklyReview = false; weeklyReviewTask = nil }
+            do {
+                let job = Task.detached(priority: .userInitiated) {
+                    try await WeeklyReviewEngine().generate(in: snapshot, period: period, template: template, scope: scope, responder: responder)
+                }
+                var report = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
+                try Task.checkCancellation()
+                if useModel && responder == nil { report.refinementPending = true }
+                if let schedule { report.scheduledFor = schedule.effectiveTrigger(at: .now) }
+                let current = await store.snapshot()
+                guard current.privacy.cloudUseEnabled == snapshot.privacy.cloudUseEnabled,
+                      current.privacy.excludedBundleIdentifiers == snapshot.privacy.excludedBundleIdentifiers else { throw WeeklyReviewError.changedSources }
+                let saved = try await store.commitWeeklyReport(report, replacing: replacing, schedule: schedule, categories: snapshot.reviewCategories)
+                state = await store.snapshot()
+                if schedule == nil { weeklyReportToOpen = saved.id }
+                weeklyReviewMessage = saved.refinementPending
+                    ? "已保存本地整理版本。模型暂不可用，你可以阅读和编辑，或稍后重试；定时任务会自动重试。"
+                    : "回顾已保存。你可以查看依据、调整内容或导出。"
+                if saved.refinementPending {
+                    recordDiagnostic(.warning, source: "WeeklyReview", message: "模型整理失败或不可用，已保存本地版本", metadata: ["scheduled": schedule == nil ? "false" : "true"])
+                }
+                if let schedule, schedule.notifyWhenReady, !saved.refinementPending {
+                    do { try await notificationScheduler.deliverWeeklyReview(saved) }
+                    catch { recordError(error, source: "WeeklyReview", message: "一周回顾已保存，通知投递失败") }
+                }
+            } catch is CancellationError {
+                weeklyReviewMessage = "已取消生成，已有回顾保持不变。"
+            } catch {
+                weeklyReviewMessage = error.localizedDescription
+                recordError(error, source: "WeeklyReview", message: "一周回顾生成失败")
+                if let schedule {
+                    let skip = (error as? WeeklyReviewError) == .noEvidence || (error as? WeeklyReviewError) == .noWorkScope
+                    do { try await store.deferReviewSchedule(schedule, noEvidence: skip); state = await store.snapshot() }
+                    catch { recordError(error, source: "WeeklyReview", message: "保存回顾重试状态失败") }
+                }
+            }
+        }
+    }
+
+    func weeklyMarkdownForExport(_ id: UUID) async -> String? {
+        let snapshot = await store.snapshot()
+        guard let report = snapshot.weeklyReports.first(where: { $0.id == id && $0.isReadable }),
+              WeeklyReviewEngine.sourcesUnchanged(report, in: snapshot) else { return nil }
+        return report.markdown
+    }
+
+    func logWeeklyExportFailure(_ error: Error) { recordError(error, source: "WeeklyReview", message: "导出一周回顾失败") }
+
+    func cancelWeeklyReview() { weeklyReviewTask?.cancel() }
+
+    func saveReviewTemplate(_ template: ReviewTemplate) async -> Bool {
+        do { try await store.saveReviewTemplate(template); state = await store.snapshot(); return true }
+        catch { recordError(error, source: "WeeklyReview", message: "保存回顾模板失败"); return false }
+    }
+
+    func deleteReviewTemplate(_ id: String) async {
+        do { try await store.deleteReviewTemplate(id: id); state = await store.snapshot() }
+        catch { recordError(error, source: "WeeklyReview", message: "删除回顾模板失败") }
+    }
+
+    func setReviewCategory(topicID: String, category: ReviewCategory) async {
+        do { try await store.saveReviewCategory(topicID: topicID, category: category); await refresh() }
+        catch { recordError(error, source: "WeeklyReview", message: "保存主题分类失败") }
+    }
+
+    func saveReviewSchedule(_ value: ReviewSchedule) async -> Bool {
+        var schedule = value
+        if schedule.notifyWhenReady {
+            do {
+                let granted = try await notificationScheduler.requestAuthorization()
+                if !granted {
+                    schedule.notifyWhenReady = false
+                    weeklyReviewMessage = "自动生成会照常执行；系统通知未授权。"
+                }
+            } catch {
+                schedule.notifyWhenReady = false
+                recordError(error, source: "WeeklyReview", message: "回顾通知授权失败")
+            }
+        }
+        do { try await store.saveReviewSchedule(schedule); await refresh(); return true }
+        catch { recordError(error, source: "WeeklyReview", message: "保存回顾计划失败"); return false }
+    }
+
+    func deleteReviewSchedule(_ id: UUID) async {
+        do { try await store.deleteReviewSchedule(id: id); state = await store.snapshot() }
+        catch { recordError(error, source: "WeeklyReview", message: "删除回顾计划失败") }
+    }
+
+    func editWeeklyReport(_ id: UUID, markdown: String?) async -> Bool {
+        do { try await store.editWeeklyReport(id: id, markdown: markdown); state = await store.snapshot(); return true }
+        catch { recordError(error, source: "WeeklyReview", message: "保存回顾修改失败"); return false }
+    }
+
+    func deleteWeeklyReport(_ id: UUID) async {
+        do {
+            deletionUndoNotice = try await store.deleteWeeklyReport(id: id)
+            await refresh()
+        } catch { recordError(error, source: "WeeklyReview", message: "删除一周回顾失败") }
+    }
+
+    private func armWeeklySchedules() {
+        guard weeklyScheduleTimer == nil else { return }
+        weeklyScheduleTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.runDueWeeklySchedule() }
+        }
+    }
+
+    private func runDueWeeklySchedule() {
+        guard !isGeneratingWeeklyReview,
+              let schedule = state.reviewSchedules.filter({ $0.isDue(at: .now) }).sorted(by: { ($0.nextRunAt ?? .distantFuture) < ($1.nextRunAt ?? .distantFuture) }).first,
+              let trigger = schedule.effectiveTrigger(at: .now) else { return }
+        // Missed runs use the scheduled cutoff, never the time at which the app reopened.
+        // Coalesce older missed weeks into one due report; don't flood users with backfill.
+        let report = schedule.lastReportID.flatMap { id in state.weeklyReports.first { $0.id == id && $0.scheduledFor == trigger } }
+        if report?.editedMarkdown != nil {
+            Task {
+                do { try await store.deferReviewSchedule(schedule, noEvidence: true); state = await store.snapshot() }
+                catch { recordError(error, source: "WeeklyReview", message: "更新已编辑回顾的计划状态失败") }
+            }
+            return
+        }
+        let period = ReviewPeriod.make(schedule.periodKind, at: trigger, calendar: schedule.calendar)
+        generateWeeklyReview(period: period, template: schedule.template, scope: schedule.scope,
+            useModel: schedule.useModel, replacing: report?.id, schedule: schedule)
+    }
+
     func organizeExistingMatters() {
         guard !isBuildingMatters else { return }
         matterBuildMessage = nil
@@ -162,9 +312,13 @@ final class RecallAppModel: ObservableObject {
         let snapshot = state
         isBuildingMatters = true
         matterBuildTask = Task {
-            let files = await Task.detached(priority: .utility) { MatterMemoryEngine().files(in: snapshot) }.value
+            let result = await Task.detached(priority: .utility) {
+                (MatterMemoryEngine().files(in: snapshot), WeeklyReviewEngine().topics(in: snapshot))
+            }.value
             guard !Task.isCancelled else { return }
+            let files = result.0
             matterFiles = files
+            reviewTopics = result.1
             isBuildingMatters = false
             if announce {
                 if snapshot.captures.isEmpty {

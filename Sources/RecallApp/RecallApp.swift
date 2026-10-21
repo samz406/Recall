@@ -51,6 +51,7 @@ final class RecallAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let reminderID = response.notification.request.content.userInfo["reminderID"] as? String
+        let weeklyReportID = response.notification.request.content.userInfo["weeklyReportID"] as? String
         let action = response.actionIdentifier
         completionHandler()
         DispatchQueue.main.async {
@@ -61,6 +62,9 @@ final class RecallAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
                     userInfo: ["reminderID": reminderID, "action": action]
                 )
                 NotificationCenter.default.post(name: .recallOpenReminders, object: nil)
+            }
+            if let weeklyReportID {
+                NotificationCenter.default.post(name: .recallOpenWeeklyReview, object: nil, userInfo: ["weeklyReportID": weeklyReportID])
             }
             Self.activateMainWindow()
         }

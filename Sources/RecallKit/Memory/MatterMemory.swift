@@ -6,12 +6,14 @@ public struct ManualMatterNote: Codable, Hashable, Sendable {
     public var detail: String
     public var status: WorkEpisodeStatus
     public var eventAt: Date
+    public var reviewCategory: ReviewCategory?
 
-    public init(title: String, detail: String, status: WorkEpisodeStatus, eventAt: Date) {
+    public init(title: String, detail: String, status: WorkEpisodeStatus, eventAt: Date, reviewCategory: ReviewCategory? = nil) {
         self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         self.detail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
         self.status = status
         self.eventAt = eventAt
+        self.reviewCategory = reviewCategory
     }
 
     public var isValid: Bool {

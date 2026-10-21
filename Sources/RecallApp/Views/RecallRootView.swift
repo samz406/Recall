@@ -96,6 +96,10 @@ struct RecallRootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .recallOpenReminders)) { _ in
             section = .reminders
         }
+        .onReceive(NotificationCenter.default.publisher(for: .recallOpenWeeklyReview)) { note in
+            if let id = note.userInfo?["weeklyReportID"] as? String { model.weeklyReportToOpen = UUID(uuidString: id) }
+            section = .matters
+        }
     }
 
     private var highPrioritySummaryTodoCount: Int {
@@ -2074,7 +2078,7 @@ private struct DailyBriefingView: View {
     }
 }
 
-private struct MarkdownDocumentView: View {
+struct MarkdownDocumentView: View {
     private enum Block {
         case heading(level: Int, text: String)
         case unorderedList(text: String)
