@@ -55,6 +55,7 @@ struct MatterWorkspaceView: View {
                 }
             }.padding(.horizontal, 24).padding(.bottom, 18)
             Divider()
+            ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     if tab != .weeklyReview, let message = model.matterBuildMessage {
@@ -111,10 +112,11 @@ struct MatterWorkspaceView: View {
                         ForEach(Array(files.prefix(visibleCount))) { file in fileCard(file, resume: false) }
                         more(total: files.count)
                     } else if tab == .weeklyReview {
-                        WeeklyReviewView().environmentObject(model)
+                        WeeklyReviewView(scrollToReport: { withAnimation { proxy.scrollTo("weekly-report", anchor: .top) } }).environmentObject(model)
                     }
                 }.padding(24).frame(maxWidth: 1100).frame(maxWidth: .infinity)
             }.clipped()
+            }
         }
         .onAppear { if model.weeklyReportToOpen != nil { tab = .weeklyReview } }
         .onChange(of: model.weeklyReportToOpen) { _, id in if id != nil { tab = .weeklyReview } }

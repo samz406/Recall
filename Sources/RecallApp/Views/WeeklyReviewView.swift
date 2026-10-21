@@ -22,6 +22,7 @@ struct WeeklyReviewView: View {
     @State private var exporting: WeeklyReport?
     @State private var sourceItem: ReviewItem?
     @State private var deleting: WeeklyReport?
+    var scrollToReport: () -> Void = {}
 
     private var period: ReviewPeriod {
         if periodKind != .custom { return .make(periodKind) }
@@ -51,7 +52,7 @@ struct WeeklyReviewView: View {
                     Button("取消") { model.cancelWeeklyReview() }
                 }.padding(22).reviewSurface()
             }
-            if let report { reportBody(report) }
+            if let report { reportBody(report).id("weekly-report") }
             else { emptyState }
             history
         }
@@ -59,9 +60,10 @@ struct WeeklyReviewView: View {
             showsComposer = model.state.weeklyReports.isEmpty
             if let id = model.weeklyReportToOpen { selectedID = id }
         }
+        .onChange(of: customStart) { _, start in if customEnd < start { customEnd = start } }
         .onChange(of: model.weeklyReportToOpen) { _, id in
             selectedID = id
-            if id != nil { showsComposer = false }
+            if id != nil { showsComposer = false; DispatchQueue.main.async { scrollToReport() } }
         }
         .sheet(isPresented: $showsScope) { ReviewScopeSheet(kind: template.kind, scope: $scope).environmentObject(model) }
         .sheet(isPresented: $showsTemplates) { ReviewTemplateSheet(template: template) { saved in template = saved }.environmentObject(model) }
@@ -148,7 +150,10 @@ struct WeeklyReviewView: View {
     }
     private func templateButton(_ kind: ReviewTemplateKind) -> some View {
         let selected = template.kind == kind
-        return Button { template = ReviewTemplate(kind: kind); scope = ReviewScope() } label: {
+        return Button {
+            template = ReviewTemplate(kind: kind); scope = ReviewScope()
+            if kind.requiresWorkScope && !model.reviewTopics.contains(where: { WeeklyReviewEngine().category(for: $0, in: model.state) == .work }) { showsScope = true }
+        } label: {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Image(systemName: kind.symbol).font(.title3).foregroundStyle(selected ? Color.accentColor : .secondary)
@@ -205,7 +210,11 @@ struct WeeklyReviewView: View {
                 Text("已保留你的修改。每条原始依据仍可从下方查看。")
                     .font(.caption).foregroundStyle(.secondary)
                 DisclosureGroup("查看原始整理与依据") { reportSections(report).padding(.top, 18) }
-            } else { reportSections(report) }
+            } else {
+                Text(report.overview).font(.system(size: 18, weight: .medium)).lineSpacing(7)
+                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                reportSections(report)
+            }
             Text("保存于 \(report.createdAt.formatted()) · \(report.modelAssisted ? "模型辅助选取重点" : "本地事实整理")")
                 .font(.caption).foregroundStyle(.secondary)
             if report.refinementPending { Text("已保留可用的本地版本，模型整理待重试。") .font(.caption).foregroundStyle(.orange) }
@@ -293,7 +302,7 @@ struct WeeklyReviewView: View {
                 Text("生成后会保存在这里，之后可以随时回看或调整。").font(.callout).foregroundStyle(.secondary)
             }
             ForEach(Array(model.state.weeklyReports.prefix(historyCount))) { report in
-                Button { selectedID = report.id } label: {
+                Button { selectedID = report.id; DispatchQueue.main.async { scrollToReport() } } label: {
                     HStack(spacing: 14) {
                         Image(systemName: report.template.kind.symbol).foregroundStyle(Color.accentColor)
                             .frame(width: 38, height: 38).background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
@@ -527,6 +536,15 @@ private struct ReviewSourcesSheet: View {
                                 Text(entry.date.formatted()).font(.caption).foregroundStyle(.secondary)
                                 Text(entry.text).textSelection(.enabled)
                                 ForEach(model.state.captures.filter { entry.sourceIDs.contains($0.id) }) { capture in
+                                    Button("查看原记录 · " + (capture.sourceAppName ?? "已保存记录")) { source = capture }
+                                }
+                            }.padding(18).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()
+                        }
+                        if let action = item.nextAction {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("记录中的后续安排").font(.caption).foregroundStyle(.secondary)
+                                Text(action).textSelection(.enabled)
+                                ForEach(model.state.captures.filter { item.nextActionSourceIDs.contains($0.id) }) { capture in
                                     Button("查看原记录 · " + (capture.sourceAppName ?? "已保存记录")) { source = capture }
                                 }
                             }.padding(18).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()

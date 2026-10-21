@@ -88,6 +88,7 @@ public struct ReviewTemplate: Codable, Equatable, Identifiable, Sendable {
     }
     public var isValid: Bool {
         (1...40).contains(name.trimmingCharacters(in: .whitespacesAndNewlines).count)
+            && sections.count == ReviewSection.allCases.count
             && Set(sections).count == ReviewSection.allCases.count
             && headings.values.allSatisfy { $0.count <= 40 }
     }
@@ -163,7 +164,8 @@ public struct ReviewItem: Codable, Identifiable, Equatable, Sendable {
     public var excerpts: [ReviewExcerpt]
     public var featuredIDs: [UUID]
     public var nextAction: String?
-    public var sourceIDs: [UUID] { Array(Set(excerpts.flatMap(\.sourceIDs) + (previous?.sourceIDs ?? []))).sorted { $0.uuidString < $1.uuidString } }
+    public var nextActionSourceIDs: [UUID]
+    public var sourceIDs: [UUID] { Array(Set(excerpts.flatMap(\.sourceIDs) + (previous?.sourceIDs ?? []) + nextActionSourceIDs)).sorted { $0.uuidString < $1.uuidString } }
     public func featured(for length: ReviewLength) -> [ReviewExcerpt] {
         if length == .detailed { return excerpts }
         let picked = excerpts.filter { featuredIDs.contains($0.id) }
@@ -188,10 +190,31 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
     public var scheduledFor: Date?
     public var sourceIDs: Set<UUID> { Set(sourceVersions.keys) }
     public var isReadable: Bool { invalidatedAt == nil }
+    public var overview: String {
+        guard isReadable else { return "" }
+        let ranked = items.sorted {
+            let a = $0.section == .progress ? 0 : ($0.section == .open ? 1 : 2)
+            let b = $1.section == .progress ? 0 : ($1.section == .open ? 1 : 2)
+            return a == b ? $0.id < $1.id : a < b
+        }
+        let phrases = ranked.prefix(3).map { item in
+            let state = item.excerpts.last?.status ?? .explored
+            let verb: String
+            switch state {
+            case .completed: verb = "记录了完成结果"
+            case .progressed: verb = "有新的进展"
+            case .blocked: verb = "记录了仍待解决的问题"
+            case .pending: verb = item.nextAction == nil ? "留下明确的后续安排" : "有进展和后续安排"
+            case .explored: verb = "留下新的经历或学习记录"
+            }
+            return "「" + item.title + "」" + verb
+        }
+        return phrases.joined(separator: "；") + (phrases.isEmpty ? "" : "。")
+    }
     public var markdown: String {
         guard isReadable else { return "原始记录已删除或更正，请重新生成这份回顾。" }
         if let editedMarkdown { return editedMarkdown }
-        var lines = ["# \(template.name)", "", period.label, ""]
+        var lines = ["# \(template.name)", "", period.label, "", overview, ""]
         for section in template.sections {
             let rows = items.filter { $0.section == section }
             guard !rows.isEmpty else { continue }
@@ -285,10 +308,9 @@ public struct WeeklyReviewEngine: Sendable {
     public func topics(in state: RecallState) -> [MatterFile] {
         let safe = state.correctedForAnalysis()
         var files = MatterMemoryEngine().files(in: state)
-        let covered = Set(files.flatMap(\.evidenceIDs))
         // Reading/learning/life records do not need a work-progress verb. Still require
         // an explicit first-person action; a saved article or unknown chat role is not one.
-        for record in safe.captures where !covered.contains(record.id) && record.eventTemplate != .dailyReview {
+        for record in safe.captures where record.eventTemplate != .dailyReview {
             guard record.manualMatter == nil else { continue }
             for segment in RecordedText.segments(in: record) where segment.speaker == .user {
                 let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -304,13 +326,20 @@ public struct WeeklyReviewEngine: Sendable {
                 } else { files.append(MatterFile(id: key, title: pair.0, events: [event])) }
             }
         }
-        for i in files.indices { files[i].events.sort { $0.date < $1.date } }
+        for i in files.indices {
+            files[i].events.sort { $0.date < $1.date }
+            // Scope/category settings must not retain a deleted person's name or original
+            // topic sentence inside an identifier. Only opaque stable IDs leave the ledger.
+            let prefix = files[i].id.hasPrefix("life:") ? "life:" : "topic:"
+            files[i].id = prefix + SHA256.hash(data: Data(files[i].id.utf8)).map { String(format: "%02x", $0) }.joined()
+        }
         return files.sorted { $0.latest.date > $1.latest.date }
     }
 
     public func category(for file: MatterFile, in state: RecallState) -> ReviewCategory {
         if let selected = state.reviewCategories[file.id] { return selected }
-        let notes = state.captures.filter { file.evidenceIDs.contains($0.id) }.compactMap { $0.manualMatter?.reviewCategory }
+        let notes = state.captures.filter { file.evidenceIDs.contains($0.id) }.sorted { $0.createdAt < $1.createdAt }
+            .compactMap { $0.manualMatter?.reviewCategory }.filter { $0 != .unclassified }
         if let category = notes.last, category != .unclassified { return category }
         if file.id.hasPrefix("life:") {
             return ["阅读", "学习", "练习"].contains(where: file.title.hasPrefix) ? .learning : .personal
@@ -337,20 +366,25 @@ public struct WeeklyReviewEngine: Sendable {
             let changes = file.events.filter { period.contains($0.date) }
             guard let last = changes.last else { continue }
             let previous = file.events.last { $0.date < period.start }
+            let actual = changes.filter { $0.status != .pending || $0.nextAction != nil }
+            let separatedAction = last.status == .pending && last.nextAction == nil && !actual.isEmpty
+            let visible = separatedAction ? actual : changes
+            let current = visible.last ?? last
             let section: ReviewSection
-            if last.status == .blocked { section = .open }
-            else if last.status == .pending && last.nextAction == nil { section = .plans }
-            else if last.status == .explored { section = .notes }
+            if current.status == .blocked { section = .open }
+            else if current.status == .pending && current.nextAction == nil { section = .plans }
+            else if current.status == .explored { section = .notes }
             else { section = .progress }
-            let excerpts = changes.map { excerpt($0) }
+            let excerpts = visible.map { excerpt($0) }
             // Always retain the latest state. Preserve meaningful earlier outcomes rather
             // than blindly taking only the last three screenshots.
-            var featured = [last.id]
-            if let outcome = changes.last(where: { $0.status == .completed }), outcome.id != last.id { featured.append(outcome.id) }
-            if let first = changes.first, !featured.contains(first.id) { featured.append(first.id) }
+            var featured = [current.id]
+            if let outcome = visible.last(where: { $0.status == .completed }), outcome.id != current.id { featured.append(outcome.id) }
+            if let first = visible.first, !featured.contains(first.id) { featured.append(first.id) }
+            let action = separatedAction ? last.detail : last.nextAction
             result.append(ReviewItem(id: file.id, title: clean(file.title), category: category, section: section,
                 previous: previous.map(excerpt), excerpts: excerpts, featuredIDs: featured,
-                nextAction: last.nextAction.map(clean)))
+                nextAction: action.map(clean), nextActionSourceIDs: action == nil ? [] : last.evidenceIDs))
         }
         return result.sorted { lhs, rhs in
             let left = lhs.excerpts.last?.date ?? .distantPast, right = rhs.excerpts.last?.date ?? .distantPast
@@ -378,11 +412,11 @@ public struct WeeklyReviewEngine: Sendable {
                 }
                 return copy
             }
-            let candidates = modelCandidates(eligibleItems)
+            let candidates = modelCandidates(eligibleItems, calendar: period.calendar)
             let privacy = PrivacyEngine()
             let rows = candidates.map { row in
                 "topicID=\(modelID(row.topic)); excerptID=\(row.excerpt.id.uuidString); 日期=\(row.excerpt.date.formatted()); "
-                    + "主题=\(privacy.redact(row.title)); 状态=\(row.excerpt.status.rawValue); 原句=\(privacy.redact(row.excerpt.text))"
+                    + "状态=\(row.excerpt.status.rawValue)"
             }.joined(separator: "\n")
             let prompt = """
             为“\(privacy.redact(template.name))”挑选最能说明本周实际变化的原句，按重要性排列主题。
@@ -400,10 +434,12 @@ public struct WeeklyReviewEngine: Sendable {
                         ocrText: "topicID=\(modelID(row.topic)); excerptID=\(row.excerpt.id.uuidString); "
                             + privacy.redact(row.title + "：" + row.excerpt.text), textOrigin: .userInput)
                 }
-                let answer = try await responder.answer(to: LLMRequest(question: prompt, context: context))
+                let answer: LLMAnswer
+                if candidates.isEmpty { answer = LLMAnswer(content: #"{"selections":[]}"#, citedCaptureIDs: []) }
+                else { answer = try await responder.answer(to: LLMRequest(question: prompt, context: context)) }
                 try Task.checkCancellation()
                 items = try applying(answer.content, to: items, candidates: candidates)
-                assisted = true
+                assisted = !candidates.isEmpty
             } catch is CancellationError { throw CancellationError() }
             catch { pending = true }
         }
@@ -449,14 +485,26 @@ public struct WeeklyReviewEngine: Sendable {
     private func modelID(_ topic: String) -> String {
         "topic-" + SHA256.hash(data: Data(topic.utf8)).map { String(format: "%02x", $0) }.joined()
     }
-    private func modelCandidates(_ items: [ReviewItem]) -> [Candidate] {
+    private func modelCandidates(_ items: [ReviewItem], calendar: Calendar) -> [Candidate] {
         var rows: [Candidate] = [], budget = 0
-        let maxDepth = min(items.map { $0.excerpts.count }.max() ?? 0, 12)
+        let queues = items.map { item -> [Candidate] in
+            var ordered: [ReviewExcerpt] = [], seen: Set<UUID> = []
+            func append(_ entry: ReviewExcerpt?) {
+                if let entry, seen.insert(entry.id).inserted { ordered.append(entry) }
+            }
+            append(item.excerpts.last)
+            append(item.excerpts.last { $0.status == .completed })
+            let days = Dictionary(grouping: item.excerpts) { calendar.startOfDay(for: $0.date) }
+            for day in days.keys.sorted() { append(days[day]?.last) }
+            for entry in item.excerpts.reversed() { append(entry) }
+            return ordered.map { Candidate(topic: item.id, title: item.title, excerpt: $0) }
+        }
+        let maxDepth = min(queues.map(\.count).max() ?? 0, 32)
         for depth in 0..<maxDepth {
-            for item in items where depth < item.excerpts.count {
-                let entry = item.excerpts[item.excerpts.count - 1 - depth]
-                guard budget + entry.text.count + item.title.count < 22_000, rows.count < 100 else { continue }
-                rows.append(Candidate(topic: item.id, title: item.title, excerpt: entry)); budget += entry.text.count + item.title.count
+            for queue in queues where depth < queue.count {
+                let candidate = queue[depth]
+                guard budget + candidate.excerpt.text.count + candidate.title.count < 22_000, rows.count < 100 else { continue }
+                rows.append(candidate); budget += candidate.excerpt.text.count + candidate.title.count
             }
         }
         return rows

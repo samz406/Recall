@@ -420,7 +420,12 @@ public actor FileMemoryStore {
         try Task.checkCancellation()
         guard WeeklyReviewEngine.sourcesUnchanged(submitted, in: state),
               categories == nil || categories == state.reviewCategories else { throw WeeklyReviewError.changedSources }
-        if let expected { guard state.reviewSchedules.contains(expected), expected.isEnabled else { throw WeeklyReviewError.changedSources } }
+        if let expected {
+            guard state.reviewSchedules.contains(expected), expected.isDue(at: now),
+                  let trigger = submitted.scheduledFor ?? expected.effectiveTrigger(at: now),
+                  submitted.period == ReviewPeriod.make(expected.periodKind, at: trigger, calendar: expected.calendar),
+                  submitted.template == expected.template, submitted.scope == expected.scope else { throw WeeklyReviewError.changedSources }
+        }
         let before = state
         var report = submitted
         if let id, !state.weeklyReports.contains(where: { $0.id == id }) { throw WeeklyReviewError.changedSources }
@@ -479,6 +484,11 @@ public actor FileMemoryStore {
         var deleted = RecentlyDeletedMemory(label: report.template.name + " · " + report.period.label, reason: .noLongerNeeded,
             deletedAt: now, expiresAt: Calendar.current.date(byAdding: .day, value: 7, to: now) ?? now)
         deleted.weeklyReports = [report]
+        for i in state.reviewSchedules.indices where state.reviewSchedules[i].lastReportID == id {
+            state.reviewSchedules[i].nextRunAt = state.reviewSchedules[i].nextTrigger(after: now)
+            state.reviewSchedules[i].lastReportID = nil
+            state.reviewSchedules[i].retryAfter = nil; state.reviewSchedules[i].failureCount = 0
+        }
         state.weeklyReports.removeAll { $0.id == id }; state.recentlyDeletedMemories.insert(deleted, at: 0)
         do { try persist() } catch { state = before; throw error }
         return deleted

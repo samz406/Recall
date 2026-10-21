@@ -64,13 +64,16 @@ enum WeeklyReviewVerification {
         let state = RecallState(captures: [before, early, outcome, follow])
         var template = ReviewTemplate(kind: .work, id: "custom-format")
         template.name = "团队周报"; template.sections = [.plans, .open, .progress, .notes]
-        template.headings[ReviewSection.plans.rawValue] = "已确定的安排"; template.length = .detailed
+        template.headings[ReviewSection.progress.rawValue] = "本周交付"; template.length = .detailed
         let period = ReviewPeriod.make(.currentWeek, at: date(21, 20), calendar: calendar)
         let report = try await WeeklyReviewEngine().generate(in: state, period: period, template: template, now: date(21, 20))
-        try expect(report.items.count == 1 && report.items[0].excerpts.count == 3, "同一主题整周变化应合并，不能只取最后一句")
+        try expect(report.items.count == 1 && report.items[0].excerpts.count == 2, "同一主题整周变化应合并，不能只取最后一句")
         try expect(report.items[0].previous?.text == before.manualMatter?.detail, "必须有范围之前的真实对照记录")
-        try expect(report.markdown.contains("已确定的安排") && report.markdown.contains("空数据和分页回归"), "模板改变表达与顺序，不得漏掉已验证结果")
+        try expect(report.markdown.contains("本周交付") && report.markdown.contains("空数据和分页回归"), "模板改变表达与顺序，不得漏掉已验证结果")
         try expect(!report.markdown.contains("## 待解决") && !report.markdown.contains("## 补充记录"), "没有内容的栏目必须隐藏")
+        try expect(report.items[0].section == .progress && report.items[0].nextAction == follow.manualMatter?.detail
+            && report.items[0].nextActionSourceIDs == [follow.id], "后来的待办不能覆盖整周成果，且后续安排要独立关联来源")
+        try expect(!report.items[0].id.contains("发票") && !report.items[0].id.contains("Lumen"), "范围和分类标识不能保留可识别的原始主题文字")
         try expect(report.sourceIDs == Set([before.id, early.id, outcome.id, follow.id]), "回顾每项应关联到整周及对照的原始依据")
         var changedTemplate = template; changedTemplate.name = "另一个名字"
         try expect(report.template.name == "团队周报", "模板更改不能静默改写历史快照")
@@ -166,6 +169,37 @@ enum WeeklyReviewVerification {
         try await store.deferReviewSchedule(retry, noEvidence: true, now: previousNext.addingTimeInterval(300))
         let settled = await store.snapshot().reviewSchedules[0]
         try expect(settled.nextRunAt! > previousNext && settled.failureCount == 0, "没有记录的周期应安静结束，不能反复生成空报告")
+        _ = try await store.addManualMatter(ManualMatterNote(title: "合成交付计划", detail: "交付清单已核对。", status: .completed,
+            eventAt: date(20), reviewCategory: .work), now: date(21))
+        var testPlan = ReviewSchedule(template: template)
+        testPlan.weekday = 4; testPlan.hour = 20; testPlan.timeZoneIdentifier = "Asia/Shanghai"
+        try await store.saveReviewSchedule(testPlan, now: date(21))
+        testPlan = await store.snapshot().reviewSchedules.first { $0.id == testPlan.id }!
+        let active = await store.snapshot()
+        var scheduledReport = try await WeeklyReviewEngine().generate(in: active, period: period, template: template, now: date(21, 20))
+        scheduledReport.refinementPending = true
+        scheduledReport.scheduledFor = testPlan.nextRunAt
+        let saved = try await store.commitWeeklyReport(scheduledReport, schedule: testPlan, categories: active.reviewCategories, now: date(21, 20))
+        let waiting = await store.snapshot().reviewSchedules.first { $0.id == testPlan.id }!
+        try expect(waiting.lastReportID == saved.id && waiting.failureCount == 1, "模型失败应保留同一份可读的本地版本并安排重试")
+        var refined = scheduledReport; refined.refinementPending = false; refined.modelAssisted = true
+        _ = try await store.commitWeeklyReport(refined, replacing: saved.id, schedule: waiting, now: waiting.retryAfter!)
+        let successful = await store.snapshot()
+        try expect(successful.weeklyReports.filter { $0.id == saved.id }.count == 1, "重试成功不能重复新增同一期报告")
+        do {
+            _ = try await store.commitWeeklyReport(refined, replacing: saved.id, schedule: waiting)
+            throw Failure(message: "完成后不能用旧计划状态重复提交和通知")
+        } catch let error as WeeklyReviewError { try expect(error == .changedSources, "计划状态应提供幂等提交保护") }
+        var againPlan = ReviewSchedule(template: template)
+        againPlan.weekday = 4; againPlan.hour = 20; againPlan.timeZoneIdentifier = "Asia/Shanghai"
+        try await store.saveReviewSchedule(againPlan, now: date(21))
+        againPlan = await store.snapshot().reviewSchedules.first { $0.id == againPlan.id }!
+        var pendingCopy = scheduledReport; pendingCopy.id = UUID()
+        let pendingSaved = try await store.commitWeeklyReport(pendingCopy, schedule: againPlan, now: date(21, 20))
+        _ = try await store.deleteWeeklyReport(id: pendingSaved.id, now: date(21, 21))
+        let stopped = await store.snapshot().reviewSchedules.first { $0.id == againPlan.id }!
+        try expect(stopped.lastReportID == nil && stopped.retryAfter == nil && stopped.nextRunAt! > date(21, 21),
+            "删除待重试报告后不能自动将它重新生成")
         try await store.clearAllMemoryData()
         let cleared = await store.snapshot()
         try expect(cleared.weeklyReports.isEmpty && cleared.reviewCategories.isEmpty && !cleared.reviewSchedules.isEmpty,
