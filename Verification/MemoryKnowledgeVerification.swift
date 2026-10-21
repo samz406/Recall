@@ -1,6 +1,7 @@
 import Foundation
 import RecallKit
 
+@MainActor
 enum MemoryKnowledgeVerification {
     struct Failure: LocalizedError {
         let text: String
@@ -69,7 +70,8 @@ enum MemoryKnowledgeVerification {
         try await store.addCapture(capture("[聊天·自己] 我喜欢苹果。\n[聊天·自己] 我不喜欢苹果。"))
         try await store.organizeMemory()
         state = await store.snapshot()
-        try expect(state.memoryKnowledge.claims.filter { $0.kind == .preference && !$0.explicit }.allSatisfy { $0.state == .conflicted }, "矛盾偏好被静默合并为稳定结论")
+        let conflicts = state.memoryKnowledge.claims.filter { $0.kind == .preference && !$0.explicit }
+        try expect(conflicts.count == 2 && conflicts.allSatisfy { $0.state == .conflicted }, "矛盾偏好被静默合并为稳定结论")
         _ = try await assistant.ask("记住：妙妙的生日是九月十八日")
         state = await store.snapshot()
         try expect(state.memoryKnowledge.entities.contains { $0.kind == "person" && $0.name == "妙妙" }, "明确人物事实没有形成可检索人物")
@@ -183,10 +185,11 @@ enum MemoryKnowledgeVerification {
     }
     static func experiences() throws {
         let old = capture("[聊天·自己] 账单导出分页仍然失败。", day: .now.addingTimeInterval(-86_400 * 3))
+        let method = capture("[聊天·自己] 账单导出已修改分页边界并补充测试。", day: .now.addingTimeInterval(-86_400 * 2))
         let fixed = capture("[聊天·自己] 账单导出分页修复已验证通过。", day: .now.addingTimeInterval(-86_400))
-        var state = RecallState(captures: [old, fixed])
+        var state = RecallState(captures: [old, method, fixed])
         var knowledge = MemoryKnowledgeEngine().reconcile(state, force: true)
-        try expect(knowledge.claims.contains { $0.kind == .experience && $0.dependencies.count >= 2 }, "没有将问题与有结果的处理过程连成经验")
+        try expect(knowledge.claims.contains { $0.kind == .experience && $0.dependencies.count >= 3 }, "没有将问题与有结果的处理过程连成经验")
         state.captures = [old]
         knowledge = MemoryKnowledgeEngine().reconcile(state, force: true)
         try expect(!knowledge.claims.contains { $0.kind == .experience }, "缺少完成证据仍宣称形成可复用经验")

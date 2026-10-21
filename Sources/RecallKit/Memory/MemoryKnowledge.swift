@@ -204,7 +204,9 @@ public struct MemoryKnowledgeEngine: Sendable {
             return UserMemory(id: claim.id, key: claim.key, kind: kind, content: claim.content,
                 confidence: 0.8, status: .confirmed, evidenceIDs: claim.sourceIDs, createdAt: claim.validFrom, updatedAt: claim.updatedAt)
         }
-        let progress = episodes.filter { [.completed, .progressed].contains($0.status) || $0.outcome != nil }
+        var progressKeys: Set<String> = []
+        let progress = episodes.reversed().filter { [.completed, .progressed].contains($0.status) || $0.outcome != nil }
+            .filter { progressKeys.insert($0.projectKey).inserted }
         let open = episodes.filter { [.pending, .blocked].contains($0.status) && $0.nextAction != nil }
         result.briefing.headline = files.filter { calendar.isDate($0.latest.date, inSameDayAs: day) }.map(\.title).prefix(3).joined(separator: "；")
         result.briefing.progress = progress.map { BriefingItem(title: $0.projectName, detail: $0.outcome ?? $0.action, confidence: 0.8, evidenceIDs: $0.evidenceIDs) }
@@ -270,7 +272,8 @@ public struct MemoryKnowledgeEngine: Sendable {
                    status: WorkEpisodeStatus? = nil, resultStatus: WorkEpisodeStatus? = nil,
                    nextAction: String? = nil, explicit: Bool = false) -> MemoryClaim {
             let first = evidence.map(\.recordedAt).min() ?? now
-            return MemoryClaim(id: Self.id(key), key: key, subjectID: subject, title: title, content: content, kind: kind,
+            let identifier = Self.id(key)
+            return MemoryClaim(id: identifier, key: identifier.uuidString, subjectID: subject, title: title, content: content, kind: kind,
                 state: .active, scope: scope, scopeID: scopeID, evidence: evidence, dependencies: [], supersedes: [],
                 status: status, resultStatus: resultStatus, nextAction: nextAction, validFrom: first,
                 validUntil: nil, updatedAt: evidence.map(\.recordedAt).max() ?? now, explicit: explicit)
@@ -298,7 +301,7 @@ public struct MemoryKnowledgeEngine: Sendable {
         ]
         for source in safe.captures.sorted(by: { $0.createdAt < $1.createdAt }) {
             if let directive = source.memoryDirective {
-                let key = "personal:\(directive.scope.rawValue):\(directive.scopeID ?? ""):\(directive.key):\(MemoryDirective.normalized(directive.content))"
+                let key = "personal:\(directive.scope.rawValue):\(directive.scopeID ?? ""):\(directive.key):\(source.id.uuidString)"
                 candidates.append(claim(key: key, subject: "user", title: directive.content, content: directive.content,
                     kind: directive.kind, scope: directive.scope, scopeID: directive.scopeID,
                     evidence: [proof(source, quote: directive.content, ordinal: 0, speaker: "本人明确要求")], explicit: true))
@@ -373,7 +376,8 @@ public struct MemoryKnowledgeEngine: Sendable {
         let activeIDs = Set(merged.map(\.id))
         for file in files {
             guard let resultEvent = file.events.last(where: { $0.status == .completed || $0.resultStatus == .completed }),
-                  file.events.contains(where: { $0.id != resultEvent.id && ($0.status == .blocked || $0.status == .progressed) }) else { continue }
+                  file.events.contains(where: { $0.id != resultEvent.id && $0.status == .blocked }),
+                  file.events.contains(where: { $0.id != resultEvent.id && $0.status == .progressed && $0.date <= resultEvent.date }) else { continue }
             let supporting = merged.filter { $0.subjectID == file.id && $0.kind == .event && $0.date <= resultEvent.date }
             var experience = claim(key: "experience:" + file.id, subject: file.id, title: file.title,
                 content: supporting.map(\.content).memoryUnique().joined(separator: "\n"), kind: .experience,
