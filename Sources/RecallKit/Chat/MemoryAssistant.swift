@@ -26,7 +26,8 @@ public final class MemoryAssistant {
     public func ask(
         _ question: String,
         userMessage: ConversationMessage? = nil,
-        onUserMessageSaved: (@MainActor @Sendable () async -> Void)? = nil
+        onUserMessageSaved: (@MainActor @Sendable () async -> Void)? = nil,
+        onRetrievalWarning: (@MainActor @Sendable () -> Void)? = nil
     ) async throws -> ConversationMessage {
         try Task.checkCancellation()
         if ChatCommand.parse(question) == .clear {
@@ -43,14 +44,28 @@ public final class MemoryAssistant {
             await onUserMessageSaved?()
             return result
         }
-        let state = originalState.correctedForAnalysis()
         let userMessage = userMessage ?? ConversationMessage(role: .user, content: question)
         try await store.addMessage(userMessage, inConversation: conversation.id)
         await onUserMessageSaved?()
         try Task.checkCancellation()
+        if let directive = MemoryDirective.parse(question, conversationID: conversation.id) {
+            let record = try await store.remember(directive)
+            let includesTask = ["解释", "分析", "总结", "写一", "帮我", "告诉", "查一下", "看看", "怎么", "什么", "聊聊"].contains(where: question.contains)
+            if directive.scope != .conversation || !includesTask {
+            let answer = ConversationMessage(role: .assistant,
+                content: "已记住：" + directive.content + "\n适用范围：" + directive.scope.title + "。你可以在‘记忆脉络 → 记忆与约定’中修改或忘记。",
+                citations: [record.id])
+            try await store.addMessage(answer, inConversation: conversation.id)
+            return answer
+            }
+        }
+        try await store.organizeMemory()
+        var state = (await store.snapshot()).correctedForAnalysis()
+        state.messages.removeAll { $0.id == userMessage.id }
 
         let recordsAllowedInChat = state.captures.filter { capture in
-            state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
+            let participates = state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
+            return participates && !state.privacy.excludedBundleIdentifiers.contains(capture.sourceBundleIdentifier ?? "")
         }.map { capture in
             var copy = capture
             let originalDate = originalState.captures.first { $0.id == capture.id }?.createdAt ?? capture.createdAt
@@ -97,11 +112,26 @@ public final class MemoryAssistant {
         } else {
             MemoryEvidenceSelector().select(ranked, question: retrievalText, limit: 12)
         }
+        var retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: retrieved,
+            conversationID: conversation.id, limit: contextManager.maxEvidenceRecords)
+        if retrieval.needsSemanticLookup, state.privacy.cloudUseEnabled,
+           state.llmConfiguration.provider != .localOnly, !state.llmConfiguration.apiKey.isEmpty {
+            do {
+                let responder = CompatibleLLM(configuration: state.llmConfiguration, apiKey: state.llmConfiguration.apiKey)
+                let ids = try await MemorySemanticLookup().topics(for: retrievalText, in: state, responder: responder)
+                if !ids.isEmpty {
+                    retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: retrieved,
+                        conversationID: conversation.id, limit: contextManager.maxEvidenceRecords, resolvedEntityIDs: ids)
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch { onRetrievalWarning?() }
+        }
+        let selectedEvidence = retrieval.evidence
         let plan = contextManager.plan(
             history: state.messages,
             existingSummary: state.conversationSummary,
             coveredMessageCount: state.conversationSummaryCoveredMessageCount ?? 0,
-            retrievedEvidence: retrieved
+            retrievedEvidence: selectedEvidence
         )
         if plan.rollingSummary != state.conversationSummary || plan.coveredMessageCount != (state.conversationSummaryCoveredMessageCount ?? 0) {
             try await store.updateConversationSummary(plan.rollingSummary, coveredMessageCount: plan.coveredMessageCount + originalState.messages.count - state.messages.count, inConversation: conversation.id)
@@ -116,6 +146,7 @@ public final class MemoryAssistant {
             question: question,
             context: plan.evidence,
             conversationSummary: requiresFreshEvidenceTurn ? nil : plan.rollingSummary,
+            supplementaryContext: retrieval.preferences,
             recentMessages: requiresFreshEvidenceTurn ? [] : plan.recentMessages
         )
         let response: LLMAnswer
@@ -124,8 +155,15 @@ public final class MemoryAssistant {
         case .localOnly:
             response = try await ExtractiveMemoryResponder().answer(to: request)
         case .openAICompatible, .anthropicCompatible:
-            guard state.privacy.cloudUseEnabled else {
+            let beforeCloud = await store.snapshot()
+            guard state.privacy.cloudUseEnabled, beforeCloud.privacy.cloudUseEnabled else {
                 throw LLMError.serviceError("请先在隐私设置中明确开启云端模型使用。")
+            }
+            guard beforeCloud.privacy.excludedBundleIdentifiers == state.privacy.excludedBundleIdentifiers,
+                  Set(state.captures.map(\.id)).isSubset(of: Set(beforeCloud.captures.map(\.id))),
+                  beforeCloud.matterCorrections.map(\.id) == state.matterCorrections.map(\.id),
+                  beforeCloud.memoryKnowledge.suppressedKeys == state.memoryKnowledge.suppressedKeys else {
+                throw LLMError.serviceError("记忆或隐私设置已更新，请重新提问。")
             }
             let key = state.llmConfiguration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty else { throw LLMError.missingAPIKey }
@@ -140,6 +178,7 @@ public final class MemoryAssistant {
                 question: question,
                 context: safeContext,
                 conversationSummary: safeSummary,
+                supplementaryContext: request.supplementaryContext.map(privacyEngine.redact),
                 recentMessages: safeRecentMessages
             )
             let cloudAnswer = try await CompatibleLLM(configuration: state.llmConfiguration, apiKey: key).answer(to: cloudRequest)
@@ -155,8 +194,26 @@ public final class MemoryAssistant {
               Set(state.captures.map(\.id)).isSubset(of: Set(latestState.captures.map(\.id))) else {
             throw LLMError.serviceError("记忆已更正或删除，请重新提问以使用最新内容。")
         }
+        let usedSourceIDs = Set(plan.evidence.flatMap { retrieval.sourceIDs[$0.id] ?? [$0.id] } + retrieval.preferenceSourceIDs)
+        let legacyIDs = Set(state.dailySummaries.filter { $0.sourceCaptureIDs.isEmpty }.map(\.id)).intersection(usedSourceIDs)
+        guard legacyIDs.isSubset(of: Set(latestState.dailySummaries.map(\.id))) else { throw LLMError.serviceError("历史回顾已更新，请重新提问。") }
+        let currentSources = Dictionary(uniqueKeysWithValues: latestState.correctedForAnalysis().captures.map { ($0.id, $0) })
+        let changedSource = state.captures.contains { source in
+            guard usedSourceIDs.contains(source.id) else { return false }
+            guard let current = currentSources[source.id] else { return true }
+            return MemoryKnowledgeEngine.version(of: source, corrections: state.matterCorrections)
+                != MemoryKnowledgeEngine.version(of: current, corrections: latestState.matterCorrections)
+        }
+        let personalBefore = state.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }
+        let personalAfter = latestState.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }
+        guard !changedSource, Set(personalBefore.map(\.id)) == Set(personalAfter.map(\.id)),
+              state.memoryKnowledge.suppressedKeys == latestState.memoryKnowledge.suppressedKeys,
+              MemoryKnowledgeEngine().sourcesUsable(Set(retrieval.preferenceSourceIDs), in: latestState) else {
+            throw LLMError.serviceError("记忆或约定已更新，请重新提问以使用最新内容。")
+        }
         let formattedContent = ChatResponseFormatter().format(response.content)
-        let assistantMessage = ConversationMessage(role: .assistant, content: formattedContent, citations: response.citedCaptureIDs)
+        let citations = (response.citedCaptureIDs.flatMap { id in retrieval.sourceIDs[id] ?? [id] } + retrieval.preferenceSourceIDs).memoryUnique()
+        let assistantMessage = ConversationMessage(role: .assistant, content: formattedContent, citations: citations)
         try Task.checkCancellation()
         try await store.addMessage(assistantMessage, inConversation: conversation.id)
         return assistantMessage

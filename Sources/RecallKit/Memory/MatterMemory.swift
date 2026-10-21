@@ -159,13 +159,12 @@ public struct MatterMemoryEngine: Sendable {
     public init() {}
 
     public func files(in state: RecallState, calendar: Calendar = .current) -> [MatterFile] {
+        MemoryKnowledgeEngine().files(in: state) ?? observedFiles(in: state, calendar: calendar)
+    }
+
+    func observedFiles(in state: RecallState, calendar: Calendar = .current) -> [MatterFile] {
         let safe = state.correctedForAnalysis()
-        let available = Set(safe.captures.map(\.id))
         let captured = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
-        let analysisCaptures = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id, $0) })
-        let existingIDs = Set(safe.episodes.flatMap(\.evidenceIDs))
-        let missing = Dictionary(grouping: safe.captures.filter { !existingIDs.contains($0.id) }) { calendar.startOfDay(for: $0.createdAt) }
-        let rebuilt = missing.flatMap { PersonalIntelligenceEngine().buildEpisodes(day: $0.key, records: $0.value, calendar: calendar) }
         var groups: [String: [MatterEvent]] = [:]
         var names: [String: String] = [:]
         var seen: Set<String> = []
@@ -177,7 +176,8 @@ public struct MatterMemoryEngine: Sendable {
             let renamed = corrections.last { $0.kind == .separate && !$0.text.isEmpty }
             let title = renamed?.text ?? note.title
             let key = (renamed == nil ? "topic:" : "user:") + MatterEvidence.key(title)
-            let event = MatterEvent(id: record.id, title: title, detail: note.detail,
+            let detail = corrections.contains { $0.kind == .completed } ? "用户已标记完成：\(title)" : note.detail
+            let event = MatterEvent(id: record.id, title: title, detail: detail,
                 recordedAt: captured[record.id]?.createdAt ?? record.createdAt,
                 eventAt: corrections.last { $0.kind == .eventDate }?.eventAt ?? note.eventAt,
                 status: corrections.contains { $0.kind == .completed } ? .completed : note.status,
@@ -187,16 +187,14 @@ public struct MatterMemoryEngine: Sendable {
         }
         // Old episodes are topic hints only. Their clipped action/outcome and inferred status
         // must never bypass the same evidence gate applied to newly captured records.
-        for episode in safe.episodes + rebuilt {
-            let ids = episode.evidenceIDs.filter(available.contains)
-            guard !ids.isEmpty, ids.count == episode.evidenceIDs.count else { continue }
-            for id in ids {
-                guard let record = analysisCaptures[id] else { continue }
+        for record in safe.captures where record.memoryDirective == nil {
+                let id = record.id
                 if record.manualMatter != nil && record.textOrigin == .userInput { continue }
+                let proposed = safe.episodes.first { $0.evidenceIDs.contains(id) }?.projectName ?? record.windowTitle ?? ""
                 let corrections = state.matterCorrections.filter { $0.evidenceIDs.contains(id) }
                 let separated = corrections.last { $0.kind == .separate && !$0.text.isEmpty }
                 for entry in MatterEvidence.entries(in: record,
-                    proposedTitle: separated?.text ?? episode.projectName, userNamed: separated != nil) {
+                    proposedTitle: separated?.text ?? proposed, userNamed: separated != nil) {
                     let key = (separated == nil ? "topic:" : "user:") + MatterEvidence.key(entry.title)
                     guard seen.insert(key + ":" + id.uuidString + ":" + String(entry.ordinal)).inserted else { continue }
                     let eventDate = corrections.last(where: { $0.kind == .eventDate })?.eventAt
@@ -211,7 +209,6 @@ public struct MatterMemoryEngine: Sendable {
                     groups[key, default: []].append(event)
                     names[key] = entry.title
                 }
-            }
         }
         return groups.map { key, events in
             let ordered = events.sorted {

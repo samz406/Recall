@@ -174,6 +174,8 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
     public var textOrigin: CaptureTextOrigin?
     /// Explicitly entered by the user; never populated from OCR or model output.
     public var manualMatter: ManualMatterNote?
+    public var memoryDirective: MemoryDirective?
+    public var isMemoryEvidenceArchive: Bool?
 
     public init(
         id: UUID = UUID(),
@@ -189,7 +191,9 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
         summary: String? = nil,
         tags: [String] = [],
         textOrigin: CaptureTextOrigin? = nil,
-        manualMatter: ManualMatterNote? = nil
+        manualMatter: ManualMatterNote? = nil,
+        memoryDirective: MemoryDirective? = nil,
+        isMemoryEvidenceArchive: Bool? = nil
     ) {
         self.id = id
         self.eventTemplate = eventTemplate
@@ -205,6 +209,8 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
         self.tags = tags
         self.textOrigin = textOrigin
         self.manualMatter = manualMatter
+        self.memoryDirective = memoryDirective
+        self.isMemoryEvidenceArchive = isMemoryEvidenceArchive
     }
 }
 

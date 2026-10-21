@@ -5,6 +5,7 @@ private enum MatterWorkspaceTab: String, CaseIterable {
     case inProgress = "进行中"
     case allTopics = "全部主题"
     case weeklyReview = "一周回顾"
+    case knowledge = "记忆与约定"
 }
 
 /// Topic-based memory browsing, with a fixed header outside the clipped scroll view.
@@ -111,6 +112,8 @@ struct MatterWorkspaceView: View {
                         }
                         ForEach(Array(files.prefix(visibleCount))) { file in fileCard(file, resume: false) }
                         more(total: files.count)
+                    } else if tab == .knowledge {
+                        MemoryKnowledgeView(search: search).environmentObject(model)
                     } else if tab == .weeklyReview {
                         WeeklyReviewView(scrollToReport: { withAnimation { proxy.scrollTo("weekly-report", anchor: .top) } }).environmentObject(model)
                     }
@@ -227,7 +230,7 @@ struct MatterWorkspaceView: View {
         Picker("浏览记忆脉络", selection: $tab) {
             ForEach(MatterWorkspaceTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
         }.pickerStyle(.segmented).labelsHidden()
-            .frame(minWidth: 320, maxWidth: 440)
+            .frame(minWidth: 440, maxWidth: 580)
             .accessibilityLabel("浏览记忆脉络")
     }
 

@@ -475,7 +475,13 @@ public struct WeeklyReviewEngine: Sendable {
                 template: template, responder: responder)
             items = composed.items; assisted = composed.assisted; pending = composed.pending
         }
-        let ids = Set(items.flatMap(\.sourceIDs))
+        var ids = Set(items.flatMap(\.sourceIDs))
+        if state.privacy.cloudUseEnabled && responder != nil {
+            let preferenceClaims = MemoryKnowledgeEngine().cloudEligibleClaims(in: state)
+            let questionScope = template.kind.requiresWorkScope ? "工作周报" : (template.kind == .learning ? "学习回顾" : "个人回顾")
+            let context = MemoryRetrievalEngine().preferenceContext(question: questionScope, claims: preferenceClaims, conversationID: nil, entities: Set(items.map(\.id))) ?? ""
+            for claim in preferenceClaims where context.contains(claim.content) { ids.formUnion(claim.sourceIDs) }
+        }
         let versions = Dictionary(uniqueKeysWithValues: ids.compactMap { id in Self.sourceVersion(id: id, state: state).map { (id, $0) } })
         return WeeklyReport(createdAt: now, updatedAt: now, period: period, template: template, scope: scope,
             items: items, sourceVersions: versions, modelAssisted: assisted, refinementPending: pending)
@@ -496,6 +502,11 @@ public struct WeeklyReviewEngine: Sendable {
 
     public static func sourceVersion(id: UUID, state: RecallState) -> String? {
         guard let source = state.captures.first(where: { $0.id == id }) else { return nil }
+        return "memory2:" + MemoryKnowledgeEngine.version(of: source, corrections: state.matterCorrections)
+    }
+
+    private static func legacySourceVersion(id: UUID, state: RecallState) -> String? {
+        guard let source = state.captures.first(where: { $0.id == id }) else { return nil }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; encoder.dateEncodingStrategy = .iso8601
         let data = (try? encoder.encode(source)) ?? Data()
         let corrections = (try? encoder.encode(state.matterCorrections.filter { $0.evidenceIDs.contains(id) })) ?? Data()
@@ -503,7 +514,9 @@ public struct WeeklyReviewEngine: Sendable {
     }
 
     public static func sourcesUnchanged(_ report: WeeklyReport, in state: RecallState) -> Bool {
-        report.sourceVersions.allSatisfy { sourceVersion(id: $0.key, state: state) == $0.value }
+        report.sourceVersions.allSatisfy { id, version in
+            version.hasPrefix("memory2:") ? sourceVersion(id: id, state: state) == version : legacySourceVersion(id: id, state: state) == version
+        } && MemoryKnowledgeEngine().sourcesUsable(report.sourceIDs, in: state)
     }
 
     private func excerpt(_ event: MatterEvent) -> ReviewExcerpt {

@@ -20,7 +20,7 @@ public struct ReminderExtractor: Sendable {
             }
         }
 
-        for capture in captures.sorted(by: { $0.createdAt > $1.createdAt }) where !capture.ocrText.isEmpty {
+        for capture in captures.sorted(by: { $0.createdAt > $1.createdAt }) where !capture.ocrText.isEmpty && capture.memoryDirective == nil {
             for segment in RecordedText.segments(in: capture) {
                 guard let analysis = analyze(segment, base: capture.createdAt) else { continue }
                 let semanticKey = fingerprint(analysis.title)

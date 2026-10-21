@@ -6,6 +6,7 @@ import RecallKit
 struct RecallVerifier {
     static func main() async {
         do {
+            try await MemoryKnowledgeVerification.run()
             try await WeeklyReviewVerification.run()
             try verifyMatterFilesAndReview()
             try verifyMatterEvidenceQuality()
@@ -67,7 +68,7 @@ struct RecallVerifier {
                 try await verifyLiveAnthropicCompatibility()
                 print("PASS: RecallVerifier completed 61 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 65 integration checks.")
+                print("PASS: RecallVerifier completed 74 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -840,11 +841,12 @@ struct RecallVerifier {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
         let targetDay = calendar.date(from: DateComponents(year: 2026, month: 8, day: 23, hour: 12))!
-        let source = makeCapture(
+        var source = makeCapture(
             text: "待办：明天回复客户关于报价的邮件。今天完成了每日总结原型。",
             app: "Notes",
             createdAt: targetDay
         )
+        source.textOrigin = .userInput
         var unrelated = makeCapture(text: "前一天记录", app: "Notes", createdAt: targetDay.addingTimeInterval(-86_400))
         unrelated.eventTemplate = .dailyReview
 
@@ -1682,7 +1684,7 @@ struct RecallVerifier {
         }
         // 模拟今天记录很多的真实场景，验证它们不会挤掉前六天。
         for index in 0..<10 {
-            try await store.addCapture(makeCapture(text: "今天的高频工作记录 \(index)", app: "Xcode", createdAt: .now.addingTimeInterval(Double(-index))))
+            try await store.addCapture(makeCapture(text: "[聊天·自己] 账单导出第\(index)阶段已验证通过。", app: "Xcode", createdAt: .now.addingTimeInterval(Double(-index))))
         }
         try await store.updateLLMConfiguration(LLMConfiguration(provider: .localOnly))
 

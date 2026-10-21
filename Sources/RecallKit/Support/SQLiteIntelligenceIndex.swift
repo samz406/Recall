@@ -21,9 +21,11 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
     private var database: OpaquePointer?
     private let lock = NSLock()
     private let encoder: JSONEncoder
+    private var indexedRows: [String: [String: String]] = [:]
 
     public init(databaseURL: URL) throws {
         encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         var pointer: OpaquePointer?
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
@@ -50,20 +52,38 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
     }
 
     public func replace(with state: RecallState) throws {
+        try synchronize(with: state, force: true)
+    }
+
+    public func synchronize(with state: RecallState, force: Bool = false) throws {
         lock.lock()
         defer { lock.unlock() }
+        let previousRows = indexedRows
         try executeUnlocked("BEGIN IMMEDIATE;")
         do {
-            for table in ["captures_fts", "episodes_fts", "episodes", "project_states", "user_memories", "insights", "insight_feedback", "learned_routines"] {
-                try executeUnlocked("DELETE FROM \(table);")
+            if force {
+                for table in ["captures_fts", "episodes_fts", "episodes", "project_states", "user_memories", "insights", "insight_feedback", "learned_routines"] {
+                    try executeUnlocked("DELETE FROM \(table);")
+                }
+                indexedRows = [:]
             }
+            try removeMissing("captures_fts", column: "capture_id", ids: Set(state.captures.map { $0.id.uuidString }))
+            try removeMissing("episodes", column: "id", ids: Set(state.episodes.map { $0.id.uuidString }))
+            try removeMissing("project_states", column: "project_key", ids: Set(state.projects.map(\.projectKey)))
+            try removeMissing("user_memories", column: "id", ids: Set(state.userMemories.map { $0.id.uuidString }))
+            try removeMissing("insights", column: "id", ids: Set(state.insights.map { $0.id.uuidString }))
+            try removeMissing("insight_feedback", column: "id", ids: Set(state.insightFeedback.map { $0.id.uuidString }))
+            try removeMissing("learned_routines", column: "id", ids: Set(state.learnedRoutines.map { $0.id.uuidString }))
             for capture in state.captures {
+                guard try changed("captures_fts", column: "capture_id", id: capture.id.uuidString, payload: json(capture)) else { continue }
                 try insert(
                     "INSERT INTO captures_fts(capture_id, content, app_name, window_title, tags) VALUES (?, ?, ?, ?, ?);",
                     [.text(capture.id.uuidString), .text(capture.ocrText), .text(capture.sourceAppName ?? ""), .text(capture.windowTitle ?? ""), .text(capture.tags.joined(separator: " "))]
                 )
             }
             for episode in state.episodes {
+                guard try changed("episodes", column: "id", id: episode.id.uuidString, payload: json(episode)) else { continue }
+                try insert("DELETE FROM episodes_fts WHERE episode_id = ?;", [.text(episode.id.uuidString)])
                 try insert(
                     "INSERT INTO episodes(id, day, started_at, ended_at, project_key, project_name, title, intent, action, outcome, next_action, status, importance, confidence, evidence_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
                     [
@@ -79,30 +99,35 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
                 )
             }
             for project in state.projects {
+                guard try changed("project_states", column: "project_key", id: project.projectKey, payload: json(project)) else { continue }
                 try insert(
                     "INSERT INTO project_states(project_key, payload, updated_at) VALUES (?, ?, ?);",
                     [.text(project.projectKey), .text(json(project)), .double(project.updatedAt.timeIntervalSince1970)]
                 )
             }
             for memory in state.userMemories {
+                guard try changed("user_memories", column: "id", id: memory.id.uuidString, payload: json(memory)) else { continue }
                 try insert(
                     "INSERT INTO user_memories(id, memory_key, kind, status, content, confidence, payload, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
                     [.text(memory.id.uuidString), .text(memory.key), .text(memory.kind.rawValue), .text(memory.status.rawValue), .text(memory.content), .double(memory.confidence), .text(json(memory)), .double(memory.updatedAt.timeIntervalSince1970)]
                 )
             }
             for insight in state.insights {
+                guard try changed("insights", column: "id", id: insight.id.uuidString, payload: json(insight)) else { continue }
                 try insert(
                     "INSERT INTO insights(id, day, kind, title, detail, confidence, score, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
                     [.text(insight.id.uuidString), .double(insight.day.timeIntervalSince1970), .text(insight.kind.rawValue), .text(insight.title), .text(insight.detail), .double(insight.confidence), .double(insight.interventionScore), .text(json(insight))]
                 )
             }
             for item in state.insightFeedback {
+                guard try changed("insight_feedback", column: "id", id: item.id.uuidString, payload: json(item)) else { continue }
                 try insert(
                     "INSERT INTO insight_feedback(id, insight_id, kind, rating, created_at) VALUES (?, ?, ?, ?, ?);",
                     [.text(item.id.uuidString), .text(item.insightID.uuidString), .text(item.insightKind.rawValue), .text(item.rating.rawValue), .double(item.createdAt.timeIntervalSince1970)]
                 )
             }
             for routine in state.learnedRoutines {
+                guard try changed("learned_routines", column: "id", id: routine.id.uuidString, payload: json(routine)) else { continue }
                 try insert(
                     "INSERT INTO learned_routines(id, routine_key, status, title, payload, updated_at) VALUES (?, ?, ?, ?, ?, ?);",
                     [.text(routine.id.uuidString), .text(routine.key), .text(routine.status.rawValue), .text(routine.title), .text(json(routine)), .double(routine.updatedAt.timeIntervalSince1970)]
@@ -111,7 +136,24 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
             try executeUnlocked("COMMIT;")
         } catch {
             try? executeUnlocked("ROLLBACK;")
+            indexedRows = previousRows
             throw error
+        }
+    }
+
+    private func changed(_ table: String, column: String, id: String, payload: String) throws -> Bool {
+        guard indexedRows[table]?[id] != payload else { return false }
+        try insert("DELETE FROM \(table) WHERE \(column) = ?;", [.text(id)])
+        indexedRows[table, default: [:]][id] = payload
+        return true
+    }
+
+    private func removeMissing(_ table: String, column: String, ids: Set<String>) throws {
+        let removed = (indexedRows[table] ?? [:]).keys.filter { !ids.contains($0) }
+        for id in removed {
+            try insert("DELETE FROM \(table) WHERE \(column) = ?;", [.text(id)])
+            if table == "episodes" { try insert("DELETE FROM episodes_fts WHERE episode_id = ?;", [.text(id)]) }
+            indexedRows[table]?.removeValue(forKey: id)
         }
     }
 
