@@ -12,6 +12,7 @@ struct WeeklyReviewView: View {
     @State private var customEnd = Date.now
     @State private var scope = ReviewScope()
     @State private var useModel = false
+    @State private var initializedModelChoice = false
     @State private var selectedID: UUID?
     @State private var historyCount = 8
     @State private var showsComposer = true
@@ -34,6 +35,14 @@ struct WeeklyReviewView: View {
         model.state.weeklyReports.first { $0.id == selectedID } ?? model.state.weeklyReports.first
     }
     private var allTemplates: [ReviewTemplate] { ReviewTemplate.builtIns + model.state.reviewTemplates }
+    private var topicsInPeriod: [MatterFile] {
+        model.reviewTopics.filter { $0.events.contains { period.contains($0.date) } }
+    }
+    private var eligibleTopicCount: Int {
+        topicsInPeriod.filter {
+            template.kind.includes(category: WeeklyReviewEngine().category(for: $0, in: model.state), topicID: $0.id, scope: scope)
+        }.count
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -59,13 +68,19 @@ struct WeeklyReviewView: View {
         .onAppear {
             showsComposer = model.state.weeklyReports.isEmpty
             if let id = model.weeklyReportToOpen { selectedID = id }
+            if !initializedModelChoice {
+                useModel = model.state.privacy.cloudUseEnabled
+                    && model.state.llmConfiguration.provider != .localOnly
+                    && !model.state.llmConfiguration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                initializedModelChoice = true
+            }
         }
         .onChange(of: customStart) { _, start in if customEnd < start { customEnd = start } }
         .onChange(of: model.weeklyReportToOpen) { _, id in
             selectedID = id
             if id != nil { showsComposer = false; DispatchQueue.main.async { scrollToReport() } }
         }
-        .sheet(isPresented: $showsScope) { ReviewScopeSheet(kind: template.kind, scope: $scope).environmentObject(model) }
+        .sheet(isPresented: $showsScope) { ReviewScopeSheet(kind: template.kind, period: period, scope: $scope).environmentObject(model) }
         .sheet(isPresented: $showsTemplates) { ReviewTemplateSheet(template: template) { saved in template = saved }.environmentObject(model) }
         .sheet(isPresented: $showsSchedules) { ReviewSchedulesSheet(template: template, scope: scope).environmentObject(model) }
         .sheet(item: $editing) { ReviewEditSheet(reportID: $0.id).environmentObject(model) }
@@ -95,7 +110,7 @@ struct WeeklyReviewView: View {
     }
     private var utilityActions: some View {
         HStack(spacing: 14) {
-            Button { showsTemplates = true } label: { Label("模板", systemImage: "slider.horizontal.3") }
+            Button { showsTemplates = true } label: { Label("调整输出格式", systemImage: "slider.horizontal.3") }
             Button { showsSchedules = true } label: {
                 Label(model.state.reviewSchedules.contains(where: \.isEnabled) ? "定时已开启" : "定时生成", systemImage: "clock")
             }
@@ -134,12 +149,31 @@ struct WeeklyReviewView: View {
                 Image(systemName: "calendar").foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 8) {
                     Text(period.label).font(.callout.monospacedDigit())
-                    Text(template.kind.requiresWorkScope ? "只纳入标为工作或本次明确选中的主题，生活与学习分类会被排除。" : "只整理已保存的记录；没有依据的栏目会自然省略。")
+                    Text(scope.useSelectedTopics ? "仅回顾所选日期内勾选的主题；模板决定栏目和表达方式。" : "默认回顾所选日期内的全部适用记录，无需逐项选择；模板决定栏目和表达方式。")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if template.kind.requiresWorkScope {
+                        Text("工作回顾只采用工作分类或你明确选中的未分类主题，生活与学习内容会被排除。")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Spacer()
             }
-            Toggle("按模板整理成文", isOn: $useModel)
+            if model.isBuildingMatters {
+                Text("正在检查范围内的记录…").font(.caption).foregroundStyle(.secondary)
+            } else if eligibleTopicCount > 0 {
+                Label("将整理 \(eligibleTopicCount) 个主题，生成后可查看每条依据。", systemImage: "checkmark.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if template.kind.requiresWorkScope && !topicsInPeriod.isEmpty && !scope.useSelectedTopics {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("这个范围内还没有标为工作的主题。可主动选入未分类主题，或用‘我的一周’回顾全部内容。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("筛选工作主题") { showsScope = true }
+                }
+            } else {
+                Text(scope.useSelectedTopics ? "所选主题在这个日期范围内没有适用记录，可调整筛选或日期。" : "这个日期范围内暂未找到可回顾的主题，可调整日期、重新整理或补充记录。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Toggle("使用已连接的模型整理正文", isOn: $useModel)
                 .font(.callout).disabled(!model.state.privacy.cloudUseEnabled && !useModel)
                 .help("仅发送范围内经过脱敏的事实，按用途和篇幅整理正文，再核对来源；未通过的条目保留原始记录。关闭时完全在本地整理。")
             if !model.state.privacy.cloudUseEnabled {
@@ -151,8 +185,7 @@ struct WeeklyReviewView: View {
     private func templateButton(_ kind: ReviewTemplateKind) -> some View {
         let selected = template.kind == kind
         return Button {
-            template = ReviewTemplate(kind: kind); scope = ReviewScope()
-            if kind.requiresWorkScope && !model.reviewTopics.contains(where: { WeeklyReviewEngine().category(for: $0, in: model.state) == .work }) { showsScope = true }
+            template = ReviewTemplate(kind: kind)
         } label: {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
@@ -175,7 +208,7 @@ struct WeeklyReviewView: View {
                 ForEach(ReviewPeriodKind.allCases) { Text($0.title).tag($0) }
             }.labelsHidden().frame(maxWidth: 200)
             Button { showsScope = true } label: {
-                Label(scope.useSelectedTopics ? "已选 \(scope.topicIDs.count) 个主题" : (template.kind.requiresWorkScope ? "选择工作主题" : "内容范围"), systemImage: "line.3.horizontal.decrease")
+                Label(scope.useSelectedTopics ? "仅选中主题（\(scope.topicIDs.count)）" : "筛选主题（可选）", systemImage: "line.3.horizontal.decrease")
             }
         }
     }
@@ -183,7 +216,8 @@ struct WeeklyReviewView: View {
         Button {
             model.generateWeeklyReview(period: period, template: template, scope: scope, useModel: useModel)
         } label: { Label("生成回顾", systemImage: "sparkles").padding(.vertical, 4).padding(.horizontal, 6) }
-            .buttonStyle(.borderedProminent).disabled(model.isGeneratingWeeklyReview || !period.isValid)
+            .buttonStyle(.borderedProminent)
+            .disabled(model.isGeneratingWeeklyReview || model.isBuildingMatters || !period.isValid || eligibleTopicCount == 0)
     }
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -344,28 +378,34 @@ struct ReviewScopeSheet: View {
     @EnvironmentObject private var model: RecallAppModel
     @Environment(\.dismiss) private var dismiss
     let kind: ReviewTemplateKind
+    let period: ReviewPeriod?
     @Binding var scope: ReviewScope
     @State private var search = ""
     private var topics: [MatterFile] {
-        model.reviewTopics.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }
+        model.reviewTopics.filter { topic in
+            (period.map { range in topic.events.contains { range.contains($0.date) } } ?? true)
+                && (search.isEmpty || topic.title.localizedCaseInsensitiveContains(search))
+        }
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack { Text("选择回顾内容").font(.title2.bold()); Spacer(); Button("完成") { dismiss() }.buttonStyle(.borderedProminent) }
-            Text(kind.requiresWorkScope ? "只选择这次工作汇报需要的主题。标为生活或学习的主题始终不会进入工作周报。" : "可以整理符合模板的全部主题，也可以只回看选中的事情。")
+            HStack { Text("筛选回顾主题").font(.title2.bold()); Spacer(); Button("完成") { dismiss() }.buttonStyle(.borderedProminent) }
+            Text("这是可选筛选。默认按所选日期整理适用记录，只有想缩小内容范围时才需要勾选。")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let period { Text(period.label).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+            else { Text("定时计划会按每次生成时的日期范围整理。").font(.caption).foregroundStyle(.secondary) }
             Toggle("只整理我选中的主题", isOn: $scope.useSelectedTopics)
             TextField("搜索主题", text: $search).textFieldStyle(.roundedBorder)
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    if topics.isEmpty { Text("还没有匹配的主题。可以先补充一条记录，并选择工作、生活或学习分类。").foregroundStyle(.secondary) }
+                    if topics.isEmpty { Text("这个日期范围内没有匹配的主题。可以调整日期、清空搜索或补充记录。").foregroundStyle(.secondary) }
                     ForEach(topics) { topic in
                         scopeRow(topic)
                     }
                 }.padding(.vertical, 8)
             }.clipped()
-            Text("分类用于以后回顾的范围筛选；更改分类后，包含该主题的旧回顾需要重新生成。")
+            Text(kind.requiresWorkScope ? "标为生活或学习的主题不会进入工作回顾。分类调整会让依赖该主题的旧回顾等待更新。" : "关闭“只整理我选中的主题”后，会恢复整理所选日期内的全部适用记录。")
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(28).frame(width: 660, height: 590)
     }
@@ -395,8 +435,8 @@ private struct ReviewTemplateSheet: View {
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            HStack { Text("自己的回顾格式").font(.title2.bold()); Spacer(); Button("完成") { dismiss() } }
-            Text("调整栏目名称、顺序和篇幅。内容仍按事实性质归类，没有依据的栏目会省略。")
+            HStack { Text("调整输出格式").font(.title2.bold()); Spacer(); Button("完成") { dismiss() } }
+            Text("当前模板：\(template.kind.title)。这里仅调整栏目名称、顺序、篇幅和表达，不改变你选择的日期与主题范围。没有依据的栏目会省略。")
                 .foregroundStyle(.secondary)
             TextField("模板名称", text: $template.name).textFieldStyle(.roundedBorder)
             HStack {
@@ -670,6 +710,6 @@ private struct ReviewScheduleEditor: View {
                 }.buttonStyle(.borderedProminent).disabled(!schedule.isValid || saving)
             }
         }.padding(28).frame(width: 620).interactiveDismissDisabled(saving)
-            .sheet(isPresented: $showsScope) { ReviewScopeSheet(kind: schedule.template.kind, scope: $schedule.scope).environmentObject(model) }
+            .sheet(isPresented: $showsScope) { ReviewScopeSheet(kind: schedule.template.kind, period: nil, scope: $schedule.scope).environmentObject(model) }
     }
 }

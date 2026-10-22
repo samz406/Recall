@@ -264,7 +264,12 @@ public actor FileMemoryStore {
             state = RecallState()
             try Self.write(state, encoder: encoder, to: storage.stateURL)
         }
-        state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state)
+        var organizedState = state
+        let knowledge = MemoryKnowledgeEngine().reconcile(organizedState)
+        let withdrawn = MemoryKnowledgeEngine.withdrawnSourceIDs(from: organizedState.memoryKnowledge, to: knowledge)
+        organizedState.memoryKnowledge = knowledge
+        organizedState.invalidateMemoryOutputs(sourceIDs: withdrawn)
+        state = organizedState
         let migrationState = state
         for i in migrationState.weeklyReports.indices where migrationState.weeklyReports[i].isReadable {
             let report = migrationState.weeklyReports[i]

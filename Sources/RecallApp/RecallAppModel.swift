@@ -402,12 +402,9 @@ final class RecallAppModel: ObservableObject {
     }
 
     func organizeExistingMatters() {
-        guard !isBuildingMatters else { return }
+        guard !isBuildingMatters, !isOrganizingMemory else { return }
         matterBuildMessage = nil
-        Task {
-            state = await store.snapshot()
-            rebuildMatterFiles(announce: true)
-        }
+        rebuildMatterFiles(announce: true, reorganize: true)
     }
 
     func saveManualMatter(_ note: ManualMatterNote) async -> Bool {
@@ -422,27 +419,42 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
-    private func rebuildMatterFiles(announce: Bool = false) {
+    private func rebuildMatterFiles(announce: Bool = false, reorganize: Bool = false) {
         matterBuildTask?.cancel()
-        let snapshot = state
         isBuildingMatters = true
         matterBuildTask = Task {
-            let result = await Task.detached(priority: .utility) {
-                (MatterMemoryEngine().files(in: snapshot), WeeklyReviewEngine().topics(in: snapshot))
-            }.value
-            guard !Task.isCancelled else { return }
-            let files = result.0
-            matterFiles = files
-            reviewTopics = result.1
-            isBuildingMatters = false
-            if announce {
-                if snapshot.captures.isEmpty {
-                    matterBuildMessage = "还没有保存的记录。补充一条记录，从这里开始。"
-                } else if files.isEmpty {
-                    matterBuildMessage = "已检查 \(snapshot.captures.count) 条记录，暂未找到能明确归属的具体主题。你可以补充记录；原始内容仍可在时间线查看。"
-                } else {
-                    matterBuildMessage = "已检查 \(snapshot.captures.count) 条记录，整理出 \(files.count) 个主题，重复记录已合并。"
+            do {
+                if reorganize {
+                    // Rebuild the persisted fact ledger, not merely its unchanged UI projection.
+                    try await store.organizeMemory(force: true)
+                    try Task.checkCancellation()
+                    state = await store.snapshot()
                 }
+                let snapshot = state
+                let job = Task.detached(priority: .utility) {
+                    (MatterMemoryEngine().files(in: snapshot), WeeklyReviewEngine().topics(in: snapshot))
+                }
+                let result = await withTaskCancellationHandler(operation: { await job.value }, onCancel: { job.cancel() })
+                try Task.checkCancellation()
+                let files = result.0
+                matterFiles = files
+                reviewTopics = result.1
+                isBuildingMatters = false
+                if announce {
+                    if snapshot.captures.isEmpty {
+                        matterBuildMessage = "还没有保存的记录。补充一条记录，从这里开始。"
+                    } else if files.isEmpty {
+                        matterBuildMessage = "已从 \(snapshot.captures.count) 条原始记录重新整理，暂未找到能明确归属的具体事情。含糊或识别不清的片段未列为主题，原始内容仍可在时间线查看。"
+                    } else {
+                        matterBuildMessage = "已从 \(snapshot.captures.count) 条原始记录重新整理出 \(files.count) 个主题，重复和含糊片段已过滤；没有原文依据的内容不会补写。"
+                    }
+                }
+            } catch is CancellationError { }
+            catch {
+                guard !Task.isCancelled else { return }
+                isBuildingMatters = false
+                matterBuildMessage = "这次未能完成重新整理，原始记录仍然保留，请稍后重试。"
+                recordError(error, source: "Memory", message: "从原始记录重新整理主题失败")
             }
         }
     }

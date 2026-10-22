@@ -207,9 +207,9 @@ struct MatterWorkspaceView: View {
         HStack(spacing: 12) {
             if model.isBuildingMatters { ProgressView().controlSize(.small).help("正在整理记录") }
             Button { model.organizeExistingMatters() } label: {
-                Label("整理已有记录", systemImage: "arrow.clockwise")
-            }.disabled(model.isBuildingMatters)
-                .help("在本地重新整理已保存的记录")
+                Label(model.isBuildingMatters ? "正在重新整理…" : "重新整理", systemImage: "arrow.clockwise")
+            }.disabled(model.isBuildingMatters || model.isOrganizingMemory)
+                .help("从原始记录重建主题、进展与状态，并过滤旧的错误片段；不会改写原文")
             Button { supplement() } label: {
                 Label("补充记录", systemImage: "plus")
             }.buttonStyle(.borderedProminent)
@@ -296,7 +296,7 @@ struct MatterWorkspaceView: View {
             } else {
                 HStack {
                     Button("补充记录") { supplement() }.buttonStyle(.borderedProminent)
-                    Button("整理已有记录") { model.organizeExistingMatters() }
+                    Button("重新整理") { model.organizeExistingMatters() }
                     if !model.matterFiles.isEmpty && tab != .allTopics {
                         Button("查看全部主题") { tab = .allTopics }
                     }

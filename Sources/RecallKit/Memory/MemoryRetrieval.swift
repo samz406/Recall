@@ -24,7 +24,8 @@ public struct MemoryRetrievalEngine: Sendable {
         let allowedIDs = Set(byID.keys)
         let ledger = MemoryKnowledgeEngine().reconcile(state)
         let active = ledger.claims.filter { claim in
-            claim.usable(at: now) && !claim.sourceIDs.isEmpty && Set(claim.sourceIDs).isSubset(of: allowedIDs)
+            (ledger.organizationVersion == MemoryKnowledgeEngine.organizationVersion || claim.kind.isPersonal)
+                && claim.usable(at: now) && !claim.sourceIDs.isEmpty && Set(claim.sourceIDs).isSubset(of: allowedIDs)
         }
         let retiredSources = Set(ledger.claims.filter { [.retracted, .superseded, .conflicted, .expired].contains($0.state) && $0.kind.isPersonal }.flatMap(\.sourceIDs))
         let time = MemoryTimeRangeResolver().resolve(question, now: now)
