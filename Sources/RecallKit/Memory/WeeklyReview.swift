@@ -27,6 +27,14 @@ public enum ReviewTemplateKind: String, Codable, CaseIterable, Identifiable, Sen
         switch self { case .personal: "leaf"; case .work: "briefcase"; case .project: "square.stack.3d.up"; case .learning: "book" }
     }
     public var requiresWorkScope: Bool { self == .work || self == .project }
+    public func includes(category: ReviewCategory, topicID: String, scope: ReviewScope) -> Bool {
+        if scope.useSelectedTopics && !scope.topicIDs.contains(topicID) { return false }
+        if requiresWorkScope {
+            return category != .personal && category != .learning
+                && (category == .work || (scope.useSelectedTopics && scope.topicIDs.contains(topicID)))
+        }
+        return self != .learning || category == .learning || (scope.useSelectedTopics && scope.topicIDs.contains(topicID))
+    }
 }
 
 public enum ReviewSection: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -427,13 +435,8 @@ public struct WeeklyReviewEngine: Sendable {
         }
         var result: [ReviewItem] = []
         for file in files {
-            if scope.useSelectedTopics && !scope.topicIDs.contains(file.id) { continue }
             let category = category(for: file, in: state)
-            if template.kind.requiresWorkScope {
-                guard category != .personal, category != .learning,
-                      category == .work || (scope.useSelectedTopics && scope.topicIDs.contains(file.id)) else { continue }
-            }
-            if template.kind == .learning && category != .learning && !(scope.useSelectedTopics && scope.topicIDs.contains(file.id)) { continue }
+            guard template.kind.includes(category: category, topicID: file.id, scope: scope) else { continue }
             let changes = file.events.filter { period.contains($0.date) }
             guard let last = changes.last else { continue }
             let previous = file.events.last { $0.date < period.start }

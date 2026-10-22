@@ -162,6 +162,8 @@ public struct MemoryKnowledge: Codable, Sendable {
     public var sourceVersions: [String: String] = [:]
     public var suppressedKeys: [String] = []
     public var updatedAt: Date?
+    /// Parser changes must also re-evaluate unchanged historical sources.
+    public var organizationVersion: Int?
     public var pendingScreenshotDeletions: [String] = []
     public init() {}
 }
@@ -173,6 +175,11 @@ public struct MemoryKnowledgeSettings: Codable, Hashable, Sendable {
 }
 
 public struct MemoryKnowledgeEngine: Sendable {
+    public static let organizationVersion = 2
+    static func withdrawnSourceIDs(from previous: MemoryKnowledge, to current: MemoryKnowledge) -> Set<UUID> {
+        let states = Dictionary(uniqueKeysWithValues: current.claims.map { ($0.id, $0.state) })
+        return Set(previous.claims.filter { $0.state == .active && states[$0.id] != .active }.flatMap(\.sourceIDs))
+    }
     private struct SourceSnapshot: Encodable {
         var text: String
         var recordedAt: Date
@@ -263,7 +270,8 @@ public struct MemoryKnowledgeEngine: Sendable {
         let safe = state.correctedForAnalysis()
         let sources = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id, $0) })
         let versions = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id.uuidString, Self.version(of: $0, corrections: state.matterCorrections)) })
-        let changed = versions != result.sourceVersions
+        let outdated = result.organizationVersion != Self.organizationVersion
+        let changed = outdated || versions != result.sourceVersions
         result.claims = result.claims.compactMap { old in
             var claim = old
             claim.evidence.removeAll { evidence in
@@ -431,7 +439,7 @@ public struct MemoryKnowledgeEngine: Sendable {
             result.entities.append(MemoryEntity(id: key, name: MemoryDirective.personName(in: first.content) ?? first.title,
                 aliases: oldEntities[key]?.aliases ?? [], kind: "person", sourceIDs: items.flatMap(\.sourceIDs).memoryUnique()))
         }
-        result.sourceVersions = versions; result.updatedAt = now
+        result.sourceVersions = versions; result.updatedAt = now; result.organizationVersion = Self.organizationVersion
         result.dependencies = dependencies(in: state, claims: result.claims)
         return result
     }
@@ -452,6 +460,7 @@ public struct MemoryKnowledgeEngine: Sendable {
 
     public func files(in state: RecallState) -> [MatterFile]? {
         guard state.memoryKnowledge.updatedAt != nil,
+              state.memoryKnowledge.organizationVersion == Self.organizationVersion,
               state.memoryKnowledge.sourceVersions == Dictionary(uniqueKeysWithValues: state.correctedForAnalysis().captures.map {
                   ($0.id.uuidString, Self.version(of: $0, corrections: state.matterCorrections))
               }) else { return nil }

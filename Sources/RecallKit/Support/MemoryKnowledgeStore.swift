@@ -73,26 +73,11 @@ extension FileMemoryStore {
 
     /// Retract every materialized output that used a changed statement; original sources remain available.
     func invalidateMemoryOutputs(sourceIDs: Set<UUID>) {
-        guard !sourceIDs.isEmpty else { return }
-        state.dailySummaries.removeAll { !Set($0.sourceCaptureIDs).isDisjoint(with: sourceIDs) }
-        state.messages.removeAll { $0.role == .assistant && !Set($0.citations).isDisjoint(with: sourceIDs) }
-        state.episodes.removeAll { !Set($0.evidenceIDs).isDisjoint(with: sourceIDs) }
-        state.projects.removeAll { !Set($0.evidenceIDs).isDisjoint(with: sourceIDs) }
-        state.userMemories.removeAll { !Set($0.evidenceIDs).isDisjoint(with: sourceIDs) }
-        state.insights.removeAll { !Set($0.evidenceIDs).isDisjoint(with: sourceIDs) }
-        state.learnedRoutines.removeAll { !Set($0.evidenceIDs).isDisjoint(with: sourceIDs) }
-        for i in state.weeklyReports.indices where !state.weeklyReports[i].sourceIDs.isDisjoint(with: sourceIDs) {
-            state.weeklyReports[i].invalidate()
-        }
-        state.conversationSummary = nil
-        state.conversationSummaryCoveredMessageCount = state.messages.count
+        state.invalidateMemoryOutputs(sourceIDs: sourceIDs)
     }
 
     func applyKnowledge(_ knowledge: MemoryKnowledge) {
-        let states = Dictionary(uniqueKeysWithValues: knowledge.claims.map { ($0.id, $0.state) })
-        let changedSources = Set(state.memoryKnowledge.claims.filter {
-            $0.state == .active && states[$0.id] != .active
-        }.flatMap(\.sourceIDs))
+        let changedSources = MemoryKnowledgeEngine.withdrawnSourceIDs(from: state.memoryKnowledge, to: knowledge)
         state.memoryKnowledge = knowledge
         invalidateMemoryOutputs(sourceIDs: changedSources)
     }
@@ -101,5 +86,23 @@ extension FileMemoryStore {
         let finished = Set(paths)
         state.memoryKnowledge.pendingScreenshotDeletions.removeAll { finished.contains($0) }
         try persist()
+    }
+}
+
+extension RecallState {
+    mutating func invalidateMemoryOutputs(sourceIDs: Set<UUID>) {
+        guard !sourceIDs.isEmpty else { return }
+        dailySummaries.removeAll { !Set($0.sourceCaptureIDs).isDisjoint(with: sourceIDs) }
+        messages.removeAll { $0.role == .assistant && !Set($0.citations).isDisjoint(with: sourceIDs) }
+        episodes.removeAll { !Set($0.evidenceIDs).isDisjoint(with: sourceIDs) }
+        projects.removeAll { !Set($0.evidenceIDs).isDisjoint(with: sourceIDs) }
+        userMemories.removeAll { !Set($0.evidenceIDs).isDisjoint(with: sourceIDs) }
+        insights.removeAll { !Set($0.evidenceIDs).isDisjoint(with: sourceIDs) }
+        learnedRoutines.removeAll { !Set($0.evidenceIDs).isDisjoint(with: sourceIDs) }
+        for i in weeklyReports.indices where !weeklyReports[i].sourceIDs.isDisjoint(with: sourceIDs) {
+            weeklyReports[i].invalidate()
+        }
+        conversationSummary = nil
+        conversationSummaryCoveredMessageCount = messages.count
     }
 }
