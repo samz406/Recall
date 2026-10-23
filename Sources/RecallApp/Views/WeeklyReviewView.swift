@@ -35,6 +35,7 @@ struct WeeklyReviewView: View {
         model.state.weeklyReports.first { $0.id == selectedID } ?? model.state.weeklyReports.first
     }
     private var allTemplates: [ReviewTemplate] { ReviewTemplate.builtIns + model.state.reviewTemplates }
+    private var coverage: ReviewRecordCoverage { ReviewRecordCoverage(state: model.state, period: period) }
     private var topicsInPeriod: [MatterFile] {
         model.reviewTopics.filter { $0.events.contains { period.contains($0.date) } }
     }
@@ -149,6 +150,8 @@ struct WeeklyReviewView: View {
                 Image(systemName: "calendar").foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 8) {
                     Text(period.label).font(.callout.monospacedDigit())
+                    Text("全部 \(coverage.totalRecords) 条记录 · 所选日期 \(coverage.periodRecords) 条（\(coverage.textRecords) 条含文字）")
+                        .font(.caption).foregroundStyle(.secondary)
                     Text(scope.useSelectedTopics ? "仅回顾所选日期内勾选的主题；模板决定栏目和表达方式。" : "默认回顾所选日期内的全部适用记录，无需逐项选择；模板决定栏目和表达方式。")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     if template.kind.requiresWorkScope {
@@ -169,9 +172,22 @@ struct WeeklyReviewView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Button("筛选工作主题") { showsScope = true }
                 }
+            } else if coverage.periodRecords == 0 {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("所选日期内没有保存的记录；总记录数包含其他日期。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let latest = coverage.latestRecordAt, latest <= .now {
+                        Text("最近记录于 " + latest.formatted()).font(.caption).foregroundStyle(.secondary)
+                        Button("查看最近有记录的一周") {
+                            customStart = Calendar.current.date(byAdding: .day, value: -6, to: latest) ?? latest
+                            customEnd = latest; periodKind = .custom
+                        }
+                    }
+                }
             } else {
-                Text(scope.useSelectedTopics ? "所选主题在这个日期范围内没有适用记录，可调整筛选或日期。" : "这个日期范围内暂未找到可回顾的主题，可调整日期、重新整理或补充记录。")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(scope.useSelectedTopics ? "所选主题在这个日期范围内没有适用记录，可关闭主题筛选。" :
+                    (coverage.textRecords == 0 ? "这些记录没有可读取的文字。请在时间线核对是否只有截图或文字识别未成功。" : "这些记录暂未形成可回顾的正文。可在‘记忆与约定 → 记录线索’查看整理结果，并在时间线核对原始文字。"))
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Toggle("使用已连接的模型整理正文", isOn: $useModel)
                 .font(.callout).disabled(!model.state.privacy.cloudUseEnabled && !useModel)
@@ -223,7 +239,7 @@ struct WeeklyReviewView: View {
         VStack(alignment: .leading, spacing: 14) {
             Image(systemName: "book.closed").font(.system(size: 30, weight: .light)).foregroundStyle(Color.accentColor)
             Text("你的第一份一周回顾，从这里开始").font(.title3.weight(.semibold))
-            Text("选一个用途和时间范围，Recall 会沿着主题回看发生过的变化。工作、学习或生活记录，都可以成为回顾的一部分。")
+            Text("选一个用途和时间范围，Recall 会回看本人事项与保存的内容。记录线索会单独标明，不会被写成你完成的工作、形成的偏好或已经学会的技能。")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(32).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()
     }

@@ -88,6 +88,7 @@ public struct MatterEvent: Identifiable, Sendable {
     public var nextAction: String?
     public var sequence: Int = 0
     public var resultStatus: WorkEpisodeStatus? = nil
+    public var isReference = false
     public var date: Date { eventAt ?? recordedAt }
     public init(id: UUID, title: String, detail: String, recordedAt: Date, eventAt: Date? = nil, status: WorkEpisodeStatus, evidenceIDs: [UUID], nextAction: String? = nil) {
         self.id = id; self.title = title; self.detail = detail; self.recordedAt = recordedAt

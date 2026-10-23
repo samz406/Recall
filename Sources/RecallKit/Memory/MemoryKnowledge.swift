@@ -16,7 +16,7 @@ public enum MemoryScope: String, Codable, CaseIterable, Sendable {
 }
 
 public enum MemoryClaimKind: String, Codable, CaseIterable, Sendable {
-    case event, preference, goal, constraint, habit, workflow, action, experience, person
+    case event, preference, goal, constraint, habit, workflow, action, experience, person, reference
     public var title: String {
         switch self {
         case .event: "事项进展"
@@ -28,9 +28,10 @@ public enum MemoryClaimKind: String, Codable, CaseIterable, Sendable {
         case .action: "待确认行动"
         case .experience: "历史经验"
         case .person: "人物与关系"
+        case .reference: "记录线索"
         }
     }
-    public var isPersonal: Bool { ![.event, .action, .experience].contains(self) }
+    public var isPersonal: Bool { ![.event, .action, .experience, .reference].contains(self) }
 }
 
 public enum MemoryClaimState: String, Codable, CaseIterable, Sendable {
@@ -175,7 +176,7 @@ public struct MemoryKnowledgeSettings: Codable, Hashable, Sendable {
 }
 
 public struct MemoryKnowledgeEngine: Sendable {
-    public static let organizationVersion = 2
+    public static let organizationVersion = 3
     static func withdrawnSourceIDs(from previous: MemoryKnowledge, to current: MemoryKnowledge) -> Set<UUID> {
         let states = Dictionary(uniqueKeysWithValues: current.claims.map { ($0.id, $0.state) })
         return Set(previous.claims.filter { $0.state == .active && states[$0.id] != .active }.flatMap(\.sourceIDs))
@@ -251,8 +252,9 @@ public struct MemoryKnowledgeEngine: Sendable {
         let sources = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
         let knowledge = reconcile(state)
         let active = Set(knowledge.claims.filter { $0.usable() }.flatMap(\.sourceIDs))
+        let retiredReferences = Set(knowledge.claims.filter { $0.kind == .reference && !$0.usable() }.flatMap(\.sourceIDs))
         return ids.allSatisfy { id in
-            guard let record = sources[id] else { return false }
+            guard let record = sources[id], !retiredReferences.contains(id) else { return false }
             return record.memoryDirective == nil || active.contains(id)
         }
     }
@@ -269,6 +271,7 @@ public struct MemoryKnowledgeEngine: Sendable {
         var result = state.memoryKnowledge
         let safe = state.correctedForAnalysis()
         let sources = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id, $0) })
+        let originals = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
         let versions = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id.uuidString, Self.version(of: $0, corrections: state.matterCorrections)) })
         let outdated = result.organizationVersion != Self.organizationVersion
         let changed = outdated || versions != result.sourceVersions
@@ -292,7 +295,7 @@ public struct MemoryKnowledgeEngine: Sendable {
         }
         var candidates: [MemoryClaim] = []
         func proof(_ record: CaptureRecord, quote: String, ordinal: Int, speaker: String, eventAt: Date? = nil) -> MemoryEvidence {
-            let recorded = state.captures.first { $0.id == record.id }?.createdAt ?? record.createdAt
+            let recorded = originals[record.id] ?? record.createdAt
             return MemoryEvidence(captureID: record.id, fragment: ordinal, quote: quote, speaker: speaker,
                 sourceVersion: versions[record.id.uuidString] ?? "", recordedAt: recorded, eventAt: eventAt,
                 sourceApp: record.sourceAppName, sourceBundle: record.sourceBundleIdentifier)
@@ -309,6 +312,7 @@ public struct MemoryKnowledgeEngine: Sendable {
                 validUntil: nil, updatedAt: evidence.map(\.recordedAt).max() ?? now, explicit: explicit)
         }
         let files = MatterMemoryEngine().observedFiles(in: state)
+        let references = MemoryReferenceEngine().files(in: state, excluding: Set(files.flatMap(\.evidenceIDs)))
         for file in files {
             for event in file.events {
                 let evidence = event.evidenceIDs.compactMap { sourceID -> MemoryEvidence? in
@@ -326,6 +330,18 @@ public struct MemoryKnowledgeEngine: Sendable {
                 candidates.append(claim(key: key, subject: file.id, title: file.title, content: event.detail,
                     kind: .event, scope: .project, scopeID: file.id, evidence: evidence,
                     status: event.status, resultStatus: event.resultStatus, nextAction: event.nextAction))
+            }
+        }
+        for file in references {
+            for event in file.events {
+                let evidence = event.evidenceIDs.compactMap { id -> MemoryEvidence? in
+                    guard let source = sources[id], source.ocrText.contains(event.detail) else { return nil }
+                    return proof(source, quote: event.detail, ordinal: event.sequence,
+                        speaker: "保存的内容，非本人行动结论", eventAt: event.eventAt)
+                }
+                candidates.append(claim(key: "reference:" + file.id + ":" + event.id.uuidString,
+                    subject: file.id, title: file.title, content: event.detail, kind: .reference,
+                    evidence: evidence, status: .explored))
             }
         }
         let cueKinds: [(MemoryClaimKind, [String])] = [
@@ -430,7 +446,7 @@ public struct MemoryKnowledgeEngine: Sendable {
         }
             .sorted { $0.date == $1.date ? $0.key < $1.key : $0.date > $1.date }
         let oldEntities = Dictionary(uniqueKeysWithValues: result.entities.map { ($0.id, $0) })
-        result.entities = files.map { file in
+        result.entities = (files + references).map { file in
             MemoryEntity(id: file.id, name: file.title, aliases: oldEntities[file.id]?.aliases ?? [], kind: "topic", sourceIDs: file.evidenceIDs)
         }
         let people = Dictionary(grouping: result.claims.filter { $0.kind == .person }, by: \.subjectID)

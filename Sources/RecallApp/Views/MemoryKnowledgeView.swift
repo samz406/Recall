@@ -13,12 +13,13 @@ struct MemoryKnowledgeView: View {
     @State private var source: CaptureRecord?
     @State private var forgetting: MemoryClaim?
     @State private var aliases: MemoryEntity?
+    private var summary: MemoryOrganizationSummary { MemoryOrganizationSummary(state: model.state) }
 
     private var claims: [MemoryClaim] {
         model.state.memoryKnowledge.claims.filter { item in
             let matches = search.isEmpty || (item.title + item.content).localizedCaseInsensitiveContains(search)
             let kind = category == 0 ? item.kind.isPersonal && item.kind != .person :
-                (category == 1 ? item.kind == .person : item.kind == .experience)
+                (category == 1 ? item.kind == .person : (category == 2 ? item.kind == .experience : item.kind == .reference))
             return matches && kind && (includeHistory || [.active, .conflicted, .tentative].contains(item.state))
                 && item.scope != .conversation
         }
@@ -29,6 +30,7 @@ struct MemoryKnowledgeView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             introduction
+            organizationResults
             controls
             if let message = model.memoryMaintenanceMessage {
                 Label(message, systemImage: "info.circle").foregroundStyle(.secondary)
@@ -41,6 +43,7 @@ struct MemoryKnowledgeView: View {
         }
         .onChange(of: category) { _, _ in visibleCount = 20 }
         .onChange(of: search) { _, _ in visibleCount = 20; aliasVisibleCount = 20 }
+        .onAppear { if summary.agreements == 0 && summary.references > 0 { category = 3 } }
         .sheet(isPresented: $adding) {
             MemoryAgreementEditor(claim: nil, topics: model.state.memoryKnowledge.entities) { content, scope, scopeID, until in
                 await model.saveMemoryAgreement(content: content, scope: scope, scopeID: scopeID, validUntil: until)
@@ -73,7 +76,7 @@ struct MemoryKnowledgeView: View {
             Image(systemName: "brain.head.profile").font(.system(size: 30)).foregroundStyle(.blue)
             VStack(alignment: .leading, spacing: 8) {
                 Text("让每次积累，都在下次用得上").font(.title2.bold())
-                Text("回看 Recall 正在使用的约定、人物线索和历史经验。每条都保留依据，你可以随时更正、停用或忘记。")
+                Text("回看保存内容的线索、明确约定、人物信息和历史经验。每条都保留依据，你可以随时停用或忘记。")
                     .foregroundStyle(.secondary)
                 if let date = model.state.memoryKnowledge.updatedAt {
                     Text("最近整理 " + date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
@@ -86,24 +89,37 @@ struct MemoryKnowledgeView: View {
     private var controls: some View {
         VStack(alignment: .leading, spacing: 14) {
             Picker("查看记忆", selection: $category) {
-                Text("约定与偏好").tag(0); Text("人物与关系").tag(1); Text("历史经验").tag(2)
-            }.pickerStyle(.segmented).frame(maxWidth: 500)
+                Text("记录线索").tag(3); Text("约定与偏好").tag(0); Text("人物与关系").tag(1); Text("历史经验").tag(2)
+            }.pickerStyle(.segmented).frame(maxWidth: 640)
             HStack {
                 Toggle("显示旧版本和已停用内容", isOn: $includeHistory).toggleStyle(.checkbox)
                 Spacer()
                 Button("记下一条约定") { adding = true }.buttonStyle(.borderedProminent)
                 Button { model.organizeMemoryNow() } label: {
                     Label(model.isOrganizingMemory ? "正在整理…" : "立即整理", systemImage: "arrow.triangle.2.circlepath")
-                }.disabled(model.isOrganizingMemory)
+                }.disabled(model.isOrganizingMemory || model.isBuildingMatters)
             }
         }
+    }
+    private var organizationResults: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("本地记录与整理结果").font(.headline)
+            Text("\(summary.records) 条原始记录 · \(summary.textRecords) 条含文字 · \(summary.attributedRecords) 条带本人归属标记")
+                .font(.callout).foregroundStyle(.secondary)
+            Text("\(summary.matters) 个本人事项 · \(summary.references) 个记录主题 · \(summary.agreements) 条约定 · \(summary.people) 个人物线索 · \(summary.experiences) 项经验")
+                .font(.callout).fixedSize(horizontal: false, vertical: true)
+            Text("记录线索可用于回顾保存了什么；只有明确的本人表达才能形成偏好，问题、处理与结果齐全才形成经验。记录多不代表每一类都会有结果。")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 16))
     }
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(search.isEmpty ? "还没有这一类记忆" : "没有找到相关记忆").font(.headline)
-            Text(category == 2 ? "同一件事有明确的问题、处理经过与完成结果后，会在这里保留原始过程。不同条件下，过去的方法仍需重新核对。" :
-                 "你可以在问一问里说‘记住：以后工作周报简洁一点’，也可以直接补充约定。普通阅读材料不会被当作你的偏好。")
+            Text(category == 2 ? "目前还没有同时具备问题、处理经过与完成结果的经历。整理操作已完成也可能是零项；你仍可在记录线索中回看保存的内容。" :
+                 (category == 3 ? "文字为空、仅有界面菜单或内容被排除时，不会生成线索。可在时间线核对原始文字；明确的本人事项在‘进行中/全部主题’中查看。" : "你可以在问一问里说‘记住：以后工作周报简洁一点’，也可以直接补充约定。普通阅读材料不会被当作你的偏好。"))
                 .foregroundStyle(.secondary)
+            if category != 3 && summary.references > 0 { Button("查看记录线索（\(summary.references) 个主题）") { category = 3 } }
         }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
             .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 16))
     }
@@ -112,12 +128,12 @@ struct MemoryKnowledgeView: View {
             HStack(alignment: .top) {
                 Text(claim.title).font(.headline).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 16)
-                Text(claim.state.title).font(.caption).foregroundStyle(claim.state == .active ? Color.blue : Color.secondary)
+                Text(claim.kind == .reference ? "记录线索" : claim.state.title).font(.caption).foregroundStyle(.secondary)
             }
             if claim.content != claim.title { Text(claim.content).textSelection(.enabled) }
             HStack(spacing: 16) {
                 Text(claim.scope.title)
-                Text(claim.explicit ? "本人明确约定" : "来自本人表达与原始记录")
+                Text(claim.kind == .reference ? "保存的内容，归属与实际状态未确认" : (claim.explicit ? "本人明确约定" : "来自本人表达与原始记录"))
                 Text(claim.date.formatted(date: .abbreviated, time: .omitted))
             }.font(.caption).foregroundStyle(.secondary)
             if claim.state == .conflicted {
@@ -134,7 +150,7 @@ struct MemoryKnowledgeView: View {
                         Button((record.sourceAppName ?? "原始记录") + " · " + record.createdAt.formatted()) { source = record }
                     }
                 }
-                Button("更正") { editing = claim }
+                if claim.kind != .reference { Button("更正") { editing = claim } }
                 Spacer()
                 Menu {
                     if claim.state == .active { Button("停用这条记忆") { model.retireMemory(claim) } }

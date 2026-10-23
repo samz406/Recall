@@ -380,6 +380,7 @@ public struct WeeklyReviewEngine: Sendable {
     public func topics(in state: RecallState) -> [MatterFile] {
         let safe = state.correctedForAnalysis()
         var files = MatterMemoryEngine().files(in: state)
+        let originals = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
         // Reading/learning/life records do not need a work-progress verb. Still require
         // an explicit first-person action; a saved article or unknown chat role is not one.
         for record in safe.captures.sorted(by: { $0.createdAt < $1.createdAt }) where record.eventTemplate != .dailyReview {
@@ -391,7 +392,7 @@ public struct WeeklyReviewEngine: Sendable {
                       let pair = personalSubject(text) else { continue }
                 let key = "life:" + MatterEvidence.key(pair.0)
                 var event = MatterEvent(id: MatterEvidence.eventID(source: record.id, topic: key, ordinal: segment.ordinal), title: pair.0, detail: text,
-                    recordedAt: state.captures.first { $0.id == record.id }?.createdAt ?? record.createdAt,
+                    recordedAt: originals[record.id] ?? record.createdAt,
                     eventAt: state.matterCorrections.last(where: { $0.kind == .eventDate && $0.evidenceIDs.contains(record.id) })?.eventAt,
                     status: .explored, evidenceIDs: [record.id])
                 event.sequence = segment.ordinal
@@ -405,11 +406,12 @@ public struct WeeklyReviewEngine: Sendable {
                 } else { files.append(MatterFile(id: key, title: pair.0, events: [event])) }
             }
         }
+        files += MemoryReferenceEngine().files(in: state, excluding: Set(files.flatMap(\.evidenceIDs)))
         for i in files.indices {
             files[i].events.sort { $0.date == $1.date ? $0.sequence < $1.sequence : $0.date < $1.date }
             // Scope/category settings must not retain a deleted person's name or original
             // topic sentence inside an identifier. Only opaque stable IDs leave the ledger.
-            let prefix = files[i].id.hasPrefix("life:") ? "life:" : "topic:"
+            let prefix = files[i].id.hasPrefix("reference:") ? "reference:" : (files[i].id.hasPrefix("life:") ? "life:" : "topic:")
             files[i].id = prefix + SHA256.hash(data: Data(files[i].id.utf8)).map { String(format: "%02x", $0) }.joined()
         }
         return files.sorted { $0.latest.date > $1.latest.date }
@@ -523,7 +525,8 @@ public struct WeeklyReviewEngine: Sendable {
     }
 
     private func excerpt(_ event: MatterEvent) -> ReviewExcerpt {
-        ReviewExcerpt(id: event.id, date: event.date, text: clean(event.detail), status: event.resultStatus ?? event.status,
+        ReviewExcerpt(id: event.id, date: event.date,
+            text: (event.isReference ? "保存的内容（归属与实际状态未确认）：\n" : "") + clean(event.detail), status: event.resultStatus ?? event.status,
             sourceIDs: event.evidenceIDs, eventTimeKnown: event.eventAt != nil)
     }
     private func clean(_ text: String) -> String {
