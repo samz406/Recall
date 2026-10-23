@@ -13,7 +13,8 @@ struct MemoryKnowledgeView: View {
     @State private var source: CaptureRecord?
     @State private var forgetting: MemoryClaim?
     @State private var aliases: MemoryEntity?
-    private var summary: MemoryOrganizationSummary { MemoryOrganizationSummary(state: model.state) }
+    @State private var choseInitialCategory = false
+    private var summary: MemoryOrganizationSummary { model.memoryWorkspace?.summary ?? MemoryOrganizationSummary() }
 
     private var claims: [MemoryClaim] {
         model.state.memoryKnowledge.claims.filter { item in
@@ -28,6 +29,7 @@ struct MemoryKnowledgeView: View {
         model.state.memoryKnowledge.entities.filter { search.isEmpty || ($0.name + $0.aliases.joined()).localizedCaseInsensitiveContains(search) }
     }
     var body: some View {
+        let rows = claims
         VStack(alignment: .leading, spacing: 22) {
             introduction
             organizationResults
@@ -35,15 +37,16 @@ struct MemoryKnowledgeView: View {
             if let message = model.memoryMaintenanceMessage {
                 Label(message, systemImage: "info.circle").foregroundStyle(.secondary)
             }
-            if claims.isEmpty { emptyState }
-            ForEach(Array(claims.prefix(visibleCount))) { claim in claimCard(claim) }
-            if claims.count > visibleCount { Button("再显示 20 条") { visibleCount += 20 } }
+            if rows.isEmpty { emptyState }
+            ForEach(Array(rows.prefix(visibleCount))) { claim in claimCard(claim) }
+            if rows.count > visibleCount { Button("再显示 20 条") { visibleCount += 20 } }
             topicAliases
             retentionSettings
         }
-        .onChange(of: category) { _, _ in visibleCount = 20 }
+        .onChange(of: category) { _, _ in visibleCount = 20; choseInitialCategory = true }
         .onChange(of: search) { _, _ in visibleCount = 20; aliasVisibleCount = 20 }
-        .onAppear { if summary.agreements == 0 && summary.references > 0 { category = 3 } }
+        .onAppear { chooseInitialCategory() }
+        .onChange(of: model.memoryWorkspace?.revision) { _, _ in chooseInitialCategory() }
         .sheet(isPresented: $adding) {
             MemoryAgreementEditor(claim: nil, topics: model.state.memoryKnowledge.entities) { content, scope, scopeID, until in
                 await model.saveMemoryAgreement(content: content, scope: scope, scopeID: scopeID, validUntil: until)
@@ -61,7 +64,8 @@ struct MemoryKnowledgeView: View {
         .confirmationDialog("忘记这条记忆及其关联记录？", isPresented: Binding(get: { forgetting != nil }, set: { if !$0 { forgetting = nil } })) {
             Button("移入最近删除", role: .destructive) {
                 if let item = forgetting {
-                    let records = model.state.captures.filter { item.sourceIDs.contains($0.id) }
+                    let ids = Set(item.sourceIDs)
+                    let records = model.state.captures.filter { ids.contains($0.id) }
                     model.deleteCaptures(records, reason: .noLongerNeeded, suppressSimilar: false)
                 }
                 forgetting = nil
@@ -70,6 +74,11 @@ struct MemoryKnowledgeView: View {
         } message: {
             Text("关联原始记录和依赖这些记录的总结、回答及提醒会一起移除，七天内可以在‘最近删除’恢复。")
         }
+    }
+    private func chooseInitialCategory() {
+        guard !choseInitialCategory, model.memoryWorkspace != nil else { return }
+        choseInitialCategory = true
+        if summary.agreements == 0 && summary.references > 0 { category = 3 }
     }
     private var introduction: some View {
         HStack(alignment: .top, spacing: 16) {
@@ -124,7 +133,8 @@ struct MemoryKnowledgeView: View {
             .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 16))
     }
     private func claimCard(_ claim: MemoryClaim) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let sourceIDs = claim.sourceIDs
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top) {
                 Text(claim.title).font(.headline).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 16)
@@ -145,8 +155,8 @@ struct MemoryKnowledgeView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
-                Menu("查看依据（\(claim.sourceIDs.count)）") {
-                    ForEach(model.state.captures.filter { claim.sourceIDs.contains($0.id) }) { record in
+                Menu("查看依据（\(sourceIDs.count)）") {
+                    ForEach(sourceIDs.compactMap { model.memoryWorkspace?.sources[$0] }) { record in
                         Button((record.sourceAppName ?? "原始记录") + " · " + record.createdAt.formatted()) { source = record }
                     }
                 }

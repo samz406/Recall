@@ -62,7 +62,7 @@ public enum MatterCorrectionKind: String, Codable, CaseIterable, Sendable {
     }
 }
 
-public struct MatterCorrection: Identifiable, Codable, Sendable {
+public struct MatterCorrection: Identifiable, Codable, Equatable, Sendable {
     public var id: UUID = UUID()
     public var evidenceIDs: [UUID]
     public var kind: MatterCorrectionKind

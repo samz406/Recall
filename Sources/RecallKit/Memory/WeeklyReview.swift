@@ -377,9 +377,9 @@ public enum WeeklyReviewError: Error, LocalizedError, Equatable {
 public struct WeeklyReviewEngine: Sendable {
     public init() {}
 
-    public func topics(in state: RecallState) -> [MatterFile] {
+    public func topics(in state: RecallState, matterFiles: [MatterFile]? = nil) -> [MatterFile] {
         let safe = state.correctedForAnalysis()
-        var files = MatterMemoryEngine().files(in: state)
+        var files = matterFiles ?? MatterMemoryEngine().files(in: state)
         let originals = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
         // Reading/learning/life records do not need a work-progress verb. Still require
         // an explicit first-person action; a saved article or unknown chat role is not one.
@@ -418,26 +418,20 @@ public struct WeeklyReviewEngine: Sendable {
     }
 
     public func category(for file: MatterFile, in state: RecallState) -> ReviewCategory {
-        if let selected = state.reviewCategories[file.id] { return selected }
-        let notes = state.captures.filter { file.evidenceIDs.contains($0.id) }.sorted { $0.createdAt < $1.createdAt }
-            .compactMap { $0.manualMatter?.reviewCategory }.filter { $0 != .unclassified }
-        if let category = notes.last, category != .unclassified { return category }
-        if file.id.hasPrefix("life:") {
-            return ["阅读", "学习", "练习"].contains(where: file.title.hasPrefix) ? .learning : .personal
-        }
-        return .unclassified
+        ReviewCategoryIndex(state: state).category(for: file)
     }
 
     public func items(in state: RecallState, period: ReviewPeriod, template: ReviewTemplate, scope: ReviewScope) throws -> [ReviewItem] {
         guard period.isValid else { throw WeeklyReviewError.invalidPeriod }
         guard template.isValid else { throw WeeklyReviewError.invalidTemplate }
         let files = topics(in: state)
-        if template.kind.requiresWorkScope && scope.topicIDs.isEmpty && !files.contains(where: { category(for: $0, in: state) == .work }) {
+        let categories = ReviewCategoryIndex(state: state)
+        if template.kind.requiresWorkScope && scope.topicIDs.isEmpty && !files.contains(where: { categories.category(for: $0) == .work }) {
             throw WeeklyReviewError.noWorkScope
         }
         var result: [ReviewItem] = []
         for file in files {
-            let category = category(for: file, in: state)
+            let category = categories.category(for: file)
             guard template.kind.includes(category: category, topicID: file.id, scope: scope) else { continue }
             let changes = file.events.filter { period.contains($0.date) }
             guard let last = changes.last else { continue }

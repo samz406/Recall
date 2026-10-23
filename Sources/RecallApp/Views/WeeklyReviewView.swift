@@ -8,6 +8,7 @@ struct WeeklyReviewView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var template = ReviewTemplate(kind: .personal)
     @State private var periodKind: ReviewPeriodKind = .recentSeven
+    @State private var rangeNow = Date.now
     @State private var customStart = Calendar.current.date(byAdding: .day, value: -6, to: .now) ?? .now
     @State private var customEnd = Date.now
     @State private var scope = ReviewScope()
@@ -26,30 +27,22 @@ struct WeeklyReviewView: View {
     var scrollToReport: () -> Void = {}
 
     private var period: ReviewPeriod {
-        if periodKind != .custom { return .make(periodKind) }
+        if periodKind != .custom { return .make(periodKind, at: rangeNow) }
         let c = Calendar.current
-        let end = min(Date.now, c.date(byAdding: .day, value: 1, to: c.startOfDay(for: customEnd)) ?? customEnd)
+        let end = min(rangeNow, c.date(byAdding: .day, value: 1, to: c.startOfDay(for: customEnd)) ?? customEnd)
         return ReviewPeriod(start: c.startOfDay(for: customStart), end: end)
     }
     private var report: WeeklyReport? {
         model.state.weeklyReports.first { $0.id == selectedID } ?? model.state.weeklyReports.first
     }
     private var allTemplates: [ReviewTemplate] { ReviewTemplate.builtIns + model.state.reviewTemplates }
-    private var coverage: ReviewRecordCoverage { ReviewRecordCoverage(state: model.state, period: period) }
-    private var topicsInPeriod: [MatterFile] {
-        model.reviewTopics.filter { $0.events.contains { period.contains($0.date) } }
-    }
-    private var eligibleTopicCount: Int {
-        topicsInPeriod.filter {
-            template.kind.includes(category: WeeklyReviewEngine().category(for: $0, in: model.state), topicID: $0.id, scope: scope)
-        }.count
-    }
-
     var body: some View {
+        let range = period
+        let preview = model.reviewIndex.preview(in: range, kind: template.kind, scope: scope)
         VStack(alignment: .leading, spacing: 24) {
             introduction
-            if model.state.weeklyReports.isEmpty { composer }
-            else { DisclosureGroup("生成另一份回顾", isExpanded: $showsComposer) { composer.padding(.top, 16) } }
+            if model.state.weeklyReports.isEmpty { composer(range: range, preview: preview) }
+            else { DisclosureGroup("生成另一份回顾", isExpanded: $showsComposer) { composer(range: range, preview: preview).padding(.top, 16) } }
             if let message = model.weeklyReviewMessage {
                 Label(message, systemImage: "info.circle")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -67,6 +60,7 @@ struct WeeklyReviewView: View {
             history
         }
         .onAppear {
+            rangeNow = .now
             showsComposer = model.state.weeklyReports.isEmpty
             if let id = model.weeklyReportToOpen { selectedID = id }
             if !initializedModelChoice {
@@ -77,6 +71,7 @@ struct WeeklyReviewView: View {
             }
         }
         .onChange(of: customStart) { _, start in if customEnd < start { customEnd = start } }
+        .onChange(of: model.memoryWorkspace?.revision) { _, _ in rangeNow = .now }
         .onChange(of: model.weeklyReportToOpen) { _, id in
             selectedID = id
             if id != nil { showsComposer = false; DispatchQueue.main.async { scrollToReport() } }
@@ -117,8 +112,10 @@ struct WeeklyReviewView: View {
             }
         }.fixedSize()
     }
-    private var composer: some View {
-        VStack(alignment: .leading, spacing: 20) {
+    private func composer(range: ReviewPeriod, preview: ReviewRangePreview) -> some View {
+        let coverage = preview.coverage
+        let eligibleTopicCount = preview.eligibleTopicCount
+        return VStack(alignment: .leading, spacing: 20) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 155), spacing: 12)], spacing: 12) {
                 ForEach(ReviewTemplateKind.allCases) { kind in
                     templateButton(kind)
@@ -137,8 +134,8 @@ struct WeeklyReviewView: View {
             }
             Divider()
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 16) { rangeControls; Spacer(); generateButton }
-                VStack(alignment: .leading, spacing: 16) { rangeControls; generateButton }
+                HStack(alignment: .center, spacing: 16) { rangeControls; Spacer(); generateButton(range: range, eligibleTopicCount: eligibleTopicCount) }
+                VStack(alignment: .leading, spacing: 16) { rangeControls; generateButton(range: range, eligibleTopicCount: eligibleTopicCount) }
             }
             if periodKind == .custom {
                 HStack(spacing: 20) {
@@ -149,7 +146,7 @@ struct WeeklyReviewView: View {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "calendar").foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(period.label).font(.callout.monospacedDigit())
+                    Text(range.label).font(.callout.monospacedDigit())
                     Text("全部 \(coverage.totalRecords) 条记录 · 所选日期 \(coverage.periodRecords) 条（\(coverage.textRecords) 条含文字）")
                         .font(.caption).foregroundStyle(.secondary)
                     Text(scope.useSelectedTopics ? "仅回顾所选日期内勾选的主题；模板决定栏目和表达方式。" : "默认回顾所选日期内的全部适用记录，无需逐项选择；模板决定栏目和表达方式。")
@@ -166,7 +163,7 @@ struct WeeklyReviewView: View {
             } else if eligibleTopicCount > 0 {
                 Label("将整理 \(eligibleTopicCount) 个主题，生成后可查看每条依据。", systemImage: "checkmark.circle")
                     .font(.caption).foregroundStyle(.secondary)
-            } else if template.kind.requiresWorkScope && !topicsInPeriod.isEmpty && !scope.useSelectedTopics {
+            } else if template.kind.requiresWorkScope && preview.topicCount > 0 && !scope.useSelectedTopics {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("这个范围内还没有标为工作的主题。可主动选入未分类主题，或用‘我的一周’回顾全部内容。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -228,12 +225,12 @@ struct WeeklyReviewView: View {
             }
         }
     }
-    private var generateButton: some View {
+    private func generateButton(range: ReviewPeriod, eligibleTopicCount: Int) -> some View {
         Button {
-            model.generateWeeklyReview(period: period, template: template, scope: scope, useModel: useModel)
+            model.generateWeeklyReview(period: range, template: template, scope: scope, useModel: useModel)
         } label: { Label("生成回顾", systemImage: "sparkles").padding(.vertical, 4).padding(.horizontal, 6) }
             .buttonStyle(.borderedProminent)
-            .disabled(model.isGeneratingWeeklyReview || model.isBuildingMatters || !period.isValid || eligibleTopicCount == 0)
+            .disabled(model.isGeneratingWeeklyReview || model.isBuildingMatters || !range.isValid || eligibleTopicCount == 0)
     }
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -245,7 +242,7 @@ struct WeeklyReviewView: View {
     }
 
     private func reportBody(_ report: WeeklyReport) -> some View {
-        VStack(alignment: .leading, spacing: 24) {
+        LazyVStack(alignment: .leading, spacing: 24) {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 18) { reportHeading(report); Spacer(); reportActions(report) }
                 VStack(alignment: .leading, spacing: 16) { reportHeading(report); reportActions(report) }
@@ -300,11 +297,11 @@ struct WeeklyReviewView: View {
         }.fixedSize()
     }
     private func reportSections(_ report: WeeklyReport) -> some View {
-        VStack(alignment: .leading, spacing: 30) {
+        LazyVStack(alignment: .leading, spacing: 30) {
             ForEach(report.template.sections) { section in
                 let items = report.items.filter { $0.section == section }
                 if !items.isEmpty {
-                    VStack(alignment: .leading, spacing: 20) {
+                    LazyVStack(alignment: .leading, spacing: 20) {
                         Label(report.template.heading(section), systemImage: section.symbol)
                             .font(.headline).foregroundStyle(sectionColor(section))
                         ForEach(items) { item in reviewItem(item, report: report) }
@@ -397,13 +394,14 @@ struct ReviewScopeSheet: View {
     let period: ReviewPeriod?
     @Binding var scope: ReviewScope
     @State private var search = ""
-    private var topics: [MatterFile] {
-        model.reviewTopics.filter { topic in
-            (period.map { range in topic.events.contains { range.contains($0.date) } } ?? true)
+    private var topics: [ReviewTopicSummary] {
+        model.reviewIndex.topics.filter { topic in
+            (period.map { topic.occurs(in: $0) } ?? true)
                 && (search.isEmpty || topic.title.localizedCaseInsensitiveContains(search))
         }
     }
     var body: some View {
+        let rows = topics
         VStack(alignment: .leading, spacing: 18) {
             HStack { Text("筛选回顾主题").font(.title2.bold()); Spacer(); Button("完成") { dismiss() }.buttonStyle(.borderedProminent) }
             Text("这是可选筛选。默认按所选日期整理适用记录，只有想缩小内容范围时才需要勾选。")
@@ -415,8 +413,8 @@ struct ReviewScopeSheet: View {
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    if topics.isEmpty { Text("这个日期范围内没有匹配的主题。可以调整日期、清空搜索或补充记录。").foregroundStyle(.secondary) }
-                    ForEach(topics) { topic in
+                    if rows.isEmpty { Text("这个日期范围内没有匹配的主题。可以调整日期、清空搜索或补充记录。").foregroundStyle(.secondary) }
+                    ForEach(rows) { topic in
                         scopeRow(topic)
                     }
                 }.padding(.vertical, 8)
@@ -425,8 +423,8 @@ struct ReviewScopeSheet: View {
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(28).frame(width: 660, height: 590)
     }
-    private func scopeRow(_ topic: MatterFile) -> some View {
-        let category = WeeklyReviewEngine().category(for: topic, in: model.state)
+    private func scopeRow(_ topic: ReviewTopicSummary) -> some View {
+        let category = topic.category
         let excluded = kind.requiresWorkScope && (category == .personal || category == .learning)
         return HStack(spacing: 16) {
             Toggle(isOn: Binding(get: { scope.topicIDs.contains(topic.id) }, set: { selected in

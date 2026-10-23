@@ -95,6 +95,10 @@ public struct MemoryOrganizationSummary: Sendable {
     public var agreements: Int
     public var people: Int
     public var experiences: Int
+    public init() {
+        records = 0; textRecords = 0; attributedRecords = 0; matters = 0
+        references = 0; agreements = 0; people = 0; experiences = 0
+    }
     public init(state: RecallState) {
         records = state.captures.count
         textRecords = state.captures.filter { $0.ocrText.contains { !$0.isWhitespace } }.count
@@ -116,6 +120,10 @@ public struct ReviewRecordCoverage: Sendable {
     public let periodRecords: Int
     public let textRecords: Int
     public let latestRecordAt: Date?
+    init(totalRecords: Int, periodRecords: Int, textRecords: Int, latestRecordAt: Date?) {
+        self.totalRecords = totalRecords; self.periodRecords = periodRecords
+        self.textRecords = textRecords; self.latestRecordAt = latestRecordAt
+    }
     public init(state: RecallState, period: ReviewPeriod) {
         let sources = state.correctedForAnalysis().captures.filter {
             $0.memoryDirective == nil && $0.eventTemplate != .dailyReview
