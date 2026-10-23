@@ -96,7 +96,7 @@ struct MemoryKnowledgeView: View {
                 Spacer()
                 Button("记下一条约定") { adding = true }.buttonStyle(.borderedProminent)
                 Button { model.organizeMemoryNow() } label: {
-                    Label(model.isOrganizingMemory ? "正在整理…" : "立即整理", systemImage: "arrow.triangle.2.circlepath")
+                    Label(model.isOrganizingMemory || model.isBuildingMatters ? "正在整理…" : "立即整理", systemImage: "arrow.triangle.2.circlepath")
                 }.disabled(model.isOrganizingMemory || model.isBuildingMatters)
             }
         }

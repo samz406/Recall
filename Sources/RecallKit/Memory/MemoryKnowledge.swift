@@ -439,6 +439,11 @@ public struct MemoryKnowledgeEngine: Sendable {
             experience.dependencies = supporting.map(\.id).filter(activeIDs.contains)
             merged.append(experience)
         }
+        let rebuiltIDs = Set(merged.map(\.id))
+        // Keep live-source tombstones so another rebuild cannot bypass a stopped reference.
+        merged += result.claims.filter {
+            $0.kind == .reference && result.suppressedKeys.contains($0.key) && !rebuiltIDs.contains($0.id)
+        }
         result.claims = merged.filter { !$0.evidence.isEmpty }.map { original in
             var claim = original
             if result.suppressedKeys.contains(claim.key) { claim.state = .retracted }

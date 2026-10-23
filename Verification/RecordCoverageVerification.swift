@@ -51,6 +51,8 @@ enum RecordCoverageVerification {
         let indexed = await store.snapshot()
         let claim = indexed.memoryKnowledge.claims.first { $0.kind == .reference }!
         try await store.retireMemory(id: claim.id)
+        try await store.organizeMemory(force: true)
+        try await store.organizeMemory(force: true)
         let retired = await store.snapshot()
         try expect(!WeeklyReviewEngine.sourcesUnchanged(report, in: retired), "停用线索后旧回顾仍可作为有效来源提交")
         try expect(WeeklyReviewEngine().topics(in: retired).isEmpty, "停用的记录线索又从原文回退中复活")
@@ -99,7 +101,7 @@ enum RecordCoverageVerification {
         let period = ReviewPeriod(start: old.addingTimeInterval(-86_400), end: old.addingTimeInterval(86_400))
         let report = try await WeeklyReviewEngine().generate(in: state, period: period, template: ReviewTemplate(kind: .personal), now: now)
         try expect(report.sourceIDs == Set([saved.id]), "调整到有记录日期后仍空白，或菜单噪声进入了回顾")
-        var excluded = state; excluded.privacy.excludedBundleIdentifiers.append("test.coverage")
+        var excluded = state; excluded.privacy.excludedBundleIdentifiers.insert("test.coverage")
         try expect(WeeklyReviewEngine().topics(in: excluded).isEmpty, "被排除来源借记录线索进入了回顾")
         try expect(ReviewRecordCoverage(state: excluded, period: period).totalRecords == 0, "覆盖诊断泄露了被排除来源")
     }
