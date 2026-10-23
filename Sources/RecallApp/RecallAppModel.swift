@@ -19,7 +19,9 @@ extension Notification.Name {
 final class RecallAppModel: ObservableObject {
     @Published var state = RecallState()
     @Published private(set) var matterFiles: [MatterFile] = []
-    @Published private(set) var reviewTopics: [MatterFile] = []
+    @Published private(set) var memoryWorkspace: MemoryWorkspaceProjection?
+    var reviewIndex: ReviewWorkspaceIndex { memoryWorkspace?.review ?? ReviewWorkspaceIndex() }
+    private let memoryWorkspaceCache = MemoryWorkspaceCache()
     @Published private(set) var isGeneratingWeeklyReview = false
     @Published var weeklyReviewMessage: String?
     @Published var weeklyReportToOpen: UUID?
@@ -153,7 +155,11 @@ final class RecallAppModel: ObservableObject {
             let remaining = Set(after.reminders.map(\.id))
             for reminder in before.reminders where !remaining.contains(reminder.id) { notificationScheduler.cancel(reminder) }
             if failed { memoryMaintenanceAfter = Date.now.addingTimeInterval(60) }
-            if force { memoryMaintenanceMessage = MemoryOrganizationSummary(state: after).message }
+            if force {
+                memoryMaintenanceMessage = await Task.detached(priority: .utility) {
+                    MemoryOrganizationSummary(state: after).message
+                }.value
+            }
             state = after
         } catch {
             memoryMaintenanceAfter = Date.now.addingTimeInterval(60)
@@ -432,20 +438,22 @@ final class RecallAppModel: ObservableObject {
                     state = await store.snapshot()
                 }
                 let snapshot = state
+                let cache = memoryWorkspaceCache
                 let job = Task.detached(priority: .utility) {
-                    (MatterMemoryEngine().files(in: snapshot), WeeklyReviewEngine().topics(in: snapshot))
+                    try await cache.prepare(in: snapshot)
                 }
-                let result = await withTaskCancellationHandler(operation: { await job.value }, onCancel: { job.cancel() })
+                let result = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
                 try Task.checkCancellation()
-                let files = result.0
-                matterFiles = files
-                reviewTopics = result.1
+                if memoryWorkspace?.revision != result.revision {
+                    matterFiles = result.matters
+                    memoryWorkspace = result
+                }
                 isBuildingMatters = false
                 if announce {
                     if snapshot.captures.isEmpty {
                         matterBuildMessage = "还没有保存的记录。补充一条记录，从这里开始。"
                     } else {
-                        matterBuildMessage = MemoryOrganizationSummary(state: snapshot).message
+                        matterBuildMessage = result.summary.message
                     }
                 }
             } catch is CancellationError { }
