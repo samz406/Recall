@@ -86,6 +86,10 @@ enum ReviewPerformanceVerification {
         let overridden = ReviewWorkspaceIndex(state: state, topics: topics)
         try expect(overridden.topics.first { $0.id == workID }?.category == .unclassified,
             "用户手动取消分类后预览仍采用原分类")
+        state.matterCorrections.append(MatterCorrection(evidenceIDs: [learning.id], kind: .eventDate))
+        let resetIndex = ReviewWorkspaceIndex(state: state, topics: engine.topics(in: state))
+        try expect(resetIndex.coverage(in: period).periodRecords == ReviewRecordCoverage(state: state, period: period).periodRecords,
+            "撤销发生时间更正后索引继续使用旧日期")
     }
 
     private static func cacheLifecycle() async throws {

@@ -13,6 +13,7 @@ struct MemoryKnowledgeView: View {
     @State private var source: CaptureRecord?
     @State private var forgetting: MemoryClaim?
     @State private var aliases: MemoryEntity?
+    @State private var choseInitialCategory = false
     private var summary: MemoryOrganizationSummary { model.memoryWorkspace?.summary ?? MemoryOrganizationSummary() }
 
     private var claims: [MemoryClaim] {
@@ -42,9 +43,10 @@ struct MemoryKnowledgeView: View {
             topicAliases
             retentionSettings
         }
-        .onChange(of: category) { _, _ in visibleCount = 20 }
+        .onChange(of: category) { _, _ in visibleCount = 20; choseInitialCategory = true }
         .onChange(of: search) { _, _ in visibleCount = 20; aliasVisibleCount = 20 }
-        .onAppear { if summary.agreements == 0 && summary.references > 0 { category = 3 } }
+        .onAppear { chooseInitialCategory() }
+        .onChange(of: model.memoryWorkspace?.revision) { _, _ in chooseInitialCategory() }
         .sheet(isPresented: $adding) {
             MemoryAgreementEditor(claim: nil, topics: model.state.memoryKnowledge.entities) { content, scope, scopeID, until in
                 await model.saveMemoryAgreement(content: content, scope: scope, scopeID: scopeID, validUntil: until)
@@ -72,6 +74,11 @@ struct MemoryKnowledgeView: View {
         } message: {
             Text("关联原始记录和依赖这些记录的总结、回答及提醒会一起移除，七天内可以在‘最近删除’恢复。")
         }
+    }
+    private func chooseInitialCategory() {
+        guard !choseInitialCategory, model.memoryWorkspace != nil else { return }
+        choseInitialCategory = true
+        if summary.agreements == 0 && summary.references > 0 { category = 3 }
     }
     private var introduction: some View {
         HStack(alignment: .top, spacing: 16) {

@@ -3,23 +3,23 @@ import Foundation
 /// Built once on the workspace worker. UI queries never read OCR or scan captures per topic.
 public struct ReviewCategoryIndex: Sendable {
     private let overrides: [String: ReviewCategory]
-    private let notes: [UUID: (date: Date, category: ReviewCategory)]
+    private let notes: [UUID: (date: Date, ordinal: Int, category: ReviewCategory)]
 
     public init(state: RecallState) {
         overrides = state.reviewCategories
-        notes = Dictionary(uniqueKeysWithValues: state.captures.compactMap { source in
+        notes = Dictionary(uniqueKeysWithValues: state.captures.enumerated().compactMap { ordinal, source in
             guard let category = source.manualMatter?.reviewCategory, category != .unclassified else { return nil }
-            return (source.id, (date: source.createdAt, category: category))
+            return (source.id, (date: source.createdAt, ordinal: ordinal, category: category))
         })
     }
 
     public func category(for file: MatterFile) -> ReviewCategory {
         if let selected = overrides[file.id] { return selected }
         // Compute the source set once, not once for every record in the archive.
-        let latest = Set(file.events.flatMap(\.evidenceIDs)).compactMap { id -> (id: UUID, date: Date, category: ReviewCategory)? in
+        let latest = Set(file.events.flatMap(\.evidenceIDs)).compactMap { id -> (date: Date, ordinal: Int, category: ReviewCategory)? in
             guard let note = notes[id] else { return nil }
-            return (id, note.date, note.category)
-        }.max { a, b in a.date == b.date ? a.id.uuidString < b.id.uuidString : a.date < b.date }
+            return note
+        }.max { a, b in a.date == b.date ? a.ordinal < b.ordinal : a.date < b.date }
         if let latest { return latest.category }
         if file.id.hasPrefix("life:") {
             return ["阅读", "学习", "练习"].contains(where: file.title.hasPrefix) ? .learning : .personal
@@ -66,7 +66,7 @@ public struct ReviewWorkspaceIndex: Sendable {
         var eventDates: [UUID: Date] = [:], completed: Set<UUID> = []
         for correction in state.matterCorrections {
             for id in correction.evidenceIDs {
-                if correction.kind == .eventDate, let date = correction.eventAt { eventDates[id] = date }
+                if correction.kind == .eventDate { eventDates[id] = correction.eventAt }
                 if correction.kind == .completed { completed.insert(id) }
             }
         }
