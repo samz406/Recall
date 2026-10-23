@@ -50,10 +50,7 @@ struct RecallRootView: View {
                 }
             }
             .toolbar {
-                if model.isRecording || model.isThinking {
-                    ProgressView()
-                        .controlSize(.small)
-                }
+                activityToolbar
             }
         }
         .sheet(isPresented: $showingRecordSheet) {
@@ -99,6 +96,34 @@ struct RecallRootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .recallOpenWeeklyReview)) { note in
             if let id = note.userInfo?["weeklyReportID"] as? String { model.weeklyReportToOpen = UUID(uuidString: id) }
             section = .matters
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var activityToolbar: some ToolbarContent {
+        if model.isRecording || model.isThinking {
+            #if compiler(>=6.2)
+            if #available(macOS 26.0, *) {
+                activityToolbarItem.sharedBackgroundVisibility(.hidden)
+            } else {
+                activityToolbarItem
+            }
+            #else
+            activityToolbarItem
+            #endif
+        }
+    }
+
+    private var activityToolbarItem: some ToolbarContent {
+        ToolbarItem(id: "recall-activity", placement: .automatic) {
+            // Informational progress, not a button. Keep its host square and opt out
+            // of the shared glass above so the toolbar cannot draw a narrow capsule.
+            ProgressView()
+                .progressViewStyle(.circular)
+                .controlSize(.small)
+                .frame(width: 28, height: 28)
+                .help(model.isRecording ? "正在保存记录" : "正在处理内容")
+                .accessibilityLabel(model.isRecording ? "正在保存记录" : "正在处理内容")
         }
     }
 
