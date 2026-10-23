@@ -153,7 +153,7 @@ final class RecallAppModel: ObservableObject {
             let remaining = Set(after.reminders.map(\.id))
             for reminder in before.reminders where !remaining.contains(reminder.id) { notificationScheduler.cancel(reminder) }
             if failed { memoryMaintenanceAfter = Date.now.addingTimeInterval(60) }
-            if force { memoryMaintenanceMessage = "已整理有效事实、约定和历史经验，重复来源已合并。" }
+            if force { memoryMaintenanceMessage = MemoryOrganizationSummary(state: after).message }
             state = after
         } catch {
             memoryMaintenanceAfter = Date.now.addingTimeInterval(60)
@@ -163,6 +163,7 @@ final class RecallAppModel: ObservableObject {
     }
 
     func organizeMemoryNow() {
+        guard !isBuildingMatters, !isOrganizingMemory else { return }
         Task { await maintainMemory(force: true); await refresh() }
     }
 
@@ -443,10 +444,8 @@ final class RecallAppModel: ObservableObject {
                 if announce {
                     if snapshot.captures.isEmpty {
                         matterBuildMessage = "还没有保存的记录。补充一条记录，从这里开始。"
-                    } else if files.isEmpty {
-                        matterBuildMessage = "已从 \(snapshot.captures.count) 条原始记录重新整理，暂未找到能明确归属的具体事情。含糊或识别不清的片段未列为主题，原始内容仍可在时间线查看。"
                     } else {
-                        matterBuildMessage = "已从 \(snapshot.captures.count) 条原始记录重新整理出 \(files.count) 个主题，重复和含糊片段已过滤；没有原文依据的内容不会补写。"
+                        matterBuildMessage = MemoryOrganizationSummary(state: snapshot).message
                     }
                 }
             } catch is CancellationError { }

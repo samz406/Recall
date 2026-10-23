@@ -27,7 +27,7 @@ public struct MemoryRetrievalEngine: Sendable {
             (ledger.organizationVersion == MemoryKnowledgeEngine.organizationVersion || claim.kind.isPersonal)
                 && claim.usable(at: now) && !claim.sourceIDs.isEmpty && Set(claim.sourceIDs).isSubset(of: allowedIDs)
         }
-        let retiredSources = Set(ledger.claims.filter { [.retracted, .superseded, .conflicted, .expired].contains($0.state) && $0.kind.isPersonal }.flatMap(\.sourceIDs))
+        let retiredSources = Set(ledger.claims.filter { [.retracted, .superseded, .conflicted, .expired].contains($0.state) && ($0.kind.isPersonal || $0.kind == .reference) }.flatMap(\.sourceIDs))
         let time = MemoryTimeRangeResolver().resolve(question, now: now)
         let intent = MemoryQuestionIntent(question: question)
         var terms = MatterMemoryEngine.subjectTerms(question)
@@ -47,7 +47,7 @@ public struct MemoryRetrievalEngine: Sendable {
             if claim.scope == .conversation && claim.scopeID != conversationID?.uuidString { return false }
             if let time {
                 guard claim.date >= time.startDate && claim.date <= time.endDate else { return false }
-                return intent == .overview ? claim.kind == .event : relevance(claim) > 0
+                return intent == .overview ? [.event, .reference].contains(claim.kind) : relevance(claim) > 0
             }
             return relevance(claim) > 0
         }.sorted { a, b in
@@ -81,7 +81,7 @@ public struct MemoryRetrievalEngine: Sendable {
             let history: String
             if claim.kind == .event, let latest = active.filter({ $0.kind == .event && $0.subjectID == claim.subjectID }).max(by: { $0.date < $1.date }), latest.id != claim.id {
                 history = "历史记录，不能当作当前状态；需结合同主题的后续依据"
-            } else { history = "有效记录" }
+            } else { history = claim.kind == .reference ? "保存的内容线索；说话人与实际状态未确认，不能当作用户成果、承诺或偏好" : "有效记录" }
             let text = "主题：\(claim.title)\n\(history)；\(timeNote)\n原文：\(claim.content)" + (claim.nextAction.map { "\n明确后续行动：\($0)" } ?? "")
             let record = CaptureRecord(id: claim.id, eventTemplate: .manualMoment, createdAt: claim.date,
                 sourceAppName: claim.kind.title, sourceBundleIdentifier: "im.recall.memory-claim", contentHash: claim.key,
