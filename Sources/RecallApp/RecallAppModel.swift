@@ -18,6 +18,14 @@ extension Notification.Name {
 @MainActor
 final class RecallAppModel: ObservableObject {
     @Published var state = RecallState()
+    @Published var tasks: [RecallTaskStatus] = []
+    @Published var destination: MemorySearchDestination?
+    @Published var sourceToOpen: CaptureRecord?
+    @Published var reminderDraft: ReminderCandidate?
+    @Published var showsGlobalSearch = false
+    @Published var dailyToOpen: UUID?
+    @Published var topicToOpen: String?
+    @Published var knowledgeToOpen: UUID?
     @Published private(set) var matterFiles: [MatterFile] = []
     @Published private(set) var memoryWorkspace: MemoryWorkspaceProjection?
     var reviewIndex: ReviewWorkspaceIndex { memoryWorkspace?.review ?? ReviewWorkspaceIndex() }
@@ -49,7 +57,7 @@ final class RecallAppModel: ObservableObject {
     @Published private(set) var reminderDiscoveryStatus: ReminderDiscoveryStatus = .idle
 
     let storage: RecallStorage
-    private let store: FileMemoryStore
+    let store: FileMemoryStore
     private let pipeline: CapturePipeline
     private let assistant: MemoryAssistant
     private let reminderExtractor = ReminderExtractor()
@@ -61,7 +69,8 @@ final class RecallAppModel: ObservableObject {
     private var recentlyDeletedTimer: Timer?
     private var recentlyDeletedRetryAfter: Date?
     private var isPurgingRecentlyDeleted = false
-    private var isGeneratingDailySummary = false
+    @Published private(set) var isGeneratingDailySummary = false
+    private var dailyReviewTask: Task<Void, Never>?
     private var pendingDailySummaries: [(day: Date, reason: DailySummaryReason)] = []
     private let diagnosticLog: RecallDiagnosticLogStore
     private var reminderActionObserver: NSObjectProtocol?
@@ -170,7 +179,7 @@ final class RecallAppModel: ObservableObject {
 
     func organizeMemoryNow() {
         guard !isBuildingMatters, !isOrganizingMemory else { return }
-        Task { await maintainMemory(force: true); await refresh() }
+        organizeExistingMatters()
     }
 
     func updateMemorySettings(_ settings: MemoryKnowledgeSettings) {
@@ -245,6 +254,7 @@ final class RecallAppModel: ObservableObject {
         guard !isGeneratingWeeklyReview else { return }
         isGeneratingWeeklyReview = true
         weeklyReviewMessage = nil
+        let taskID = beginTask("周期回顾", target: period.label, phase: "读取适用记录")
         let snapshot = state
         let responder = useModel ? dailySummaryResponder() : nil
         let scheduledTrigger = schedule?.effectiveTrigger(at: .now)
@@ -252,7 +262,7 @@ final class RecallAppModel: ObservableObject {
             defer { isGeneratingWeeklyReview = false; weeklyReviewTask = nil }
             do {
                 let job = Task.detached(priority: .userInitiated) {
-                    try await WeeklyReviewEngine().generate(in: snapshot, period: period, template: template, scope: scope, responder: responder)
+                    try await WeeklyReviewEngine().generate(in: snapshot, period: period, template: template, scope: scope, responder: responder, onPhase: { phase in await self.updateTask(taskID, phase: phase) })
                 }
                 var report = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
                 try Task.checkCancellation()
@@ -261,9 +271,11 @@ final class RecallAppModel: ObservableObject {
                 let current = await store.snapshot()
                 guard current.privacy.cloudUseEnabled == snapshot.privacy.cloudUseEnabled,
                       current.privacy.excludedBundleIdentifiers == snapshot.privacy.excludedBundleIdentifiers else { throw WeeklyReviewError.changedSources }
+                updateTask(taskID, phase: "保存回顾")
                 let saved = try await store.commitWeeklyReport(report, replacing: replacing, schedule: schedule, categories: snapshot.reviewCategories)
                 state = await store.snapshot()
                 if schedule == nil { weeklyReportToOpen = saved.id }
+                finishTask(taskID, state: saved.refinementPending ? .partial : .succeeded, message: saved.refinementPending ? "已保存，正文可稍后更新" : "回顾已保存", destination: .review(saved.id))
                 weeklyReviewMessage = saved.refinementPending
                     ? "已保存可阅读的版本，未通过模型核对的条目保留原始记录。你可以稍后更新；定时计划最多在一天内重试三次，不影响下一期。"
                     : "回顾已保存。你可以查看依据、调整内容或导出。"
@@ -275,8 +287,10 @@ final class RecallAppModel: ObservableObject {
                     catch { recordError(error, source: "WeeklyReview", message: "一周回顾已保存，通知投递失败") }
                 }
             } catch is CancellationError {
+                finishTask(taskID, state: .cancelled, message: "已取消，已有回顾保持不变")
                 weeklyReviewMessage = "已取消生成，已有回顾保持不变。"
             } catch {
+                finishTask(taskID, state: .failed, message: error.localizedDescription)
                 weeklyReviewMessage = error.localizedDescription
                 recordError(error, source: "WeeklyReview", message: "一周回顾生成失败")
                 if let schedule {
@@ -399,7 +413,7 @@ final class RecallAppModel: ObservableObject {
                     do { try await notificationScheduler.deliverWeeklyReview(saved) }
                     catch { recordError(error, source: "WeeklyReview", message: "回顾整理完成，通知投递失败") }
                 }
-            } catch is CancellationError { }
+            } catch is CancellationError { if let taskID { finishTask(taskID, state: .cancelled, message: "已取消整理") } }
             catch {
                 recordError(error, source: "WeeklyReview", message: "回顾正文重试失败")
                 do { try await store.deferWeeklyRefinement(original, schedule: schedule); state = await store.snapshot() }
@@ -429,6 +443,7 @@ final class RecallAppModel: ObservableObject {
     private func rebuildMatterFiles(announce: Bool = false, reorganize: Bool = false) {
         matterBuildTask?.cancel()
         isBuildingMatters = true
+        let taskID = announce ? beginTask("整理记忆", target: "已保存记录", phase: "整理主题与来源") : nil
         matterBuildTask = Task {
             do {
                 if reorganize {
@@ -449,6 +464,7 @@ final class RecallAppModel: ObservableObject {
                     memoryWorkspace = result
                 }
                 isBuildingMatters = false
+                if let taskID { finishTask(taskID, state: .succeeded, message: "记忆已更新") }
                 if announce {
                     if snapshot.captures.isEmpty {
                         matterBuildMessage = "还没有保存的记录。补充一条记录，从这里开始。"
@@ -456,10 +472,11 @@ final class RecallAppModel: ObservableObject {
                         matterBuildMessage = result.summary.message
                     }
                 }
-            } catch is CancellationError { }
+            } catch is CancellationError { if let taskID { finishTask(taskID, state: .cancelled, message: "已取消整理") } }
             catch {
                 guard !Task.isCancelled else { return }
                 isBuildingMatters = false
+                if let taskID { finishTask(taskID, state: .failed, message: "整理未完成，可重试") }
                 matterBuildMessage = "这次未能完成重新整理，原始记录仍然保留，请稍后重试。"
                 recordError(error, source: "Memory", message: "从原始记录重新整理主题失败")
             }
@@ -579,7 +596,7 @@ final class RecallAppModel: ObservableObject {
         diagnosticEntries = diagnosticLog.entries
     }
 
-    private func recordError(_ error: Error, source: String, message: String) {
+    func recordError(_ error: Error, source: String, message: String) {
         recordDiagnostic(.error, source: source, message: message, metadata: ["error": recallSafeErrorCode(error)])
     }
 
@@ -626,7 +643,7 @@ final class RecallAppModel: ObservableObject {
         }
         if updatedRule.template == .dailyReview {
             noticeMessage = updatedRule.isEnabled
-                ? "“定时个人回顾”事件可手动记录；自动每日总结请在“隐私与模型”中单独开启。"
+                ? "“定时个人回顾”事件可手动记录；自动每日回顾请在“设置”中单独开启。"
                 : "已关闭手动定时个人回顾事件。"
         }
     }
@@ -746,7 +763,7 @@ final class RecallAppModel: ObservableObject {
                 await refresh()
                 deletionUndoNotice = transaction
             } catch {
-                recordError(error, source: "DailySummary", message: "删除每日总结失败")
+                recordError(error, source: "DailySummary", message: "删除每日回顾失败")
             }
         }
     }
@@ -902,6 +919,7 @@ final class RecallAppModel: ObservableObject {
     /// 后台仅分析已经持久化且用户允许参与提醒的文本，不截图、不读取其他应用，也不调用云端模型。
     func discoverReminders(force: Bool, announce: Bool = true) {
         if case .searching = reminderDiscoveryStatus { return }
+        let taskID = announce ? beginTask("发现待办", target: "已保存记录", phase: "核对新增记录") : nil
         let participatingTemplates = Set(
             state.rules
                 .filter(\.participatesInReminders)
@@ -949,7 +967,9 @@ final class RecallAppModel: ObservableObject {
                     let isExplicit = candidate.detail.hasPrefix("明确提醒") || candidate.detail.hasPrefix("明确待办")
                     return adjusted.confidence >= 0.62 || isExplicit ? adjusted : nil
                 }
+                let knownIDs = Set(state.reminders.map(\.id))
                 let merged = extractor.merging(newCandidates, into: state.reminders, now: completedAt, revalidatedCaptureIDs: revalidatedIDs)
+                let addedCount = merged.filter { !knownIDs.contains($0.id) && $0.status == .proposed }.count
                 let retained = merged.filter { reminder in
                     switch reminder.status {
                     case .dismissed:
@@ -972,16 +992,18 @@ final class RecallAppModel: ObservableObject {
                 reminderDiscoveryStatus = .completed(
                     eligibleRecordCount: eligibleCaptures.count,
                     analyzedRecordCount: captures.count,
-                    discoveredCount: newCandidates.count,
+                    discoveredCount: addedCount,
                     completedAt: completedAt
                 )
+                if let taskID { finishTask(taskID, state: .succeeded, message: addedCount == 0 ? "没有新的待办" : "新增 \(addedCount) 项待确认") }
                 if announce {
-                    noticeMessage = newCandidates.isEmpty
+                    noticeMessage = addedCount == 0
                         ? "已分析 \(captures.count) 条新增记录，暂未发现新的提醒候选。"
                         : "已分析 \(captures.count) 条记录，发现 \(newCandidates.count) 项待确认提醒。"
                 }
             } catch {
                 reminderDiscoveryStatus = .idle
+                if let taskID { finishTask(taskID, state: .failed, message: "发现未完成，可重试") }
                 recordError(error, source: "Reminders", message: "提醒发现失败")
             }
         }
@@ -1002,7 +1024,11 @@ final class RecallAppModel: ObservableObject {
                 updated.status = .scheduled
                 let granted = try await notificationScheduler.requestAuthorization()
                 guard granted else {
-                    throw ReminderNotificationError.authorizationRequired
+                    updated.status = .proposed
+                    try await store.updateReminder(updated)
+                    await refresh()
+                    noticeMessage = "事项已保存为待确认；系统通知未授权，尚未安排提醒。"
+                    return
                 }
                 try await notificationScheduler.schedule(updated)
                 var learningProfile = state.reminderLearningProfile
@@ -1228,16 +1254,21 @@ final class RecallAppModel: ObservableObject {
                 try await store.updateDailySummarySettings(persisted)
                 await refresh()
                 if settings.isEnabled {
-                    noticeMessage = "每日总结已开启：将在每天 \(dailySummaryTimeText(settings)) 汇总前一天记录。"
+                    noticeMessage = "每日回顾已开启：将在每天 \(dailySummaryTimeText(settings)) 汇总前一天记录。"
                 } else {
-                    noticeMessage = "每日总结已关闭；已有总结会继续保留，直到你手动删除。"
+                    noticeMessage = "每日回顾已关闭；已有总结会继续保留，直到你手动删除。"
                 }
             } catch {
-                recordError(error, source: "DailySummary", message: "保存每日总结设置失败")
+                recordError(error, source: "DailySummary", message: "保存每日回顾设置失败")
             }
         }
     }
 
+    func generateDailyReview(on day: Date) {
+        guard day <= Date.now else { return }
+        generateDailySummary(for: day, reason: .manual)
+    }
+    func cancelDailyReview() { dailyReviewTask?.cancel() }
     func generatePreviousDaySummaryNow() {
         let previousDay = Calendar.current.date(byAdding: .day, value: -1, to: .now) ?? .now
         generateDailySummary(for: previousDay, reason: .manual)
@@ -1295,7 +1326,7 @@ final class RecallAppModel: ObservableObject {
             return
         }
         isGeneratingDailySummary = true
-        isThinking = true
+        let taskID = beginTask("每日回顾", target: day.formatted(date: .abbreviated, time: .omitted), phase: "读取适用记录")
         let analysisState = state.correctedForAnalysis()
         let captures = analysisState.captures.filter {
             !analysisState.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "")
@@ -1303,13 +1334,15 @@ final class RecallAppModel: ObservableObject {
         let allowedSourceIDs = Set(captures.map(\.id))
         let previousSummaries = analysisState.dailySummaries
         let responder = dailySummaryResponder()
-        Task {
+        dailyReviewTask = Task {
             defer {
                 isGeneratingDailySummary = false
-                isThinking = false
+                dailyReviewTask = nil
                 processNextDailySummary()
             }
             do {
+                guard captures.contains(where: { Calendar.current.isDate($0.createdAt, inSameDayAs: day) && !$0.ocrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { throw WeeklyReviewError.noEvidence }
+                updateTask(taskID, phase: "整理并核对当天记录")
                 let generation = try await dailySummaryGenerator.generate(
                     day: day,
                     from: captures,
@@ -1325,6 +1358,8 @@ final class RecallAppModel: ObservableObject {
                     memoryKnowledgeSettings: analysisState.memoryKnowledgeSettings,
                     responder: responder
                 )
+                try Task.checkCancellation()
+                updateTask(taskID, phase: "保存回顾")
                 let summary = DailySummary(
                     day: day,
                     content: generation.content,
@@ -1338,10 +1373,12 @@ final class RecallAppModel: ObservableObject {
                 guard current.matterCorrections.map(\.id) == analysisState.matterCorrections.map(\.id),
                       Set(summary.sourceCaptureIDs).isSubset(of: Set(current.captures.map(\.id))),
                       MemoryKnowledgeEngine().sourcesUsable(Set(summary.sourceCaptureIDs), in: current) else {
-                    pendingDailySummaries.append((day, reason))
+                    finishTask(taskID, state: .failed, message: "来源已变化，请重新生成")
                     return
                 }
                 try await store.commitDailySummary(summary, consolidation: generation.consolidation)
+                finishTask(taskID, state: responder != nil && summary.generationKind != .cloud ? .partial : .succeeded, message: summary.generationKind == .cloud ? "回顾已保存" : "本地回顾已保存", destination: .daily(summary.id))
+                if reason == .manual { dailyToOpen = summary.id }
                 await refresh()
                 if state.dailySummarySettings.notifyWhenReady == true {
                     do {
@@ -1357,14 +1394,15 @@ final class RecallAppModel: ObservableObject {
                 if reason != .rebuildAfterDeletion {
                     noticeMessage = "已生成 \(day.formatted(date: .abbreviated, time: .omitted)) 的\(mode)。"
                 }
-                recordDiagnostic(.info, source: "DailySummary", message: "每日总结已生成", metadata: [
+                recordDiagnostic(.info, source: "DailySummary", message: "每日回顾已生成", metadata: [
                     "reason": reason == .scheduled ? "scheduled" : (reason == .manual ? "manual" : "deletionRebuild"),
                     "generation": summary.generationKind.rawValue,
                     "sourceCount": "\(summary.sourceCaptureIDs.count)",
                     "todoCount": "\(summary.todos.count)"
                 ])
             } catch {
-                recordDiagnostic(.error, source: "DailySummary", message: "每日总结生成失败", metadata: ["error": recallSafeErrorCode(error)])
+                finishTask(taskID, state: error is CancellationError ? .cancelled : .failed, message: error is CancellationError ? "已取消，已有回顾保持不变" : error.localizedDescription)
+                recordDiagnostic(.error, source: "DailySummary", message: "每日回顾生成失败", metadata: ["error": recallSafeErrorCode(error)])
             }
         }
     }

@@ -18,6 +18,7 @@ struct WeeklyReviewView: View {
     @State private var historyCount = 8
     @State private var showsComposer = true
     @State private var showsScope = false
+    @State private var showsAdvanced = false
     @State private var showsTemplates = false
     @State private var showsSchedules = false
     @State private var editing: WeeklyReport?
@@ -47,16 +48,11 @@ struct WeeklyReviewView: View {
                 Label(message, systemImage: "info.circle")
                     .font(.callout).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if model.isGeneratingWeeklyReview {
-                HStack(spacing: 12) {
-                    ProgressView().controlSize(.small)
-                    Text("正在核对整周记录，整理主题的变化…").foregroundStyle(RecallPalette.secondary)
-                    Spacer()
-                    Button("取消") { model.cancelWeeklyReview() }
-                }.padding(22).reviewSurface()
+            if let task = model.tasks.first(where: { $0.kind == "周期回顾" }) {
+                RecallTaskStatusView(task: task, cancel: model.cancelWeeklyReview)
             }
             if let report { reportBody(report).id("weekly-report") }
-            else { emptyState }
+            else if !model.isGeneratingWeeklyReview { emptyState }
             history
         }
         .onAppear {
@@ -99,8 +95,8 @@ struct WeeklyReviewView: View {
     }
     private var introductionText: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text("把这一周，整理成一份回顾。").font(.title2.weight(.semibold))
-            Text("从已保存的经历中找回变化，按你的用途表达。")
+            Text("把一段时间，整理成一份回顾。").font(.title2.weight(.semibold))
+            Text("按周、按月或选择日期，找回值得记住的变化。")
                 .foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -116,22 +112,11 @@ struct WeeklyReviewView: View {
         let coverage = preview.coverage
         let eligibleTopicCount = preview.eligibleTopicCount
         return VStack(alignment: .leading, spacing: 20) {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 155), spacing: 12)], spacing: 12) {
-                ForEach(ReviewTemplateKind.allCases) { kind in
-                    templateButton(kind)
-                }
-            }
-            if !model.state.reviewTemplates.isEmpty {
-                HStack {
-                    Text("我的模板").font(.caption).foregroundStyle(RecallPalette.secondary)
-                    Picker("选择保存的模板", selection: Binding(get: { template.id }, set: { id in
-                        if let selected = allTemplates.first(where: { $0.id == id }) { template = selected }
-                    })) {
-                        ForEach(allTemplates) { Text($0.name).tag($0.id) }
-                    }.labelsHidden().frame(maxWidth: 240)
-                    Spacer()
-                }
-            }
+            Picker("模板", selection: Binding(get: { template.id }, set: { id in
+                if let value = allTemplates.first(where: { $0.id == id }) { template = value }
+            })) {
+                ForEach(allTemplates) { Text($0.name).tag($0.id) }
+            }.frame(maxWidth: 340)
             Divider()
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .center, spacing: 16) { rangeControls; Spacer(); generateButton(range: range, eligibleTopicCount: eligibleTopicCount) }
@@ -143,6 +128,8 @@ struct WeeklyReviewView: View {
                     DatePicker("结束", selection: $customEnd, in: customStart...max(customStart, Date.now), displayedComponents: .date)
                 }
             }
+            DisclosureGroup("更多选项与范围说明", isExpanded: $showsAdvanced) {
+            Button("筛选主题") { showsScope = true }
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "calendar").foregroundStyle(RecallPalette.secondary)
                 VStack(alignment: .leading, spacing: 8) {
@@ -190,9 +177,10 @@ struct WeeklyReviewView: View {
                 .font(.callout).disabled(!model.state.privacy.cloudUseEnabled && !useModel)
                 .help("仅发送范围内经过脱敏的事实，按用途和篇幅整理正文，再核对来源；未通过的条目保留原始记录。关闭时完全在本地整理。")
             if !model.state.privacy.cloudUseEnabled {
-                Text("当前在本地整理；可在“隐私与模型”中开启模型文本使用。")
+                Text("当前在本地整理；可在“设置”中开启模型文本使用。")
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
+        }
         }.padding(24).reviewSurface()
     }
     private func templateButton(_ kind: ReviewTemplateKind) -> some View {
@@ -274,7 +262,7 @@ struct WeeklyReviewView: View {
     }
     private func reportHeading(_ report: WeeklyReport) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(report.template.name, systemImage: report.template.kind.symbol).font(.title2.weight(.semibold))
+            Label(report.displayName, systemImage: report.template.kind.symbol).font(.title2.weight(.semibold))
             Text(report.period.label).font(.callout.monospacedDigit()).foregroundStyle(RecallPalette.secondary)
             if report.isReadable {
                 let days = Set(report.items.flatMap(\.excerpts).map { report.period.calendar.startOfDay(for: $0.date) }).count
@@ -288,9 +276,9 @@ struct WeeklyReviewView: View {
             Button { editing = report } label: { Label("编辑", systemImage: "pencil") }.disabled(!report.isReadable)
             Button { exporting = report } label: { Label("复制与导出", systemImage: "square.and.arrow.up") }.disabled(!report.isReadable)
             Menu {
-                Button(report.editedMarkdown == nil ? "更新这份回顾" : "保留修改，生成新版") {
+                Button("重新生成（保留原版本）") {
                     model.generateWeeklyReview(period: report.period, template: report.template, scope: report.scope,
-                        useModel: useModel || (model.state.privacy.cloudUseEnabled && (report.modelAssisted || report.refinementPending)), replacing: report.editedMarkdown == nil ? report.id : nil)
+                        useModel: useModel || (model.state.privacy.cloudUseEnabled && (report.modelAssisted || report.refinementPending)), replacing: nil)
                 }.disabled(model.isGeneratingWeeklyReview)
                 Button("删除回顾", role: .destructive) { deleting = report }
             } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
@@ -302,7 +290,7 @@ struct WeeklyReviewView: View {
                 let items = report.items.filter { $0.section == section }
                 if !items.isEmpty {
                     LazyVStack(alignment: .leading, spacing: 20) {
-                        Label(report.template.heading(section), systemImage: section.symbol)
+                        Label(report.heading(section), systemImage: section.symbol)
                             .font(.headline).foregroundStyle(sectionColor(section))
                         ForEach(items) { item in reviewItem(item, report: report) }
                     }
@@ -331,6 +319,7 @@ struct WeeklyReviewView: View {
                 }
             }
             if let action = item.nextAction {
+                Button("设为提醒") { model.prepareReminder(title: action, detail: item.title, sourceIDs: item.nextActionSourceIDs) }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("记录中的后续安排").font(.caption).foregroundStyle(RecallPalette.secondary)
                     Text(action).fixedSize(horizontal: false, vertical: true)
@@ -364,7 +353,7 @@ struct WeeklyReviewView: View {
                         Image(systemName: report.template.kind.symbol).foregroundStyle(RecallPalette.accent)
                             .frame(width: 38, height: 38).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 10))
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(report.template.name).font(.headline).foregroundStyle(RecallPalette.text)
+                            Text(report.displayName).font(.headline).foregroundStyle(RecallPalette.text)
                             Text(report.period.label).font(.caption.monospacedDigit()).foregroundStyle(RecallPalette.secondary)
                         }
                         Spacer()
@@ -601,7 +590,7 @@ private struct ReviewSourcesSheet: View {
                                 Text((entry.eventTimeKnown == true ? "发生于 " : "记录于 ") + entry.date.formatted()).font(.caption).foregroundStyle(RecallPalette.secondary)
                                 Text(entry.text).textSelection(.enabled)
                                 ForEach(model.state.captures.filter { entry.sourceIDs.contains($0.id) }) { capture in
-                                    Button("查看原记录 · " + (capture.sourceAppName ?? "已保存记录")) { source = capture }
+                                    Button("在时间线定位 · " + (capture.sourceAppName ?? "已保存记录")) { dismiss(); model.destination = .record(capture.id) }
                                 }
                             }.padding(18).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()
                         }
@@ -610,7 +599,7 @@ private struct ReviewSourcesSheet: View {
                                 Text("记录中的后续安排").font(.caption).foregroundStyle(RecallPalette.secondary)
                                 Text(action).textSelection(.enabled)
                                 ForEach(model.state.captures.filter { item.nextActionSourceIDs.contains($0.id) }) { capture in
-                                    Button("查看原记录 · " + (capture.sourceAppName ?? "已保存记录")) { source = capture }
+                                    Button("在时间线定位 · " + (capture.sourceAppName ?? "已保存记录")) { dismiss(); model.destination = .record(capture.id) }
                                 }
                             }.padding(18).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()
                         }
@@ -674,6 +663,7 @@ private struct ReviewScheduleEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State var schedule: ReviewSchedule
     @State private var showsScope = false
+    @State private var showsAdvanced = false
     @State private var error: String?
     @State private var saving = false
     var body: some View {
@@ -685,10 +675,17 @@ private struct ReviewScheduleEditor: View {
             })) {
                 ForEach(ReviewTemplate.builtIns + model.state.reviewTemplates) { Text($0.name).tag($0.id) }
             }
+            Picker("重复周期", selection: Binding(get: { schedule.monthDay != nil }, set: { schedule.monthDay = $0 ? 1 : nil })) {
+                Text("每周").tag(false); Text("每月").tag(true)
+            }.pickerStyle(.segmented)
             HStack {
+                if schedule.monthDay != nil {
+                    Stepper("每月 \(schedule.monthDay ?? 1) 日", value: Binding(get: { schedule.monthDay ?? 1 }, set: { schedule.monthDay = $0 }), in: 1...28)
+                } else {
                 Picker("生成时间", selection: $schedule.weekday) {
                     Text("周一").tag(2); Text("周二").tag(3); Text("周三").tag(4); Text("周四").tag(5)
                     Text("周五").tag(6); Text("周六").tag(7); Text("周日").tag(1)
+                }
                 }
                 DatePicker("时刻", selection: Binding(get: {
                     schedule.calendar.date(bySettingHour: schedule.hour, minute: schedule.minute, second: 0, of: .now) ?? .now

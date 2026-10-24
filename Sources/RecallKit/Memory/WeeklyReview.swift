@@ -103,10 +103,10 @@ public struct ReviewTemplate: Codable, Equatable, Identifiable, Sendable {
 }
 
 public enum ReviewPeriodKind: String, Codable, CaseIterable, Identifiable, Sendable {
-    case currentWeek, previousWeek, recentSeven, custom
+    case currentWeek, previousWeek, recentSeven, currentMonth, previousMonth, custom
     public var id: String { rawValue }
     public var title: String {
-        switch self { case .currentWeek: "本周截至现在"; case .previousWeek: "上一个完整周"; case .recentSeven: "最近七天"; case .custom: "自选日期" }
+        switch self { case .currentWeek: "本周截至现在"; case .previousWeek: "上一个完整周"; case .recentSeven: "最近七天"; case .currentMonth: "本月截至现在"; case .previousMonth: "上一个完整月"; case .custom: "自选日期" }
     }
 }
 
@@ -144,6 +144,10 @@ public struct ReviewPeriod: Codable, Equatable, Sendable {
             start = calendar.date(byAdding: .day, value: -7, to: week) ?? week; end = week
         case .recentSeven:
             start = calendar.date(byAdding: .day, value: -6, to: day) ?? day; end = now
+        case .currentMonth: start = calendar.dateInterval(of: .month, for: now)?.start ?? day; end = now
+        case .previousMonth:
+            let month = calendar.dateInterval(of: .month, for: now)?.start ?? day
+            start = calendar.date(byAdding: .month, value: -1, to: month) ?? month; end = month
         case .currentWeek, .custom: start = week; end = now
         }
         return ReviewPeriod(start: start, end: end, timeZoneIdentifier: calendar.timeZone.identifier)
@@ -223,6 +227,7 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
     public var editedMarkdown: String?
     public var invalidatedAt: Date?
     public var modelAssisted: Bool = false
+    public var topicGrouping: [MemoryTopicGroup]? = nil
     public var refinementPending: Bool = false
     public var scheduleID: UUID?
     public var scheduledFor: Date?
@@ -254,14 +259,27 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
         }.joined(separator: "\n\n")
     }
 
+    public var displayName: String {
+        let long = (period.calendar.dateComponents([.day], from: period.start, to: period.end).day ?? 0) > 7
+        guard long else { return template.name }
+        if template.name == "我的一周" { return "我的回顾" }
+        if template.name == "工作周报" { return "工作回顾" }
+        return template.name
+    }
+    public func heading(_ section: ReviewSection) -> String {
+        let heading = template.heading(section)
+        guard template.headings[section.rawValue] == nil else { return heading }
+        return (period.calendar.dateComponents([.day], from: period.start, to: period.end).day ?? 0) > 7
+            ? heading.replacingOccurrences(of: "本周", with: "本期").replacingOccurrences(of: "这一周", with: "这段时间") : heading
+    }
     public var markdown: String {
         guard isReadable else { return "原始记录已删除或更正，请重新生成这份回顾。" }
         if let editedMarkdown { return editedMarkdown }
-        var lines = ["# \(template.name)", "", period.label, "", overview, ""]
+        var lines = ["# \(displayName)", "", period.label, "", overview, ""]
         for section in template.sections {
             let rows = items.filter { $0.section == section }
             guard !rows.isEmpty else { continue }
-            lines += ["## " + template.heading(section), ""]
+            lines += ["## " + heading(section), ""]
             for item in rows {
                 lines += ["### " + item.displayTitle, ""]
                 if let narrative = item.narrative { lines += [narrative.summary, ""] }
@@ -292,6 +310,7 @@ public struct ReviewSchedule: Codable, Identifiable, Equatable, Sendable {
     public var name: String
     public var isEnabled: Bool = true
     public var weekday: Int = 1
+    public var monthDay: Int? = nil
     public var hour: Int = 21
     public var minute: Int = 0
     public var timeZoneIdentifier: String = TimeZone.current.identifier
@@ -308,16 +327,20 @@ public struct ReviewSchedule: Codable, Identifiable, Equatable, Sendable {
         self.template = template; self.scope = scope; name = template.name
     }
     public var isValid: Bool {
-        template.isValid && (1...7).contains(weekday) && (0...23).contains(hour) && (0...59).contains(minute)
+        template.isValid && (monthDay == nil || (1...28).contains(monthDay!)) && (1...7).contains(weekday) && (0...23).contains(hour) && (0...59).contains(minute)
             && TimeZone(identifier: timeZoneIdentifier) != nil && periodKind != .custom && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     public var calendar: Calendar {
         var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: timeZoneIdentifier) ?? .current
         c.firstWeekday = 2; c.minimumDaysInFirstWeek = 4; return c
     }
+    private var triggerComponents: DateComponents {
+        if let monthDay { return DateComponents(day: monthDay, hour: hour, minute: minute) }
+        return DateComponents(hour: hour, minute: minute, weekday: weekday)
+    }
     public func nextTrigger(after date: Date) -> Date? {
         guard isValid else { return nil }
-        return calendar.nextDate(after: date, matching: DateComponents(hour: hour, minute: minute, weekday: weekday), matchingPolicy: .nextTime, repeatedTimePolicy: .first)
+        return calendar.nextDate(after: date, matching: triggerComponents, matchingPolicy: .nextTime, repeatedTimePolicy: .first)
     }
     public func isDue(at now: Date) -> Bool {
         isEnabled && isValid && nextRunAt.map { $0 <= now } == true
@@ -326,13 +349,16 @@ public struct ReviewSchedule: Codable, Identifiable, Equatable, Sendable {
     public func period(at trigger: Date) -> ReviewPeriod {
         let selected = ReviewPeriod.make(periodKind, at: trigger, calendar: calendar)
         // Monday 00:00 has no current-week evidence yet: close the week that just ended.
+        if selected.start == selected.end && periodKind == .currentMonth {
+            return ReviewPeriod.make(.previousMonth, at: trigger, calendar: calendar)
+        }
         return selected.start == selected.end && periodKind == .currentWeek
             ? ReviewPeriod.make(.previousWeek, at: trigger, calendar: calendar) : selected
     }
     public func effectiveTrigger(at now: Date) -> Date? {
         guard let due = nextRunAt, due <= now else { return nil }
         let latest = calendar.nextDate(after: now.addingTimeInterval(0.001),
-            matching: DateComponents(hour: hour, minute: minute, weekday: weekday),
+            matching: triggerComponents,
             matchingPolicy: .nextTime, repeatedTimePolicy: .first, direction: .backward) ?? due
         return max(due, latest)
     }
@@ -463,17 +489,20 @@ public struct WeeklyReviewEngine: Sendable {
     }
 
     public func generate(in state: RecallState, period: ReviewPeriod, template: ReviewTemplate, scope: ReviewScope = ReviewScope(),
-                         responder: (any LLMResponding)? = nil, now: Date = .now) async throws -> WeeklyReport {
+                         responder: (any LLMResponding)? = nil, now: Date = .now, onPhase: (@Sendable (String) async -> Void)? = nil) async throws -> WeeklyReport {
         guard period.end <= now.addingTimeInterval(1) else { throw WeeklyReviewError.invalidPeriod }
+        await onPhase?("整理主题变化")
         var items = try items(in: state, period: period, template: template, scope: scope)
         guard !items.isEmpty else { throw WeeklyReviewError.noEvidence }
         try Task.checkCancellation()
         var assisted = false, pending = false
         if let responder, state.privacy.cloudUseEnabled {
+            await onPhase?("撰写并核对回顾")
             let composed = try await WeeklyReviewComposition().compose(items: items, state: state, period: period,
                 template: template, responder: responder)
             items = composed.items; assisted = composed.assisted; pending = composed.pending
         }
+        await onPhase?("核验来源")
         var ids = Set(items.flatMap(\.sourceIDs))
         if state.privacy.cloudUseEnabled && responder != nil {
             let preferenceClaims = MemoryKnowledgeEngine().cloudEligibleClaims(in: state)
@@ -482,8 +511,10 @@ public struct WeeklyReviewEngine: Sendable {
             for claim in preferenceClaims where context.contains(claim.content) { ids.formUnion(claim.sourceIDs) }
         }
         let versions = Dictionary(uniqueKeysWithValues: ids.compactMap { id in Self.sourceVersion(id: id, state: state).map { (id, $0) } })
-        return WeeklyReport(createdAt: now, updatedAt: now, period: period, template: template, scope: scope,
+        var report = WeeklyReport(createdAt: now, updatedAt: now, period: period, template: template, scope: scope,
             items: items, sourceVersions: versions, modelAssisted: assisted, refinementPending: pending)
+        report.topicGrouping = state.topicGroups
+        return report
     }
 
     public func refine(_ original: WeeklyReport, in state: RecallState, responder: any LLMResponding,
@@ -513,7 +544,7 @@ public struct WeeklyReviewEngine: Sendable {
     }
 
     public static func sourcesUnchanged(_ report: WeeklyReport, in state: RecallState) -> Bool {
-        report.sourceVersions.allSatisfy { id, version in
+        (report.topicGrouping == nil || report.topicGrouping == state.topicGroups) && report.sourceVersions.allSatisfy { id, version in
             version.hasPrefix("memory2:") ? sourceVersion(id: id, state: state) == version : legacySourceVersion(id: id, state: state) == version
         } && MemoryKnowledgeEngine().sourcesUsable(report.sourceIDs, in: state)
     }

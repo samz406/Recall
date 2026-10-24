@@ -6,7 +6,14 @@ public struct ReviewCategoryIndex: Sendable {
     private let notes: [UUID: (date: Date, ordinal: Int, category: ReviewCategory)]
 
     public init(state: RecallState) {
-        overrides = state.reviewCategories
+        var values = state.reviewCategories
+        for group in state.topicGroups {
+            let categories = Set(group.memberIDs.compactMap { state.reviewCategories[$0] })
+            if categories.contains(.personal) { values[group.id] = .personal }
+            else if categories.contains(.learning) { values[group.id] = .learning }
+            else if categories == [.work] { values[group.id] = .work }
+        }
+        overrides = values
         notes = Dictionary(uniqueKeysWithValues: state.captures.enumerated().compactMap { ordinal, source in
             guard let category = source.manualMatter?.reviewCategory, category != .unclassified else { return nil }
             return (source.id, (date: source.createdAt, ordinal: ordinal, category: category))
@@ -127,6 +134,7 @@ public actor MemoryWorkspaceCache {
         let captures: [CaptureRecord]
         let episodes: [WorkEpisode]
         let corrections: [MatterCorrection]
+        let groups: [MemoryTopicGroup]
         let claims: [MemoryClaim]
         let versions: [String: String]
         let initialized: Bool
@@ -136,7 +144,7 @@ public actor MemoryWorkspaceCache {
         let excludedApps: Set<String>
         let timeZone: String
         init(_ state: RecallState, now: Date) {
-            captures = state.captures; episodes = state.episodes; corrections = state.matterCorrections
+            captures = state.captures; episodes = state.episodes; corrections = state.matterCorrections; groups = state.topicGroups
             claims = state.memoryKnowledge.claims; versions = state.memoryKnowledge.sourceVersions
             initialized = state.memoryKnowledge.updatedAt != nil; organizationVersion = state.memoryKnowledge.organizationVersion
             usableClaims = Set(claims.filter { $0.usable(at: now) }.map(\.id))
