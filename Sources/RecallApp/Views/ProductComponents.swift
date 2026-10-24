@@ -126,13 +126,29 @@ struct GlobalMemorySearchSheet: View {
     @State private var hits: [MemorySearchHit] = []
     @State private var building = false
     private var revision: String {
-        model.state.captures.map { $0.id.uuidString + $0.contentHash }.joined()
-        + model.state.dailySummaries.map { $0.id.uuidString }.joined()
-        + model.state.weeklyReports.map { $0.id.uuidString + String($0.updatedAt.timeIntervalSince1970) }.joined()
-        + model.state.reminders.map { $0.id.uuidString + String($0.updatedAt.timeIntervalSince1970) }.joined()
-        + (model.memoryWorkspace?.revision.uuidString ?? "")
+        var value = ""
+        for capture in model.state.captures {
+            value.append(capture.id.uuidString)
+            value.append(capture.contentHash)
+        }
+        for summary in model.state.dailySummaries {
+            value.append(summary.id.uuidString)
+        }
+        for report in model.state.weeklyReports {
+            value.append(report.id.uuidString)
+            value.append(String(report.updatedAt.timeIntervalSince1970))
+        }
+        for reminder in model.state.reminders {
+            value.append(reminder.id.uuidString)
+            value.append(String(reminder.updatedAt.timeIntervalSince1970))
+        }
+        value.append(model.memoryWorkspace?.revision.uuidString ?? "")
+        return value
     }
-    private var queryKey: String { query + app + topicID + String(usesDates) + start.description + end.description }
+    private var queryKey: String {
+        let parts: [String] = [query, app, topicID, String(usesDates), start.description, end.description]
+        return parts.joined()
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack { Text("搜索记忆").font(.title2.bold()); Spacer(); Button("完成") { dismiss() } }
