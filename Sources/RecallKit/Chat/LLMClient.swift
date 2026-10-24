@@ -78,7 +78,7 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
 }
 
 public enum LLMRequestPurpose: Equatable, Sendable {
-    case chat, weeklyComposition, weeklyAudit, memoryLookup
+    case chat, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup
 }
 
 public struct LLMRequest: Sendable {

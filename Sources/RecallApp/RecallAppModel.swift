@@ -276,14 +276,16 @@ final class RecallAppModel: ObservableObject {
                 let saved = try await store.commitWeeklyReport(report, replacing: replacing, schedule: schedule, categories: snapshot.reviewCategories)
                 state = await store.snapshot()
                 if schedule == nil { weeklyReportToOpen = saved.id }
-                finishTask(taskID, state: saved.refinementPending ? .partial : .succeeded, message: saved.refinementPending ? "已保存，正文可稍后更新" : "回顾已保存", destination: .review(saved.id))
-                weeklyReviewMessage = saved.refinementPending
-                    ? "已保存可阅读的版本，未通过模型核对的条目保留原始记录。你可以稍后更新；定时计划最多在一天内重试三次，不影响下一期。"
-                    : "回顾已保存。你可以查看依据、调整内容或导出。"
+                let hasDigest = !saved.digestRows.isEmpty
+                finishTask(taskID, state: saved.refinementPending || !hasDigest ? .partial : .succeeded,
+                    message: hasDigest ? "回顾已保存" : "材料已保留，暂无可靠小结", destination: .review(saved.id))
+                weeklyReviewMessage = !hasDigest
+                    ? "已保留本期材料，但暂未形成可靠小结。可查看整理依据，或稍后重新生成。"
+                    : (saved.refinementPending ? "已保存本期重点，其余材料可在整理依据中查看。部分内容尚未完成核对，可以稍后重新生成。" : "回顾已保存。你可以查看依据、调整内容或导出。")
                 if saved.refinementPending {
                     recordDiagnostic(.warning, source: "WeeklyReview", message: "模型整理失败或不可用，已保存本地版本", metadata: ["scheduled": schedule == nil ? "false" : "true"])
                 }
-                if let schedule, schedule.notifyWhenReady, !saved.refinementPending {
+                if let schedule, schedule.notifyWhenReady, !saved.refinementPending, !saved.digestRows.isEmpty {
                     do { try await notificationScheduler.deliverWeeklyReview(saved) }
                     catch { recordError(error, source: "WeeklyReview", message: "一周回顾已保存，通知投递失败") }
                 }
@@ -409,7 +411,7 @@ final class RecallAppModel: ObservableObject {
                       current.privacy.excludedBundleIdentifiers == snapshot.privacy.excludedBundleIdentifiers else { throw WeeklyReviewError.changedSources }
                 let saved = try await store.commitWeeklyRefinement(report, expected: original, schedule: schedule, categories: snapshot.reviewCategories)
                 state = await store.snapshot()
-                finishTask(taskID, state: saved.refinementPending ? .partial : .succeeded, message: saved.refinementPending ? "已保留来源事实，正文可稍后更新" : "正文已更新", destination: .review(saved.id))
+                finishTask(taskID, state: saved.refinementPending ? .partial : .succeeded, message: saved.refinementPending ? "部分小结待更新，材料已保留" : "正文已更新", destination: .review(saved.id))
                 if saved.refinementPending {
                     recordDiagnostic(.warning, source: "WeeklyReview", message: "回顾正文核对未通过，保留来源事实", metadata: [:])
                 } else if schedule.notifyWhenReady {

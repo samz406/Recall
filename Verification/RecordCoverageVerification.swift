@@ -31,8 +31,8 @@ enum RecordCoverageVerification {
         let now = Date.now, period = ReviewPeriod.make(.recentSeven, at: now)
         let report = try await WeeklyReviewEngine().generate(in: state, period: period, template: ReviewTemplate(kind: .personal), now: now)
         try expect(!report.items.isEmpty && report.items.allSatisfy { $0.section == .notes }
-            && report.sourceIDs == Set([record.id]) && report.markdown.contains("归属与实际状态未确认"),
-            "一周回顾仍被本人行动规则截断，或把保存资料写成了工作成果")
+            && report.sourceIDs == Set([record.id]) && report.digestRows.isEmpty && report.items[0].excerpts[0].text.contains("归属与实际状态未确认"),
+            "保存资料必须保留在依据中，不可在没有可靠小结时冒充用户进展")
         let plan = MemoryRetrievalEngine().plan(question: "最近七天保存了哪些内容，总结一下", state: state, fallback: [])
         try expect(plan.sourceIDs.values.contains { $0.contains(record.id) }
             && plan.evidence.contains { $0.ocrText.contains("不能当作用户成果") }, "问一问未读取带归属边界的记录线索")
