@@ -11,7 +11,7 @@ enum RecallPalette {
     static let text = adaptive("text", light: 0x292F2B, dark: 0xE4E9E1)
     static let selected = adaptive("selected", light: 0xE5EEE6, dark: 0x2C4032)
     static let surface = adaptive("surface", light: 0xFFFFFF, dark: 0x252D27)
-    static let secondary = adaptive("secondary", light: 0x69736B, dark: 0xA4B0A6)
+    static let secondary = adaptive("secondary", light: 0x626D64, dark: 0xA4B0A6)
     static let border = adaptive("border", light: 0xDDE1D8, dark: 0x414D43)
     static let onAccent = adaptive("on-accent", light: 0xFFFFFF, dark: 0x182A1E)
     static let warning = adaptive("warning", light: 0x916227, dark: 0xDCB87E)
