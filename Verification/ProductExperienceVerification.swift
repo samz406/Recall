@@ -30,7 +30,7 @@ enum ProductExperienceVerification {
         for subject in subjects {
             for suffix in ["已经完成并通过验证", "尚未完成，需核对否定状态", "将于 19:48 继续", "已取消，不应再安排"] {
                 let sentence = subject + suffix
-                let repaired = DailySummaryItemParser.sanitized([DailySummaryItem(section: .progress, title: subject, detail: sentence)])[0]
+                guard let repaired = DailySummaryItemParser.sanitized([DailySummaryItem(section: .progress, title: subject, detail: sentence)]).first else { throw Failure(errorDescription: "完整进展被误过滤：" + sentence) }
                 try expect(repaired.title == sentence && repaired.detail.isEmpty, "旧版前缀重复修复丢失了完整句意")
             }
         }
@@ -48,7 +48,7 @@ enum ProductExperienceVerification {
             }
         }
         let item = DailySummaryItem(section: .progress, title: "**修复分页** [16]", detail: "保留 19:48 与 §1.2", evidenceIDs: [UUID()])
-        let clean = DailySummaryItemParser.sanitized([item])[0]
+        guard let clean = DailySummaryItemParser.sanitized([item]).first else { throw Failure(errorDescription: "格式清理后条目丢失") }
         try expect(!clean.title.contains("**") && !clean.title.contains("[16]") && clean.detail.contains("19:48"), "标记清理破坏正文")
         try expect(ReviewContentQuality.usefulInsight(title: "账单重试条件发生变化", detail: "相同请求先失败，修复游标后通过；两条独立记录可核对。"), "具体变化被一并屏蔽")
         print("PASS: product content cases cover complete titles, duplication, metadata actions and unsupported insights")
@@ -136,7 +136,7 @@ enum ProductExperienceVerification {
         let reminder = ReminderCandidate(id: actionID, title: action.title, detail: action.detail, sourceCaptureIDs: [source.id], confidence: 1, status: .completed)
         try await store.updateReminder(reminder, learningProfile: ReminderLearningProfile())
         snapshot = await store.snapshot()
-        try expect(snapshot.dailySummaries[0].todos[0].status == .completed, "完成提醒后回顾仍计作待办")
+        try expect(snapshot.dailySummaries.first?.todos.first?.status == .completed, "完成提醒后回顾仍计作待办")
     }
     static func legacyDecoding() throws {
         let state = try JSONDecoder().decode(RecallState.self, from: Data("{}".utf8))

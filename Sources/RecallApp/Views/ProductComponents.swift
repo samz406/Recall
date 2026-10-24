@@ -159,7 +159,7 @@ struct GlobalMemorySearchSheet: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if !building && !query.isEmpty && hits.isEmpty { Text("没有匹配内容，可以换一个词或扩大范围。") }
-                    if query.isEmpty { Text("搜索记录、主题、每日回顾、周期回顾、提醒与长期记忆。支持多个关键词组合；全程本地检索。") }
+                    if query.isEmpty && topicID.isEmpty && app.isEmpty && !usesDates { Text("搜索记录、主题、每日回顾、周期回顾、提醒与长期记忆。支持多个关键词组合；全程本地检索。") }
                     ForEach(hits) { hit in
                         Button {
                             model.destination = hit.destination; dismiss()
@@ -180,7 +180,8 @@ struct GlobalMemorySearchSheet: View {
             .task(id: revision) {
                 building = true; hits = []; index = nil
                 let snapshot = model.state, files = model.matterFiles
-                let result = await Task.detached(priority: .utility) { GlobalMemorySearch(state: snapshot, matters: files) }.value
+                let job = Task.detached(priority: .utility) { GlobalMemorySearch(state: snapshot, matters: files) }
+                let result = await withTaskCancellationHandler(operation: { await job.value }, onCancel: { job.cancel() })
                 guard !Task.isCancelled else { return }
                 index = result; building = false; await search()
             }

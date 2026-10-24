@@ -103,9 +103,11 @@ public struct GlobalMemorySearch: Sendable {
         let sources = state.captures.filter { !excluded.contains($0.sourceBundleIdentifier ?? "") }
         let ids = Set(sources.map(\.id))
         apps = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0.sourceAppName ?? "") })
-        var hits: [MemorySearchHit] = sources.map {
-            MemorySearchHit(id: "record:" + $0.id.uuidString, title: CapturePresentation(capture: $0).title,
-                detail: $0.ocrText, kind: "原始记录", date: $0.createdAt, sourceIDs: [$0.id], destination: .record($0.id))
+        var hits: [MemorySearchHit] = []
+        for source in sources {
+            if Task.isCancelled { break }
+            hits.append(MemorySearchHit(id: "record:" + source.id.uuidString, title: CapturePresentation(capture: source).title,
+                detail: source.ocrText, kind: "原始记录", date: source.createdAt, sourceIDs: [source.id], destination: .record(source.id)))
         }
         for file in matters where Set(file.evidenceIDs).isSubset(of: ids) {
             hits.append(.init(id: "topic:" + file.id, title: file.title, detail: file.events.map(\.detail).joined(separator: "\n"), kind: "记忆主题",
@@ -132,7 +134,7 @@ public struct GlobalMemorySearch: Sendable {
     }
     public func search(_ text: String, start: Date? = nil, end: Date? = nil, app: String? = nil, topicSources: Set<UUID>? = nil, limit: Int = 50) -> [MemorySearchHit] {
         let terms = text.split(whereSeparator: \.isWhitespace).map(String.init)
-        guard !terms.isEmpty else { return [] }
+        guard !terms.isEmpty || start != nil || end != nil || app != nil || topicSources != nil else { return [] }
         return rows.filter { row in
             (start == nil || row.date >= start!) && (end == nil || row.date < end!)
                 && (app == nil || row.sourceIDs.contains { apps[$0] == app })

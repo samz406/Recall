@@ -34,7 +34,7 @@ struct WeeklyReviewView: View {
         return ReviewPeriod(start: c.startOfDay(for: customStart), end: end)
     }
     private var report: WeeklyReport? {
-        model.state.weeklyReports.first { $0.id == selectedID } ?? model.state.weeklyReports.first
+        model.state.weeklyReports.first { $0.id == selectedID } ?? model.state.weeklyReports.first(where: \.isReadable) ?? model.state.weeklyReports.first
     }
     private var allTemplates: [ReviewTemplate] { ReviewTemplate.builtIns + model.state.reviewTemplates }
     var body: some View {
