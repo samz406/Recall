@@ -79,8 +79,7 @@ struct DailyReviewContentView: View {
                 Spacer(minLength: 0)
                 Menu {
                     Button("从这份回顾移除") { model.removeSummaryItem(item, from: summary, reason: .noLongerNeeded) }
-                    Button("归属不对：不是我的事") { model.correctMatter(MatterCorrection(evidenceIDs: item.evidenceIDs, kind: .notMine)) }
-                    Button("内容不准确") { model.correctMatter(MatterCorrection(evidenceIDs: item.evidenceIDs, kind: .inaccurate)) }
+                    Button("核对来源并更正") { source = item }
                 } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
             }.font(.caption)
             Divider().padding(.top, 6)

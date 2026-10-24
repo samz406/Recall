@@ -35,7 +35,8 @@ public struct MemoryRetrievalEngine: Sendable {
             resolvedEntityIDs.contains(entity.id) || ([entity.name] + entity.aliases).contains { !$0.isEmpty && question.localizedCaseInsensitiveContains($0) }
         }
         for entity in entities { terms.formUnion(MatterMemoryEngine.subjectTerms(entity.name)) }
-        let entityIDs = Set(entities.map(\.id))
+        let matchingGroups = state.topicGroups.filter { question.localizedCaseInsensitiveContains($0.title) || resolvedEntityIDs.contains($0.id) }
+        let entityIDs = Set(entities.map(\.id) + matchingGroups.flatMap(\.memberIDs))
         func relevance(_ claim: MemoryClaim) -> Int {
             let text = claim.title + " " + claim.content
             let count = terms.filter { text.localizedCaseInsensitiveContains($0) }.count

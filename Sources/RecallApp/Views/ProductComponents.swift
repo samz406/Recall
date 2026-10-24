@@ -96,7 +96,13 @@ struct RecallSourcesView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             Text((source.sourceAppName ?? "记录") + " · " + source.createdAt.formatted()).font(.caption).foregroundStyle(RecallPalette.secondary)
                             Text(source.ocrText).font(RecallTypography.body).textSelection(.enabled)
-                            Button("在时间线定位") { dismiss(); model.destination = .record(source.id) }
+                            HStack {
+                                Button("在时间线定位") { dismiss(); model.destination = .record(source.id) }
+                                Menu("更正这条记录") {
+                                    Button("不是我说的") { model.correctMatter(MatterCorrection(evidenceIDs: [source.id], kind: .notMine)); dismiss() }
+                                    Button("内容不准确") { model.correctMatter(MatterCorrection(evidenceIDs: [source.id], kind: .inaccurate)); dismiss() }
+                                }
+                            }
                         }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                             .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
                     }
@@ -111,6 +117,7 @@ struct GlobalMemorySearchSheet: View {
     @Environment(\.dismiss) var dismiss
     @State private var query = ""
     @State private var app = ""
+    @State private var topicID = ""
     @State private var usesDates = false
     @State private var start = Calendar.current.date(byAdding: .day, value: -6, to: .now) ?? .now
     @State private var end = Date.now
@@ -124,7 +131,7 @@ struct GlobalMemorySearchSheet: View {
         + model.state.reminders.map { $0.id.uuidString + String($0.updatedAt.timeIntervalSince1970) }.joined()
         + (model.memoryWorkspace?.revision.uuidString ?? "")
     }
-    private var queryKey: String { query + app + String(usesDates) + start.description + end.description }
+    private var queryKey: String { query + app + topicID + String(usesDates) + start.description + end.description }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack { Text("搜索记忆").font(.title2.bold()); Spacer(); Button("完成") { dismiss() } }
@@ -134,6 +141,13 @@ struct GlobalMemorySearchSheet: View {
                     Text("全部应用").tag("")
                     ForEach(Array(Set(model.state.captures.compactMap(\.sourceAppName))).sorted(), id: \.self) { Text($0).tag($0) }
                 }.frame(maxWidth: 220)
+                Picker("主题", selection: $topicID) {
+                    Text("全部主题").tag("")
+                    ForEach(model.matterFiles) { Text($0.title).tag($0.id) }
+                }.frame(maxWidth: 240)
+                Spacer()
+            }
+            HStack {
                 Toggle("限定日期", isOn: $usesDates)
                 if usesDates {
                     DatePicker("从", selection: $start, displayedComponents: .date).labelsHidden()
@@ -178,7 +192,8 @@ struct GlobalMemorySearchSheet: View {
         let text = query, source = app.isEmpty ? nil : app
         let first = usesDates ? Calendar.current.startOfDay(for: start) : nil
         let last = usesDates ? Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: end)) : nil
-        let result = await Task.detached(priority: .userInitiated) { index.search(text, start: first, end: last, app: source) }.value
+        let topicSources = topicID.isEmpty ? nil : Set(model.matterFiles.first { $0.id == topicID }?.evidenceIDs ?? [])
+        let result = await Task.detached(priority: .userInitiated) { index.search(text, start: first, end: last, app: source, topicSources: topicSources) }.value
         guard !Task.isCancelled else { return }; hits = result
     }
     private func highlight(_ text: String) -> AttributedString {

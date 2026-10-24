@@ -10,7 +10,7 @@ private enum MatterWorkspaceTab: String, CaseIterable {
 /// Topic-based memory browsing, with a fixed header outside the clipped scroll view.
 struct MatterWorkspaceView: View {
     @EnvironmentObject private var model: RecallAppModel
-    @State private var tab: MatterWorkspaceTab = .topics
+    @AppStorage("recall.memory.tab") private var tab: MatterWorkspaceTab = .topics
     @State private var topicFilter = 0
     @State private var showsMerge = false
     @State private var search = ""

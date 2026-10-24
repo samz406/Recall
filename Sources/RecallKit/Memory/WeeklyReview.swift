@@ -260,7 +260,7 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
     }
 
     public var displayName: String {
-        let long = (period.calendar.dateComponents([.day], from: period.start, to: period.end).day ?? 0) > 7
+        let long = (period.calendar.dateComponents([.day], from: period.start, to: period.end).day ?? 0) > 7 || period.calendar.dateInterval(of: .month, for: period.start)?.start == period.start
         guard long else { return template.name }
         if template.name == "我的一周" { return "我的回顾" }
         if template.name == "工作周报" { return "工作回顾" }
@@ -269,7 +269,7 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
     public func heading(_ section: ReviewSection) -> String {
         let heading = template.heading(section)
         guard template.headings[section.rawValue] == nil else { return heading }
-        return (period.calendar.dateComponents([.day], from: period.start, to: period.end).day ?? 0) > 7
+        return ((period.calendar.dateComponents([.day], from: period.start, to: period.end).day ?? 0) > 7 || period.calendar.dateInterval(of: .month, for: period.start)?.start == period.start)
             ? heading.replacingOccurrences(of: "本周", with: "本期").replacingOccurrences(of: "这一周", with: "这段时间") : heading
     }
     public var markdown: String {

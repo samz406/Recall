@@ -44,7 +44,7 @@ enum ProductExperienceVerification {
         for title in nonActions {
             for prefix in ["", "[聊天·角色未知] ", "[聊天·资料] "] {
                 let record = CaptureRecord(eventTemplate: .manualMoment, contentHash: UUID().uuidString, ocrText: prefix + title)
-                try expect(ReminderExtractor().candidates(from: [record]).isEmpty, "元数据或泛指残句成为待办：" + title)
+                try expect(ReminderExtractor().candidates(from: [record], existing: []).isEmpty, "元数据或泛指残句成为待办：" + title)
             }
         }
         let item = DailySummaryItem(section: .progress, title: "**修复分页** [16]", detail: "保留 19:48 与 §1.2", evidenceIDs: [UUID()])

@@ -130,12 +130,13 @@ public struct GlobalMemorySearch: Sendable {
         }
         rows = hits
     }
-    public func search(_ text: String, start: Date? = nil, end: Date? = nil, app: String? = nil, limit: Int = 50) -> [MemorySearchHit] {
+    public func search(_ text: String, start: Date? = nil, end: Date? = nil, app: String? = nil, topicSources: Set<UUID>? = nil, limit: Int = 50) -> [MemorySearchHit] {
         let terms = text.split(whereSeparator: \.isWhitespace).map(String.init)
         guard !terms.isEmpty else { return [] }
         return rows.filter { row in
             (start == nil || row.date >= start!) && (end == nil || row.date < end!)
                 && (app == nil || row.sourceIDs.contains { apps[$0] == app })
+                && (topicSources == nil || !row.sourceIDs.isDisjoint(with: topicSources!))
                 && terms.allSatisfy { (row.title + " " + row.detail).localizedCaseInsensitiveContains($0) }
         }.sorted {
             let a = $0.title.localizedCaseInsensitiveContains(text), b = $1.title.localizedCaseInsensitiveContains(text)
@@ -151,7 +152,9 @@ public struct DailyReviewVersion: Codable, Identifiable, Hashable, Sendable {
     public var items: [DailySummaryItem]
     public var sourceIDs: [UUID]
     public init(summary: DailySummary) {
-        id = summary.id; createdAt = summary.createdAt; items = summary.items; sourceIDs = summary.sourceCaptureIDs
+        id = summary.id; createdAt = summary.createdAt; items = summary.items
+        let itemIDs = summary.items.flatMap(\.evidenceIDs) + summary.todos.flatMap(\.sourceCaptureIDs)
+        sourceIDs = itemIDs.isEmpty ? summary.sourceCaptureIDs : Array(Set(itemIDs))
     }
 }
 public struct RecallTaskStatus: Identifiable, Sendable {
