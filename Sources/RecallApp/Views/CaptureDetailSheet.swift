@@ -20,7 +20,7 @@ struct CaptureDetailSheet: View {
                         .textSelection(.enabled)
                     Text(capture.createdAt.formatted(date: .complete, time: .standard))
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                 }
                 Spacer()
                 Button("关闭") { dismiss() }
@@ -39,7 +39,7 @@ struct CaptureDetailSheet: View {
                             metadata("记录方式", capture.eventTemplate.title)
                             if capture.isRedacted {
                                 Label("识别文本已脱敏", systemImage: "lock.fill")
-                                    .font(.caption).foregroundStyle(.secondary)
+                                    .font(.caption).foregroundStyle(RecallPalette.secondary)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -55,7 +55,7 @@ struct CaptureDetailSheet: View {
                         HStack {
                             Text("完整识别文本").font(.headline)
                             Text("\(capture.ocrText.count) 字符")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.caption).foregroundStyle(RecallPalette.secondary)
                             Spacer()
                             Button {
                                 NSPasteboard.general.clearContents()
@@ -66,14 +66,14 @@ struct CaptureDetailSheet: View {
                             .disabled(capture.ocrText.isEmpty)
                         }
                         Text("以下为当时保存的识别文本，仅覆盖截图中的可见内容，可能包含识别误差。")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(RecallPalette.secondary)
                         Text(capture.ocrText.isEmpty ? "这条记录没有识别出文本。" : capture.ocrText)
                             .font(.body)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(14)
-                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 10))
                     }
                     VStack(alignment: .leading, spacing: 10) {
                         Text("原始截图").font(.headline)
@@ -87,7 +87,7 @@ struct CaptureDetailSheet: View {
                             Text(capture.imageRelativePath == nil
                                 ? "这条记录未保留截图。"
                                 : "截图文件已清理或无法读取，识别文本仍可查看。")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(RecallPalette.secondary)
                         }
                     }
                 }
@@ -107,7 +107,7 @@ struct CaptureDetailSheet: View {
 
     private func metadata(_ label: String, _ value: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Text(label).foregroundStyle(.secondary).frame(width: 64, alignment: .leading)
+            Text(label).foregroundStyle(RecallPalette.secondary).frame(width: 64, alignment: .leading)
             Text(value).textSelection(.enabled)
         }
         .font(.subheadline)

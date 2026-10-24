@@ -12,6 +12,7 @@ struct RecallApp: App {
         Window("Recall · 个人记忆", id: "main") {
             RecallRootView()
                 .environmentObject(model)
+                .recallColors()
                 .frame(minWidth: 980, minHeight: 680)
         }
         .defaultSize(width: 1180, height: 780)
@@ -19,11 +20,13 @@ struct RecallApp: App {
         MenuBarExtra("Recall", systemImage: "brain.head.profile") {
             MenuBarPanel()
                 .environmentObject(model)
+                .recallColors()
         }
 
         Settings {
             RecallSettingsView()
                 .environmentObject(model)
+                .recallColors()
                 .frame(width: 620, height: 560)
         }
     }
@@ -106,7 +109,7 @@ private struct MenuBarPanel: View {
                 .font(.headline)
             Text(model.state.privacy.screenCapturePaused ? "屏幕采集已暂停" : "本地优先的个人记忆")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RecallPalette.secondary)
             Divider()
             Button("记录此刻  ⌥↩") {
                 if let rule = model.state.rules.first(where: { $0.template == .manualMoment }) {
