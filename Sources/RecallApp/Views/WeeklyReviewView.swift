@@ -170,7 +170,7 @@ struct WeeklyReviewView: View {
                 }
             } else {
                 Text(scope.useSelectedTopics ? "所选主题在这个日期范围内没有适用记录，可关闭主题筛选。" :
-                    (coverage.textRecords == 0 ? "这些记录没有可读取的文字。请在时间线核对是否只有截图或文字识别未成功。" : "这些记录暂未形成可回顾的正文。可在‘记忆与约定 → 记录线索’查看整理结果，并在时间线核对原始文字。"))
+                    (coverage.textRecords == 0 ? "这些记录没有可读取的文字。请在时间线核对是否只有截图或文字识别未成功。" : "这些记录暂未形成可回顾的正文。可在‘长期记忆 → 保存的资料与线索’查看整理结果，并在时间线核对原始文字。"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Toggle("使用已连接的模型整理正文", isOn: $useModel)
@@ -223,7 +223,7 @@ struct WeeklyReviewView: View {
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 14) {
             Image(systemName: "book.closed").font(.system(size: 30, weight: .light)).foregroundStyle(RecallPalette.accent)
-            Text("你的第一份一周回顾，从这里开始").font(.title3.weight(.semibold))
+            Text("你的第一份回顾，从这里开始").font(.title3.weight(.semibold))
             Text("选一个用途和时间范围，Recall 会回看本人事项与保存的内容。记录线索会单独标明，不会被写成你完成的工作、形成的偏好或已经学会的技能。")
                 .foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(32).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()

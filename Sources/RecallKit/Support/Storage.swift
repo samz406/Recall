@@ -1097,12 +1097,10 @@ public actor FileMemoryStore {
         }
         guard dismissedCount > 0 else { return 0 }
         state.reminderLearningProfile = learningProfile
+        let dismissedIDs = Set(state.reminders.filter { $0.status == .dismissed }.map(\.id))
         for i in state.dailySummaries.indices {
-            for j in state.dailySummaries[i].todos.indices {
-                let action = state.dailySummaries[i].todos[j]
-                guard action.id == reminder.id || (action.title == reminder.title && !Set(action.sourceCaptureIDs).isDisjoint(with: reminder.sourceCaptureIDs)) else { continue }
-                if reminder.status == .completed { state.dailySummaries[i].todos[j].status = .completed }
-                if reminder.status == .cancelled || reminder.status == .dismissed { state.dailySummaries[i].todos[j].status = .ignored }
+            for j in state.dailySummaries[i].todos.indices where dismissedIDs.contains(state.dailySummaries[i].todos[j].id) {
+                state.dailySummaries[i].todos[j].status = .ignored
             }
         }
         try persist()

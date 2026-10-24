@@ -393,6 +393,7 @@ final class RecallAppModel: ObservableObject {
 
     private func refineWeeklyReport(_ original: WeeklyReport, schedule: ReviewSchedule) {
         guard !isGeneratingWeeklyReview, let responder = dailySummaryResponder() else { return }
+        let taskID = beginTask("周期回顾", target: original.period.label, phase: "更新正文并核对来源")
         let snapshot = state
         isGeneratingWeeklyReview = true
         weeklyReviewTask = Task {
@@ -407,14 +408,16 @@ final class RecallAppModel: ObservableObject {
                       current.privacy.excludedBundleIdentifiers == snapshot.privacy.excludedBundleIdentifiers else { throw WeeklyReviewError.changedSources }
                 let saved = try await store.commitWeeklyRefinement(report, expected: original, schedule: schedule, categories: snapshot.reviewCategories)
                 state = await store.snapshot()
+                finishTask(taskID, state: saved.refinementPending ? .partial : .succeeded, message: saved.refinementPending ? "已保留来源事实，正文可稍后更新" : "正文已更新", destination: .review(saved.id))
                 if saved.refinementPending {
                     recordDiagnostic(.warning, source: "WeeklyReview", message: "回顾正文核对未通过，保留来源事实", metadata: [:])
                 } else if schedule.notifyWhenReady {
                     do { try await notificationScheduler.deliverWeeklyReview(saved) }
                     catch { recordError(error, source: "WeeklyReview", message: "回顾整理完成，通知投递失败") }
                 }
-            } catch is CancellationError { if let taskID { finishTask(taskID, state: .cancelled, message: "已取消整理") } }
+            } catch is CancellationError { finishTask(taskID, state: .cancelled, message: "已取消正文更新") }
             catch {
+                finishTask(taskID, state: .failed, message: "正文更新失败，原版本保留")
                 recordError(error, source: "WeeklyReview", message: "回顾正文重试失败")
                 do { try await store.deferWeeklyRefinement(original, schedule: schedule); state = await store.snapshot() }
                 catch { recordError(error, source: "WeeklyReview", message: "保存正文重试状态失败") }

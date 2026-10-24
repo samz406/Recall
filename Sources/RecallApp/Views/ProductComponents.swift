@@ -171,6 +171,7 @@ struct GlobalMemorySearchSheet: View {
                 index = result; building = false; await search()
             }
             .task(id: queryKey) { await search() }
+            .onChange(of: start) { _, value in if end < value { end = value } }
     }
     private func search() async {
         guard let index else { return }

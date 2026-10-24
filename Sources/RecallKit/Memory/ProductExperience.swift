@@ -39,7 +39,7 @@ public enum ReviewContentQuality {
             guard depth == 0, c == ":" || c == "：" else { continue }
             let before = String(text[..<index]), after = String(text[text.index(after: index)...])
             if c == ":", (before.last?.isNumber == true && after.first?.isNumber == true || after.hasPrefix("//")) { continue }
-            guard !before.contains("http"), !before.contains("/"), before.count <= 36,
+            guard !before.contains("http"), !before.contains("/"), before.range(of: #"\.[A-Za-z]{1,8}(?:\s|$)"#, options: .regularExpression) == nil, before.count <= 36,
                   !after.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
             return [before, after]
         }
@@ -124,9 +124,9 @@ public struct GlobalMemorySearch: Sendable {
             hits.append(.init(id: "reminder:" + reminder.id.uuidString, title: reminder.title, detail: reminder.detail, kind: "提醒",
                 date: reminder.updatedAt, sourceIDs: Set(reminder.sourceCaptureIDs), destination: .reminder(reminder.id)))
         }
-        for claim in state.memoryKnowledge.claims where claim.usable(at: .now) && claim.scope != .conversation && claim.sourceIDs.isSubset(of: ids) {
+        for claim in state.memoryKnowledge.claims where claim.usable(at: .now) && claim.scope != .conversation && Set(claim.sourceIDs).isSubset(of: ids) {
             hits.append(.init(id: "knowledge:" + claim.id.uuidString, title: claim.title, detail: claim.content, kind: "长期记忆",
-                date: claim.date, sourceIDs: claim.sourceIDs, destination: .knowledge(claim.id)))
+                date: claim.date, sourceIDs: Set(claim.sourceIDs), destination: .knowledge(claim.id)))
         }
         rows = hits
     }
