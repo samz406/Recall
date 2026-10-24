@@ -66,6 +66,7 @@ struct WeeklyReviewView: View {
                 initializedModelChoice = true
             }
         }
+        .onChange(of: selectedID) { _, id in if let id { model.weeklyReportToOpen = id } }
         .onChange(of: customStart) { _, start in if customEnd < start { customEnd = start } }
         .onChange(of: model.memoryWorkspace?.revision) { _, _ in rangeNow = .now }
         .onChange(of: model.weeklyReportToOpen) { _, id in
@@ -553,7 +554,7 @@ private struct ReviewExportSheet: View {
     private func export() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
-        panel.nameFieldStringValue = "Recall-" + (report?.template.kind.title ?? "回顾") + ".md"
+        panel.nameFieldStringValue = "Recall-" + (report?.displayName ?? "回顾") + ".md"
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             Task { @MainActor in
@@ -638,7 +639,7 @@ private struct ReviewSchedulesSheet: View {
                                     Task { _ = await model.saveReviewSchedule(updated) }
                                 })).labelsHidden()
                             }
-                            Text("每\(weekday(value.weekday)) \(String(format: "%02d:%02d", value.hour, value.minute)) · \(value.template.name)")
+                            Text((value.monthDay.map { "每月 \($0) 日" } ?? "每\(weekday(value.weekday))") + " \(String(format: "%02d:%02d", value.hour, value.minute)) · \(value.template.name)")
                             Text(value.timeZoneIdentifier + " · " + value.periodKind.title).font(.caption).foregroundStyle(RecallPalette.secondary)
                             if value.failureCount > 0 { Text("模型或保存暂未完成，将自动重试；已有的本地版本可以阅读。") .font(.caption).foregroundStyle(RecallPalette.warning) }
                             else if value.isEnabled, let next = value.nextRunAt { Text("下次生成：" + next.formatted()).font(.caption).foregroundStyle(RecallPalette.secondary) }

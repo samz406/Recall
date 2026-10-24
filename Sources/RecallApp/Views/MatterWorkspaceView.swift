@@ -118,7 +118,7 @@ struct MatterWorkspaceView: View {
             }
         }
         .onAppear { openRequestedContent() }
-        .onChange(of: model.destination) { _, _ in openRequestedContent() }
+        .onChange(of: model.navigationRevision) { _, _ in openRequestedContent() }
         .onChange(of: model.weeklyReportToOpen) { _, id in if id != nil { tab = .weeklyReview } }
         .onChange(of: tab) { _, _ in visibleCount = 20; olderVisibleCount = 20 }
         .onChange(of: search) { _, text in

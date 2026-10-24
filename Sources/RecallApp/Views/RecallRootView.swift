@@ -74,7 +74,8 @@ struct RecallRootView: View {
                 }
             }
         }
-        .onChange(of: model.destination) { _, target in
+        .onChange(of: model.navigationRevision) { _, _ in
+            let target = model.destination
             guard let target else { return }
             returnSection = section; showingTasks = false
             switch target {
@@ -388,7 +389,7 @@ private struct TimelineView: View {
                         .padding(.horizontal, 32)
                         .padding(.bottom, 24)
                     }.onAppear { locateRequestedRecord(proxy: proxy) }
-                        .onChange(of: model.destination) { _, _ in locateRequestedRecord(proxy: proxy) }
+                        .onChange(of: model.navigationRevision) { _, _ in locateRequestedRecord(proxy: proxy) }
                     }
                 }
             }
@@ -400,7 +401,8 @@ private struct TimelineView: View {
             }
             initializeExpandedDays()
         }
-        .onChange(of: model.destination) { _, target in
+        .onChange(of: model.navigationRevision) { _, _ in
+            let target = model.destination
             if case .record(let id) = target, let source = model.state.captures.first(where: { $0.id == id }) { selectedDay = Calendar.current.startOfDay(for: source.createdAt) }
         }
         .onChange(of: searchText) { _, _ in initializeExpandedDays() }
@@ -1491,6 +1493,7 @@ private struct DailySummariesView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            ScrollViewReader { proxy in
             ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 if summaries.isEmpty && !model.isGeneratingDailySummary {
@@ -1503,6 +1506,11 @@ private struct DailySummariesView: View {
             .padding(.horizontal, 40)
             .padding(.vertical, 34)
             .frame(maxWidth: .infinity)
+        }.onAppear { if let id = model.dailyToOpen { DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) } } }
+            .onChange(of: model.dailyToOpen) { _, id in if let id { DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) } } }
+            .onChange(of: model.navigationRevision) { _, _ in
+                if case .daily(let id) = model.destination { DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) } }
+            }
         }
         }
         .background(RecallPalette.background)
@@ -1514,6 +1522,11 @@ private struct DailySummariesView: View {
         }
         .onChange(of: model.dailyToOpen) { _, id in expandedSummaryID = id; visibleSummaryCount = max(12, (summaries.firstIndex { $0.id == id } ?? 0) + 1) }
         .onDisappear { model.dailyToOpen = expandedSummaryID }
+        .onChange(of: model.navigationRevision) { _, _ in
+            if case .daily(let id) = model.destination {
+                expandedSummaryID = id; visibleSummaryCount = max(12, (summaries.firstIndex { $0.id == id } ?? 0) + 1)
+            }
+        }
     }
 
     private var history: some View {
@@ -1539,7 +1552,7 @@ private struct DailySummariesView: View {
                     onManage: { summaryBeingManaged = summary },
                     onReviewInsight: { insight, rating in model.reviewInsight(insight, rating: rating) },
                     onUpdateRoutine: { routine, status in model.updateLearnedRoutine(routine, status: status) }
-                )
+                ).id(summary.id)
             }
             if visibleSummaries.count < summaries.count {
                 Button {
@@ -1651,7 +1664,7 @@ private struct DailySummaryCard: View {
                             Text(summary.day.formatted(.dateTime.year().month().day().weekday()))
                                 .font(.headline)
                             HStack(spacing: 8) {
-                                Label(summary.generationKind == .cloud ? "模型生成" : "本地摘要", systemImage: summary.generationKind == .cloud ? "cpu" : "text.document")
+                                Label("更新于 " + summary.createdAt.formatted(date: .omitted, time: .shortened), systemImage: "clock")
                                 if activeActionCount > 0 {
                                     Label("\(activeActionCount) 项待处理", systemImage: "checklist")
                                 }
@@ -2014,7 +2027,7 @@ private struct DailyBriefingView: View {
                     .font(.title2)
                     .foregroundStyle(RecallPalette.accent)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("今天推进了什么").font(.caption.weight(.semibold)).foregroundStyle(RecallPalette.secondary)
+                    Text("当天进展").font(.caption.weight(.semibold)).foregroundStyle(RecallPalette.secondary)
                     Text(clean(briefing.headline)).font(.system(size: 15, weight: .semibold))
                 }
             }
@@ -2328,7 +2341,7 @@ private struct RemindersView: View {
         }
         .background(RecallPalette.background)
         .onAppear { openRequestedReminder() }
-        .onChange(of: model.destination) { _, _ in openRequestedReminder() }
+        .onChange(of: model.navigationRevision) { _, _ in openRequestedReminder() }
         .sheet(item: $reminderBeingScheduled) { reminder in
             ReminderScheduleSheet(
                 reminder: reminder,
@@ -2438,7 +2451,11 @@ private struct RemindersView: View {
                                 .foregroundStyle(RecallPalette.danger)
                         }
                     }
-                    ForEach(paged(scheduled, page: scheduledPage)) { reminder in
+                    let rows = paged(scheduled, page: scheduledPage)
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, reminder in
+                        if index == 0 || timeGroup(rows[index - 1]) != timeGroup(reminder) {
+                            Text(timeGroup(reminder)).font(.headline).foregroundStyle(RecallPalette.secondary).padding(.top, 8)
+                        }
                         reminderCard(reminder, deliveryState: model.reminderDeliveryStates[reminder.id])
                     }
                     ReminderPagination(page: $scheduledPage, itemCount: scheduled.count, pageSize: pageSize)
@@ -2489,6 +2506,11 @@ private struct RemindersView: View {
         }
     }
 
+    private func timeGroup(_ reminder: ReminderCandidate) -> String {
+        guard let due = reminder.dueAt else { return "以后" }
+        if due < .now { return "已逾期" }
+        return Calendar.current.isDateInToday(due) ? "今天" : "以后"
+    }
     private func reminderCard(_ reminder: ReminderCandidate, deliveryState: ReminderDeliveryState?) -> some View {
         ReminderCandidateCard(
             reminder: reminder,
@@ -2949,7 +2971,7 @@ private struct ReminderCandidateCard: View {
                     HStack(spacing: 8) {
                         Menu("稍后") {
                             Button("1 小时后") { snooze(.now.addingTimeInterval(60 * 60)) }
-                            Button("明天 (preferredHour):00") {
+                            Button("明天 \(preferredHour):00") {
                                 let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: .now) ?? .now.addingTimeInterval(86_400)
                                 snooze(Calendar.current.date(bySettingHour: preferredHour, minute: 0, second: 0, of: tomorrow) ?? tomorrow)
                             }

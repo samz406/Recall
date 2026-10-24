@@ -119,7 +119,7 @@ public struct GlobalMemorySearch: Sendable {
                 sourceIDs: Set(report.sourceCaptureIDs), destination: .daily(report.id)))
         }
         for report in state.weeklyReports where report.isReadable && report.sourceIDs.isSubset(of: ids) {
-            hits.append(.init(id: "review:" + report.id.uuidString, title: report.template.name, detail: report.markdown,
+            hits.append(.init(id: "review:" + report.id.uuidString, title: report.displayName, detail: report.markdown,
                 kind: "周期回顾", date: report.createdAt, sourceIDs: report.sourceIDs, destination: .review(report.id)))
         }
         for reminder in state.reminders where Set(reminder.sourceCaptureIDs).isSubset(of: ids) {

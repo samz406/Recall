@@ -59,6 +59,7 @@ struct MemoryKnowledgeView: View {
         .onAppear { chooseInitialCategory() }
         .onChange(of: model.memoryWorkspace?.revision) { _, _ in chooseInitialCategory() }
         .onChange(of: model.knowledgeToOpen) { _, _ in choseInitialCategory = false; chooseInitialCategory() }
+        .onChange(of: model.navigationRevision) { _, _ in if case .knowledge = model.destination { choseInitialCategory = false; chooseInitialCategory() } }
         .sheet(isPresented: $adding) {
             MemoryAgreementEditor(claim: nil, topics: model.state.memoryKnowledge.entities) { content, scope, scopeID, until in
                 await model.saveMemoryAgreement(content: content, scope: scope, scopeID: scopeID, validUntil: until)

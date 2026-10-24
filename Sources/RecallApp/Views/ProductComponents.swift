@@ -116,6 +116,7 @@ struct GlobalMemorySearchSheet: View {
     @EnvironmentObject var model: RecallAppModel
     @Environment(\.dismiss) var dismiss
     @State private var query = ""
+    @FocusState private var queryFocused: Bool
     @State private var app = ""
     @State private var topicID = ""
     @State private var usesDates = false
@@ -135,7 +136,7 @@ struct GlobalMemorySearchSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack { Text("搜索记忆").font(.title2.bold()); Spacer(); Button("完成") { dismiss() } }
-            TextField("关键词、主题或人名", text: $query).textFieldStyle(.roundedBorder)
+            TextField("关键词、主题或人名", text: $query).textFieldStyle(.roundedBorder).focused($queryFocused)
             HStack {
                 Picker("来源", selection: $app) {
                     Text("全部应用").tag("")
@@ -177,6 +178,7 @@ struct GlobalMemorySearchSheet: View {
             Text("最多显示 50 项；缩小关键词、日期或来源可继续定位。")
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
         }.padding(24).frame(minWidth: 720, idealWidth: 820, minHeight: 540, idealHeight: 670)
+            .onAppear { queryFocused = true }
             .task(id: revision) {
                 building = true; hits = []; index = nil
                 let snapshot = model.state, files = model.matterFiles

@@ -19,7 +19,8 @@ extension Notification.Name {
 final class RecallAppModel: ObservableObject {
     @Published var state = RecallState()
     @Published var tasks: [RecallTaskStatus] = []
-    @Published var destination: MemorySearchDestination?
+    @Published var navigationRevision = UUID()
+    @Published var destination: MemorySearchDestination? { didSet { navigationRevision = UUID() } }
     @Published var sourceToOpen: CaptureRecord?
     @Published var reminderDraft: ReminderCandidate?
     @Published var showsGlobalSearch = false
