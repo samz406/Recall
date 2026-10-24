@@ -1372,8 +1372,11 @@ final class RecallAppModel: ObservableObject {
                     briefing: generation.briefing,
                     items: generation.items
                 )
+                guard !summary.items.isEmpty else { throw WeeklyReviewError.noEvidence }
                 let current = await store.snapshot()
-                guard current.matterCorrections.map(\.id) == analysisState.matterCorrections.map(\.id),
+                guard current.privacy.cloudUseEnabled == analysisState.privacy.cloudUseEnabled,
+                      current.privacy.excludedBundleIdentifiers == analysisState.privacy.excludedBundleIdentifiers,
+                      current.matterCorrections.map(\.id) == analysisState.matterCorrections.map(\.id),
                       Set(summary.sourceCaptureIDs).isSubset(of: Set(current.captures.map(\.id))),
                       MemoryKnowledgeEngine().sourcesUsable(Set(summary.sourceCaptureIDs), in: current) else {
                     finishTask(taskID, state: .failed, message: "来源已变化，请重新生成")

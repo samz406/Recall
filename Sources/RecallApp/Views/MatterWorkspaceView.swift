@@ -64,7 +64,7 @@ struct MatterWorkspaceView: View {
                     if tab == .topics && topicFilter == 0 {
                         if resumeFiles.isEmpty {
                             empty(search.isEmpty ? (model.matterFiles.isEmpty ? "还没有整理出主题" : "暂时没有进行中的主题") : "没有找到匹配的进行中主题",
-                                detail: search.isEmpty ? (model.matterFiles.isEmpty ? "保存记录后，Recall 会把同一件事的相关内容串联起来。你也可以补充一条记录，从这里开始。" : "已完成或仅作记录的内容，可以在‘全部主题’中回看。") : "换个关键词，或清空搜索后查看。")
+                                detail: search.isEmpty ? (model.matterFiles.isEmpty ? "保存记录后，Recall 会把同一件事的相关内容串联起来。你也可以补充一条记录，从这里开始。" : "已完成或仅作记录的内容，可以切换到‘全部’回看。") : "换个关键词，或清空搜索后查看。")
                         }
                         ForEach(Array(recentResumeFiles.prefix(visibleCount))) { file in
                             fileCard(file, resume: true)
@@ -218,7 +218,7 @@ struct MatterWorkspaceView: View {
         HStack(spacing: 12) {
             if model.isBuildingMatters { ProgressView().controlSize(.small).help("正在整理记录") }
             Button { model.organizeExistingMatters() } label: {
-                Label(model.isBuildingMatters ? "正在重新整理…" : "重新整理", systemImage: "arrow.clockwise")
+                Label(model.isBuildingMatters ? "正在更新…" : "更新记忆", systemImage: "arrow.clockwise")
             }.disabled(model.isBuildingMatters || model.isOrganizingMemory)
                 .help("从原始记录重建主题、进展与状态，并过滤旧的错误片段；不会改写原文")
             Button { supplement() } label: {
@@ -318,7 +318,7 @@ struct MatterWorkspaceView: View {
             } else {
                 HStack {
                     Button("补充记录") { supplement() }.buttonStyle(.borderedProminent)
-                    Button("重新整理") { model.organizeExistingMatters() }
+                    Button("更新记忆") { model.organizeExistingMatters() }
                     if !model.matterFiles.isEmpty && topicFilter != 2 {
                         Button("查看全部主题") { tab = .topics; topicFilter = 2 }
                     }

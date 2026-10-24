@@ -97,10 +97,20 @@ enum ProductExperienceVerification {
         try expect(MatterMemoryEngine().files(in: merged).count == 1 && merged.captures.map(\.ocrText) == original.captures.map(\.ocrText), "持久化合并改写原文")
         let cache = MemoryWorkspaceCache(), first = try await cache.prepare(in: original), second = try await cache.prepare(in: merged)
         try expect(first.revision != second.revision && second.matters.count == 1, "合并没有失效工作区缓存")
+        let lookup = MemoryRetrievalEngine().plan(question: "Atlas 接口交付的进展是什么", state: merged, fallback: [])
+        try expect(Set(lookup.sourceIDs.values.flatMap { $0 }).isSuperset(of: [a.id, b.id]), "合并后的主题名未检索原始成员")
         try await store.undoTopicGroup(group.id)
         let undone = await store.snapshot()
         try expect(undone.topicGroups.isEmpty && MatterMemoryEngine().files(in: undone).count == 2, "撤销合并没有持久化")
         let life = try note("周末植物记录", category: .personal)
+        try await store.saveTopicGroup(group)
+        if let deletion = try await store.moveCapturesToRecentlyDeleted(ids: Set([a.id, b.id]), reason: .noLongerNeeded, suppressSimilar: false) {
+            let deleted = await store.snapshot()
+            try expect(deleted.topicGroups.isEmpty, "删除全部来源后仍保留孤立的主题名称")
+            _ = try await store.restoreRecentlyDeleted(id: deletion.id)
+            let restored = await store.snapshot()
+            try expect(restored.topicGroups.count == 1 && MatterMemoryEngine().files(in: restored).count == 1, "恢复记录丢失原主题分组")
+        }
         let mixedStore = try makeStore(RecallState(captures: [a, life]))
         let mixed = await mixedStore.snapshot(), ids = MatterMemoryEngine().files(in: mixed).map(\.id)
         do { try await mixedStore.saveTopicGroup(.init(title: "混合主题", memberIDs: ids)); throw Failure(errorDescription: "工作与生活被合并进入工作模板") }

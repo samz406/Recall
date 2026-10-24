@@ -736,6 +736,7 @@ public actor FileMemoryStore {
         knowledgeSnapshot.suppressedKeys = state.memoryKnowledge.suppressedKeys.filter(affectedKeys.contains)
         transaction.memoryKnowledge = knowledgeSnapshot
         transaction.weeklyReports = state.weeklyReports.filter { !$0.sourceIDs.isDisjoint(with: actualIDs) }
+        transaction.topicGroups = state.topicGroups.filter { !Set($0.sourceIDs ?? []).isDisjoint(with: actualIDs) }
         transaction.matterCorrections = state.matterCorrections.filter { !Set($0.evidenceIDs).isDisjoint(with: actualIDs) }
         state.matterCorrections.removeAll { !Set($0.evidenceIDs).isDisjoint(with: actualIDs) }
         state.captures.removeAll { actualIDs.contains($0.id) }
@@ -835,6 +836,9 @@ public actor FileMemoryStore {
             state.dailySummaries.append(summary)
         }
         state.dailySummaries.sort { $0.day > $1.day }
+        let groupedMembers = Set(state.topicGroups.flatMap(\.memberIDs))
+        let restoredGroups = (transaction.topicGroups ?? []).filter { Set($0.memberIDs).isDisjoint(with: groupedMembers) }
+        Self.restoreUnique(restoredGroups, to: &state.topicGroups, id: \.id)
         Self.restoreUnique(transaction.weeklyReports ?? [], to: &state.weeklyReports, id: \.id)
         Self.restoreUnique(transaction.messages, to: &state.messages, id: \.id)
         state.messages.sort { $0.createdAt < $1.createdAt }

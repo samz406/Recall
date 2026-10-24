@@ -3,9 +3,11 @@ import Foundation
 /// Built once on the workspace worker. UI queries never read OCR or scan captures per topic.
 public struct ReviewCategoryIndex: Sendable {
     private let overrides: [String: ReviewCategory]
+    private let groupedIDs: Set<String>
     private let notes: [UUID: (date: Date, ordinal: Int, category: ReviewCategory)]
 
     public init(state: RecallState) {
+        groupedIDs = Set(state.topicGroups.map(\.id))
         var values = state.reviewCategories
         for group in state.topicGroups {
             let categories = Set(group.memberIDs.compactMap { state.reviewCategories[$0] })
@@ -21,6 +23,11 @@ public struct ReviewCategoryIndex: Sendable {
     }
 
     public func category(for file: MatterFile) -> ReviewCategory {
+        if groupedIDs.contains(file.id) {
+            let kinds = Set(file.evidenceIDs.compactMap { notes[$0]?.category })
+            if kinds.contains(.personal) { return .personal }
+            if kinds.contains(.learning) { return .learning }
+        }
         if let selected = overrides[file.id] { return selected }
         // Compute the source set once, not once for every record in the archive.
         let latest = Set(file.events.flatMap(\.evidenceIDs)).compactMap { id -> (date: Date, ordinal: Int, category: ReviewCategory)? in
