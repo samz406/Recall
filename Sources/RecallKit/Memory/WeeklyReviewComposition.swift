@@ -195,8 +195,15 @@ struct WeeklyReviewComposition: Sendable {
         let ranks = Dictionary(uniqueKeysWithValues: ranking.enumerated().map { ($0.element, $0.offset) })
         let result = items.enumerated().map { offset, original -> (Int, ReviewItem) in
             var item = original
-            // An unsuccessful re-check must not keep an old, unchecked narrative in the body.
-            if chosenIDs.contains(item.id) { item.narrative = accepted[item.id] }
+            if chosenIDs.contains(item.id) {
+                if let narrative = accepted[item.id] { item.narrative = narrative }
+                else if let existing = item.narrative, let topic = byTopic[item.id],
+                        validDraft(Draft(topicID: item.id, title: existing.title, summary: existing.summary,
+                            evidenceIDs: existing.evidenceIDs), topic: topic, length: template.length) {
+                    // Sources are unchanged during refinement: retain an already checked short
+                    // narrative if the provider fails, but do not revive an overlong legacy draft.
+                } else { item.narrative = nil }
+            }
             if let narrative = item.narrative { item.featuredIDs = narrative.evidenceIDs }
             return (offset, item)
         }.sorted { left, right in

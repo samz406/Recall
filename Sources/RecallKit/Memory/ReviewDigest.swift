@@ -21,35 +21,43 @@ public struct ReviewDigestRow: Identifiable, Sendable {
 /// A projection, not a deletion or a claim that every candidate is a real-life topic.
 /// Unknown ownership is never upgraded to an accomplishment in the local fallback.
 public enum ReviewDigest {
+    private struct Candidate {
+        let item: ReviewItem
+        let days: Set<Date>
+        let score: Int
+        let key: String
+    }
     public static func candidates(_ items: [ReviewItem], period: ReviewPeriod, limit: Int) -> [ReviewItem] {
-        let eligible = items.filter { item in
-            meaningfulTitle(item.title) && !item.excerpts.isEmpty
-                && item.excerpts.contains { readable($0.text) }
+        var candidates: [Candidate] = []
+        for item in items {
+            guard meaningfulTitle(item.displayTitle), !item.excerpts.isEmpty,
+                  item.excerpts.contains(where: { readable($0.text) }) else { continue }
+            let days = Set(item.excerpts.map { period.calendar.startOfDay(for: $0.date) })
+            let states = Set(item.excerpts.map { $0.status.rawValue }).count
+            var score = item.id.hasPrefix("reference:") ? 0 : 30
+            score += item.importance * 6 + min(days.count, 7) * 2 + min(states, 3) * 3
+            if item.nextAction != nil { score += 4 }
+            candidates.append(Candidate(item: item, days: days, score: score, key: duplicateKey(item)))
         }
-        let ranked = eligible.sorted { a, b in
-            let x = score(a, period: period), y = score(b, period: period)
-            if x != y { return x > y }
-            let first = a.excerpts.last?.date ?? .distantPast, second = b.excerpts.last?.date ?? .distantPast
-            return first == second ? a.id < b.id : first > second
+        let ranked = candidates.sorted { a, b in
+            if a.score != b.score { return a.score > b.score }
+            let first = a.item.excerpts.last?.date ?? .distantPast
+            let second = b.item.excerpts.last?.date ?? .distantPast
+            return first == second ? a.item.id < b.item.id : first > second
         }
-        // Keep different record days/categories in contention. A late burst of screenshots
-        // must not displace all earlier outcomes from a weekly/monthly review.
+        // Metadata and duplicate keys are computed once, not for every comparison in a view.
         var result: [ReviewItem] = [], days: Set<Date> = [], categories: Set<ReviewCategory> = []
-        func append(_ item: ReviewItem) {
-            guard result.count < limit, !result.contains(where: { duplicate($0, item) }) else { return }
-            result.append(item)
-            days.formUnion(item.excerpts.map { period.calendar.startOfDay(for: $0.date) })
-            categories.insert(item.category)
+        var seenIDs: Set<String> = [], seenKeys: Set<String> = []
+        func append(_ row: Candidate) {
+            guard result.count < limit, !seenIDs.contains(row.item.id), !seenKeys.contains(row.key) else { return }
+            result.append(row.item); seenIDs.insert(row.item.id); seenKeys.insert(row.key)
+            days.formUnion(row.days); categories.insert(row.item.category)
         }
-        let owned = ranked.filter { !$0.id.hasPrefix("reference:") }
-        // Start with a genuine change, then cover other kinds of experience before filling.
+        let owned = ranked.filter { !$0.item.id.hasPrefix("reference:") }
         if let first = owned.first ?? ranked.first { append(first) }
-        for item in owned where !categories.contains(item.category) { append(item) }
-        for item in ranked {
-            let dates = Set(item.excerpts.map { period.calendar.startOfDay(for: $0.date) })
-            if dates.isDisjoint(with: days) { append(item) }
-        }
-        for item in ranked { append(item) }
+        for row in owned where !categories.contains(row.item.category) { append(row) }
+        for row in ranked where row.days.isDisjoint(with: days) { append(row) }
+        for row in ranked { append(row) }
         return result
     }
 
@@ -60,8 +68,8 @@ public enum ReviewDigest {
         else { selected = candidates(items, period: period, limit: items.count) }
         var rows: [ReviewDigestRow] = [], remaining = length.bodyLimit
         for item in selected {
-            guard rows.count < length.itemLimit,
-                  !rows.contains(where: { duplicate($0.item, item) }),
+            if rows.count == length.itemLimit { break }
+            guard !rows.contains(where: { duplicate($0.item, item) }),
                   let row = row(item, length: length), row.characterCount <= remaining else { continue }
             rows.append(row); remaining -= row.characterCount
         }
@@ -114,20 +122,14 @@ public enum ReviewDigest {
         DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: DailySummaryContentFormatter.removingCitationMarkers(from: text))
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    private static func score(_ item: ReviewItem, period: ReviewPeriod) -> Int {
-        let days = Set(item.excerpts.map { period.calendar.startOfDay(for: $0.date) }).count
-        let states = Set(item.excerpts.map { $0.status.rawValue }).count
-        return (item.id.hasPrefix("reference:") ? 0 : 30) + item.importance * 6 + min(days, 7) * 2
-            + min(states, 3) * 3 + (item.nextAction == nil ? 0 : 4)
+    private static func duplicateKey(_ item: ReviewItem) -> String {
+        let texts = Set(item.excerpts.map { MatterEvidence.key($0.text) }).sorted()
+        return MatterEvidence.key(item.title) + "|" + item.section.rawValue + "|" + texts.joined(separator: "\n")
     }
     private static func duplicate(_ a: ReviewItem, _ b: ReviewItem) -> Bool {
-        if a.id == b.id { return true }
-        // Only duplicate evidence, not coincidentally similar topics or source applications.
-        let texts = Set(a.excerpts.map { MatterEvidence.key($0.text) })
-        let other = Set(b.excerpts.map { MatterEvidence.key($0.text) })
-        return !texts.isEmpty && texts == other && a.section == b.section
-            && MatterEvidence.key(a.title) == MatterEvidence.key(b.title)
+        a.id == b.id || duplicateKey(a) == duplicateKey(b)
     }
+
 }
 
 public extension WeeklyReport {

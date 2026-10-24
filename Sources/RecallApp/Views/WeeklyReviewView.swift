@@ -688,8 +688,7 @@ private struct ReviewSchedulesSheet: View {
             }.clipped()
             HStack { Spacer(); Button("新建生成计划") { editing = ReviewSchedule(template: template, scope: scope) }.buttonStyle(.borderedProminent) }
         }.padding(28).frame(width: 680, height: 580)
-            .sheet(item: $materials) { ReviewMaterialsSheet(reportID: $0.id).environmentObject(model) }
-        .sheet(item: $editing) { ReviewScheduleEditor(schedule: $0).environmentObject(model) }
+            .sheet(item: $editing) { ReviewScheduleEditor(schedule: $0).environmentObject(model) }
     }
     private func weekday(_ value: Int) -> String { ["", "周日", "周一", "周二", "周三", "周四", "周五", "周六"][min(max(value, 1), 7)] }
 }

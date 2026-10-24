@@ -411,10 +411,12 @@ final class RecallAppModel: ObservableObject {
                       current.privacy.excludedBundleIdentifiers == snapshot.privacy.excludedBundleIdentifiers else { throw WeeklyReviewError.changedSources }
                 let saved = try await store.commitWeeklyRefinement(report, expected: original, schedule: schedule, categories: snapshot.reviewCategories)
                 state = await store.snapshot()
-                finishTask(taskID, state: saved.refinementPending ? .partial : .succeeded, message: saved.refinementPending ? "部分小结待更新，材料已保留" : "正文已更新", destination: .review(saved.id))
+                let hasDigest = !saved.digestRows.isEmpty
+                finishTask(taskID, state: saved.refinementPending || !hasDigest ? .partial : .succeeded,
+                    message: hasDigest ? "正文已更新" : "材料已保留，暂无可靠小结", destination: .review(saved.id))
                 if saved.refinementPending {
                     recordDiagnostic(.warning, source: "WeeklyReview", message: "回顾正文核对未通过，保留来源事实", metadata: [:])
-                } else if schedule.notifyWhenReady {
+                } else if schedule.notifyWhenReady && hasDigest {
                     do { try await notificationScheduler.deliverWeeklyReview(saved) }
                     catch { recordError(error, source: "WeeklyReview", message: "回顾整理完成，通知投递失败") }
                 }

@@ -118,6 +118,14 @@ enum ReviewDigestVerification {
             windowTitle: "Atlas 接口设计资料", contentHash: "synthetic-reference",
             ocrText: String(repeating: "这份资料讨论参数检查、重试边界和重复请求识别，尚未给出完整的回归测试结果，也未说明实际执行者。这段讨论只能作为技术资料，不能确认用户完成了实现。", count: 2))
         var state = RecallState(captures: [reference]); state.privacy.cloudUseEnabled = true
+        var pending = try await WeeklyReviewEngine().generate(in: state, period: period,
+            template: ReviewTemplate(kind: .personal), now: date(25))
+        pending.refinementPending = true
+        let recovered = try await WeeklyReviewEngine().refine(pending, in: state, responder: DigestProbe(mode: .valid), now: date(25))
+        try expect(recovered.digestRows.count == 1, "先前没有模型、精选为空时，恢复模型后必须能重新筛选资料")
+        let retry = try await WeeklyReviewEngine().refine(recovered, in: state, responder: DigestProbe(mode: .auditFails), now: date(25))
+        try expect(retry.digestRows.first?.summary == recovered.digestRows.first?.summary && retry.refinementPending,
+            "来源未变时，失败重试不能丢掉此前已通过核对的简短小结")
         for mode in [DigestProbe.Mode.auditFails, .tooLong] {
             let report = try await WeeklyReviewEngine().generate(in: state, period: period, template: ReviewTemplate(kind: .personal), responder: DigestProbe(mode: mode), now: date(25))
             try expect(report.refinementPending && report.digestRows.isEmpty && !report.items.isEmpty && report.sourceIDs == [reference.id],
