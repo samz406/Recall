@@ -14,24 +14,33 @@ struct RecallRootView: View {
             List(selection: $section) {
                 Section("记忆") {
                     Label("记忆脉络", systemImage: "square.stack.3d.up").tag(SidebarSection.matters)
+                        .recallSidebarRow(isSelected: section == .matters)
                     Label("每日总结", systemImage: "calendar.badge.clock")
                         .badge(highPrioritySummaryTodoCount)
                         .tag(SidebarSection.dailySummaries)
+                        .recallSidebarRow(isSelected: section == .dailySummaries)
                     Label("问一问", systemImage: "bubble.left.and.bubble.right")
                         .tag(SidebarSection.chat)
+                        .recallSidebarRow(isSelected: section == .chat)
                     Label("时间线", systemImage: "clock.arrow.circlepath")
                         .tag(SidebarSection.timeline)
+                        .recallSidebarRow(isSelected: section == .timeline)
                     Label("提醒", systemImage: "bell.badge")
                         .badge(proposedReminderCount)
                         .tag(SidebarSection.reminders)
+                        .recallSidebarRow(isSelected: section == .reminders)
                 }
                 Section("控制") {
                     Label("记录事件", systemImage: "checklist")
                         .tag(SidebarSection.rules)
+                        .recallSidebarRow(isSelected: section == .rules)
                     Label("隐私与模型", systemImage: "lock.shield")
                         .tag(SidebarSection.privacy)
+                        .recallSidebarRow(isSelected: section == .privacy)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(RecallPalette.sidebar)
             .navigationTitle("Recall")
 
         } detail: {
@@ -49,6 +58,7 @@ struct RecallRootView: View {
                 case .privacy: PrivacyAndModelView()
                 }
             }
+            .background(RecallPalette.background)
             .toolbar {
                 activityToolbar
             }
@@ -147,26 +157,26 @@ private struct DeletionUndoBanner: View {
         HStack(spacing: 12) {
             Image(systemName: "trash.circle.fill")
                 .font(.title3)
-                .foregroundStyle(.orange)
+                .foregroundStyle(RecallPalette.warning)
             VStack(alignment: .leading, spacing: 2) {
                 Text("已移到最近删除")
                     .font(.subheadline.weight(.semibold))
                 Text(item.label)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
                     .lineLimit(1)
             }
             Button("撤销", action: undo)
                 .buttonStyle(.borderedProminent)
             Button(action: dismiss) { Image(systemName: "xmark") }
                 .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RecallPalette.secondary)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().stroke(.quaternary, lineWidth: 1))
-        .shadow(color: .black.opacity(0.16), radius: 14, y: 6)
+        .overlay(Capsule().stroke(RecallPalette.border, lineWidth: 1))
+        .shadow(color: RecallPalette.shadow.opacity(0.16), radius: 14, y: 6)
     }
 }
 
@@ -181,7 +191,7 @@ private struct NoticeBanner: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
+                .foregroundStyle(RecallPalette.accent)
             Text(text)
                 .font(.subheadline)
                 .lineLimit(3)
@@ -194,12 +204,12 @@ private struct NoticeBanner: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
+                .stroke(RecallPalette.border.opacity(0.6), lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.14), radius: 12, y: 5)
+        .shadow(color: RecallPalette.shadow.opacity(0.14), radius: 12, y: 5)
     }
 }
 
@@ -218,7 +228,7 @@ private struct RecordSheet: View {
             Text("记录一个工作节点")
                 .font(.title2.weight(.semibold))
             Text("只有在你确认后才会采集。截图、OCR 与索引默认保存在本机。")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RecallPalette.secondary)
             Picker("事件模板", selection: $selectedTemplate) {
                 ForEach(model.state.rules.filter(\.isEnabled)) { rule in
                     Text(rule.template.title).tag(rule.template)
@@ -368,23 +378,23 @@ private struct TimelineView: View {
         HStack(alignment: .center, spacing: 18) {
             Image(systemName: "clock.arrow.circlepath")
                 .font(.title2.weight(.semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(RecallPalette.onAccent)
                 .frame(width: 46, height: 46)
-                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14))
+                .background(RecallPalette.accent, in: RoundedRectangle(cornerRadius: 14))
             VStack(alignment: .leading, spacing: 5) {
                 Text("记忆时间线")
                     .font(.title2.weight(.semibold))
                 Text("按天回看本地记录；每条内容都可以追溯和删除。")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
             Spacer(minLength: 20)
             Label("本地优先", systemImage: "lock.fill")
                 .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RecallPalette.secondary)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .background(.quaternary, in: Capsule())
+                .background(RecallPalette.sidebar, in: Capsule())
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) {
                     isManaging.toggle()
@@ -411,15 +421,15 @@ private struct TimelineView: View {
             HStack(alignment: .top, spacing: 18) {
                 Image(systemName: "tray.and.arrow.down.fill")
                     .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(RecallPalette.accent)
                     .frame(width: 58, height: 58)
-                    .background(Color.accentColor.opacity(0.11), in: RoundedRectangle(cornerRadius: 18))
+                    .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 18))
                 VStack(alignment: .leading, spacing: 6) {
                     Text("从第一条本地记录开始")
                         .font(.title3.weight(.semibold))
                     Text("完成屏幕录制授权后，启用的记录事件产生的内容会显示在这里。所有截图、OCR 和索引默认保存在这台 Mac 上。")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -458,13 +468,13 @@ private struct TimelineView: View {
                 .buttonStyle(.borderedProminent)
                 Text("你随时可以在“隐私与模型”中暂停采集或删除本地数据。")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
         }
         .padding(28)
         .frame(maxWidth: 820, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22))
-        .overlay(RoundedRectangle(cornerRadius: 22).stroke(.quaternary, lineWidth: 1))
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 22))
+        .overlay(RoundedRectangle(cornerRadius: 22).stroke(RecallPalette.border, lineWidth: 1))
         .padding(.horizontal, 32)
         .padding(.top, 20)
         .frame(maxWidth: .infinity, alignment: .top)
@@ -474,14 +484,14 @@ private struct TimelineView: View {
         VStack(spacing: 10) {
             Image(systemName: isSearching ? "magnifyingglass" : "calendar.badge.clock")
                 .font(.system(size: 28, weight: .medium))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(RecallPalette.accent)
             Text(isSearching ? "当天没有匹配的记录" : "当天没有记录")
                 .font(.headline)
             Text(isSearching
                  ? "搜索只作用于当前选择的日期，可更换关键词或切换日期。"
                  : "\(dayTitle(for: selectedDay)) 暂无本地记录，可通过上方日期栏查看其他日期。")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RecallPalette.secondary)
             if !Calendar.current.isDateInToday(selectedDay) {
                 Button("回到今天") { selectDay(.now) }
                     .buttonStyle(.bordered)
@@ -508,7 +518,7 @@ private struct TimelineView: View {
                             .fontWeight(.medium)
                         Image(systemName: "chevron.down")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(RecallPalette.secondary)
                     }
                 }
                 .buttonStyle(.bordered)
@@ -538,7 +548,7 @@ private struct TimelineView: View {
 
                 Label("\(selectedDayCaptures.count) 条记录", systemImage: "doc.text")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
 
             if !availableDayOptions.isEmpty {
@@ -569,18 +579,18 @@ private struct TimelineView: View {
                     Text("\(option.count) 条")
                 }
                 .font(.caption)
-                .foregroundStyle(isSelected ? Color.white.opacity(0.82) : Color.secondary)
+                .foregroundStyle(isSelected ? RecallPalette.onAccent.opacity(0.82) : RecallPalette.secondary)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .foregroundStyle(isSelected ? RecallPalette.onAccent : RecallPalette.text)
             .background(
-                isSelected ? Color.accentColor : Color(nsColor: .controlBackgroundColor),
+                isSelected ? RecallPalette.accent : RecallPalette.surface,
                 in: RoundedRectangle(cornerRadius: 10, style: .continuous)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(isSelected ? Color.clear : Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
+                    .stroke(isSelected ? Color.clear : RecallPalette.border.opacity(0.6), lineWidth: 1)
             }
         }
         .buttonStyle(.plain)
@@ -684,15 +694,15 @@ private struct TimelineEmptyStateStep: View {
         HStack(alignment: .top, spacing: 9) {
             Text(number)
                 .font(.caption.weight(.bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(RecallPalette.onAccent)
                 .frame(width: 22, height: 22)
-                .background(Color.accentColor, in: Circle())
+                .background(RecallPalette.accent, in: Circle())
             VStack(alignment: .leading, spacing: 4) {
                 Label(title, systemImage: icon)
                     .font(.subheadline.weight(.semibold))
                 Text(detail)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -739,16 +749,16 @@ private struct TimelineDaySection: View {
                             .font(.headline)
                         Text(isSearchResult ? "命中 \(group.captures.count) 条" : "\(group.captures.count) 条记录")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(RecallPalette.secondary)
                     }
                     Spacer()
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption.weight(.bold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-                .background(Color(nsColor: .windowBackgroundColor))
+                .background(RecallPalette.background)
             }
             .buttonStyle(.plain)
             .contentShape(Rectangle())
@@ -772,7 +782,7 @@ private struct CaptureRow: View {
                 Button { onToggleSelection(capture) } label: {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                         .font(.title3)
-                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                        .foregroundStyle(isSelected ? RecallPalette.accent : RecallPalette.secondary)
                 }
                 .buttonStyle(.plain)
             }
@@ -782,7 +792,7 @@ private struct CaptureRow: View {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: capture.imageRelativePath == nil ? "doc.text" : "rectangle.on.rectangle")
                         .frame(width: 34, height: 34)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 8))
                     VStack(alignment: .leading, spacing: 5) {
                         HStack {
                             Text(presentation.title)
@@ -791,36 +801,36 @@ private struct CaptureRow: View {
                             if capture.isRedacted {
                                 Label("已脱敏", systemImage: "lock.fill")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(RecallPalette.secondary)
                             }
                         }
                         Text(presentation.summary)
                             .lineLimit(2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(RecallPalette.secondary)
                         HStack(spacing: 8) {
                             Text(capture.createdAt.formatted(date: .omitted, time: .shortened))
                             if let source = capture.sourceAppName { Text(source) }
                             Text(capture.eventTemplate.title)
                         }
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(RecallPalette.secondary)
                         if !presentation.tags.isEmpty {
                             HStack(spacing: 6) {
                                 ForEach(presentation.tags.prefix(3), id: \.self) { tag in
                                     Text(tag).lineLimit(1)
                                         .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(.quaternary, in: Capsule())
+                                        .background(RecallPalette.sidebar, in: Capsule())
                                 }
                             }
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(RecallPalette.secondary)
                         }
                     }
                     Spacer(minLength: 8)
                     if !isManaging {
                         Image(systemName: "chevron.right")
                             .font(.caption)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(RecallPalette.secondary)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -853,14 +863,14 @@ private struct CaptureDeletionSheet: View {
             HStack(spacing: 14) {
                 Image(systemName: "trash.slash.fill")
                     .font(.title2)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(RecallPalette.warning)
                     .frame(width: 48, height: 48)
-                    .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                    .background(RecallPalette.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
                 VStack(alignment: .leading, spacing: 4) {
                     Text(captures.count == 1 ? "删除这条记忆？" : "删除 \(captures.count) 条记忆？")
                         .font(.title2.weight(.semibold))
                     Text("内容会立即退出搜索与问一问，并在最近删除中保留 7 天。")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                 }
             }
 
@@ -872,7 +882,7 @@ private struct CaptureDeletionSheet: View {
             Toggle("以后也忽略相似内容", isOn: $suppressSimilar)
             Text("开启后会在本机保存内容特征和来源应用，用于拦截相似采集；可在“隐私与模型”中删除规则。")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RecallPalette.secondary)
 
             HStack {
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -903,13 +913,13 @@ private struct CaptureDeletionSheet: View {
             }
         }
         .padding(16)
-        .background(Color.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
+        .background(RecallPalette.warning.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
     }
 
     private func impactLine(_ title: String, _ count: Int, _ icon: String) -> some View {
         Label("\(title) · \(count)", systemImage: icon)
             .font(.subheadline)
-            .foregroundStyle(count == 0 ? Color.secondary : Color.primary)
+            .foregroundStyle(count == 0 ? RecallPalette.secondary : RecallPalette.text)
     }
 }
 
@@ -940,7 +950,7 @@ private struct ChatView: View {
 
     var body: some View {
         ZStack {
-            Color(nsColor: .windowBackgroundColor)
+            RecallPalette.background
                 .ignoresSafeArea()
             VStack(spacing: 0) {
                 chatHeader
@@ -964,15 +974,15 @@ private struct ChatView: View {
         HStack(spacing: 12) {
             Image(systemName: "sparkle")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(RecallPalette.onAccent)
                 .frame(width: 30, height: 30)
-                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 9))
+                .background(RecallPalette.accent, in: RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 2) {
                 Text("问一问")
                     .font(.system(size: 16, weight: .semibold))
                 Text("基于你的本地记忆与可追溯来源")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
             Spacer()
             HStack(spacing: 6) {
@@ -980,14 +990,14 @@ private struct ChatView: View {
                 Text(isCloudModel ? model.state.llmConfiguration.provider.title : "本地模式")
             }
             .font(.caption.weight(.medium))
-            .foregroundStyle(isCloudModel ? Color.accentColor : Color.secondary)
+            .foregroundStyle(isCloudModel ? RecallPalette.accent : RecallPalette.secondary)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(.quaternary, in: Capsule())
+            .background(RecallPalette.sidebar, in: Capsule())
             if model.state.conversationSummary != nil {
                 Label("长对话已压缩", systemImage: "text.compress")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
         }
         .padding(.horizontal, 32)
@@ -1035,11 +1045,11 @@ private struct ChatView: View {
                         } label: {
                             Image(systemName: "arrow.down")
                                 .font(.system(size: 16, weight: .medium))
-                                .foregroundStyle(.indigo)
+                                .foregroundStyle(RecallPalette.accent)
                                 .frame(width: 36, height: 36)
-                                .background(Color(nsColor: .controlBackgroundColor), in: Circle())
-                                .overlay(Circle().stroke(Color(nsColor: .separatorColor).opacity(0.65), lineWidth: 1))
-                                .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+                                .background(RecallPalette.surface, in: Circle())
+                                .overlay(Circle().stroke(RecallPalette.border.opacity(0.65), lineWidth: 1))
+                                .shadow(color: RecallPalette.shadow.opacity(0.12), radius: 4, y: 2)
                                 .contentShape(Circle())
                         }
                         .buttonStyle(.plain)
@@ -1119,14 +1129,14 @@ private struct ChatWelcomeView: View {
             Spacer()
             Image(systemName: "brain.head.profile")
                 .font(.system(size: 36, weight: .light))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(RecallPalette.accent)
                 .frame(width: 76, height: 76)
-                .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 24))
+                .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 24))
             VStack(spacing: 8) {
                 Text("今天想回忆什么？")
                     .font(.system(size: 28, weight: .semibold))
                 Text("Recall 会先检索相关记忆，再给出带来源的回答。")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 ForEach(suggestions, id: \.0) { suggestion in
@@ -1135,19 +1145,19 @@ private struct ChatWelcomeView: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 9) {
                             Image(systemName: suggestion.1)
-                                .foregroundStyle(Color.accentColor)
+                                .foregroundStyle(RecallPalette.accent)
                             Text(suggestion.0)
                                 .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(RecallPalette.text)
                             Text(suggestion.2)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(RecallPalette.secondary)
                                 .multilineTextAlignment(.leading)
                         }
                         .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
                         .padding(16)
-                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
-                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.quaternary, lineWidth: 1))
+                        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(RecallPalette.border, lineWidth: 1))
                     }
                     .buttonStyle(.plain)
                 }
@@ -1169,7 +1179,7 @@ private struct RecallMessageCard: View {
             if message.role == .system {
                 Label(displayedContent, systemImage: "terminal")
                     .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
                     .textSelection(.enabled)
                     .padding(.vertical, 12)
                     .frame(maxWidth: .infinity)
@@ -1184,9 +1194,9 @@ private struct RecallMessageCard: View {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "sparkle")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(RecallPalette.onAccent)
                         .frame(width: 28, height: 28)
-                        .background(Color.accentColor, in: Circle())
+                        .background(RecallPalette.accent, in: Circle())
                     messageBody
                     Spacer(minLength: 24)
                 }
@@ -1199,17 +1209,17 @@ private struct RecallMessageCard: View {
             HStack {
                 Text(message.role == .user ? "你" : "Recall")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
                 Spacer()
                 Text(message.createdAt.formatted(date: .omitted, time: .shortened))
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
             if message.role == .assistant {
                 MarkdownParagraphText(markdown: isTyping ? displayedContent : ChatResponseFormatter().format(displayedContent))
                 if isTyping {
                     RoundedRectangle(cornerRadius: 1)
-                        .fill(Color.accentColor)
+                        .fill(RecallPalette.accent)
                         .frame(width: 2, height: 16)
                         .opacity(displayedContent.isEmpty ? 0.65 : 1)
                 }
@@ -1222,8 +1232,8 @@ private struct RecallMessageCard: View {
         }
         .padding(16)
         .frame(maxWidth: message.role == .user ? 590 : .infinity, alignment: .leading)
-        .background(message.role == .user ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(message.role == .user ? Color.clear : Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1))
+        .background(message.role == .user ? RecallPalette.selected : RecallPalette.surface, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(message.role == .user ? Color.clear : RecallPalette.border.opacity(0.6), lineWidth: 1))
     }
 }
 
@@ -1265,11 +1275,11 @@ private struct ThinkingCard: View {
             ProgressView().controlSize(.small)
             Text("Recall 正在检索记忆并组织回答…")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RecallPalette.secondary)
             Spacer()
         }
         .padding(16)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 16))
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
     }
 }
 
@@ -1322,7 +1332,7 @@ private struct ChatComposer: View {
                 Button(action: submit) {
                     Image(systemName: isSending && ChatCommand.parse(question) != .clear ? "ellipsis" : "arrow.up")
                         .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(RecallPalette.onAccent)
                         .frame(width: 44, height: 44)
                         .background(sendButtonColor, in: Circle())
                         .contentShape(Circle())
@@ -1336,12 +1346,12 @@ private struct ChatComposer: View {
         .padding(.trailing, 10)
         .padding(.bottom, 10)
         .frame(minHeight: 132, alignment: .top)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .stroke(isFocused ? Color.accentColor.opacity(0.65) : Color(nsColor: .separatorColor).opacity(0.55), lineWidth: isFocused ? 1.5 : 1)
+                .stroke(isFocused ? RecallPalette.accent.opacity(0.65) : RecallPalette.border.opacity(0.55), lineWidth: isFocused ? 1.5 : 1)
         }
-        .shadow(color: .black.opacity(isFocused ? 0.09 : 0.055), radius: isFocused ? 20 : 14, y: 6)
+        .shadow(color: RecallPalette.shadow.opacity(isFocused ? 0.09 : 0.055), radius: isFocused ? 20 : 14, y: 6)
         .animation(.easeOut(duration: 0.16), value: isFocused)
         .frame(maxWidth: 780)
         .overlay(alignment: .top) {
@@ -1375,14 +1385,14 @@ private struct ChatComposer: View {
                             .font(.system(size: 16, weight: .semibold, design: .monospaced))
                         Text(command.detail)
                             .font(.system(size: 14))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(RecallPalette.secondary)
                         Spacer(minLength: 0)
                         Image(systemName: "arrow.turn.down.left")
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(RecallPalette.secondary)
                     }
                     .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                     .padding(.horizontal, 12)
-                    .background(.quaternary.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
+                    .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
                     .contentShape(RoundedRectangle(cornerRadius: 12))
                 }
                 .buttonStyle(.plain)
@@ -1392,14 +1402,14 @@ private struct ChatComposer: View {
             }
             Text("点击或按 Tab / 回车填入，发送后执行")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RecallPalette.secondary)
                 .padding(.horizontal, 12)
                 .padding(.bottom, 4)
         }
         .padding(8)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 1))
-        .shadow(color: .black.opacity(0.12), radius: 18, y: 6)
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(RecallPalette.border.opacity(0.5), lineWidth: 1))
+        .shadow(color: RecallPalette.shadow.opacity(0.12), radius: 18, y: 6)
     }
 
     private func insertCommand(_ command: ChatCommand) {
@@ -1409,7 +1419,7 @@ private struct ChatComposer: View {
     }
 
     private var sendButtonColor: Color {
-        canSend ? Color.accentColor : Color.secondary.opacity(0.45)
+        canSend ? RecallPalette.accent : RecallPalette.secondary.opacity(0.45)
     }
 
     private func submit() {
@@ -1449,7 +1459,7 @@ private struct DailySummariesView: View {
             .padding(.vertical, 34)
             .frame(maxWidth: .infinity)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(RecallPalette.background)
         .onAppear {
             if expandedSummaryID == nil {
                 expandedSummaryID = summaries.first?.id
@@ -1468,12 +1478,12 @@ private struct DailySummariesView: View {
                         .font(.title3.weight(.semibold))
                     Text("默认展开最新一条；其余以紧凑预览显示，点击即可查看全文。")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                 }
                 Spacer()
                 Text("共 \(summaries.count) 条")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
             ForEach(visibleSummaries) { summary in
                 DailySummaryCard(
@@ -1508,16 +1518,16 @@ private struct DailySummariesView: View {
                 Label("每日总结", systemImage: "calendar.badge.clock")
                     .font(.system(size: 22, weight: .semibold))
                 Text("在指定时间汇总前一天的显式记录；仅在你已允许云端文本使用且配置 API Key 时发送最小化、已脱敏的文本片段。")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if model.state.dailySummarySettings.isEnabled {
                     Label("已开启：每天 \(dailySummaryTimeText) 自动汇总前一天", systemImage: "checkmark.circle.fill")
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.green)
+                        .foregroundStyle(RecallPalette.accent)
                 } else {
                     Label("自动总结当前关闭，可在“隐私与模型”中设置时间并开启", systemImage: "pause.circle")
                         .font(.subheadline)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(RecallPalette.warning)
                 }
             }
             Spacer(minLength: 20)
@@ -1530,24 +1540,24 @@ private struct DailySummariesView: View {
             .disabled(model.isThinking)
         }
         .padding(22)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 20))
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(.quaternary, lineWidth: 1))
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 20))
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(RecallPalette.border, lineWidth: 1))
     }
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 12) {
             Image(systemName: "text.badge.plus")
                 .font(.system(size: 28))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(RecallPalette.accent)
             Text("还没有每日总结")
                 .font(.title2.weight(.semibold))
             Text("先记录一些工作节点；你可以点击“立即总结昨天”，也可以在“隐私与模型”中设置每天自动执行的时间。")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RecallPalette.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(28)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 20))
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(.quaternary, lineWidth: 1))
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 20))
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(RecallPalette.border, lineWidth: 1))
     }
 
     private var dailySummaryTimeText: String {
@@ -1606,7 +1616,7 @@ private struct DailySummaryCard: View {
                 Button(action: onToggle) {
                     HStack(alignment: .top, spacing: 11) {
                         Image(systemName: isExpanded ? "chevron.down.circle.fill" : "chevron.right.circle")
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(RecallPalette.accent)
                             .font(.title3)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(summary.day.formatted(.dateTime.year().month().day().weekday()))
@@ -1618,7 +1628,7 @@ private struct DailySummaryCard: View {
                                 }
                             }
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(RecallPalette.secondary)
                         }
                         Spacer(minLength: 8)
                     }
@@ -1654,14 +1664,14 @@ private struct DailySummaryCard: View {
             } else {
                 Text(preview)
                     .font(.system(size: 15))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
                     .lineLimit(2)
                     .padding(.leading, 34)
             }
         }
         .padding(isExpanded ? 19 : 15)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(isExpanded ? Color.accentColor.opacity(0.28) : Color.gray.opacity(0.22), lineWidth: 1))
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(isExpanded ? RecallPalette.accent.opacity(0.28) : RecallPalette.border, lineWidth: 1))
         .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
@@ -1700,7 +1710,7 @@ private struct DailySummaryItemsView: View {
                                 if !item.detail.isEmpty, item.detail != item.title {
                                     Text(item.detail)
                                         .font(.system(size: 15))
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(RecallPalette.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
@@ -1714,11 +1724,11 @@ private struct DailySummaryItemsView: View {
 
     private func color(for section: DailySummarySection) -> Color {
         switch section {
-        case .headline, .nextActions: .blue
-        case .progress: .green
-        case .openLoops, .todos, .actions: .orange
-        case .insights: .purple
-        case .recent: .teal
+        case .headline, .nextActions: RecallPalette.accent
+        case .progress: RecallPalette.accent
+        case .openLoops, .todos, .actions: RecallPalette.warning
+        case .insights: RecallPalette.accent
+        case .recent: RecallPalette.accent
         }
     }
 }
@@ -1740,14 +1750,14 @@ private struct DailySummaryManagementSheet: View {
             HStack(alignment: .top, spacing: 14) {
                 Image(systemName: "slider.horizontal.3")
                     .font(.title2)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(RecallPalette.onAccent)
                     .frame(width: 46, height: 46)
-                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14))
+                    .background(RecallPalette.accent, in: RoundedRectangle(cornerRadius: 14))
                 VStack(alignment: .leading, spacing: 4) {
                     Text("管理每日总结")
                         .font(.title2.weight(.semibold))
                     Text(summary.day.formatted(.dateTime.year().month().day().weekday()))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                 }
                 Spacer()
                 Button("完成") { dismiss() }
@@ -1770,11 +1780,11 @@ private struct DailySummaryManagementSheet: View {
                                         VStack(alignment: .leading, spacing: 4) {
                                             Text(item.title).font(.system(size: 15, weight: .semibold))
                                             if !item.detail.isEmpty, item.detail != item.title {
-                                                Text(item.detail).font(.system(size: 14)).foregroundStyle(.secondary).lineLimit(3)
+                                                Text(item.detail).font(.system(size: 14)).foregroundStyle(RecallPalette.secondary).lineLimit(3)
                                             }
                                             Label("关联 \(item.evidenceIDs.count) 条原始记忆", systemImage: "link")
                                                 .font(.caption)
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(RecallPalette.secondary)
                                         }
                                         Spacer()
                                         Button {
@@ -1798,8 +1808,8 @@ private struct DailySummaryManagementSheet: View {
                                         .fixedSize()
                                     }
                                     .padding(14)
-                                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(.quaternary, lineWidth: 1))
+                                    .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
+                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(RecallPalette.border, lineWidth: 1))
                                 }
                             }
                         }
@@ -1809,15 +1819,15 @@ private struct DailySummaryManagementSheet: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("只删除这份总结").font(.headline)
                             Text("原始记录会保留，之后仍可重新生成。")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.caption).foregroundStyle(RecallPalette.secondary)
                         }
                         Spacer()
                         Button("删除总结", role: .destructive) { isConfirmingSummaryDeletion = true }
                             .buttonStyle(.bordered)
                     }
                     .padding(16)
-                    .background(Color.red.opacity(0.04), in: RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.red.opacity(0.18), lineWidth: 1))
+                    .background(RecallPalette.danger.opacity(0.04), in: RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(RecallPalette.danger.opacity(0.18), lineWidth: 1))
                 }
                 .padding(24)
             }
@@ -1867,14 +1877,14 @@ private struct SummarySourceDeletionSheet: View {
             HStack(alignment: .top, spacing: 14) {
                 Image(systemName: "trash.slash.fill")
                     .font(.title2)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(RecallPalette.warning)
                     .frame(width: 48, height: 48)
-                    .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                    .background(RecallPalette.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
                 VStack(alignment: .leading, spacing: 4) {
                     Text("删除内容和原始记录？")
                         .font(.title2.weight(.semibold))
                     Text(item.title)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                         .lineLimit(2)
                 }
             }
@@ -1883,10 +1893,10 @@ private struct SummarySourceDeletionSheet: View {
                 Label("本次会删除 \(sourceCount) 条来源记录", systemImage: "doc.text.magnifyingglass")
                     .font(.headline)
                 Text("相关内容会退出时间线、搜索、问一问和派生提醒，并在“最近删除”中保留 7 天。")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
             .padding(16)
-            .background(Color.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
+            .background(RecallPalette.warning.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
 
             Picker("为什么删除（仅用于本机整理）", selection: $reason) {
                 ForEach(MemoryDeletionReason.allCases) { Text($0.title).tag($0) }
@@ -1896,7 +1906,7 @@ private struct SummarySourceDeletionSheet: View {
                 Toggle("以后不再记录类似内容", isOn: $suppressSimilar)
                 Text("可选。它只影响之后的新采集，不会改变本次删除的内容和范围；过滤规则可在“隐私与模型”中移除。")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
 
             HStack {
@@ -1925,7 +1935,7 @@ private struct SummaryItemSourceSheet: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("记忆来源").font(.title2.weight(.semibold))
-                    Text(item.title).foregroundStyle(.secondary).lineLimit(2)
+                    Text(item.title).foregroundStyle(RecallPalette.secondary).lineLimit(2)
                 }
                 Spacer()
                 Button("关闭") { dismiss() }.buttonStyle(.borderedProminent)
@@ -1941,17 +1951,19 @@ private struct SummaryItemSourceSheet: View {
                             Text(capture.sourceAppName ?? capture.eventTemplate.title).font(.headline)
                             Spacer()
                             Text(capture.createdAt.formatted(date: .abbreviated, time: .shortened))
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.caption).foregroundStyle(RecallPalette.secondary)
                         }
                         Text(capture.summary ?? capture.ocrText)
                             .font(.system(size: 15))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(RecallPalette.secondary)
                             .lineLimit(5)
                             .textSelection(.enabled)
                     }
                     .padding(.vertical, 6)
                 }
                 .listStyle(.inset)
+                .scrollContentBackground(.hidden)
+                .background(RecallPalette.background)
             }
         }
         .frame(width: 680, height: 520)
@@ -1970,37 +1982,37 @@ private struct DailyBriefingView: View {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "scope")
                     .font(.title2)
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(RecallPalette.accent)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("今天推进了什么").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text("今天推进了什么").font(.caption.weight(.semibold)).foregroundStyle(RecallPalette.secondary)
                     Text(clean(briefing.headline)).font(.system(size: 15, weight: .semibold))
                 }
             }
             if !briefing.progress.isEmpty {
-                briefingSection("具体进展", icon: "checkmark.seal.fill", color: .green, items: briefing.progress, empty: "")
+                briefingSection("具体进展", icon: "checkmark.seal.fill", color: RecallPalette.accent, items: briefing.progress, empty: "")
             }
             if !actionItems.isEmpty {
-                briefingSection("接下来要处理", icon: "checklist", color: .orange, items: actionItems, empty: "")
+                briefingSection("接下来要处理", icon: "checklist", color: RecallPalette.warning, items: actionItems, empty: "")
             }
 
             let visibleInsights = briefing.insights.filter { $0.confidence >= 0.75 }
             if !visibleInsights.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
-                    sectionTitle("值得留意", icon: "sparkles", color: .purple)
+                    sectionTitle("值得留意", icon: "sparkles", color: RecallPalette.accent)
                     ForEach(visibleInsights) { insight in
                         VStack(alignment: .leading, spacing: 7) {
                             Text(clean(insight.title))
                                 .font(.system(size: 15, weight: .semibold))
-                            Text(clean(insight.detail)).font(.system(size: 15)).foregroundStyle(.secondary)
+                            Text(clean(insight.detail)).font(.system(size: 15)).foregroundStyle(RecallPalette.secondary)
                             if let recommendation = insight.recommendation {
                                 Label(clean(recommendation), systemImage: "arrow.right.circle.fill")
                                     .font(.system(size: 15, weight: .medium))
-                                    .foregroundStyle(Color.accentColor)
+                                    .foregroundStyle(RecallPalette.accent)
                             }
                             insightFeedbackControls(insight)
                         }
                         .padding(12)
-                        .background(Color.purple.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
+                        .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 12))
                     }
                 }
             }
@@ -2014,12 +2026,12 @@ private struct DailyBriefingView: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle(title, icon: icon, color: color)
             if items.isEmpty {
-                Text(empty).font(.system(size: 15)).foregroundStyle(.secondary)
+                Text(empty).font(.system(size: 15)).foregroundStyle(RecallPalette.secondary)
             } else {
                 ForEach(items) { item in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(clean(item.title)).font(.system(size: 15, weight: .semibold))
-                        Text(clean(item.detail)).font(.system(size: 15)).foregroundStyle(.secondary)
+                        Text(clean(item.detail)).font(.system(size: 15)).foregroundStyle(RecallPalette.secondary)
                     }
                     .padding(.leading, 2)
                 }
@@ -2047,10 +2059,10 @@ private struct DailyBriefingView: View {
     private func insightFeedbackControls(_ insight: PersonalInsight) -> some View {
         if let rating = feedback[insight.id] {
             Label(feedbackTitle(rating), systemImage: "checkmark.circle.fill")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(RecallPalette.secondary)
         } else {
             HStack(spacing: 14) {
-                Text("这个判断准确吗？").font(.caption).foregroundStyle(.secondary)
+                Text("这个判断准确吗？").font(.caption).foregroundStyle(RecallPalette.secondary)
                 Button("准确") { onReviewInsight(insight, .accurate) }
                 Button("部分准确") { onReviewInsight(insight, .partiallyAccurate) }
                 Button("不准确") { onReviewInsight(insight, .inaccurate) }
@@ -2064,12 +2076,12 @@ private struct DailyBriefingView: View {
     private var routineReview: some View {
         if !briefing.routineCandidates.isEmpty {
             VStack(alignment: .leading, spacing: 9) {
-                sectionTitle("可学习的个人规则", icon: "wand.and.stars", color: .teal)
+                sectionTitle("可学习的个人规则", icon: "wand.and.stars", color: RecallPalette.accent)
                 ForEach(briefing.routineCandidates) { routine in
                     HStack(alignment: .top, spacing: 10) {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(clean(routine.title)).font(.system(size: 15, weight: .semibold))
-                            Text(clean("\(routine.trigger)，\(routine.suggestedAction)")).font(.system(size: 15)).foregroundStyle(.secondary)
+                            Text(clean("\(routine.trigger)，\(routine.suggestedAction)")).font(.system(size: 15)).foregroundStyle(RecallPalette.secondary)
                         }
                         Spacer()
                         let status = routineStates[routine.id] ?? routine.status
@@ -2077,14 +2089,14 @@ private struct DailyBriefingView: View {
                             Button("启用") { onUpdateRoutine(routine, .enabled) }
                             Button("忽略") { onUpdateRoutine(routine, .dismissed) }
                         } else {
-                            Text(status == .enabled ? "已启用" : "已忽略").font(.caption).foregroundStyle(.secondary)
+                            Text(status == .enabled ? "已启用" : "已忽略").font(.caption).foregroundStyle(RecallPalette.secondary)
                         }
                     }
                     .buttonStyle(.borderless)
                 }
             }
             .padding(12)
-            .background(Color.teal.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
+            .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 12))
         }
     }
 
@@ -2151,7 +2163,7 @@ struct MarkdownDocumentView: View {
                     .padding(.leading, 4)
                 case let .orderedList(marker, text):
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(marker).font(.system(size: 15, weight: .semibold)).foregroundStyle(.secondary)
+                        Text(marker).font(.system(size: 15, weight: .semibold)).foregroundStyle(RecallPalette.secondary)
                         inlineText(text).frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.leading, 4)
@@ -2277,7 +2289,7 @@ private struct RemindersView: View {
             .padding(.vertical, 30)
             .frame(maxWidth: .infinity)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(RecallPalette.background)
         .sheet(item: $reminderBeingScheduled) { reminder in
             ReminderScheduleSheet(
                 reminder: reminder,
@@ -2318,15 +2330,15 @@ private struct RemindersView: View {
         HStack(alignment: .center, spacing: 16) {
             Image(systemName: "bell.badge.fill")
                 .font(.title2.weight(.semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(RecallPalette.onAccent)
                 .frame(width: 44, height: 44)
-                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 13))
+                .background(RecallPalette.accent, in: RoundedRectangle(cornerRadius: 13))
             VStack(alignment: .leading, spacing: 5) {
                 Text("提醒")
                     .font(.system(size: 26, weight: .semibold))
                 Text("把未闭环的承诺，在合适的时间重新带回你的注意力。")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
             Spacer(minLength: 20)
             HStack(spacing: 10) {
@@ -2353,16 +2365,16 @@ private struct RemindersView: View {
             }
         }
         .padding(18)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary, lineWidth: 1))
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(RecallPalette.border, lineWidth: 1))
     }
 
     private var reminderOverview: some View {
         HStack(spacing: 12) {
-            ReminderMetric(title: "已过期", value: overdue.count, color: overdue.isEmpty ? .secondary : .red, icon: "exclamationmark.circle")
-            ReminderMetric(title: "今天", value: today.count, color: .blue, icon: "sun.max")
-            ReminderMetric(title: "接下来", value: upcoming.count, color: .teal, icon: "calendar")
-            ReminderMetric(title: "待确认", value: proposed.count, color: .orange, icon: "sparkles")
+            ReminderMetric(title: "已过期", value: overdue.count, color: overdue.isEmpty ? RecallPalette.secondary : RecallPalette.danger, icon: "exclamationmark.circle")
+            ReminderMetric(title: "今天", value: today.count, color: RecallPalette.accent, icon: "sun.max")
+            ReminderMetric(title: "接下来", value: upcoming.count, color: RecallPalette.accent, icon: "calendar")
+            ReminderMetric(title: "待确认", value: proposed.count, color: RecallPalette.warning, icon: "sparkles")
         }
     }
 
@@ -2380,23 +2392,23 @@ private struct RemindersView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(Color.accentColor.opacity(0.075), in: RoundedRectangle(cornerRadius: 14))
+            .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 14))
         case let .completed(eligibleRecordCount, analyzedRecordCount, discoveredCount, completedAt):
             HStack(spacing: 10) {
                 Image(systemName: discoveredCount > 0 ? "checkmark.circle.fill" : "magnifyingglass")
-                    .foregroundStyle(discoveredCount > 0 ? .green : .secondary)
+                    .foregroundStyle(discoveredCount > 0 ? RecallPalette.accent : RecallPalette.secondary)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(discoveredCount > 0 ? "本次分析 \(analyzedRecordCount) 条，发现 \(discoveredCount) 项候选" : "本次分析 \(analyzedRecordCount) 条，暂未发现新的候选")
                         .font(.subheadline.weight(.medium))
                     Text("共 \(eligibleRecordCount) 条记忆参与提醒 · \(completedAt.formatted(date: .omitted, time: .shortened)) · 后台仅处理新增内容")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                 }
                 Spacer()
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background((discoveredCount > 0 ? Color.green : Color.secondary).opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+            .background((discoveredCount > 0 ? RecallPalette.accent : RecallPalette.secondary).opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
         }
     }
 
@@ -2410,15 +2422,15 @@ private struct RemindersView: View {
                             .font(.title3.weight(.semibold))
                         Text("\(scheduled.count)")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(overdue.isEmpty ? Color.accentColor : .red)
+                            .foregroundStyle(overdue.isEmpty ? RecallPalette.accent : RecallPalette.danger)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
-                            .background((overdue.isEmpty ? Color.accentColor : Color.red).opacity(0.12), in: Capsule())
+                            .background((overdue.isEmpty ? RecallPalette.accent : RecallPalette.danger).opacity(0.12), in: Capsule())
                         Spacer()
                         if !overdue.isEmpty {
                             Label("\(overdue.count) 项已过期", systemImage: "exclamationmark.circle.fill")
                                 .font(.caption.weight(.medium))
-                                .foregroundStyle(.red)
+                                .foregroundStyle(RecallPalette.danger)
                         }
                     }
                     ForEach(paged(scheduled, page: scheduledPage)) { reminder in
@@ -2434,10 +2446,10 @@ private struct RemindersView: View {
                             .font(.title3.weight(.semibold))
                         Text("\(proposed.count)")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(RecallPalette.accent)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
-                            .background(Color.accentColor.opacity(0.12), in: Capsule())
+                            .background(RecallPalette.selected, in: Capsule())
                         Spacer()
                         Button("全部忽略", role: .destructive) {
                             isConfirmingDismissAll = true
@@ -2457,10 +2469,10 @@ private struct RemindersView: View {
                             .font(.title3.weight(.semibold))
                         Text("\(completed.count)")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(RecallPalette.secondary)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
-                            .background(.quaternary, in: Capsule())
+                            .background(RecallPalette.sidebar, in: Capsule())
                         Spacer()
                     }
                     ForEach(paged(completed, page: completedPage)) { reminder in
@@ -2511,15 +2523,15 @@ private struct ReminderMetric: View {
                 .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 1) {
                 Text("\(value)").font(.title3.weight(.semibold)).monospacedDigit()
-                Text(title).font(.caption).foregroundStyle(.secondary)
+                Text(title).font(.caption).foregroundStyle(RecallPalette.secondary)
             }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.quaternary, lineWidth: 1))
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(RecallPalette.border, lineWidth: 1))
     }
 }
 
@@ -2540,7 +2552,7 @@ private struct ReminderPagination: View {
                     .disabled(page <= 1)
                 Text("\(page) / \(pageCount)")
                     .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
                 Button("下一页") { page = min(pageCount, page + 1) }
                     .disabled(page >= pageCount)
             }
@@ -2558,12 +2570,12 @@ private struct ReminderWorkflowStep: View {
         HStack(alignment: .top, spacing: 10) {
             Text(number)
                 .font(.caption.weight(.bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(RecallPalette.onAccent)
                 .frame(width: 23, height: 23)
-                .background(Color.accentColor, in: Circle())
+                .background(RecallPalette.accent, in: Circle())
             VStack(alignment: .leading, spacing: 3) {
                 Text(title).font(.subheadline.weight(.semibold))
-                Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(detail).font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2582,19 +2594,19 @@ private struct ReminderEmptyState: View {
         HStack(alignment: .center, spacing: 22) {
             Image(systemName: "checkmark.circle")
                 .font(.system(size: 30, weight: .medium))
-                .foregroundStyle(.green)
+                .foregroundStyle(RecallPalette.accent)
                 .frame(width: 58, height: 58)
-                .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 18))
+                .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 18))
             VStack(alignment: .leading, spacing: 7) {
                 Text("今天没有需要处理的提醒")
                     .font(.title3.weight(.semibold))
                 Text(discoveryDescription)
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
                 if let lastRunAt {
                     Text("上次后台分析：\(lastRunAt.formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(RecallPalette.secondary)
                 }
             }
             Spacer()
@@ -2619,8 +2631,8 @@ private struct ReminderEmptyState: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 22))
-        .overlay(RoundedRectangle(cornerRadius: 22).stroke(.quaternary, lineWidth: 1))
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 22))
+        .overlay(RoundedRectangle(cornerRadius: 22).stroke(RecallPalette.border, lineWidth: 1))
     }
 
     private var discoveryDescription: String {
@@ -2638,9 +2650,9 @@ private struct ReminderFeature: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Image(systemName: icon).foregroundStyle(Color.accentColor)
+            Image(systemName: icon).foregroundStyle(RecallPalette.accent)
             Text(title).font(.caption.weight(.semibold))
-            Text(detail).font(.caption2).foregroundStyle(.secondary)
+            Text(detail).font(.caption2).foregroundStyle(RecallPalette.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -2671,23 +2683,23 @@ private struct ReminderScheduleSheet: View {
                     .font(.title2.weight(.semibold))
                 Text(reminder.title)
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
                     .lineLimit(2)
                 if reminder.status == .scheduled || reminder.status == .snoozed, let currentDate = reminder.dueAt {
                     Text("当前安排：\(currentDate.formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption.weight(.medium))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(RecallPalette.accent)
                 } else if let suggestedDate = reminder.dueAt {
                     Text("已根据记录中的时间线索预填建议时间，你可以直接修改。")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                     Text("建议：\(suggestedDate.formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption.weight(.medium))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(RecallPalette.accent)
                 } else {
                     Text("记录中没有明确时间；已预填明天上午 9:00，请按需要调整。")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                 }
             }
 
@@ -2709,7 +2721,7 @@ private struct ReminderScheduleSheet: View {
             HStack {
                 Text("创建后仍可在“已安排”中取消提醒。")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
                 Spacer()
                 Button("取消") { dismiss() }
                 Button(reminder.status == .scheduled || reminder.status == .snoozed ? "保存修改" : "确认并创建") {
@@ -2744,7 +2756,7 @@ private struct NewReminderSheet: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text("新建提醒").font(.title2.weight(.semibold))
                 Text("直接创建你已经确认的事项，不需要先经过记忆识别。")
-                    .font(.subheadline).foregroundStyle(.secondary)
+                    .font(.subheadline).foregroundStyle(RecallPalette.secondary)
             }
             TextField("要提醒什么", text: $title)
                 .textFieldStyle(.roundedBorder)
@@ -2789,7 +2801,7 @@ private struct ReminderSourceSheet: View {
                         .font(.title2.weight(.semibold))
                     Text(reminder.title)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                         .lineLimit(2)
                 }
                 Spacer()
@@ -2812,7 +2824,7 @@ private struct ReminderSourceSheet: View {
                             Spacer()
                             Text(capture.createdAt.formatted(date: .abbreviated, time: .shortened))
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(RecallPalette.secondary)
                         }
                         Text(capture.summary ?? capture.ocrText)
                             .font(.subheadline)
@@ -2822,6 +2834,8 @@ private struct ReminderSourceSheet: View {
                     .padding(.vertical, 6)
                 }
                 .listStyle(.inset)
+                .scrollContentBackground(.hidden)
+                .background(RecallPalette.background)
             }
         }
         .padding(24)
@@ -2850,10 +2864,10 @@ private struct ReminderCandidateCard: View {
 
     private var statusColor: Color {
         switch reminder.status {
-        case .proposed: .orange
-        case .scheduled, .snoozed: isOverdue ? .red : .accentColor
-        case .completed: .green
-        case .dismissed, .cancelled: .secondary
+        case .proposed: RecallPalette.warning
+        case .scheduled, .snoozed: isOverdue ? RecallPalette.danger : .accentColor
+        case .completed: RecallPalette.accent
+        case .dismissed, .cancelled: RecallPalette.secondary
         }
     }
 
@@ -2878,7 +2892,7 @@ private struct ReminderCandidateCard: View {
                 if !reminder.detail.isEmpty {
                     Text(reminder.detail)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                         .lineLimit(3)
                 }
                 HStack(spacing: 10) {
@@ -2887,7 +2901,7 @@ private struct ReminderCandidateCard: View {
                             Label("\(reminder.sourceCaptureIDs.count) 条来源", systemImage: "link")
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(RecallPalette.accent)
                     }
                     if let dueAt = reminder.dueAt {
                         Label(
@@ -2906,13 +2920,13 @@ private struct ReminderCandidateCard: View {
                     Text(reminder.origin.title)
                 }
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(RecallPalette.secondary)
                 if isActive, deliveryState == .notFound, !isOverdue {
                     ReminderDeliveryBadge(state: deliveryState)
                 } else if reminder.status == .completed {
                     Label("已由你标记完成", systemImage: "checkmark.circle")
                         .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                 }
             }
             Spacer()
@@ -2920,10 +2934,10 @@ private struct ReminderCandidateCard: View {
                 VStack(alignment: .trailing, spacing: 8) {
                     Text(isOverdue ? "已过期" : (reminder.status == .snoozed ? "已稍后" : "已安排"))
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(isOverdue ? .red : .green)
+                        .foregroundStyle(isOverdue ? RecallPalette.danger : RecallPalette.accent)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 6)
-                        .background((isOverdue ? Color.red : Color.green).opacity(0.10), in: Capsule())
+                        .background((isOverdue ? RecallPalette.danger : RecallPalette.accent).opacity(0.10), in: Capsule())
                     Button("标记完成", action: complete)
                         .buttonStyle(.borderedProminent)
                         .font(.caption)
@@ -2954,7 +2968,7 @@ private struct ReminderCandidateCard: View {
                 VStack(alignment: .trailing, spacing: 8) {
                     Text(reminder.status == .completed ? "已完成" : "已取消")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                     Button("从列表移除", action: remove)
                         .buttonStyle(.borderless)
                         .font(.caption)
@@ -2962,8 +2976,8 @@ private struct ReminderCandidateCard: View {
             }
         }
         .padding(18)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.quaternary, lineWidth: 1))
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(RecallPalette.border, lineWidth: 1))
     }
 }
 
@@ -2973,13 +2987,13 @@ private struct ReminderDeliveryBadge: View {
     private var presentation: (text: String, symbol: String, color: Color) {
         switch state {
         case .pending:
-            return ("已写入系统通知队列，等待投递", "clock.badge.checkmark", .blue)
+            return ("已写入系统通知队列，等待投递", "clock.badge.checkmark", RecallPalette.accent)
         case .delivered:
-            return ("已推送到 macOS 通知中心", "checkmark.bubble", .green)
+            return ("已推送到 macOS 通知中心", "checkmark.bubble", RecallPalette.accent)
         case .notFound:
-            return ("未在 macOS 通知队列中找到", "exclamationmark.triangle", .orange)
+            return ("未在 macOS 通知队列中找到", "exclamationmark.triangle", RecallPalette.warning)
         case .none:
-            return ("正在核验 macOS 通知状态", "arrow.triangle.2.circlepath", .secondary)
+            return ("正在核验 macOS 通知状态", "arrow.triangle.2.circlepath", RecallPalette.secondary)
         }
     }
 
@@ -2997,14 +3011,17 @@ private struct EventRulesView: View {
         List {
             Section {
                 Text("勾选你希望 Recall 记录的事件。每一类都可以独立配置采集范围、保留周期和是否用于提醒。裸 Enter 监听不会被默认启用。")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
             Section("事件模板") {
                 ForEach(model.state.rules) { rule in
                     EventRuleRow(rule: rule)
+                        .listRowBackground(RecallPalette.surface)
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(RecallPalette.background)
         .navigationTitle("记录事件")
     }
 }
@@ -3023,7 +3040,7 @@ private struct EventRuleRow: View {
                 )) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(rule.template.title).font(.headline)
-                        Text(rule.template.summary).font(.caption).foregroundStyle(.secondary)
+                        Text(rule.template.summary).font(.caption).foregroundStyle(RecallPalette.secondary)
                     }
                 }
                 Button(expanded ? "收起" : "配置") { expanded.toggle() }
@@ -3033,7 +3050,7 @@ private struct EventRuleRow: View {
                 HStack(spacing: 8) {
                     Label(model.enterKeyMonitorStatus.title, systemImage: model.enterKeyMonitorStatus.symbolName)
                         .font(.caption)
-                        .foregroundStyle(model.enterKeyMonitorStatus == .monitoring ? Color.green : Color.orange)
+                        .foregroundStyle(model.enterKeyMonitorStatus == .monitoring ? RecallPalette.accent : RecallPalette.warning)
                     Spacer()
                     Button("检查跨应用权限") {
                         model.checkEnterKeyMonitor()
@@ -3043,7 +3060,7 @@ private struct EventRuleRow: View {
                 }
                 Text("跨应用触发需同时获得“输入监控”和“辅助功能”授权；实际截图仍需屏幕录制权限。监听不拦截按键，且仅在 Recall 不在前台时触发。")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
             if expanded {
                 EventRuleEditor(rule: rule)
@@ -3123,7 +3140,7 @@ private struct RecallDiagnosticsLogSheet: View {
                         .font(.title2.weight(.semibold))
                     Text("仅包含 Recall 的操作状态与错误代码，不包含 API Key、聊天正文、OCR 文本或截图。")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                 }
                 Spacer()
                 Button("关闭") { dismiss() }
@@ -3146,31 +3163,33 @@ private struct RecallDiagnosticsLogSheet: View {
                                 .foregroundStyle(color(for: entry.level))
                             Text(entry.source)
                                 .font(.caption.weight(.medium))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(RecallPalette.secondary)
                             Spacer()
                             Text(entry.createdAt.formatted(date: .abbreviated, time: .standard))
                                 .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(RecallPalette.secondary)
                         }
                         Text(entry.message)
                             .font(.subheadline)
                         if !entry.metadata.isEmpty {
                             Text(entry.metadata.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: " · "))
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(RecallPalette.secondary)
                                 .textSelection(.enabled)
                         }
                     }
                     .padding(.vertical, 4)
                 }
                 .listStyle(.inset)
+                .scrollContentBackground(.hidden)
+                .background(RecallPalette.background)
             }
 
             Divider()
             HStack {
                 Text("最多保留 200 条；仅保存在此 Mac。")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
                 Spacer()
                 Button("清空日志", role: .destructive) { model.clearDiagnosticLog() }
             }
@@ -3181,9 +3200,9 @@ private struct RecallDiagnosticsLogSheet: View {
 
     private func color(for level: RecallDiagnosticLevel) -> Color {
         switch level {
-        case .info: .secondary
-        case .warning: .orange
-        case .error: .red
+        case .info: RecallPalette.secondary
+        case .warning: RecallPalette.warning
+        case .error: RecallPalette.danger
         }
     }
 
@@ -3238,7 +3257,7 @@ private struct PrivacyAndModelView: View {
                         HStack {
                             Label(model.state.privacy.screenCapturePaused ? "采集已暂停" : "采集由你控制", systemImage: model.state.privacy.screenCapturePaused ? "pause.circle" : "hand.raised.fill")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(RecallPalette.secondary)
                             Spacer()
                             Button("检查屏幕权限") { model.requestScreenRecordingAccess() }
                                 .buttonStyle(.bordered)
@@ -3249,9 +3268,9 @@ private struct PrivacyAndModelView: View {
                         HStack(alignment: .top, spacing: 12) {
                             Image(systemName: activeConfiguration.provider == .anthropicCompatible ? "a.circle.fill" : "o.circle.fill")
                                 .font(.system(size: 25))
-                                .foregroundStyle(Color.accentColor)
+                                .foregroundStyle(RecallPalette.accent)
                                 .frame(width: 42, height: 42)
-                                .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+                                .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 12))
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(activeConfiguration.provider.title)
                                     .font(.headline)
@@ -3259,33 +3278,33 @@ private struct PrivacyAndModelView: View {
                                     .font(.subheadline.weight(.medium))
                                 Text(activeConfiguration.baseURLString)
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(RecallPalette.secondary)
                                     .lineLimit(1)
                                     .textSelection(.enabled)
                             }
                             Spacer()
                             Image(systemName: savedKeyExists ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                                .foregroundStyle(savedKeyExists ? .green : .orange)
+                                .foregroundStyle(savedKeyExists ? RecallPalette.accent : RecallPalette.warning)
                         }
                         Toggle("允许发送已检索的脱敏文本", isOn: privacyBinding(\.cloudUseEnabled))
                         HStack {
                             Text(savedKeyExists ? "连接凭据已保存在本机" : "配置 Key 后才会使用云端模型")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(RecallPalette.secondary)
                             Spacer()
                             Button("编辑连接") { isEditingModelConnection = true }
                                 .buttonStyle(.borderedProminent)
                         }
                     }
 
-                    settingsCard(title: "每日总结", icon: "calendar.badge.clock", tint: .indigo) {
+                    settingsCard(title: "每日总结", icon: "calendar.badge.clock", tint: RecallPalette.accent) {
                         Toggle("每天自动汇总前一天", isOn: dailySummaryEnabledBinding)
                         Toggle("总结完成后发送系统通知", isOn: dailySummaryNotificationBinding)
                             .disabled(!model.state.dailySummarySettings.isEnabled)
                         HStack {
                             Label(model.state.dailySummarySettings.isEnabled ? "已启用" : "当前关闭", systemImage: model.state.dailySummarySettings.isEnabled ? "checkmark.circle.fill" : "pause.circle")
                                 .font(.caption)
-                                .foregroundStyle(model.state.dailySummarySettings.isEnabled ? .green : .secondary)
+                                .foregroundStyle(model.state.dailySummarySettings.isEnabled ? RecallPalette.accent : RecallPalette.secondary)
                             Spacer()
                             DatePicker(
                                 "执行时间",
@@ -3298,19 +3317,19 @@ private struct PrivacyAndModelView: View {
                         }
                         Text("仅汇总前一天已保存的显式记录；通知默认关闭，只有你主动开启后才会请求系统权限。云端模型未启用时会保存本地智能简报。")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(RecallPalette.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    settingsCard(title: "本地诊断", icon: "stethoscope", tint: .orange) {
+                    settingsCard(title: "本地诊断", icon: "stethoscope", tint: RecallPalette.warning) {
                         Text("仅保留权限状态、事件模板、操作结果和错误代码；不包含 API Key、聊天正文、OCR 或截图。")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(RecallPalette.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         HStack {
                             Label("当前 \(model.diagnosticEntries.count) 条", systemImage: "list.bullet.rectangle")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(RecallPalette.secondary)
                             Spacer()
                             Button("查看日志") { isShowingDiagnostics = true }
                                 .buttonStyle(.bordered)
@@ -3322,30 +3341,30 @@ private struct PrivacyAndModelView: View {
 
                 HStack(alignment: .center, spacing: 14) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
+                        .foregroundStyle(RecallPalette.danger)
                         .frame(width: 34, height: 34)
-                        .background(Color.red.opacity(0.11), in: RoundedRectangle(cornerRadius: 10))
+                        .background(RecallPalette.danger.opacity(0.11), in: RoundedRectangle(cornerRadius: 10))
                     VStack(alignment: .leading, spacing: 3) {
                         Text("危险操作")
                             .font(.subheadline.weight(.semibold))
                         Text("清空全部数据不会进入最近删除；仅在确定不再需要任何本地记忆时使用。")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(RecallPalette.secondary)
                     }
                     Spacer()
                     Button("删除全部本地记忆", role: .destructive) { isConfirmingClearAll = true }
                         .buttonStyle(.bordered)
                 }
                 .padding(16)
-                .background(Color.red.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.red.opacity(0.2), lineWidth: 1))
+                .background(RecallPalette.danger.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(RecallPalette.danger.opacity(0.2), lineWidth: 1))
             }
             .frame(maxWidth: 1_100, alignment: .leading)
             .padding(.horizontal, 40)
             .padding(.vertical, 30)
             .frame(maxWidth: .infinity, alignment: .center)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(RecallPalette.background)
         .navigationTitle("隐私与模型")
         .onAppear(perform: load)
         .sheet(isPresented: $isShowingDiagnostics) {
@@ -3391,19 +3410,19 @@ private struct PrivacyAndModelView: View {
                 Spacer()
                 Text("最近删除保留 \(MemoryGovernance.retentionDays) 天")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
             Text("删除的内容会立即退出搜索、问一问、总结和派生提醒；7 天内可恢复。到期时运行中的应用会自动清理，应用关闭时将在下次启动后清理。忽略规则只保存在本机，并在采集时生效。")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RecallPalette.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if model.state.recentlyDeletedMemories.isEmpty && model.state.memorySuppressionRules.isEmpty {
                 HStack(spacing: 12) {
-                    Image(systemName: "checkmark.shield.fill").foregroundStyle(.green)
+                    Image(systemName: "checkmark.shield.fill").foregroundStyle(RecallPalette.accent)
                     Text("暂无最近删除内容或忽略规则。")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                 }
                 .padding(.vertical, 4)
             } else {
@@ -3412,7 +3431,7 @@ private struct PrivacyAndModelView: View {
                         HStack {
                             Text("最近删除").font(.headline)
                             Text("\(model.state.recentlyDeletedMemories.count) 条")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.caption).foregroundStyle(RecallPalette.secondary)
                             Spacer()
                             if model.state.recentlyDeletedMemories.count > 8 {
                                 Button(showsAllRecentlyDeleted ? "收起" : "查看全部") {
@@ -3427,15 +3446,15 @@ private struct PrivacyAndModelView: View {
                                 .prefix(showsAllRecentlyDeleted ? model.state.recentlyDeletedMemories.count : 8)) { item in
                                 HStack(spacing: 12) {
                                     Image(systemName: "trash.circle")
-                                        .foregroundStyle(.orange)
+                                        .foregroundStyle(RecallPalette.warning)
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(item.label).font(.subheadline.weight(.medium)).lineLimit(1)
                                         Text(item.reason.title)
-                                            .font(.caption).foregroundStyle(.secondary)
+                                            .font(.caption).foregroundStyle(RecallPalette.secondary)
                                         Text(item.expiresAt <= .now
                                              ? "已到期，等待永久清理"
                                              : "将于 \(item.expiresAt.formatted(date: .abbreviated, time: .shortened)) 永久删除")
-                                            .font(.caption).foregroundStyle(.secondary)
+                                            .font(.caption).foregroundStyle(RecallPalette.secondary)
                                     }
                                     Spacer()
                                     Button("恢复") { model.restoreRecentlyDeleted(item) }
@@ -3448,7 +3467,7 @@ private struct PrivacyAndModelView: View {
                                         .buttonStyle(.borderless)
                                 }
                                 .padding(12)
-                                .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+                                .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
                             }
                         }
                     }
@@ -3460,10 +3479,10 @@ private struct PrivacyAndModelView: View {
                         Text("以后忽略").font(.headline)
                         ForEach(model.state.memorySuppressionRules.filter(\.isEnabled).prefix(8)) { rule in
                             HStack(spacing: 12) {
-                                Image(systemName: "nosign").foregroundStyle(.secondary)
+                                Image(systemName: "nosign").foregroundStyle(RecallPalette.secondary)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(rule.phrase).font(.subheadline).lineLimit(1)
-                                    Text(rule.reason.title).font(.caption).foregroundStyle(.secondary)
+                                    Text(rule.reason.title).font(.caption).foregroundStyle(RecallPalette.secondary)
                                 }
                                 Spacer()
                                 Button("删除规则", role: .destructive) { model.removeSuppressionRule(rule) }
@@ -3475,23 +3494,23 @@ private struct PrivacyAndModelView: View {
             }
         }
         .padding(20)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary, lineWidth: 1))
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(RecallPalette.border, lineWidth: 1))
     }
 
     private var settingsHeader: some View {
         HStack(alignment: .center, spacing: 16) {
             Image(systemName: "lock.shield.fill")
                 .font(.title2.weight(.semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(RecallPalette.onAccent)
                 .frame(width: 50, height: 50)
-                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 15))
+                .background(RecallPalette.accent, in: RoundedRectangle(cornerRadius: 15))
             VStack(alignment: .leading, spacing: 5) {
                 Text("隐私与模型")
                     .font(.system(size: 26, weight: .semibold))
                 Text("统一管理本地数据边界、模型使用和每日总结。")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 5) {
@@ -3499,11 +3518,11 @@ private struct PrivacyAndModelView: View {
                 Label(model.state.privacy.cloudUseEnabled ? "已允许脱敏文本" : "仅本地模式", systemImage: model.state.privacy.cloudUseEnabled ? "cloud.fill" : "desktopcomputer")
             }
             .font(.caption.weight(.medium))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(RecallPalette.secondary)
         }
         .padding(20)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary, lineWidth: 1))
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(RecallPalette.border, lineWidth: 1))
     }
 
     private func settingsCard<Content: View>(title: String, icon: String, tint: Color = .accentColor, @ViewBuilder content: () -> Content) -> some View {
@@ -3514,8 +3533,8 @@ private struct PrivacyAndModelView: View {
             content()
         }
         .padding(20)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary, lineWidth: 1))
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(RecallPalette.border, lineWidth: 1))
     }
 
     private func load() {
@@ -3619,22 +3638,22 @@ private struct ModelConnectionEditorSheet: View {
             HStack(spacing: 14) {
                 Image(systemName: "cpu.fill")
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(RecallPalette.onAccent)
                     .frame(width: 44, height: 44)
-                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .background(RecallPalette.accent, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 VStack(alignment: .leading, spacing: 4) {
                     Text("编辑模型连接").font(.title2.weight(.semibold))
                     Text("配置与 OpenAI 或 Anthropic 协议兼容的模型服务")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                 }
                 Spacer()
                 Label(savedKeyExists ? "凭据已配置" : "等待配置", systemImage: savedKeyExists ? "checkmark.shield.fill" : "key.horizontal")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(savedKeyExists ? .green : .orange)
+                    .foregroundStyle(savedKeyExists ? RecallPalette.accent : RecallPalette.warning)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background((savedKeyExists ? Color.green : Color.orange).opacity(0.10), in: Capsule())
+                    .background((savedKeyExists ? RecallPalette.accent : RecallPalette.warning).opacity(0.10), in: Capsule())
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
@@ -3653,7 +3672,7 @@ private struct ModelConnectionEditorSheet: View {
                         .labelsHidden()
                     }
                     .padding(16)
-                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                     VStack(alignment: .leading, spacing: 15) {
                         sectionTitle("连接信息", detail: "Key 只保存在本机，不会在重新打开时显示")
@@ -3685,7 +3704,7 @@ private struct ModelConnectionEditorSheet: View {
                                     revealsAPIKey.toggle()
                                 } label: {
                                     Image(systemName: revealsAPIKey ? "eye.slash" : "eye")
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(RecallPalette.secondary)
                                 }
                                 .buttonStyle(.plain)
                                 .help(revealsAPIKey ? "隐藏 API Key" : "显示 API Key")
@@ -3693,8 +3712,8 @@ private struct ModelConnectionEditorSheet: View {
                         }
                     }
                     .padding(16)
-                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.quaternary, lineWidth: 1))
+                    .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(RecallPalette.border, lineWidth: 1))
 
                     HStack(alignment: .center, spacing: 14) {
                         Image(systemName: connectionStatusSymbol)
@@ -3707,7 +3726,7 @@ private struct ModelConnectionEditorSheet: View {
                                 .font(.subheadline.weight(.semibold))
                             Text(connectionStatusDetail)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(RecallPalette.secondary)
                                 .lineLimit(2)
                         }
                         Spacer(minLength: 16)
@@ -3735,7 +3754,7 @@ private struct ModelConnectionEditorSheet: View {
             HStack {
                 Label("保存后，下一次提问立即使用新连接", systemImage: "info.circle")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
                 Spacer()
                 Button("取消") { dismiss() }
                 Button("保存", action: save)
@@ -3768,7 +3787,7 @@ private struct ModelConnectionEditorSheet: View {
     private func sectionTitle(_ title: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).font(.headline)
-            Text(detail).font(.caption).foregroundStyle(.secondary)
+            Text(detail).font(.caption).foregroundStyle(RecallPalette.secondary)
         }
     }
 
@@ -3776,13 +3795,13 @@ private struct ModelConnectionEditorSheet: View {
         VStack(alignment: .leading, spacing: 7) {
             Label(title, systemImage: icon)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RecallPalette.secondary)
             content()
                 .padding(.horizontal, 12)
                 .frame(height: 40)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 1))
+                .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(RecallPalette.border.opacity(0.55), lineWidth: 1))
         }
     }
 
@@ -3852,9 +3871,9 @@ private struct ModelConnectionEditorSheet: View {
     private var connectionStatusColor: Color {
         if isTestingConnection { return .accentColor }
         switch connectionStatus {
-        case .success: return .green
-        case .failure: return .red
-        case .none: return connectionChanged ? .orange : .green
+        case .success: return RecallPalette.accent
+        case .failure: return RecallPalette.danger
+        case .none: return connectionChanged ? RecallPalette.warning : RecallPalette.accent
         }
     }
 

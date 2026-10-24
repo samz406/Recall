@@ -47,7 +47,7 @@ struct TimelineCalendarPopover: View {
                 ForEach(Array(["日", "一", "二", "三", "四", "五", "六"].enumerated()), id: \.offset) { _, label in
                     Text(label)
                         .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RecallPalette.secondary)
                         .frame(maxWidth: .infinity, minHeight: 30)
                         .accessibilityHidden(true)
                 }
@@ -58,7 +58,7 @@ struct TimelineCalendarPopover: View {
         }
         .padding(16)
         .frame(width: 336)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(RecallPalette.background)
         .onExitCommand { dismiss() }
     }
 
@@ -70,7 +70,7 @@ struct TimelineCalendarPopover: View {
         } label: {
             Image(systemName: symbol)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RecallPalette.secondary)
                 .frame(width: 28, height: 30)
                 .contentShape(Rectangle())
         }
@@ -91,12 +91,12 @@ struct TimelineCalendarPopover: View {
             Text("\(calendar.component(.day, from: day))")
                 .font(.system(size: 16, weight: .semibold))
                 .monospacedDigit()
-                .foregroundStyle(isSelected ? Color.white : (isCurrentMonth && !isFuture ? Color.primary : Color.secondary.opacity(0.6)))
+                .foregroundStyle(isSelected ? RecallPalette.onAccent : (isCurrentMonth && !isFuture ? RecallPalette.text : RecallPalette.secondary.opacity(0.6)))
                 .frame(width: 34, height: 34)
-                .background(isSelected ? Color.accentColor : Color.clear, in: Circle())
+                .background(isSelected ? RecallPalette.accent : Color.clear, in: Circle())
                 .overlay {
                     if isToday && !isSelected {
-                        Circle().stroke(Color.accentColor.opacity(0.65), lineWidth: 1)
+                        Circle().stroke(RecallPalette.accent.opacity(0.65), lineWidth: 1)
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 38)

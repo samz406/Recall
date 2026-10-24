@@ -35,7 +35,7 @@ struct MemoryKnowledgeView: View {
             organizationResults
             controls
             if let message = model.memoryMaintenanceMessage {
-                Label(message, systemImage: "info.circle").foregroundStyle(.secondary)
+                Label(message, systemImage: "info.circle").foregroundStyle(RecallPalette.secondary)
             }
             if rows.isEmpty { emptyState }
             ForEach(Array(rows.prefix(visibleCount))) { claim in claimCard(claim) }
@@ -82,18 +82,18 @@ struct MemoryKnowledgeView: View {
     }
     private var introduction: some View {
         HStack(alignment: .top, spacing: 16) {
-            Image(systemName: "brain.head.profile").font(.system(size: 30)).foregroundStyle(.blue)
+            Image(systemName: "brain.head.profile").font(.system(size: 30)).foregroundStyle(RecallPalette.accent)
             VStack(alignment: .leading, spacing: 8) {
                 Text("让每次积累，都在下次用得上").font(.title2.bold())
                 Text("回看保存内容的线索、明确约定、人物信息和历史经验。每条都保留依据，你可以随时停用或忘记。")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(RecallPalette.secondary)
                 if let date = model.state.memoryKnowledge.updatedAt {
-                    Text("最近整理 " + date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                    Text("最近整理 " + date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(RecallPalette.secondary)
                 }
             }
             Spacer(minLength: 0)
         }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
-            .background(.blue.opacity(0.05), in: RoundedRectangle(cornerRadius: 20))
+            .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 20))
     }
     private var controls: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -114,23 +114,23 @@ struct MemoryKnowledgeView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("本地记录与整理结果").font(.headline)
             Text("\(summary.records) 条原始记录 · \(summary.textRecords) 条含文字 · \(summary.attributedRecords) 条带本人归属标记")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundStyle(RecallPalette.secondary)
             Text("\(summary.matters) 个本人事项 · \(summary.references) 个记录主题 · \(summary.agreements) 条约定 · \(summary.people) 个人物线索 · \(summary.experiences) 项经验")
                 .font(.callout).fixedSize(horizontal: false, vertical: true)
             Text("记录线索可用于回顾保存了什么；只有明确的本人表达才能形成偏好，问题、处理与结果齐全才形成经验。记录多不代表每一类都会有结果。")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 16))
+            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
     }
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(search.isEmpty ? "还没有这一类记忆" : "没有找到相关记忆").font(.headline)
             Text(category == 2 ? "目前还没有同时具备问题、处理经过与完成结果的经历。整理操作已完成也可能是零项；你仍可在记录线索中回看保存的内容。" :
                  (category == 3 ? "文字为空、仅有界面菜单或内容被排除时，不会生成线索。可在时间线核对原始文字；明确的本人事项在‘进行中/全部主题’中查看。" : "你可以在问一问里说‘记住：以后工作周报简洁一点’，也可以直接补充约定。普通阅读材料不会被当作你的偏好。"))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RecallPalette.secondary)
             if category != 3 && summary.references > 0 { Button("查看记录线索（\(summary.references) 个主题）") { category = 3 } }
         }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 16))
+            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
     }
     private func claimCard(_ claim: MemoryClaim) -> some View {
         let sourceIDs = claim.sourceIDs
@@ -138,21 +138,21 @@ struct MemoryKnowledgeView: View {
             HStack(alignment: .top) {
                 Text(claim.title).font(.headline).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 16)
-                Text(claim.kind == .reference ? "记录线索" : claim.state.title).font(.caption).foregroundStyle(.secondary)
+                Text(claim.kind == .reference ? "记录线索" : claim.state.title).font(.caption).foregroundStyle(RecallPalette.secondary)
             }
             if claim.content != claim.title { Text(claim.content).textSelection(.enabled) }
             HStack(spacing: 16) {
                 Text(claim.scope.title)
                 Text(claim.kind == .reference ? "保存的内容，归属与实际状态未确认" : (claim.explicit ? "本人明确约定" : "来自本人表达与原始记录"))
                 Text(claim.date.formatted(date: .abbreviated, time: .omitted))
-            }.font(.caption).foregroundStyle(.secondary)
+            }.font(.caption).foregroundStyle(RecallPalette.secondary)
             if claim.state == .conflicted {
                 Text("发现了不同说法，当前不会作为稳定偏好使用。更正后可确定今后使用的版本。")
-                    .font(.callout).foregroundStyle(.orange)
+                    .font(.callout).foregroundStyle(RecallPalette.warning)
             }
             if claim.kind == .experience {
                 Text("保留的是当时记录中的过程与结果；不代表本次问题具有相同原因。")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
             HStack {
                 Menu("查看依据（\(sourceIDs.count)）") {
@@ -168,18 +168,18 @@ struct MemoryKnowledgeView: View {
                 } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
             }
         }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 18))
+            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 18))
     }
     private var topicAliases: some View {
         DisclosureGroup("主题与人物的别名") {
             VStack(alignment: .leading, spacing: 14) {
                 Text("为常用简称或不同叫法建立关联，问一问会据此补查原始记录。")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.callout).foregroundStyle(RecallPalette.secondary)
                 ForEach(Array(entities.prefix(aliasVisibleCount))) { entity in
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(entity.name)
-                            if !entity.aliases.isEmpty { Text(entity.aliases.joined(separator: "、")).font(.caption).foregroundStyle(.secondary) }
+                            if !entity.aliases.isEmpty { Text(entity.aliases.joined(separator: "、")).font(.caption).foregroundStyle(RecallPalette.secondary) }
                         }
                         Spacer()
                         Button("编辑别名") { aliases = entity }
@@ -187,7 +187,7 @@ struct MemoryKnowledgeView: View {
                 }
                 if entities.count > aliasVisibleCount { Button("再显示 20 个主题") { aliasVisibleCount += 20 } }
             }.padding(.top, 16)
-        }.padding(20).background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 16))
+        }.padding(20).background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
     }
     private var retentionSettings: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -199,9 +199,9 @@ struct MemoryKnowledgeView: View {
                 var settings = model.state.memoryKnowledgeSettings; settings.retainExplicitMemories = value; model.updateMemorySettings(settings)
             }))
             Text("后台只整理已保存的文本。原始截图与文本仍按‘记录事件’里的期限清理；明确约定单独保留必要文本依据，直到你停用、忘记或关闭此项。应用关闭时，到期内容会在下次启动后清理。")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(RecallPalette.secondary)
         }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 18))
+            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 18))
     }
 }
 
@@ -220,9 +220,9 @@ private struct MemoryAgreementEditor: View {
         VStack(alignment: .leading, spacing: 18) {
             Text(claim == nil ? "记下一条约定" : "更正记忆").font(.title2.bold())
             Text("写下具体内容与适用范围。更正会保留旧版本，并停止使用依赖旧说法的结果。")
-                .foregroundStyle(.secondary)
-            TextEditor(text: $content).font(.body).frame(height: 150).padding(10)
-                .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 12))
+                .foregroundStyle(RecallPalette.secondary)
+            TextEditor(text: $content).font(.body).scrollContentBackground(.hidden).frame(height: 150).padding(10)
+                .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
             Picker("适用范围", selection: $scope) {
                 ForEach(MemoryScope.allCases.filter { $0 != .conversation }, id: \.self) { Text($0.title).tag($0) }
             }
@@ -262,7 +262,7 @@ private struct MemoryAliasEditor: View {
             Text(entity.name).font(.headline)
             TextField("用逗号分隔，例如：账单导出、报表下载", text: $text).textFieldStyle(.roundedBorder)
             Text("最多 12 个别名，每个 2–60 字。别名只帮助定位内容，不会合并不同人的身份或修改原始事实。")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(RecallPalette.secondary)
             HStack {
                 Spacer(); Button("取消") { dismiss() }
                 Button("保存") { saving = true; Task { if await save(text) { dismiss() }; saving = false } }
