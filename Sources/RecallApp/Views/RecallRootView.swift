@@ -967,6 +967,29 @@ private struct CaptureDeletionSheet: View {
     }
 }
 
+private enum ChatLayout {
+    static let readingWidth: CGFloat = 860
+    static let edgeInset: CGFloat = 32
+    static let avatarSize: CGFloat = 28
+    static let avatarGutter: CGFloat = 40
+    static let textInset: CGFloat = 20
+}
+
+/// Both the scroll document and composer must occupy the viewport before centering
+/// their reading column. Reserve the same avatar gutter on each side at narrow widths.
+private struct ChatReadingColumn<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+
+    var body: some View {
+        content
+            .frame(maxWidth: ChatLayout.readingWidth)
+            .padding(.horizontal, ChatLayout.edgeInset + ChatLayout.avatarGutter)
+            .frame(maxWidth: .infinity)
+    }
+}
+
 private struct ChatView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var question = ""
@@ -1000,7 +1023,9 @@ private struct ChatView: View {
                 chatHeader
                 Divider().opacity(0.55)
                 if model.state.messages.isEmpty {
-                    ChatWelcomeView(onSelect: { question = $0 })
+                    ChatReadingColumn {
+                        ChatWelcomeView(onSelect: { question = $0 })
+                    }
                 } else {
                     messageTimeline
                 }
@@ -1052,24 +1077,24 @@ private struct ChatView: View {
         GeometryReader { viewport in
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(spacing: 16) {
-                        ForEach(model.state.messages) { message in
-                            RecallMessageCard(
-                                message: message,
-                                displayedContent: message.id == model.typingMessageID ? model.typingMessageContent : message.content,
-                                isTyping: message.id == model.typingMessageID
-                            )
-                            .id(message.id)
+                    ChatReadingColumn {
+                        VStack(spacing: 16) {
+                            ForEach(model.state.messages) { message in
+                                RecallMessageCard(
+                                    message: message,
+                                    displayedContent: message.id == model.typingMessageID ? model.typingMessageContent : message.content,
+                                    isTyping: message.id == model.typingMessageID
+                                )
+                                .id(message.id)
+                            }
+                            if model.isThinking {
+                                ThinkingCard()
+                            }
+                            Color.clear
+                                .frame(height: 1)
+                                .id(ChatScrollAnchor.bottom)
                         }
-                        if model.isThinking {
-                            ThinkingCard()
-                        }
-                        Color.clear
-                            .frame(height: 1)
-                            .id(ChatScrollAnchor.bottom)
                     }
-                    .frame(maxWidth: 860)
-                    .padding(.horizontal, 32)
                     .padding(.vertical, 30)
                     .background {
                         GeometryReader { content in
@@ -1082,24 +1107,29 @@ private struct ChatView: View {
                 }
                 .coordinateSpace(name: ChatScrollAnchor.viewport)
                 .onPreferenceChange(ChatContentFrameKey.self) { messageContentFrame = $0 }
-                .overlay(alignment: .bottomTrailing) {
+                .overlay(alignment: .bottom) {
                     if showsLatestButton {
-                        Button {
-                            scrollToLatest(using: proxy)
-                        } label: {
-                            Image(systemName: "arrow.down")
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundStyle(RecallPalette.accent)
-                                .frame(width: 36, height: 36)
-                                .background(RecallPalette.surface, in: Circle())
-                                .overlay(Circle().stroke(RecallPalette.border.opacity(0.65), lineWidth: 1))
-                                .shadow(color: RecallPalette.shadow.opacity(0.12), radius: 4, y: 2)
-                                .contentShape(Circle())
+                        ChatReadingColumn {
+                            HStack {
+                                Spacer(minLength: 0)
+                                Button {
+                                    scrollToLatest(using: proxy)
+                                } label: {
+                                    Image(systemName: "arrow.down")
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundStyle(RecallPalette.accent)
+                                        .frame(width: 36, height: 36)
+                                        .background(RecallPalette.surface, in: Circle())
+                                        .overlay(Circle().stroke(RecallPalette.border.opacity(0.65), lineWidth: 1))
+                                        .shadow(color: RecallPalette.shadow.opacity(0.12), radius: 4, y: 2)
+                                        .contentShape(Circle())
+                                }
+                                .buttonStyle(.plain)
+                                .help("跳到最新消息")
+                                .accessibilityLabel("跳到最新消息")
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .padding(18)
-                        .help("跳到最新消息")
-                        .accessibilityLabel("跳到最新消息")
+                        .padding(.bottom, 18)
                     }
                 }
                 .onAppear {
@@ -1209,7 +1239,6 @@ private struct ChatWelcomeView: View {
             .frame(maxWidth: 720)
             Spacer()
         }
-        .padding(.horizontal, 32)
     }
 }
 
@@ -1235,15 +1264,15 @@ private struct RecallMessageCard: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "sparkle")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(RecallPalette.onAccent)
-                        .frame(width: 28, height: 28)
-                        .background(RecallPalette.accent, in: Circle())
-                    messageBody
-                    Spacer(minLength: 24)
-                }
+                messageBody
+                    .overlay(alignment: .topLeading) {
+                        Image(systemName: "sparkle")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(RecallPalette.onAccent)
+                            .frame(width: ChatLayout.avatarSize, height: ChatLayout.avatarSize)
+                            .background(RecallPalette.accent, in: Circle())
+                            .offset(x: -ChatLayout.avatarGutter)
+                    }
             }
         }
     }
@@ -1274,7 +1303,8 @@ private struct RecallMessageCard: View {
                     .lineSpacing(5)
             }
         }
-        .padding(16)
+        .padding(.horizontal, ChatLayout.textInset)
+        .padding(.vertical, 16)
         .frame(maxWidth: message.role == .user ? 590 : .infinity, alignment: .leading)
         .background(message.role == .user ? RecallPalette.selected : RecallPalette.surface, in: RoundedRectangle(cornerRadius: 18))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(message.role == .user ? Color.clear : RecallPalette.border.opacity(0.6), lineWidth: 1))
@@ -1340,6 +1370,14 @@ private struct ChatComposer: View {
     }
 
     var body: some View {
+        ChatReadingColumn { editor }
+            .padding(.vertical, 16)
+            .onChange(of: question) { _, value in
+                if value != dismissedCommandQuery { dismissedCommandQuery = nil }
+            }
+    }
+
+    private var editor: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topLeading) {
                 TextField("向 Recall 提问…", text: $question, axis: .vertical)
@@ -1386,7 +1424,7 @@ private struct ChatComposer: View {
             }
         }
         .padding(.top, 18)
-        .padding(.leading, 20)
+        .padding(.leading, ChatLayout.textInset)
         .padding(.trailing, 10)
         .padding(.bottom, 10)
         .frame(minHeight: 132, alignment: .top)
@@ -1397,18 +1435,11 @@ private struct ChatComposer: View {
         }
         .shadow(color: RecallPalette.shadow.opacity(isFocused ? 0.09 : 0.055), radius: isFocused ? 20 : 14, y: 6)
         .animation(.easeOut(duration: 0.16), value: isFocused)
-        .frame(maxWidth: 780)
         .overlay(alignment: .top) {
             if !commandSuggestions.isEmpty {
                 commandMenu
                     .alignmentGuide(.top) { $0[.bottom] + 10 }
             }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 32)
-        .padding(.vertical, 16)
-        .onChange(of: question) { _, value in
-            if value != dismissedCommandQuery { dismissedCommandQuery = nil }
         }
     }
 
