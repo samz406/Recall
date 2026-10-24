@@ -160,7 +160,7 @@ public struct MatterMemoryEngine: Sendable {
     public init() {}
 
     public func files(in state: RecallState, calendar: Calendar = .current) -> [MatterFile] {
-        MemoryKnowledgeEngine().files(in: state) ?? observedFiles(in: state, calendar: calendar)
+        MemoryTopicGroup.applying(state.topicGroups, to: MemoryKnowledgeEngine().files(in: state) ?? observedFiles(in: state, calendar: calendar))
     }
 
     func observedFiles(in state: RecallState, calendar: Calendar = .current) -> [MatterFile] {

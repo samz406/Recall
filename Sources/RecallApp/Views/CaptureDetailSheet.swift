@@ -6,6 +6,8 @@ struct CaptureDetailSheet: View {
     @EnvironmentObject private var model: RecallAppModel
     @Environment(\.dismiss) private var dismiss
     let capture: CaptureRecord
+    var embedded = false
+    var close: (() -> Void)? = nil
     @State private var screenshot: NSImage?
     @State private var didCopy = false
 
@@ -23,7 +25,7 @@ struct CaptureDetailSheet: View {
                         .foregroundStyle(RecallPalette.secondary)
                 }
                 Spacer()
-                Button("关闭") { dismiss() }
+                Button("关闭") { if embedded { close?() } else { dismiss() } }
                     .keyboardShortcut(.cancelAction)
             }
             .padding(24)
@@ -95,7 +97,7 @@ struct CaptureDetailSheet: View {
                 .padding(24)
             }
         }
-        .frame(minWidth: 620, idealWidth: 760, minHeight: 480, idealHeight: 680)
+        .frame(minWidth: embedded ? 400 : 620, idealWidth: embedded ? 500 : 760, minHeight: 480, idealHeight: 680)
         .task(id: capture.id) {
             if let path = capture.imageRelativePath {
                 screenshot = NSImage(contentsOf: model.storage.screenshotURL(relativePath: path))

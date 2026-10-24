@@ -11,6 +11,7 @@ struct RecallVerifier {
             try await ReviewFlowVerification.run()
             try await RecordCoverageVerification.run()
             try await ReviewPerformanceVerification.run()
+            try await ProductExperienceVerification.run()
             try verifyMatterFilesAndReview()
             try verifyMatterEvidenceQuality()
             try verifyMatterProgressQualityAndFreshness()
@@ -69,9 +70,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 83 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 91 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 82 integration checks.")
+                print("PASS: RecallVerifier completed 90 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -882,7 +883,7 @@ struct RecallVerifier {
         try expect(generation.sourceCaptureIDs == [source.id], "每日总结混入了非目标日期或旧回顾记录")
         try expect(generation.actions.contains(where: { $0.title.contains("回复客户") }), "每日总结没有提取明确行动事项")
         try expect(generation.actions.first(where: { $0.title.contains("回复客户") })?.priority == .normal, "仅有时间或较高识别分数不应被标为建议先做")
-        try expect(generation.content.contains("今天推进了什么"), "本地每日总结缺少当天进展区块")
+        try expect(generation.content.contains("当天进展"), "本地每日总结缺少当天进展区块")
         try expect(!generation.briefing.headline.isEmpty && !generation.briefing.progress.isEmpty, "每日总结没有形成结构化工作主线")
         try expect(generation.content.contains("接下来要处理"), "本地每日总结缺少统一行动区块")
         try expect(!generation.content.contains("近 14 天提醒与建议"), "时间筛选范围仍被错误展示为独立内容板块")

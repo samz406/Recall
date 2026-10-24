@@ -143,7 +143,7 @@ public enum DailySummaryContentFormatter {
             options: .regularExpression
         ) == nil else { return nil }
         let actionCues = [
-            "完成", "修复", "确认", "联系", "回复", "提交", "评审", "验证", "整理", "安排", "决定", "选择", "下单",
+            "完成", "修复", "确认", "联系", "回复", "提交", "评审", "复核", "核对", "验证", "整理", "安排", "决定", "选择", "下单",
             "输出", "拆分", "关闭", "更新", "跟进", "检查", "创建", "推进", "解决", "补充", "复盘", "记录", "归档",
             "预约", "约", "购买", "发送", "实现", "优化", "发布", "测试", "接入", "迁移", "准备", "讨论", "调研",
             "编写", "阅读", "学习", "练习", "补全", "补偿", "扫描", "复现", "回访", "到期", "过期"
@@ -340,7 +340,7 @@ public enum DailySummarySection: String, Codable, CaseIterable, Identifiable, Ha
 
     public var title: String {
         switch self {
-        case .headline, .progress: "今天推进了什么"
+        case .headline, .progress: "当天进展"
         case .openLoops, .todos, .recent, .nextActions, .actions: "接下来要处理"
         case .insights: "值得留意"
         }
@@ -435,7 +435,7 @@ public enum DailySummaryItemParser {
                 .replacingOccurrences(of: #"^\d+[\.、]\s*"#, with: "", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard cleaned.count >= 2, !isPlaceholder(cleaned) else { continue }
-            let parts = cleaned.split(maxSplits: 1, whereSeparator: { $0 == ":" || $0 == "：" }).map(String.init)
+            let parts = ReviewContentQuality.titleAndDetail(cleaned)
             // 单句就是完整事项，不再按字符数猜测标题。只有明确存在“标题：说明”时才拆分。
             var title = parts.count == 2 ? parts[0] : cleaned
             var detail = parts.count == 2 ? parts[1] : ""
@@ -528,7 +528,7 @@ public enum DailySummaryItemParser {
                 item.title = item.detail
                 item.detail = ""
             }
-            if item.section == .insights, isLowValueInsight(item) { continue }
+            if item.section == .insights, isLowValueInsight(item) || !ReviewContentQuality.usefulInsight(title: item.title, detail: item.detail) { continue }
             item.title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
             item.detail = item.detail.trimmingCharacters(in: .whitespacesAndNewlines)
             repairLegacyPrefixDuplication(in: &item)
@@ -625,7 +625,7 @@ public enum DailySummaryItemParser {
 
     private static func section(for heading: String) -> DailySummarySection? {
         let compact = heading.replacingOccurrences(of: " ", with: "")
-        if compact.contains("今天推进了什么") { return .progress }
+        if compact.contains("当天进展") || compact.contains("今天推进了什么") { return .progress }
         if compact.contains("接下来要处理") { return .actions }
         if compact.contains("值得留意") { return .insights }
         if compact.contains("主线") { return .headline }
@@ -708,6 +708,8 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
     public var briefing: DailyBriefing?
     /// 结构化展示与条目级删除的数据源。Markdown 仅作为兼容与导出格式保留。
     public var items: [DailySummaryItem]
+    public var formatVersion: Int? = 2
+    public var versions: [DailyReviewVersion]? = nil
 
     public init(
         id: UUID = UUID(),
@@ -743,11 +745,13 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, day, createdAt, content, sourceCaptureIDs, todos, generationKind, briefing, items
+        case id, day, createdAt, content, sourceCaptureIDs, todos, generationKind, briefing, items, formatVersion, versions
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        versions = try container.decodeIfPresent([DailyReviewVersion].self, forKey: .versions)
+        formatVersion = try container.decodeIfPresent(Int.self, forKey: .formatVersion)
         id = try container.decode(UUID.self, forKey: .id)
         day = Calendar.current.startOfDay(for: try container.decode(Date.self, forKey: .day))
         createdAt = try container.decode(Date.self, forKey: .createdAt)
@@ -796,6 +800,8 @@ public struct DailySummaryGeneration: Sendable {
     public var todos: [DailySummaryTodo]
     public var actions: [DailySummaryTodo] { todos }
     public var items: [DailySummaryItem]
+    public var formatVersion: Int? = 2
+    public var versions: [DailyReviewVersion]? = nil
     public var generationKind: DailySummaryGenerationKind
     public var briefing: DailyBriefing
     public var consolidation: IntelligenceConsolidation
@@ -1263,7 +1269,7 @@ public struct DailySummaryGenerator: Sendable {
 
         聊天证据中的“[聊天·自己]”表示已识别为用户发送的内容（不一定在右侧），“[聊天·对方]”表示联系人或助手的内容，“[聊天·角色未知]”表示无法可靠判断。只有“自己”的表达才能作为用户的决定、承诺、偏好、经历或已完成事项；“对方”的请求可以形成用户待处理动作，但必须明确是对方提出，绝不能改写成用户已经决定或完成；角色未知时不得推断说话人。Slack 等频道中的发言者姓名只表示显示名称，不能据此认定是当前用户；频道日期与时间标记是可见聊天时间，系统事件和截断片段不能当成用户的行动或个人事实。附有“[内容·资料]”或“[内容·附件]”的内容只是保存、引用的材料或文件卡片，即使由自己发送，也不得据此推断用户的偏好、经历、承诺或完成事项；应使用相邻的明确个人表达作为依据。
 
-        insights 最多 3 项，只写跨记录比较后才成立且对用户有决策价值的判断；单条记录、网页标签、导航文字和模型回复不得直接当作用户事实。不得用知识笔记中的观点解释用户当天的心理或行为，不得因为同一天跑通一两次流程就声称“稳定、可复用”或形成长期方法；这类内容应留在 progress。两件事同日出现不代表同一根因，不得把生产超时与其他功能问题仅凭时间接近推为同一链路。只有跨时间重复出现且证据确实支持的风险、异常、冲突、停滞、稳定规律或会改变后续决策的信号才进入 insights。不要根据截图数量或片段数量推断用户的工作节奏。title 必须是完整、可独立阅读的结论，不能是截断半句、以连接词开头或原始 OCR 残片；detail 只写支撑结论的事实，不要附带伪造的“下一步”。confidence 是仅供后台过滤的 0 到 1 数值，低于 0.75 必须返回空数组，正文标题禁止出现“可能”“置信度”“跨证据比较”“行为模式”等算法术语；证据不足时返回空数组。
+        insights 最多 3 项，只写跨记录比较后才成立且对用户有决策价值的判断；单条记录、网页标签、导航文字和模型回复不得直接当作用户事实。不得用知识笔记中的观点解释用户当天的心理或行为，不得因为同一天跑通一两次流程就声称“稳定、可复用”或形成长期方法；这类内容应留在 progress。两件事同日出现不代表同一根因，不得把生产超时与其他功能问题仅凭时间接近推为同一链路。只有跨时间重复出现且证据确实支持的风险、异常、冲突、停滞、稳定规律或会改变后续决策的信号才进入 insights。不要根据截图数量或片段数量推断用户的工作节奏。title 必须独立概括具体对象和变化；不能截取 detail 的前半段，detail 不能重复 title；时间（如 19:48）、URL、文件名和括号内内容不能按冒号拆开。title 必须是完整、可独立阅读的结论，不能是截断半句、以连接词开头或原始 OCR 残片；detail 只写支撑结论的事实，不要附带伪造的“下一步”。confidence 是仅供后台过滤的 0 到 1 数值，低于 0.75 必须返回空数组，正文标题禁止出现“可能”“置信度”“跨证据比较”“行为模式”等算法术语；证据不足时返回空数组。
 
         actions 采用“默认不成立”的严格准入：只有证据明确表达为用户的待办、提醒、承诺，或同时包含明确日历时间与用户可执行动作时才输出。每条必须同时包含对象、动作和可判断的结果，例如“补充退款幂等测试并提交 PR”。技术规则中的 TTL、30 分钟无操作过期、每天最多登录一次、系统配置时长不是用户的截止时间，绝不能推算为明天 9:00 的提醒。对方陈述、助手回答、条件句“若业务确认就……”和已完成事项也不属于用户的待办。禁止仅因出现“任务、完成、需要、检查”等词就推断行动；禁止把文章/笔记观点、知识内容、系统错误提示（如“网络异常，请检查后重试”）、助手向用户提出的问题、缺少对象的残句写入 actions。没有足够明确的行动时必须返回空数组，页面会隐藏整个“接下来要处理”模块。不要从旧总结快照复制行动事项。
 

@@ -2,16 +2,17 @@ import SwiftUI
 import RecallKit
 
 private enum MatterWorkspaceTab: String, CaseIterable {
-    case inProgress = "进行中"
-    case allTopics = "全部主题"
-    case weeklyReview = "一周回顾"
-    case knowledge = "记忆与约定"
+    case topics = "记忆主题"
+    case weeklyReview = "周期回顾"
+    case knowledge = "长期记忆"
 }
 
 /// Topic-based memory browsing, with a fixed header outside the clipped scroll view.
 struct MatterWorkspaceView: View {
     @EnvironmentObject private var model: RecallAppModel
-    @State private var tab: MatterWorkspaceTab = .inProgress
+    @AppStorage("recall.memory.tab") private var tab: MatterWorkspaceTab = .topics
+    @State private var topicFilter = 0
+    @State private var showsMerge = false
     @State private var search = ""
     @State private var visibleCount = 20
     @State private var olderVisibleCount = 20
@@ -25,7 +26,10 @@ struct MatterWorkspaceView: View {
     let continueChat: (String) -> Void
 
     private var files: [MatterFile] {
-        model.matterFiles.filter { search.isEmpty || ($0.title + $0.events.map(\.detail).joined(separator: " ")).localizedCaseInsensitiveContains(search) }
+        model.matterFiles.filter { file in
+            (search.isEmpty || (file.title + file.events.map(\.detail).joined(separator: " ")).localizedCaseInsensitiveContains(search))
+                && (tab != .topics || topicFilter != 1 || file.latest.status == .completed)
+        }
     }
     private var resumeFiles: [MatterFile] { files.filter { $0.latest.status.isOpenMatter } }
     private var recentResumeFiles: [MatterFile] { resumeFiles.filter { !$0.needsStatusUpdate() } }
@@ -33,25 +37,17 @@ struct MatterWorkspaceView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 24) {
-                    pageIntroduction
-                    Spacer(minLength: 16)
-                    pageActions
-                }
-                VStack(alignment: .leading, spacing: 20) {
-                    pageIntroduction
-                    pageActions
-                }
-            }.padding(24)
+            RecallPageHeader(title: "记忆", subtitle: "把零散的记录，串成可以接续的经历") { pageActions }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 24) {
                     browsingTabs
+                    if tab == .topics { topicFilters }
                     Spacer(minLength: 16)
                     if tab != .weeklyReview { topicSearch }
                 }
                 VStack(alignment: .leading, spacing: 14) {
                     browsingTabs
+                    if tab == .topics { topicFilters }
                     if tab != .weeklyReview { topicSearch }
                 }
             }.padding(.horizontal, 24).padding(.bottom, 18)
@@ -65,10 +61,10 @@ struct MatterWorkspaceView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 14))
                     }
-                    if tab == .inProgress {
+                    if tab == .topics && topicFilter == 0 {
                         if resumeFiles.isEmpty {
                             empty(search.isEmpty ? (model.matterFiles.isEmpty ? "还没有整理出主题" : "暂时没有进行中的主题") : "没有找到匹配的进行中主题",
-                                detail: search.isEmpty ? (model.matterFiles.isEmpty ? "保存记录后，Recall 会把同一件事的相关内容串联起来。你也可以补充一条记录，从这里开始。" : "已完成或仅作记录的内容，可以在‘全部主题’中回看。") : "换个关键词，或清空搜索后查看。")
+                                detail: search.isEmpty ? (model.matterFiles.isEmpty ? "保存记录后，Recall 会把同一件事的相关内容串联起来。你也可以补充一条记录，从这里开始。" : "已完成或仅作记录的内容，可以切换到‘全部’回看。") : "换个关键词，或清空搜索后查看。")
                         }
                         ForEach(Array(recentResumeFiles.prefix(visibleCount))) { file in
                             fileCard(file, resume: true)
@@ -105,7 +101,7 @@ struct MatterWorkspaceView: View {
                                 }
                             }.padding(20).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 18))
                         }
-                    } else if tab == .allTopics {
+                    } else if tab == .topics {
                         if files.isEmpty {
                             empty(search.isEmpty ? "还没有整理出主题" : "没有找到匹配的主题",
                                 detail: search.isEmpty ? "保存记录后，Recall 会把同一件事的相关内容串联起来。你也可以补充一条记录，从这里开始。" : "换个关键词，或清空搜索后查看全部主题。")
@@ -121,7 +117,8 @@ struct MatterWorkspaceView: View {
             }.clipped()
             }
         }
-        .onAppear { if model.weeklyReportToOpen != nil { tab = .weeklyReview } }
+        .onAppear { openRequestedContent() }
+        .onChange(of: model.navigationRevision) { _, _ in openRequestedContent() }
         .onChange(of: model.weeklyReportToOpen) { _, id in if id != nil { tab = .weeklyReview } }
         .onChange(of: tab) { _, _ in visibleCount = 20; olderVisibleCount = 20 }
         .onChange(of: search) { _, text in
@@ -133,10 +130,11 @@ struct MatterWorkspaceView: View {
             ManualMatterSheet(title: newMatterTitle) { note in
                 guard await model.saveManualMatter(note) else { return false }
                 search = ""
-                tab = .allTopics
+                tab = .topics; topicFilter = 2
                 return true
             }
         }
+        .sheet(isPresented: $showsMerge) { TopicMergeSheet().environmentObject(model) }
         .sheet(isPresented: $showsCorrections) {
             MatterCorrectionHistorySheet().environmentObject(model)
         }
@@ -195,25 +193,39 @@ struct MatterWorkspaceView: View {
         }
     }
 
+    private func openRequestedContent() {
+        switch model.destination {
+        case .topic(let id): tab = .topics; topicFilter = 2; selected = model.matterFiles.first { $0.id == id }
+        case .knowledge: tab = .knowledge; search = ""
+        case .review: tab = .weeklyReview
+        default: break
+        }
+    }
     private var pageIntroduction: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("记忆脉络").font(.largeTitle.bold())
+            Text("记忆").font(RecallTypography.page)
             Text("把零散的记录，串成可以接续的经历。")
                 .foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
         }.frame(minWidth: 300, alignment: .leading)
     }
 
+    private var topicFilters: some View {
+        Picker("主题状态", selection: $topicFilter) {
+            Text("进行中").tag(0); Text("已完成").tag(1); Text("全部").tag(2)
+        }.pickerStyle(.segmented).frame(maxWidth: 230)
+    }
     private var pageActions: some View {
         HStack(spacing: 12) {
             if model.isBuildingMatters { ProgressView().controlSize(.small).help("正在整理记录") }
             Button { model.organizeExistingMatters() } label: {
-                Label(model.isBuildingMatters ? "正在重新整理…" : "重新整理", systemImage: "arrow.clockwise")
+                Label(model.isBuildingMatters ? "正在更新…" : "更新记忆", systemImage: "arrow.clockwise")
             }.disabled(model.isBuildingMatters || model.isOrganizingMemory)
                 .help("从原始记录重建主题、进展与状态，并过滤旧的错误片段；不会改写原文")
             Button { supplement() } label: {
                 Label("补充记录", systemImage: "plus")
             }.buttonStyle(.borderedProminent)
             Menu {
+                Button("合并主题") { showsMerge = true }
                 Button { showsCorrections = true } label: {
                     Label("更正记录", systemImage: "clock.arrow.circlepath")
                 }
@@ -227,11 +239,11 @@ struct MatterWorkspaceView: View {
     }
 
     private var browsingTabs: some View {
-        Picker("浏览记忆脉络", selection: $tab) {
+        Picker("浏览记忆", selection: $tab) {
             ForEach(MatterWorkspaceTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
         }.pickerStyle(.segmented).labelsHidden()
             .frame(minWidth: 440, maxWidth: 580)
-            .accessibilityLabel("浏览记忆脉络")
+            .accessibilityLabel("浏览记忆")
     }
 
     private var topicSearch: some View {
@@ -267,6 +279,15 @@ struct MatterWorkspaceView: View {
                     Text(action).textSelection(.enabled)
                 }
             }
+            if model.state.experienceHintsEnabled,
+               let previous = file.events.dropLast().last,
+               previous.status != file.latest.status,
+               !model.state.dismissedExperienceIDs.contains("change:" + file.latest.id.uuidString) {
+                Text("状态有了变化：" + previous.status.matterLabel + " → " + file.latest.status.matterLabel)
+                    .font(.callout).foregroundStyle(RecallPalette.accent)
+                Button("对照前后记录") { selected = file }
+                Button("不再提示这条变化") { model.dismissExperience("change:" + file.latest.id.uuidString) }
+            }
             if file.needsStatusUpdate() {
                 Text("此后暂无新的进展记录，当前状态仍待确认。")
                     .font(.callout).foregroundStyle(RecallPalette.secondary)
@@ -274,7 +295,8 @@ struct MatterWorkspaceView: View {
             Text("最近记录于 \(file.latest.date.formatted(date: .abbreviated, time: .omitted)) · \(file.evidenceIDs.count) 条来源")
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
             HStack {
-                Button("查看脉络与来源") { selected = file }
+                Button("查看记忆脉络") { selected = file }
+                if model.state.topicGroups.contains(where: { $0.id == file.id }) { Button("撤销合并") { model.undoTopicMerge(file.id) } }
                 if resume {
                     Button("补充进展") { supplement(title: file.title) }
                     Button("接着问") { continueChat("关于\(file.title)，请找回上次的进展、已确认的结论和仍缺少的信息。") }
@@ -296,9 +318,9 @@ struct MatterWorkspaceView: View {
             } else {
                 HStack {
                     Button("补充记录") { supplement() }.buttonStyle(.borderedProminent)
-                    Button("重新整理") { model.organizeExistingMatters() }
-                    if !model.matterFiles.isEmpty && tab != .allTopics {
-                        Button("查看全部主题") { tab = .allTopics }
+                    Button("更新记忆") { model.organizeExistingMatters() }
+                    if !model.matterFiles.isEmpty && topicFilter != 2 {
+                        Button("查看全部主题") { tab = .topics; topicFilter = 2 }
                     }
                 }
             }

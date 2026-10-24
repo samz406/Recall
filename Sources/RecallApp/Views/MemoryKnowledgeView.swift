@@ -14,15 +14,25 @@ struct MemoryKnowledgeView: View {
     @State private var forgetting: MemoryClaim?
     @State private var aliases: MemoryEntity?
     @State private var choseInitialCategory = false
+    @State private var showsDiagnostics = false
     private var summary: MemoryOrganizationSummary { model.memoryWorkspace?.summary ?? MemoryOrganizationSummary() }
 
     private var claims: [MemoryClaim] {
         model.state.memoryKnowledge.claims.filter { item in
             let matches = search.isEmpty || (item.title + item.content).localizedCaseInsensitiveContains(search)
-            let kind = category == 0 ? item.kind.isPersonal && item.kind != .person :
-                (category == 1 ? item.kind == .person : (category == 2 ? item.kind == .experience : item.kind == .reference))
+            let kind: Bool = switch category {
+            case 0: item.kind == .person
+            case 1: [.preference, .habit, .workflow].contains(item.kind)
+            case 2: item.kind == .experience
+            case 3: item.kind == .reference
+            default: [.goal, .constraint].contains(item.kind)
+            }
             return matches && kind && (includeHistory || [.active, .conflicted, .tentative].contains(item.state))
                 && item.scope != .conversation
+        }.sorted { a, b in
+            if a.id == model.knowledgeToOpen { return true }
+            if b.id == model.knowledgeToOpen { return false }
+            return a.date == b.date ? a.id.uuidString < b.id.uuidString : a.date > b.date
         }
     }
     private var entities: [MemoryEntity] {
@@ -32,12 +42,13 @@ struct MemoryKnowledgeView: View {
         let rows = claims
         VStack(alignment: .leading, spacing: 22) {
             introduction
-            organizationResults
+            DisclosureGroup("查看整理详情", isExpanded: $showsDiagnostics) { organizationResults }
             controls
             if let message = model.memoryMaintenanceMessage {
                 Label(message, systemImage: "info.circle").foregroundStyle(RecallPalette.secondary)
             }
-            if rows.isEmpty { emptyState }
+            if let task = model.tasks.first(where: { $0.kind == "整理记忆" }) { RecallTaskStatusView(task: task) }
+            if rows.isEmpty && !model.isOrganizingMemory && !model.isBuildingMatters { emptyState }
             ForEach(Array(rows.prefix(visibleCount))) { claim in claimCard(claim) }
             if rows.count > visibleCount { Button("再显示 20 条") { visibleCount += 20 } }
             topicAliases
@@ -47,6 +58,8 @@ struct MemoryKnowledgeView: View {
         .onChange(of: search) { _, _ in visibleCount = 20; aliasVisibleCount = 20 }
         .onAppear { chooseInitialCategory() }
         .onChange(of: model.memoryWorkspace?.revision) { _, _ in chooseInitialCategory() }
+        .onChange(of: model.knowledgeToOpen) { _, _ in choseInitialCategory = false; chooseInitialCategory() }
+        .onChange(of: model.navigationRevision) { _, _ in if case .knowledge = model.destination { choseInitialCategory = false; chooseInitialCategory() } }
         .sheet(isPresented: $adding) {
             MemoryAgreementEditor(claim: nil, topics: model.state.memoryKnowledge.entities) { content, scope, scopeID, until in
                 await model.saveMemoryAgreement(content: content, scope: scope, scopeID: scopeID, validUntil: until)
@@ -78,13 +91,17 @@ struct MemoryKnowledgeView: View {
     private func chooseInitialCategory() {
         guard !choseInitialCategory, model.memoryWorkspace != nil else { return }
         choseInitialCategory = true
-        if summary.agreements == 0 && summary.references > 0 { category = 3 }
+        if case .knowledge(let id) = model.destination,
+           let claim = model.state.memoryKnowledge.claims.first(where: { $0.id == id }) {
+            category = claim.kind == .reference ? 3 : (claim.kind == .experience ? 2 : (claim.kind == .person ? 0 : ([.preference, .habit, .workflow].contains(claim.kind) ? 1 : 4)))
+            visibleCount = max(20, (claims.firstIndex { $0.id == id } ?? 0) + 1)
+        } else { category = 4 }
     }
     private var introduction: some View {
         HStack(alignment: .top, spacing: 16) {
             Image(systemName: "brain.head.profile").font(.system(size: 30)).foregroundStyle(RecallPalette.accent)
             VStack(alignment: .leading, spacing: 8) {
-                Text("让每次积累，都在下次用得上").font(.title2.bold())
+                Text("长期记忆").font(.title2.bold())
                 Text("回看保存内容的线索、明确约定、人物信息和历史经验。每条都保留依据，你可以随时停用或忘记。")
                     .foregroundStyle(RecallPalette.secondary)
                 if let date = model.state.memoryKnowledge.updatedAt {
@@ -98,14 +115,15 @@ struct MemoryKnowledgeView: View {
     private var controls: some View {
         VStack(alignment: .leading, spacing: 14) {
             Picker("查看记忆", selection: $category) {
-                Text("记录线索").tag(3); Text("约定与偏好").tag(0); Text("人物与关系").tag(1); Text("历史经验").tag(2)
+                Text("事实与关系").tag(0); Text("偏好与习惯").tag(1); Text("目标与约定").tag(4); Text("历史经验").tag(2)
             }.pickerStyle(.segmented).frame(maxWidth: 640)
+            Button("保存的资料与线索") { category = 3 }
             HStack {
                 Toggle("显示旧版本和已停用内容", isOn: $includeHistory).toggleStyle(.checkbox)
                 Spacer()
                 Button("记下一条约定") { adding = true }.buttonStyle(.borderedProminent)
                 Button { model.organizeMemoryNow() } label: {
-                    Label(model.isOrganizingMemory || model.isBuildingMatters ? "正在整理…" : "立即整理", systemImage: "arrow.triangle.2.circlepath")
+                    Label(model.isOrganizingMemory || model.isBuildingMatters ? "正在更新…" : "更新长期记忆", systemImage: "arrow.triangle.2.circlepath")
                 }.disabled(model.isOrganizingMemory || model.isBuildingMatters)
             }
         }
@@ -198,7 +216,7 @@ struct MemoryKnowledgeView: View {
             Toggle("单独保留我明确要求记住的约定", isOn: Binding(get: { model.state.memoryKnowledgeSettings.retainExplicitMemories }, set: { value in
                 var settings = model.state.memoryKnowledgeSettings; settings.retainExplicitMemories = value; model.updateMemorySettings(settings)
             }))
-            Text("后台只整理已保存的文本。原始截图与文本仍按‘记录事件’里的期限清理；明确约定单独保留必要文本依据，直到你停用、忘记或关闭此项。应用关闭时，到期内容会在下次启动后清理。")
+            Text("后台只整理已保存的文本。原始截图与文本仍按‘记录管理’里的期限清理；明确约定单独保留必要文本依据，直到你停用、忘记或关闭此项。应用关闭时，到期内容会在下次启动后清理。")
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
         }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
             .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 18))

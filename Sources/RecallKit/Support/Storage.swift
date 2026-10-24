@@ -107,6 +107,7 @@ public struct RecallState: Codable, Sendable {
     public var recentlyDeletedMemories: [RecentlyDeletedMemory]
     public var memorySuppressionRules: [MemorySuppressionRule]
     public var matterCorrections: [MatterCorrection]
+    public var topicGroups: [MemoryTopicGroup] = []
     public var dismissedExperienceIDs: [String]
     public var experienceHintsEnabled: Bool
     public var memoryKnowledge: MemoryKnowledge
@@ -179,7 +180,7 @@ public struct RecallState: Codable, Sendable {
         case privacy, llmConfiguration, conversationSummary, conversationSummaryCoveredMessageCount
         case weeklyReports, reviewTemplates, reviewSchedules, reviewCategories, memoryKnowledge, memoryKnowledgeSettings
         case episodes, projects, userMemories, insights, insightFeedback, learnedRoutines
-        case recentlyDeletedMemories, memorySuppressionRules, matterCorrections, dismissedExperienceIDs, experienceHintsEnabled
+        case recentlyDeletedMemories, memorySuppressionRules, matterCorrections, dismissedExperienceIDs, experienceHintsEnabled, topicGroups
     }
 
     public init(from decoder: Decoder) throws {
@@ -204,6 +205,7 @@ public struct RecallState: Codable, Sendable {
         learnedRoutines = try container.decodeIfPresent([LearnedRoutine].self, forKey: .learnedRoutines) ?? []
         recentlyDeletedMemories = try container.decodeIfPresent([RecentlyDeletedMemory].self, forKey: .recentlyDeletedMemories) ?? []
         memorySuppressionRules = try container.decodeIfPresent([MemorySuppressionRule].self, forKey: .memorySuppressionRules) ?? []
+        topicGroups = try container.decodeIfPresent([MemoryTopicGroup].self, forKey: .topicGroups) ?? []
         matterCorrections = try container.decodeIfPresent([MatterCorrection].self, forKey: .matterCorrections) ?? []
         dismissedExperienceIDs = try container.decodeIfPresent([String].self, forKey: .dismissedExperienceIDs) ?? []
         experienceHintsEnabled = try container.decodeIfPresent(Bool.self, forKey: .experienceHintsEnabled) ?? false
@@ -420,6 +422,36 @@ public actor FileMemoryStore {
         do { try persist() } catch { state = before; throw error }
     }
 
+    public func saveTopicGroup(_ group: MemoryTopicGroup) throws {
+        guard group.memberIDs.count >= 2, !group.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !state.topicGroups.contains(where: { !Set($0.memberIDs).isDisjoint(with: group.memberIDs) }) else { throw WeeklyReviewError.changedSources }
+        let files = MatterMemoryEngine().files(in: state)
+        guard Set(group.memberIDs).isSubset(of: Set(files.map(\.id))) else { throw WeeklyReviewError.changedSources }
+        let index = ReviewCategoryIndex(state: state)
+        let categories = Set(files.filter { group.memberIDs.contains($0.id) }.map { index.category(for: $0) }.filter { $0 != .unclassified })
+        guard categories.count <= 1 else { throw WeeklyReviewError.noWorkScope }
+        let before = state
+        var group = group
+        group.sourceIDs = files.filter { group.memberIDs.contains($0.id) }.flatMap(\.evidenceIDs)
+        state.topicGroups.append(group)
+        invalidateGroupedReports(Set(group.memberIDs))
+        do { try persist() } catch { state = before; throw error }
+    }
+    public func undoTopicGroup(_ id: String) throws {
+        guard let group = state.topicGroups.first(where: { $0.id == id }) else { return }
+        let before = state
+        state.topicGroups.removeAll { $0.id == id }
+        invalidateGroupedReports(Set(group.memberIDs + [id]))
+        do { try persist() } catch { state = before; throw error }
+    }
+    private func invalidateGroupedReports(_ ids: Set<String>) {
+        for i in state.weeklyReports.indices where state.weeklyReports[i].items.contains(where: { ids.contains($0.id) }) { state.weeklyReports[i].invalidate() }
+        for i in state.recentlyDeletedMemories.indices {
+            guard var reports = state.recentlyDeletedMemories[i].weeklyReports else { continue }
+            for j in reports.indices where reports[j].items.contains(where: { ids.contains($0.id) }) { reports[j].invalidate() }
+            state.recentlyDeletedMemories[i].weeklyReports = reports
+        }
+    }
     public func saveReviewCategory(topicID: String, category: ReviewCategory) throws {
         let before = state
         state.reviewCategories[topicID] = category
@@ -575,12 +607,19 @@ public actor FileMemoryStore {
         try persist()
     }
 
-    public func commitDailySummary(_ summary: DailySummary, consolidation: IntelligenceConsolidation) throws {
+    public func commitDailySummary(_ submitted: DailySummary, consolidation: IntelligenceConsolidation) throws {
+        try Task.checkCancellation()
+        let before = state
+        var summary = submitted
+        if let old = state.dailySummaries.first(where: { Calendar.current.isDate($0.day, inSameDayAs: summary.day) }) {
+            summary.versions = Array(([DailyReviewVersion(summary: old)] + (old.versions ?? [])).prefix(8))
+            summary.sourceCaptureIDs = Array(Set(summary.sourceCaptureIDs + (summary.versions ?? []).flatMap(\.sourceIDs)))
+        }
         state.dailySummaries.removeAll { Calendar.current.isDate($0.day, inSameDayAs: summary.day) }
         state.dailySummaries.append(summary)
         state.dailySummaries.sort { $0.day > $1.day }
         applyIntelligenceState(consolidation, for: summary.day)
-        try persist()
+        do { try persist() } catch { state = before; throw error }
     }
 
     private func applyIntelligenceState(_ consolidation: IntelligenceConsolidation, for day: Date) {
@@ -697,6 +736,7 @@ public actor FileMemoryStore {
         knowledgeSnapshot.suppressedKeys = state.memoryKnowledge.suppressedKeys.filter(affectedKeys.contains)
         transaction.memoryKnowledge = knowledgeSnapshot
         transaction.weeklyReports = state.weeklyReports.filter { !$0.sourceIDs.isDisjoint(with: actualIDs) }
+        transaction.topicGroups = state.topicGroups.filter { !Set($0.sourceIDs ?? []).isDisjoint(with: actualIDs) }
         transaction.matterCorrections = state.matterCorrections.filter { !Set($0.evidenceIDs).isDisjoint(with: actualIDs) }
         state.matterCorrections.removeAll { !Set($0.evidenceIDs).isDisjoint(with: actualIDs) }
         state.captures.removeAll { actualIDs.contains($0.id) }
@@ -796,6 +836,9 @@ public actor FileMemoryStore {
             state.dailySummaries.append(summary)
         }
         state.dailySummaries.sort { $0.day > $1.day }
+        let groupedMembers = Set(state.topicGroups.flatMap(\.memberIDs))
+        let restoredGroups = (transaction.topicGroups ?? []).filter { Set($0.memberIDs).isDisjoint(with: groupedMembers) }
+        Self.restoreUnique(restoredGroups, to: &state.topicGroups, id: \.id)
         Self.restoreUnique(transaction.weeklyReports ?? [], to: &state.weeklyReports, id: \.id)
         Self.restoreUnique(transaction.messages, to: &state.messages, id: \.id)
         state.messages.sort { $0.createdAt < $1.createdAt }
@@ -903,6 +946,7 @@ public actor FileMemoryStore {
         state.dailySummaries = []
         state.weeklyReports = []
         state.reviewCategories = [:]
+        state.topicGroups = []
         state.conversationSummary = nil
         state.conversationSummaryCoveredMessageCount = 0
         state.memoryKnowledge = MemoryKnowledge()
@@ -1020,6 +1064,14 @@ public actor FileMemoryStore {
             state.reminders.insert(reminder, at: 0)
         }
         state.reminderLearningProfile = learningProfile
+        for i in state.dailySummaries.indices {
+            for j in state.dailySummaries[i].todos.indices {
+                let action = state.dailySummaries[i].todos[j]
+                guard action.id == reminder.id || (action.title == reminder.title && !Set(action.sourceCaptureIDs).isDisjoint(with: reminder.sourceCaptureIDs)) else { continue }
+                if reminder.status == .completed { state.dailySummaries[i].todos[j].status = .completed }
+                if reminder.status == .cancelled || reminder.status == .dismissed { state.dailySummaries[i].todos[j].status = .ignored }
+            }
+        }
         try persist()
     }
 
@@ -1049,6 +1101,12 @@ public actor FileMemoryStore {
         }
         guard dismissedCount > 0 else { return 0 }
         state.reminderLearningProfile = learningProfile
+        let dismissedIDs = Set(state.reminders.filter { $0.status == .dismissed }.map(\.id))
+        for i in state.dailySummaries.indices {
+            for j in state.dailySummaries[i].todos.indices where dismissedIDs.contains(state.dailySummaries[i].todos[j].id) {
+                state.dailySummaries[i].todos[j].status = .ignored
+            }
+        }
         try persist()
         return dismissedCount
     }
@@ -1102,6 +1160,8 @@ public actor FileMemoryStore {
     }
 
     func persist() throws {
+        let liveIDs = Set(state.captures.map(\.id))
+        state.topicGroups.removeAll { group in group.sourceIDs.map { Set($0).isDisjoint(with: liveIDs) } ?? false }
         invalidateWeeklyReports()
         applyKnowledge(MemoryKnowledgeEngine().reconcile(state, allowNew: false))
         state.memoryKnowledge.dependencies = MemoryKnowledgeEngine().dependencies(in: state, claims: state.memoryKnowledge.claims)
