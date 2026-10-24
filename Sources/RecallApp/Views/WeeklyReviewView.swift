@@ -25,6 +25,7 @@ struct WeeklyReviewView: View {
     @State private var exporting: WeeklyReport?
     @State private var sourceItem: ReviewItem?
     @State private var deleting: WeeklyReport?
+    @State private var materials: WeeklyReport?
     var scrollToReport: () -> Void = {}
 
     private var period: ReviewPeriod {
@@ -76,6 +77,7 @@ struct WeeklyReviewView: View {
         .sheet(isPresented: $showsScope) { ReviewScopeSheet(kind: template.kind, period: period, scope: $scope).environmentObject(model) }
         .sheet(isPresented: $showsTemplates) { ReviewTemplateSheet(template: template) { saved in template = saved }.environmentObject(model) }
         .sheet(isPresented: $showsSchedules) { ReviewSchedulesSheet(template: template, scope: scope).environmentObject(model) }
+        .sheet(item: $materials) { ReviewMaterialsSheet(reportID: $0.id).environmentObject(model) }
         .sheet(item: $editing) { ReviewEditSheet(reportID: $0.id).environmentObject(model) }
         .sheet(item: $exporting) { ReviewExportSheet(reportID: $0.id).environmentObject(model) }
         .sheet(item: $sourceItem) { ReviewSourcesSheet(item: $0, reportID: report?.id).environmentObject(model) }
@@ -176,7 +178,7 @@ struct WeeklyReviewView: View {
             }
             Toggle("使用已连接的模型整理正文", isOn: $useModel)
                 .font(.callout).disabled(!model.state.privacy.cloudUseEnabled && !useModel)
-                .help("仅发送范围内经过脱敏的事实，按用途和篇幅整理正文，再核对来源；未通过的条目保留原始记录。关闭时完全在本地整理。")
+                .help("仅发送范围内经过脱敏的事实，按用途和篇幅整理正文，再核对来源；不可靠或重复的条目只保留在整理依据中。关闭时仅展示能明确归属的简短事实。")
             if !model.state.privacy.cloudUseEnabled {
                 Text("当前在本地整理；可在“设置”中开启模型文本使用。")
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
@@ -243,20 +245,27 @@ struct WeeklyReviewView: View {
             } else if let edited = report.editedMarkdown {
                 MarkdownDocumentView(markdown: edited).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     .font(.system(size: 17)).lineSpacing(7)
-                Text("已保留你的修改。每条原始依据仍可从下方查看。")
+                Text("已保留你的修改。原始依据可从下方入口查看。")
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
-                DisclosureGroup("查看原始整理与依据") { reportSections(report).padding(.top, 18) }
+                DisclosureGroup("查看自动整理的小结") { reportSections(report).padding(.top, 18) }
             } else {
                 Text(report.overview).font(.system(size: 18, weight: .medium)).lineSpacing(7)
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 reportSections(report)
             }
+            if report.isReadable {
+                Button { materials = report } label: {
+                    Label("查看本期整理依据（\(report.items.count) 组材料）", systemImage: "doc.text.magnifyingglass")
+                }.buttonStyle(.link)
+                Text("完整记录和过程保留在依据中，未写入正文不代表记录丢失。")
+                    .font(.caption).foregroundStyle(RecallPalette.secondary)
+            }
             Text("保存于 \(report.createdAt.formatted()) · \(report.modelAssisted ? "模型整理与来源核对" : "本地事实整理")")
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
             if report.refinementPending {
                 Text(report.canRefine(at: .now) && report.scheduleID != nil
-                     ? "部分条目保留原始记录，将在一天内有限重试；不会影响下一期回顾。"
-                     : "部分条目保留原始记录，你可以使用模型重新整理。")
+                     ? "部分内容尚未形成可靠小结，将在一天内有限重试；完整材料可在依据中查看。"
+                     : "部分内容尚未形成可靠小结，已收进整理依据。可以重新生成，原版本会保留。")
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
         }.padding(28).reviewSurface()
@@ -266,8 +275,7 @@ struct WeeklyReviewView: View {
             Label(report.displayName, systemImage: report.template.kind.symbol).font(.title2.weight(.semibold))
             Text(report.period.label).font(.callout.monospacedDigit()).foregroundStyle(RecallPalette.secondary)
             if report.isReadable {
-                let days = Set(report.items.flatMap(\.excerpts).map { report.period.calendar.startOfDay(for: $0.date) }).count
-                Text("\(report.items.count) 个主题 · 涵盖 \(days) 个记录日" + (report.editedMarkdown == nil ? "" : " · 已编辑"))
+                Text("\(report.digestRows.count) 项重点 · 涵盖 \(report.coveredDayCount) 个记录日" + (report.editedMarkdown == nil ? "" : " · 已编辑"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
         }
@@ -286,53 +294,40 @@ struct WeeklyReviewView: View {
         }.fixedSize()
     }
     private func reportSections(_ report: WeeklyReport) -> some View {
-        LazyVStack(alignment: .leading, spacing: 30) {
+        let rows = report.digestRows
+        return LazyVStack(alignment: .leading, spacing: 30) {
+            if rows.contains(where: \.isExtractive) {
+                Text("部分小结采用明确归属的简短事实；完整过程可展开依据核对。")
+                    .font(.caption).foregroundStyle(RecallPalette.secondary)
+            }
             ForEach(report.template.sections) { section in
-                let items = report.items.filter { $0.section == section }
+                let items = rows.filter { $0.item.section == section }
                 if !items.isEmpty {
                     LazyVStack(alignment: .leading, spacing: 20) {
                         Label(report.heading(section), systemImage: section.symbol)
                             .font(.headline).foregroundStyle(sectionColor(section))
-                        ForEach(items) { item in reviewItem(item, report: report) }
+                        ForEach(items) { row in reviewItem(row, report: report) }
                     }
                 }
             }
         }
     }
-    private func reviewItem(_ item: ReviewItem, report: WeeklyReport) -> some View {
+    private func reviewItem(_ row: ReviewDigestRow, report: WeeklyReport) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(item.displayTitle).font(.system(size: 18, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-            if let narrative = item.narrative {
-                Text(narrative.summary).fixedSize(horizontal: false, vertical: true)
-            }
-            if item.narrative == nil || report.template.length == .detailed {
-                if let previous = item.previous {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("此前 · " + (previous.eventTimeKnown == true ? "发生于 " : "记录于 ") + stamp(previous.date, report: report)).font(.caption).foregroundStyle(RecallPalette.secondary)
-                        Text(previous.text).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                ForEach(item.featured(for: report.template.length)) { excerpt in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text((excerpt.eventTimeKnown == true ? "发生于 " : "记录于 ") + stamp(excerpt.date, report: report)).font(.caption).foregroundStyle(RecallPalette.secondary)
-                        Text(excerpt.text).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-            if let action = item.nextAction {
-                Button("设为提醒") { model.prepareReminder(title: action, detail: item.title, sourceIDs: item.nextActionSourceIDs) }
+            Text(row.title).font(.system(size: 18, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+            if !row.summary.isEmpty { Text(row.summary).fixedSize(horizontal: false, vertical: true) }
+            if let action = row.action {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("记录中的后续安排").font(.caption).foregroundStyle(RecallPalette.secondary)
+                    Text("已明确的后续安排").font(.caption).foregroundStyle(RecallPalette.secondary)
                     Text(action).fixedSize(horizontal: false, vertical: true)
+                    Button("设为提醒") { model.prepareReminder(title: action, detail: row.title, sourceIDs: row.item.nextActionSourceIDs) }
                 }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
                     .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 12))
             }
-            Button { sourceItem = item } label: {
-                Label("查看依据与完整过程（\(item.sourceIDs.count) 条来源）", systemImage: "link")
-                    .font(.caption)
+            Button { sourceItem = row.item } label: {
+                Label("查看依据与完整过程（\(row.item.sourceIDs.count) 条来源）", systemImage: "link").font(.caption)
             }.buttonStyle(.link)
-        }.font(.system(size: 17)).lineSpacing(6).textSelection(.enabled)
-            .padding(.leading, 2)
+        }.font(.system(size: 17)).lineSpacing(6).textSelection(.enabled).padding(.leading, 2)
     }
     private func stamp(_ date: Date, report: WeeklyReport) -> String {
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "zh_CN")
@@ -447,6 +442,7 @@ private struct ReviewTemplateSheet: View {
                 Picker("篇幅", selection: $template.length) { ForEach(ReviewLength.allCases) { Text($0.title).tag($0) } }
                 Picker("表达", selection: $template.tone) { ForEach(ReviewTone.allCases) { Text($0.title).tag($0) } }
             }
+            Text(template.length.explanation).font(.caption).foregroundStyle(RecallPalette.secondary)
             ForEach(Array(template.sections.enumerated()), id: \.element) { index, section in
                 HStack {
                     Image(systemName: section.symbol).frame(width: 22).foregroundStyle(RecallPalette.secondary)
@@ -563,6 +559,44 @@ private struct ReviewExportSheet: View {
                 catch { model.logWeeklyExportFailure(error); message = "导出失败，请换一个位置重试。" }
             }
         }
+    }
+}
+
+/// Materials are deliberately outside the report body and paginated. They are not summaries.
+private struct ReviewMaterialsSheet: View {
+    @EnvironmentObject private var model: RecallAppModel
+    @Environment(\.dismiss) private var dismiss
+    let reportID: UUID
+    @State private var query = ""
+    @State private var limit = 20
+    @State private var selected: ReviewItem?
+    private var report: WeeklyReport? { model.state.weeklyReports.first { $0.id == reportID && $0.isReadable } }
+    var body: some View {
+        let rows = report?.items.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) } ?? []
+        VStack(alignment: .leading, spacing: 18) {
+            HStack { Text("本期整理依据").font(.title2.bold()); Spacer(); Button("完成") { dismiss() } }
+            Text("这里保留本期的候选材料与完整过程，包含未进入回顾正文的零碎记录；材料标题不代表已确认的真实事项。")
+                .foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
+            TextField("搜索材料标题", text: $query).textFieldStyle(.roundedBorder)
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if report == nil { Text("来源已删除或更正，请更新回顾后再查看。") }
+                    else if rows.isEmpty { Text("没有匹配的材料。") }
+                    ForEach(Array(rows.prefix(limit))) { item in
+                        Button { selected = item } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(item.title).font(.headline).lineLimit(2)
+                                Text("\(item.sourceIDs.count) 条来源 · 查看完整过程").font(.caption).foregroundStyle(RecallPalette.secondary)
+                            }.padding(14).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()
+                        }.buttonStyle(.plain)
+                    }
+                    if rows.count > limit { Button("再显示 20 组材料") { limit += 20 } }
+                }
+            }.clipped()
+        }.padding(28).frame(width: 720, height: 600)
+            .onChange(of: query) { _, _ in limit = 20 }
+            .sheet(item: $selected) { ReviewSourcesSheet(item: $0, reportID: reportID).environmentObject(model) }
     }
 }
 

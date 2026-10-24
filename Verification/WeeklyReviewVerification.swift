@@ -345,7 +345,7 @@ private extension WeeklyReviewVerification {
             "模型漏掉重要完成结果时必须拒绝，而不是让后面的状态覆盖整周")
         var other = item; other.id = "aaaa"; other.section = .notes; other.excerpts = [item.excerpts[1]]
         var ranked = report; ranked.items = [other, item]
-        try expect(ranked.overview.hasPrefix(latest.manualMatter!.detail), "概览按实际重要性，而非主题 ID 顺序")
+        try expect(ranked.digestRows.first?.summary.contains(latest.manualMatter!.detail) == true, "概览按实际重要性，而非主题 ID 顺序")
     }
 
     static func verifyCompositionQuality() async throws {
@@ -371,7 +371,7 @@ private extension WeeklyReviewVerification {
             let requests = await probe.allRequests()
             try expect(requests.count == 2 && requests[0].purpose == .weeklyComposition && requests[1].purpose == .weeklyAudit,
                 "成文与事实核对必须是两个独立协议")
-            try expect(requests[0].question.contains("正文不超过 260 字")
+            try expect(requests[0].question.contains("正文不超过 120 字")
                 && requests[0].question.contains(template.tone == .formal ? "语言克制、正式" : "语言自然、直接"),
                 "模板篇幅和语气必须真正进入成文约束")
         }

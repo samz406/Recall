@@ -176,6 +176,9 @@ public struct ReviewNarrative: Codable, Equatable, Sendable {
     public var title: String
     public var summary: String
     public var evidenceIDs: [UUID]
+    public init(title: String, summary: String, evidenceIDs: [UUID]) {
+        self.title = title; self.summary = summary; self.evidenceIDs = evidenceIDs
+    }
 }
 
 public struct ReviewItem: Codable, Identifiable, Equatable, Sendable {
@@ -228,6 +231,8 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
     public var invalidatedAt: Date?
     public var modelAssisted: Bool = false
     public var topicGrouping: [MemoryTopicGroup]? = nil
+    /// Selected reading topics; all candidates/evidence remain in items. Nil denotes a legacy report.
+    public var digestTopicIDs: [String]? = nil
     public var refinementPending: Bool = false
     public var scheduleID: UUID?
     public var scheduledFor: Date?
@@ -248,16 +253,7 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
     }
     public var sourceIDs: Set<UUID> { Set(sourceVersions.keys) }
     public var isReadable: Bool { invalidatedAt == nil }
-    public var overview: String {
-        guard isReadable else { return "" }
-        let ranked = items.enumerated().sorted {
-            $0.element.importance == $1.element.importance ? $0.offset < $1.offset : $0.element.importance > $1.element.importance
-        }
-        // Use supported prose or the latest complete source sentence, not generic filler.
-        return ranked.prefix(3).map { row in
-            row.element.narrative?.summary ?? row.element.excerpts.last?.text ?? row.element.title
-        }.joined(separator: "\n\n")
-    }
+    public var overview: String { isReadable ? digestOverview : "" }
 
     public var displayName: String {
         let long = (period.calendar.dateComponents([.day], from: period.start, to: period.end).day ?? 0) > 7 || period.calendar.dateInterval(of: .month, for: period.start)?.start == period.start
@@ -275,33 +271,26 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
     public var markdown: String {
         guard isReadable else { return "原始记录已删除或更正，请重新生成这份回顾。" }
         if let editedMarkdown { return editedMarkdown }
+        let digest = digestRows
         var lines = ["# \(displayName)", "", period.label, "", overview, ""]
+        if digest.contains(where: \.isExtractive) {
+            lines += ["部分小结来自明确归属的简短事实；完整过程保留在应用的整理依据中。", ""]
+        }
         for section in template.sections {
-            let rows = items.filter { $0.section == section }
+            let rows = digest.filter { $0.item.section == section }
             guard !rows.isEmpty else { continue }
             lines += ["## " + heading(section), ""]
-            for item in rows {
-                lines += ["### " + item.displayTitle, ""]
-                if let narrative = item.narrative { lines += [narrative.summary, ""] }
-                if item.narrative == nil || template.length == .detailed {
-                    if let previous = item.previous { lines += ["此前记录：" + previous.text, ""] }
-                    for excerpt in item.featured(for: template.length) {
-                        let formatter = DateFormatter(); formatter.timeZone = period.calendar.timeZone
-                        formatter.locale = Locale(identifier: "zh_CN"); formatter.dateFormat = "M月d日"
-                        let stamp = formatter.string(from: excerpt.date)
-                        let dated = (excerpt.eventTimeKnown == true ? "发生于 " : "记录于 ") + stamp
-                        let prefix = template.tone == .formal ? dated + "：" : dated + " · "
-                        lines += [prefix + excerpt.text, ""]
-                    }
-                }
-                if let action = item.nextAction { lines += ["记录中的后续安排：" + action, ""] }
+            for row in rows {
+                lines += ["### " + row.title, ""]
+                if !row.summary.isEmpty { lines += [row.summary, ""] }
+                if let action = row.action { lines += ["已明确的后续安排：" + action, ""] }
             }
         }
         return lines.joined(separator: "\n")
     }
     /// Remove dependent text, including user edits, instead of merely concealing it in the UI.
     public mutating func invalidate(at date: Date = .now) {
-        items = []; editedMarkdown = nil; sourceVersions = [:]; invalidatedAt = date; refinementPending = false
+        items = []; digestTopicIDs = nil; editedMarkdown = nil; sourceVersions = [:]; invalidatedAt = date; refinementPending = false
     }
 }
 
@@ -496,11 +485,15 @@ public struct WeeklyReviewEngine: Sendable {
         guard !items.isEmpty else { throw WeeklyReviewError.noEvidence }
         try Task.checkCancellation()
         var assisted = false, pending = false
+        var selectedIDs = ReviewDigest.candidates(items, period: period, limit: items.count)
+            .filter { ReviewDigest.row($0, length: template.length) != nil }
+            .prefix(template.length.itemLimit).map(\.id)
         if let responder, state.privacy.cloudUseEnabled {
             await onPhase?("撰写并核对回顾")
             let composed = try await WeeklyReviewComposition().compose(items: items, state: state, period: period,
                 template: template, responder: responder)
             items = composed.items; assisted = composed.assisted; pending = composed.pending
+            selectedIDs = composed.selectedIDs
         }
         await onPhase?("核验来源")
         var ids = Set(items.flatMap(\.sourceIDs))
@@ -514,6 +507,7 @@ public struct WeeklyReviewEngine: Sendable {
         var report = WeeklyReport(createdAt: now, updatedAt: now, period: period, template: template, scope: scope,
             items: items, sourceVersions: versions, modelAssisted: assisted, refinementPending: pending)
         report.topicGrouping = state.topicGroups
+        report.digestTopicIDs = selectedIDs
         return report
     }
 
@@ -522,10 +516,11 @@ public struct WeeklyReviewEngine: Sendable {
         guard original.isReadable, original.editedMarkdown == nil, state.privacy.cloudUseEnabled,
               Self.sourcesUnchanged(original, in: state) else { throw WeeklyReviewError.changedSources }
         let result = try await WeeklyReviewComposition().compose(items: original.items, state: state,
-            period: original.period, template: original.template, responder: responder)
+            period: original.period, template: original.template, responder: responder, selectedIDs: original.modelAssisted ? original.digestTopicIDs : nil)
         var report = original
         report.items = result.items; report.updatedAt = now
-        report.modelAssisted = report.items.contains { $0.narrative != nil }
+        report.digestTopicIDs = result.selectedIDs
+        report.modelAssisted = report.digestRows.contains { !$0.isExtractive }
         report.refinementPending = result.pending
         return report
     }
