@@ -3384,6 +3384,10 @@ private struct PrivacyAndModelView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
+                    settingsCard(title: "记忆", icon: "brain.head.profile") {
+                        MemoryOrganizationSettings().environmentObject(model)
+                    }
+
                     settingsCard(title: "本地诊断", icon: "stethoscope", tint: RecallPalette.warning) {
                         Text("仅保留权限状态、事件模板、操作结果和错误代码；不包含 API Key、聊天正文、OCR 或截图。")
                             .font(.caption)

@@ -24,7 +24,7 @@ public struct MemoryRetrievalEngine: Sendable {
         let allowedIDs = Set(byID.keys)
         let ledger = MemoryKnowledgeEngine().reconcile(state)
         let active = ledger.claims.filter { claim in
-            (ledger.organizationVersion == MemoryKnowledgeEngine.organizationVersion || claim.kind.isPersonal)
+            ledger.organizationVersion == MemoryKnowledgeEngine.organizationVersion
                 && claim.usable(at: now) && !claim.sourceIDs.isEmpty && Set(claim.sourceIDs).isSubset(of: allowedIDs)
         }
         let retiredSources = Set(ledger.claims.filter { [.retracted, .superseded, .conflicted, .expired].contains($0.state) && ($0.kind.isPersonal || $0.kind == .reference) }.flatMap(\.sourceIDs))
@@ -45,7 +45,7 @@ public struct MemoryRetrievalEngine: Sendable {
             return count * 4 + entity + purpose
         }
         let candidates = active.filter { claim in
-            if claim.scope == .conversation && claim.scopeID != conversationID?.uuidString { return false }
+            if claim.kind.isPersonal && !MemoryPersonalization.applies(claim, question: question, entities: entityIDs, conversationID: conversationID) { return false }
             if let time {
                 guard claim.date >= time.startDate && claim.date <= time.endDate else { return false }
                 return intent == .overview ? [.event, .reference].contains(claim.kind) : relevance(claim) > 0
@@ -103,6 +103,9 @@ public struct MemoryRetrievalEngine: Sendable {
         var seen = Set(evidence.map(\.id))
         raw = raw.filter { record in
             guard !retiredSources.contains(record.id), seen.insert(record.id).inserted else { return false }
+            if record.memoryDirective != nil {
+                guard active.contains(where: { $0.sourceIDs.contains(record.id) && MemoryPersonalization.applies($0, question: question, entities: entityIDs, conversationID: conversationID) }) else { return false }
+            }
             if !entities.isEmpty, [.status, .change, .decision, .solution].contains(intent),
                !sourceAnchorIDs.contains(record.id), !mentionsEntity(record) { return false }
             if let time { return record.createdAt >= time.startDate && record.createdAt <= time.endDate }
@@ -126,7 +129,7 @@ public struct MemoryRetrievalEngine: Sendable {
             evidence.append(record); sources[record.id] = ids
         }
         if time != nil && intent == .overview { evidence = temporalCoverage(evidence, limit: limit) }
-        let preferences = preferenceContext(question: question, claims: active, conversationID: conversationID, entities: entityIDs)
+        let preferences = preferenceContext(question: question, claims: active, conversationID: conversationID, entities: entityIDs, now: now)
         let preferenceSources = active.filter { claim in preferences?.contains(claim.content) == true && claim.kind.isPersonal }.flatMap(\.sourceIDs).memoryUnique()
         return MemoryRetrievalPlan(evidence: evidence, preferences: preferences, sourceIDs: sources,
             preferenceSourceIDs: preferenceSources,
@@ -155,18 +158,10 @@ public struct MemoryRetrievalEngine: Sendable {
         return result
     }
 
-    public func preferenceContext(question: String, claims: [MemoryClaim], conversationID: UUID?, entities: Set<String> = []) -> String? {
-        let scope: MemoryScope = ["周报", "工作", "交付", "项目", "代码"].contains(where: question.contains) ? .work :
-            (["学习", "练习", "英语"].contains(where: question.contains) ? .learning :
-             (["生活", "个人回顾", "家人"].contains(where: question.contains) ? .personal : .global))
+    public func preferenceContext(question: String, claims: [MemoryClaim], conversationID: UUID?, entities: Set<String> = [], now: Date = .now) -> String? {
         let relevant = claims.filter { claim in
-            guard [.preference, .constraint, .workflow].contains(claim.kind), claim.usable() else { return false }
-            switch claim.scope {
-            case .global: return true
-            case .conversation: return claim.scopeID == conversationID?.uuidString
-            case .project: return claim.scopeID.map(entities.contains) ?? false
-            default: return claim.scope == scope
-            }
+            [.preference, .constraint, .workflow].contains(claim.kind) && claim.usable(at: now)
+                && MemoryPersonalization.applies(claim, question: question, entities: entities, conversationID: conversationID)
         }.sorted { a, b in
             func priority(_ item: MemoryClaim) -> Int { item.scope == .conversation ? 3 : (item.scope == .global ? 1 : 2) }
             let x = priority(a), y = priority(b)
@@ -174,11 +169,13 @@ public struct MemoryRetrievalEngine: Sendable {
         }
         guard !relevant.isEmpty else { return nil }
         var budget = 0
-        var lines: [String] = []
-        for item in relevant.prefix(8) where budget + item.content.count <= 2400 {
+        var lines: [String] = [], slots: Set<String> = []
+        for item in relevant where lines.count < 8 && budget + item.content.count <= 2400 {
+            if let slot = MemoryPersonalization.preferenceSlot(item.content), !slots.insert(slot).inserted { continue }
             lines.append("- \(item.scope.title) · \(item.explicit ? "本人明确约定" : "本人陈述")：\(item.content)")
             budget += item.content.count
         }
+        guard !lines.isEmpty else { return nil }
         return "当前任务适用的用户约定（只调整表达和组织；本次会话约定优先。不扩大采集、联网、通知、发送或执行权限；不把偏好写成当天成果）：\n" + lines.joined(separator: "\n")
     }
 }

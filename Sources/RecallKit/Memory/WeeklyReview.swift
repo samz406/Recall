@@ -170,6 +170,9 @@ public struct ReviewExcerpt: Codable, Identifiable, Equatable, Sendable {
     public var status: WorkEpisodeStatus
     public var sourceIDs: [UUID]
     public var eventTimeKnown: Bool?
+    public init(id: UUID, date: Date, text: String, status: WorkEpisodeStatus, sourceIDs: [UUID], eventTimeKnown: Bool? = nil) {
+        self.id = id; self.date = date; self.text = text; self.status = status; self.sourceIDs = sourceIDs; self.eventTimeKnown = eventTimeKnown
+    }
 }
 
 public struct ReviewNarrative: Codable, Equatable, Sendable {
@@ -192,9 +195,21 @@ public struct ReviewItem: Codable, Identifiable, Equatable, Sendable {
     public var nextAction: String?
     public var nextActionSourceIDs: [UUID]
     public var narrative: ReviewNarrative? = nil
+    public var memberTopicIDs: [String]? = nil
+    public var consolidatedRequiredIDs: [UUID]? = nil
+    public var locallyGrouped: Bool? = nil
+    public init(id: String, title: String, category: ReviewCategory, section: ReviewSection, previous: ReviewExcerpt?,
+                excerpts: [ReviewExcerpt], featuredIDs: [UUID], nextAction: String?, nextActionSourceIDs: [UUID],
+                narrative: ReviewNarrative? = nil, memberTopicIDs: [String]? = nil,
+                consolidatedRequiredIDs: [UUID]? = nil, locallyGrouped: Bool? = nil) {
+        self.id = id; self.title = title; self.category = category; self.section = section; self.previous = previous
+        self.excerpts = excerpts; self.featuredIDs = featuredIDs; self.nextAction = nextAction; self.nextActionSourceIDs = nextActionSourceIDs
+        self.narrative = narrative; self.memberTopicIDs = memberTopicIDs; self.consolidatedRequiredIDs = consolidatedRequiredIDs; self.locallyGrouped = locallyGrouped
+    }
     public var displayTitle: String { narrative?.title ?? title }
     public var sourceIDs: [UUID] { Array(Set(excerpts.flatMap(\.sourceIDs) + (previous?.sourceIDs ?? []) + nextActionSourceIDs)).sorted { $0.uuidString < $1.uuidString } }
     public var requiredExcerptIDs: [UUID] {
+        if let consolidatedRequiredIDs { return consolidatedRequiredIDs }
         var ids = excerpts.last.map { [$0.id] } ?? []
         if let outcome = excerpts.last(where: { $0.status == .completed }), !ids.contains(outcome.id) { ids.append(outcome.id) }
         return ids
@@ -381,7 +396,7 @@ public enum WeeklyReviewError: Error, LocalizedError, Equatable {
         case .invalidTemplate: "请填写模板名称，并保留四类内容的栏目设置。"
         case .changedSources: "生成期间来源或设置发生了变化，请重新生成。"
         case .cancelled: "已取消本次生成。"
-        case .noWorkScope: "请先选择本次要纳入的工作主题，或把主题标为工作。生活内容不会进入工作周报。"
+        case .noWorkScope: "所选日期内暂未识别出明确的工作内容，可以改用“我的一周”回顾全部内容。"
         }
     }
 }
@@ -393,8 +408,11 @@ public struct WeeklyReviewEngine: Sendable {
     public init() {}
 
     public func topics(in state: RecallState, matterFiles: [MatterFile]? = nil) -> [MatterFile] {
-        let safe = state.correctedForAnalysis()
-        var files = matterFiles ?? MatterMemoryEngine().files(in: state)
+        var input = state
+        input.captures.removeAll { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }
+        let safe = input.correctedForAnalysis()
+        let allowed = Set(safe.captures.map(\.id))
+        var files = (matterFiles ?? MatterMemoryEngine().files(in: input)).filter { Set($0.evidenceIDs).isSubset(of: allowed) }
         let originals = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
         // Reading/learning/life records do not need a work-progress verb. Still require
         // an explicit first-person action; a saved article or unknown chat role is not one.
@@ -421,15 +439,19 @@ public struct WeeklyReviewEngine: Sendable {
                 } else { files.append(MatterFile(id: key, title: pair.0, events: [event])) }
             }
         }
-        files += MemoryReferenceEngine().files(in: state, excluding: Set(files.flatMap(\.evidenceIDs)))
+        files += MemoryReferenceEngine().files(in: input, excluding: Set(files.flatMap(\.evidenceIDs)))
         for i in files.indices {
             files[i].events.sort { $0.date == $1.date ? $0.sequence < $1.sequence : $0.date < $1.date }
             // Scope/category settings must not retain a deleted person's name or original
             // topic sentence inside an identifier. Only opaque stable IDs leave the ledger.
-            let prefix = files[i].id.hasPrefix("reference:") ? "reference:" : (files[i].id.hasPrefix("life:") ? "life:" : "topic:")
-            files[i].id = prefix + SHA256.hash(data: Data(files[i].id.utf8)).map { String(format: "%02x", $0) }.joined()
+            files[i].id = Self.topicID(for: files[i])
         }
         return files.sorted { $0.latest.date > $1.latest.date }
+    }
+
+    public static func topicID(for file: MatterFile) -> String {
+        let prefix = file.id.hasPrefix("reference:") ? "reference:" : (file.id.hasPrefix("life:") ? "life:" : "topic:")
+        return prefix + SHA256.hash(data: Data(file.id.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     public func category(for file: MatterFile, in state: RecallState) -> ReviewCategory {
@@ -481,7 +503,7 @@ public struct WeeklyReviewEngine: Sendable {
                          responder: (any LLMResponding)? = nil, now: Date = .now, onPhase: (@Sendable (String) async -> Void)? = nil) async throws -> WeeklyReport {
         guard period.end <= now.addingTimeInterval(1) else { throw WeeklyReviewError.invalidPeriod }
         await onPhase?("整理主题变化")
-        var items = try items(in: state, period: period, template: template, scope: scope)
+        var items = ReviewConsolidation.local(try items(in: state, period: period, template: template, scope: scope))
         guard !items.isEmpty else { throw WeeklyReviewError.noEvidence }
         try Task.checkCancellation()
         var assisted = false, pending = false
