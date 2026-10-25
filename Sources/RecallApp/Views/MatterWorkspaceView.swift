@@ -17,11 +17,13 @@ struct MatterWorkspaceView: View {
     @State private var visibleCount = 20
     @State private var olderVisibleCount = 20
     @State private var showsOlderMatters = false
+    @State private var topicAlias: MemoryEntity?
     @State private var selected: MatterFile?
     @State private var source: CaptureRecord?
     @State private var correctionEvent: MatterEvent?
     @State private var showsNewMatter = false
     @State private var newMatterTitle = ""
+    @State private var showsReferences = false
     @State private var showsCorrections = false
     let continueChat: (String) -> Void
 
@@ -55,7 +57,7 @@ struct MatterWorkspaceView: View {
             ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    if tab != .weeklyReview, let message = model.matterBuildMessage {
+                    if tab == .topics, let message = model.matterBuildMessage {
                         Label(message, systemImage: "info.circle")
                             .foregroundStyle(RecallPalette.secondary).padding(16)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -134,6 +136,7 @@ struct MatterWorkspaceView: View {
                 return true
             }
         }
+        .sheet(isPresented: $showsReferences) { MemoryReferenceBrowser().environmentObject(model) }
         .sheet(isPresented: $showsMerge) { TopicMergeSheet().environmentObject(model) }
         .sheet(isPresented: $showsCorrections) {
             MatterCorrectionHistorySheet().environmentObject(model)
@@ -174,12 +177,25 @@ struct MatterWorkspaceView: View {
                         }
                     }.padding(24)
                 }
-                Button("围绕这件事继续问") {
-                    selected = nil
-                    continueChat("关于\(file.title)，上次进展是什么？有哪些已确认的结论和仍未知的信息？")
-                }.buttonStyle(.borderedProminent).padding(24)
+                HStack(spacing: 14) {
+                    Button("回顾这件事") {
+                        model.reviewTopicToOpen = WeeklyReviewEngine.topicID(for: file)
+                        selected = nil; tab = .weeklyReview
+                    }
+                    if let entity = model.state.memoryKnowledge.entities.first(where: { $0.id == file.id }) {
+                        Button("管理别名") { topicAlias = entity }
+                    }
+                    Spacer()
+                    Button("围绕这件事继续问") {
+                        selected = nil
+                        continueChat("关于\(file.title)，上次进展是什么？有哪些已确认的结论和仍未知的信息？")
+                    }.buttonStyle(.borderedProminent)
+                }.padding(24)
             }.frame(minWidth: 650, idealWidth: 820, minHeight: 500, idealHeight: 720)
                 .sheet(item: $source) { CaptureDetailSheet(capture: $0).environmentObject(model) }
+                .sheet(item: $topicAlias) { entity in
+                    MemoryAliasEditor(entity: entity) { await model.saveMemoryAliases(entity: entity, text: $0) }
+                }
                 .sheet(item: $correctionEvent) { event in
                     MatterCorrectionSheet(event: event) { correction in
                         model.correctMatter(correction)
@@ -216,6 +232,7 @@ struct MatterWorkspaceView: View {
     }
     private var pageActions: some View {
         HStack(spacing: 12) {
+            if tab == .topics {
             if model.isBuildingMatters { ProgressView().controlSize(.small).help("正在整理记录") }
             Button { model.organizeExistingMatters() } label: {
                 Label(model.isBuildingMatters ? "正在更新…" : "更新记忆", systemImage: "arrow.clockwise")
@@ -225,6 +242,7 @@ struct MatterWorkspaceView: View {
                 Label("补充记录", systemImage: "plus")
             }.buttonStyle(.borderedProminent)
             Menu {
+                Button("资料与线索") { showsReferences = true }
                 Button("合并主题") { showsMerge = true }
                 Button { showsCorrections = true } label: {
                     Label("更正记录", systemImage: "clock.arrow.circlepath")
@@ -235,6 +253,7 @@ struct MatterWorkspaceView: View {
                 Image(systemName: "ellipsis.circle")
             }.menuStyle(.borderlessButton)
                 .fixedSize().accessibilityLabel("更多选项").help("更多选项")
+            }
         }.fixedSize(horizontal: true, vertical: false)
     }
 

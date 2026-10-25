@@ -69,7 +69,7 @@ enum MemoryKnowledgeVerification {
         let reader = MemoryRetrievalEngine()
         let here = reader.preferenceContext(question: "工作周报", claims: state.memoryKnowledge.claims, conversationID: id) ?? ""
         let elsewhere = reader.preferenceContext(question: "生活回顾", claims: state.memoryKnowledge.claims, conversationID: UUID()) ?? ""
-        try expect(here.contains("本次会话") && here.contains("详细"), "没有保留本次约定优先和任务范围")
+        try expect(here.contains("本次会话") && here.contains("简洁") && !here.contains("周报详细"), "没有保留本次约定优先和任务范围")
         try expect(!elsewhere.contains("简洁") && !elsewhere.contains("工作周报"), "工作或本次约定污染了其他范围")
         try expect(MemoryDirective.parse("以后如何解决数据库死锁") == nil, "普通提问被误保存为长期约定")
         try await store.addCapture(capture("[聊天·自己] 我喜欢苹果。\n[聊天·自己] 我不喜欢苹果。"))

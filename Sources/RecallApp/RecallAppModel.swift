@@ -33,6 +33,7 @@ final class RecallAppModel: ObservableObject {
     private let memoryWorkspaceCache = MemoryWorkspaceCache()
     @Published private(set) var isGeneratingWeeklyReview = false
     @Published var weeklyReviewMessage: String?
+    @Published var reviewTopicToOpen: String?
     @Published var weeklyReportToOpen: UUID?
     private var weeklyReviewTask: Task<Void, Never>?
     private var weeklyScheduleTimer: Timer?
@@ -195,7 +196,7 @@ final class RecallAppModel: ObservableObject {
             if let replacing { try await store.correctMemory(id: replacing.id, content: content, scope: scope, scopeID: scopeID, validUntil: validUntil) }
             else {
                 var directive = MemoryDirective.parse("记住：" + content) ?? MemoryDirective(content: content, key: "manual:" + UUID().uuidString)
-                directive.scope = scope; directive.scopeID = scopeID; directive.validUntil = validUntil
+                directive.scope = scope; directive.scopeID = scopeID; directive.validUntil = validUntil; directive.scopeExplicitlySet = true
                 _ = try await store.remember(directive)
             }
             await refresh()

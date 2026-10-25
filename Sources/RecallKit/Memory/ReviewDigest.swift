@@ -29,7 +29,8 @@ public enum ReviewDigest {
     }
     public static func candidates(_ items: [ReviewItem], period: ReviewPeriod, limit: Int) -> [ReviewItem] {
         var candidates: [Candidate] = []
-        for item in items {
+        let groupedMembers = Set(items.flatMap { $0.memberTopicIDs ?? [] })
+        for item in items where !groupedMembers.contains(item.id) {
             guard meaningfulTitle(item.displayTitle), !item.excerpts.isEmpty,
                   item.excerpts.contains(where: { readable($0.text) }) else { continue }
             let days = Set(item.excerpts.map { period.calendar.startOfDay(for: $0.date) })
@@ -78,6 +79,7 @@ public enum ReviewDigest {
 
     public static func row(_ item: ReviewItem, length: ReviewLength) -> ReviewDigestRow? {
         let title = clean(item.displayTitle)
+        guard item.memberTopicIDs == nil || item.locallyGrouped == true || item.narrative != nil else { return nil }
         guard meaningfulTitle(title) else { return nil }
         let summary: String
         let extractive: Bool

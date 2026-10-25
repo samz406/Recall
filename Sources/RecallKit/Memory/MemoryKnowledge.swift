@@ -56,6 +56,7 @@ public struct MemoryDirective: Codable, Hashable, Sendable {
     public var scopeID: String?
     public var replacesPrevious: Bool
     public var validUntil: Date?
+    public var scopeExplicitlySet: Bool? = nil
     public init(content: String, key: String, kind: MemoryClaimKind = .preference, scope: MemoryScope = .global,
                 scopeID: String? = nil, replacesPrevious: Bool = true, validUntil: Date? = nil) {
         self.content = content; self.key = key; self.kind = kind; self.scope = scope
@@ -69,25 +70,43 @@ public struct MemoryDirective: Codable, Hashable, Sendable {
               !["如果", "假如", "比如", "例如", "他说", "她说", "文中", "请问"].contains(where: text.contains) else { return nil }
         let explicitRemember = text.hasPrefix("记住") || text.hasPrefix("请记住")
         guard explicitRemember || ["简洁", "详细", "篇幅", "少换行", "精简", "简短", "正式", "自然", "语气", "口吻", "中文", "英文", "只写工作", "私人", "老规矩"].contains(where: text.contains) else { return nil }
-        let oneTurn = text.hasPrefix("这次") || text.hasPrefix("本次")
-        let scope: MemoryScope = oneTurn ? .conversation :
-            (text.contains("周报") || text.contains("工作总结") ? .work :
-             (text.contains("学习") ? .learning : (text.contains("个人回顾") || text.contains("生活回顾") ? .personal : .global)))
         var content = text.replacingOccurrences(of: #"^(?:请)?记住[：:，,\s]*"#, with: "", options: .regularExpression)
         content = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let oneTurn = content.hasPrefix("这次") || content.hasPrefix("本次")
+        let scope: MemoryScope = oneTurn ? .conversation :
+            (content.contains("周报") || content.contains("工作总结") ? .work :
+             (content.contains("学习") ? .learning : MemoryPersonalization.inferredScope(content)))
         let key: String
         let kind: MemoryClaimKind
         if let name = personName(in: content) { key = "person:" + normalized(name) + (content.contains("生日") ? ":birthday" : ":relationship"); kind = .person }
-        else if ["我的目标", "我要成为", "我希望"].contains(where: content.contains) { key = "goal:" + normalized(content); kind = .goal }
+        else if ["我的目标", "我要成为", "长期目标"].contains(where: content.contains) { key = "goal:" + normalized(content); kind = .goal }
         else if ["我每天", "我每周", "我通常", "我习惯"].contains(where: content.contains) { key = "habit:" + normalized(content); kind = .habit }
         else if ["私人", "生活内容", "工作内容", "只写工作", "个人内容"].contains(where: content.contains) { key = "review-content"; kind = .constraint }
         else if ["简洁", "详细", "篇幅", "少换行", "精简", "简短"].contains(where: content.contains) { key = "response-length"; kind = .preference }
+        else if ["配色", "蓝色", "绿色", "森林绿", "主题色"].contains(where: content.contains) { key = "appearance-colors"; kind = .preference }
         else if ["正式", "自然", "语气", "口吻"].contains(where: content.contains) { key = "response-tone"; kind = .preference }
         else if ["中文", "英文", "语言"].contains(where: content.contains) { key = "response-language"; kind = .preference }
         else if ["先", "后", "老规矩", "步骤"].contains(where: content.contains) { key = "workflow:" + normalized(content); kind = .workflow }
         else { key = "explicit:" + normalized(content); kind = .constraint }
-        return MemoryDirective(content: content, key: key, kind: kind, scope: scope,
+        var directive = MemoryDirective(content: content, key: key, kind: kind, scope: scope,
             scopeID: oneTurn ? conversationID?.uuidString : nil)
+        if let context = MemoryPersonalization.namedContext(content), !oneTurn {
+            directive.scope = .project; directive.scopeID = context.id
+        }
+        // A dated request is not a permanent preference even when introduced by “记住”.
+        if !oneTurn && MemoryPersonalization.isTemporary(content) {
+            let now = Date.now
+            let calendar = Calendar.current
+            if content.contains("本周") || content.contains("这周") {
+                var week = calendar; week.firstWeekday = 2
+                directive.validUntil = week.dateInterval(of: .weekOfYear, for: now)?.end
+            } else if content.contains("本月") || content.contains("这月") {
+                directive.validUntil = calendar.dateInterval(of: .month, for: now)?.end
+            } else {
+                directive.validUntil = calendar.date(byAdding: .day, value: content.contains("明天") ? 2 : 1, to: calendar.startOfDay(for: now))
+            }
+        }
+        return directive
     }
     static func normalized(_ text: String) -> String { text.lowercased().filter { $0.isLetter || $0.isNumber } }
     static func personName(in text: String) -> String? {
@@ -176,7 +195,7 @@ public struct MemoryKnowledgeSettings: Codable, Hashable, Sendable {
 }
 
 public struct MemoryKnowledgeEngine: Sendable {
-    public static let organizationVersion = 3
+    public static let organizationVersion = 4
     static func withdrawnSourceIDs(from previous: MemoryKnowledge, to current: MemoryKnowledge) -> Set<UUID> {
         let states = Dictionary(uniqueKeysWithValues: current.claims.map { ($0.id, $0.state) })
         return Set(previous.claims.filter { $0.state == .active && states[$0.id] != .active }.flatMap(\.sourceIDs))
@@ -213,7 +232,7 @@ public struct MemoryKnowledgeEngine: Sendable {
                 evidenceIDs: file.evidenceIDs, confidence: 0.8, lastActiveAt: file.latest.date)
         }
         let knowledge = reconcile(state)
-        result.memories = knowledge.claims.filter { $0.kind.isPersonal && $0.usable() }.map { claim in
+        result.memories = knowledge.claims.filter { $0.kind.isPersonal && $0.scope == .global && $0.usable() }.map { claim in
             let kind: UserMemoryKind
             switch claim.kind {
             case .goal: kind = .goal
@@ -262,14 +281,17 @@ public struct MemoryKnowledgeEngine: Sendable {
         let allowed = Set(state.captures.filter {
             !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "")
         }.map(\.id))
-        return reconcile(state).claims.filter { $0.usable() && !$0.sourceIDs.isEmpty && Set($0.sourceIDs).isSubset(of: allowed) }
+        let knowledge = reconcile(state)
+        guard knowledge.organizationVersion == Self.organizationVersion else { return [] }
+        return knowledge.claims.filter { $0.usable() && !$0.sourceIDs.isEmpty && Set($0.sourceIDs).isSubset(of: allowed) }
     }
     static func id(_ text: String) -> UUID { MatterEvidence.eventID(source: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, topic: text, ordinal: 0) }
 
     /// One source ledger for reviews, chat, and the topic browser. Explicit deletion is reconciled even while paused.
     public func reconcile(_ state: RecallState, force: Bool = false, now: Date = .now, allowNew: Bool = true) -> MemoryKnowledge {
         var result = state.memoryKnowledge
-        let safe = state.correctedForAnalysis()
+        var safe = state.correctedForAnalysis()
+        safe.captures.removeAll { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }
         let sources = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id, $0) })
         let originals = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
         let versions = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id.uuidString, Self.version(of: $0, corrections: state.matterCorrections)) })
@@ -311,8 +333,17 @@ public struct MemoryKnowledgeEngine: Sendable {
                 status: status, resultStatus: resultStatus, nextAction: nextAction, validFrom: first,
                 validUntil: nil, updatedAt: evidence.map(\.recordedAt).max() ?? now, explicit: explicit)
         }
-        let files = MatterMemoryEngine().observedFiles(in: state)
-        let references = MemoryReferenceEngine().files(in: state, excluding: Set(files.flatMap(\.evidenceIDs)))
+        let files = MatterMemoryEngine().observedFiles(in: safe)
+        let references = MemoryReferenceEngine().files(in: safe, excluding: Set(files.flatMap(\.evidenceIDs)))
+        let contextEntities = (files + references).map { file in
+            MemoryEntity(id: file.id, name: file.title, aliases: result.entities.first { $0.id == file.id }?.aliases ?? [], kind: "topic", sourceIDs: file.evidenceIDs)
+        } + result.entities.filter { $0.id.hasPrefix("context:") }
+        var namedContexts: [String: (name: String, sources: Set<UUID>)] = [:]
+        func rememberContext(_ target: (id: String, name: String)?, sourceID: UUID) {
+            guard let target, target.id.hasPrefix("context:") else { return }
+            var value = namedContexts[target.id] ?? (target.name, Set<UUID>())
+            value.sources.insert(sourceID); namedContexts[target.id] = value
+        }
         for file in files {
             for event in file.events {
                 let evidence = event.evidenceIDs.compactMap { sourceID -> MemoryEvidence? in
@@ -345,17 +376,19 @@ public struct MemoryKnowledgeEngine: Sendable {
             }
         }
         let cueKinds: [(MemoryClaimKind, [String])] = [
-            (.preference, ["我喜欢", "我更喜欢", "我不喜欢", "我偏好"]),
-            (.goal, ["我的目标", "我想要", "我希望", "我要成为"]),
+            (.preference, ["我喜欢", "我更喜欢", "我不喜欢", "我不再喜欢", "我一直喜欢", "我长期偏好", "我偏好"]),
+            (.goal, ["我的目标", "长期目标", "我要成为"]),
             (.constraint, ["我不能", "我的限制", "我要求"]),
             (.habit, ["我通常", "我习惯", "我每天", "我每周"]),
             (.workflow, ["我以后", "我下次", "老规矩"])
         ]
         for source in safe.captures.sorted(by: { $0.createdAt < $1.createdAt }) {
             if let directive = source.memoryDirective {
-                let key = "personal:\(directive.scope.rawValue):\(directive.scopeID ?? ""):\(directive.key):\(source.id.uuidString)"
+                let (scope, scopeID) = MemoryPersonalization.effectiveScopeID(directive, entities: contextEntities)
+                rememberContext(MemoryPersonalization.namedContext(directive.content), sourceID: source.id)
+                let key = "personal:\(scope.rawValue):\(scopeID ?? ""):\(directive.key):\(source.id.uuidString)"
                 candidates.append(claim(key: key, subject: "user", title: directive.content, content: directive.content,
-                    kind: directive.kind, scope: directive.scope, scopeID: directive.scopeID,
+                    kind: directive.kind, scope: scope, scopeID: scopeID,
                     evidence: [proof(source, quote: directive.content, ordinal: 0, speaker: "本人明确要求")], explicit: true))
                 candidates[candidates.count - 1].validUntil = directive.validUntil
                 if let name = MemoryDirective.personName(in: directive.content) { candidates[candidates.count - 1].subjectID = "person:" + MemoryDirective.normalized(name) }
@@ -364,13 +397,18 @@ public struct MemoryKnowledgeEngine: Sendable {
             }
             for segment in RecordedText.segments(in: source) where segment.speaker == .user {
                 let text = segment.text
-                guard (5...220).contains(text.count), !["如果", "例如", "比如", "他说", "她说", "文章", "这次", "本次", "今天先", "暂时"].contains(where: text.contains) else { continue }
+                guard (5...220).contains(text.count), !MemoryPersonalization.isTemporary(text),
+                      !["如果", "例如", "比如", "他说", "她说", "文章", "？", "?", "吗"].contains(where: text.contains) else { continue }
                 let kind: MemoryClaimKind?
                 if MemoryDirective.personName(in: text) != nil { kind = .person }
                 else { kind = cueKinds.first { $0.1.contains(where: text.contains) }?.0 }
                 guard let kind else { continue }
-                let key = "personal:observed:\(kind.rawValue):\(MemoryDirective.normalized(text))"
+                let target = MemoryPersonalization.context(text, entities: contextEntities)
+                rememberContext(target, sourceID: source.id)
+                let scope = target == nil ? MemoryPersonalization.inferredScope(text) : .project
+                let key = "personal:observed:\(scope.rawValue):\(target?.id ?? ""):\(kind.rawValue):\(MemoryDirective.normalized(text))"
                 candidates.append(claim(key: key, subject: "user", title: text, content: text, kind: kind,
+                    scope: scope, scopeID: target?.id,
                     evidence: [proof(source, quote: text, ordinal: segment.ordinal, speaker: "自己")]))
                 if let name = MemoryDirective.personName(in: text) { candidates[candidates.count - 1].subjectID = "person:" + MemoryDirective.normalized(name) }
             }
@@ -398,8 +436,27 @@ public struct MemoryKnowledgeEngine: Sendable {
             var seen: Set<String> = []
             first.evidence = values.flatMap(\.evidence).filter { seen.insert($0.captureID.uuidString + ":" + String($0.fragment)).inserted }
             first.updatedAt = first.evidence.map(\.recordedAt).max() ?? first.updatedAt
+            first.validFrom = first.evidence.map(\.recordedAt).min() ?? first.validFrom
+            if first.kind.isPersonal && !first.explicit {
+                // Repeated captures in one day do not provide long-term corroboration.
+                let days = Set(first.evidence.map { Calendar.current.startOfDay(for: $0.recordedAt) })
+                let contexts = Set(first.evidence.compactMap { evidence -> String? in
+                    guard let source = sources[evidence.captureID], let title = source.windowTitle, !title.isEmpty else { return nil }
+                    return (source.sourceBundleIdentifier ?? "") + ":" + title
+                })
+                let authored = Set(first.evidence.filter { sources[$0.captureID]?.textOrigin == .userInput }.map(\.captureID))
+                let corroborated = days.count >= 2 && (contexts.count >= 2 || authored.count >= 2)
+                let stable = MemoryPersonalization.isStable(first.content, kind: first.kind) || corroborated
+                first.state = stable ? .active : .tentative
+                if first.kind != .person {
+                    first.validUntil = Calendar.current.date(byAdding: .day, value: first.kind == .goal ? 30 : 180, to: first.updatedAt)
+                }
+            }
             if let until = first.validUntil, until <= now { first.state = .expired }
-            if let old = result.claims.first(where: { $0.id == first.id }), [.retracted, .expired].contains(old.state) {
+            let old = result.claims.first { $0.id == first.id } ?? result.claims.first {
+                $0.state == .retracted && $0.kind == first.kind && $0.content == first.content && !Set($0.sourceIDs).isDisjoint(with: first.sourceIDs)
+            }
+            if let old, old.state == .retracted || (first.explicit && old.state == .expired) {
                 first.state = old.state; first.validUntil = old.validUntil
             }
             return first
@@ -407,7 +464,8 @@ public struct MemoryKnowledgeEngine: Sendable {
         // Only a newer explicit instruction in the same scope replaces an old instruction.
         let directives = Dictionary(grouping: safe.captures.filter { $0.memoryDirective != nil }) { source in
             let d = source.memoryDirective!
-            return "\(d.scope.rawValue):\(d.scopeID ?? ""):\(d.key)"
+            let (scope, scopeID) = MemoryPersonalization.effectiveScopeID(d, entities: contextEntities)
+            return "\(scope.rawValue):\(scopeID ?? ""):\(d.key)"
         }
         for records in directives.values {
             guard let latest = records.max(by: { $0.createdAt < $1.createdAt }) else { continue }
@@ -419,13 +477,28 @@ public struct MemoryKnowledgeEngine: Sendable {
                 else if oldClaims.contains(where: { $0.id == merged[i].id }) && merged[i].state == .active { merged[i].state = .superseded }
             }
         }
-        // Negative and positive observations about the same object remain a visible conflict, not a guessed preference.
-        let observed = merged.indices.filter { merged[$0].kind == .preference && !merged[$0].explicit }
+        // Contradictions are local to the same subject and context. A work preference
+        // must never conflict with an unrelated project or life preference.
+        let observed = merged.indices.filter { merged[$0].kind == .preference && !merged[$0].explicit && [.active, .tentative].contains(merged[$0].state) }
         for i in observed {
-            let positive = merged[i].content.replacingOccurrences(of: "我不喜欢", with: "我喜欢")
-            if observed.contains(where: { $0 != i && merged[$0].content != merged[i].content && merged[$0].content.replacingOccurrences(of: "我不喜欢", with: "我喜欢") == positive }) {
-                merged[i].state = .conflicted
-            }
+            guard let object = MemoryPersonalization.polarityObject(merged[i].content) else { continue }
+            if observed.contains(where: { j in
+                j != i && merged[j].scope == merged[i].scope && merged[j].scopeID == merged[i].scopeID
+                    && MemoryPersonalization.polarityObject(merged[j].content) == object
+                    && MemoryPersonalization.isNegative(merged[j].content) != MemoryPersonalization.isNegative(merged[i].content)
+            }) { merged[i].state = .conflicted }
+        }
+        // A later explicit correction can retire matching observations without
+        // suppressing every preference or every fact from the same screenshot.
+        for i in merged.indices where !merged[i].explicit && merged[i].kind == .preference {
+            guard let object = MemoryPersonalization.polarityObject(merged[i].content),
+                  let replacement = merged.first(where: {
+                      $0.explicit && $0.usable(at: now) && $0.scope == merged[i].scope && $0.scopeID == merged[i].scopeID
+                          && $0.updatedAt >= merged[i].updatedAt && MemoryPersonalization.polarityObject($0.content) == object
+                  }) else { continue }
+            let retiredID = merged[i].id
+            merged[i].state = .superseded
+            if let j = merged.firstIndex(where: { $0.id == replacement.id }), !merged[j].supersedes.contains(retiredID) { merged[j].supersedes.append(retiredID) }
         }
         let activeIDs = Set(merged.map(\.id))
         for file in files {
@@ -453,6 +526,9 @@ public struct MemoryKnowledgeEngine: Sendable {
         let oldEntities = Dictionary(uniqueKeysWithValues: result.entities.map { ($0.id, $0) })
         result.entities = (files + references).map { file in
             MemoryEntity(id: file.id, name: file.title, aliases: oldEntities[file.id]?.aliases ?? [], kind: "topic", sourceIDs: file.evidenceIDs)
+        }
+        for (id, value) in namedContexts where !result.entities.contains(where: { $0.id == id }) {
+            result.entities.append(MemoryEntity(id: id, name: value.name, aliases: oldEntities[id]?.aliases ?? [], kind: "topic", sourceIDs: Array(value.sources).sorted { $0.uuidString < $1.uuidString }))
         }
         let people = Dictionary(grouping: result.claims.filter { $0.kind == .person }, by: \.subjectID)
         for (key, items) in people {
@@ -482,7 +558,9 @@ public struct MemoryKnowledgeEngine: Sendable {
     public func files(in state: RecallState) -> [MatterFile]? {
         guard state.memoryKnowledge.updatedAt != nil,
               state.memoryKnowledge.organizationVersion == Self.organizationVersion,
-              state.memoryKnowledge.sourceVersions == Dictionary(uniqueKeysWithValues: state.correctedForAnalysis().captures.map {
+              state.memoryKnowledge.sourceVersions == Dictionary(uniqueKeysWithValues: state.correctedForAnalysis().captures.filter {
+                  !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "")
+              }.map {
                   ($0.id.uuidString, Self.version(of: $0, corrections: state.matterCorrections))
               }) else { return nil }
         let groups = Dictionary(grouping: state.memoryKnowledge.claims.filter { $0.kind == .event && $0.usable() }, by: \.subjectID)

@@ -20,6 +20,9 @@ extension FileMemoryStore {
         let previous = state
         guard !directive.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               directive.content.count <= 800 else { throw LLMError.serviceError("请输入 1–800 字的具体约定。") }
+        guard directive.scope != .project || directive.scopeID?.isEmpty == false else { throw LLMError.serviceError("请选择这条记忆适用的主题。") }
+        guard directive.scope != .conversation || directive.scopeID?.isEmpty == false else { throw LLMError.serviceError("本次约定需要有效的会话。") }
+        guard directive.validUntil == nil || directive.validUntil! > now else { throw LLMError.serviceError("有效期必须晚于当前时间。") }
         let record = CaptureRecord(eventTemplate: .manualMoment, createdAt: now,
             sourceAppName: "记忆约定", sourceBundleIdentifier: "im.recall.app", contentHash: UUID().uuidString,
             ocrText: directive.content, textOrigin: .userInput, memoryDirective: directive)
@@ -56,8 +59,9 @@ extension FileMemoryStore {
         do {
             state.memoryKnowledge.suppressedKeys.append(claim.key)
             invalidateMemoryOutputs(sourceIDs: Set(claim.sourceIDs))
-            let directive = MemoryDirective(content: content, key: oldDirective?.key ?? claim.key,
+            var directive = MemoryDirective(content: content, key: oldDirective?.key ?? claim.key,
                 kind: claim.kind, scope: scope, scopeID: scopeID, validUntil: validUntil)
+            directive.scopeExplicitlySet = true
             _ = try remember(directive)
         } catch { state = previous; throw error }
     }

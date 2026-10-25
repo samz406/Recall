@@ -4,69 +4,55 @@ import RecallKit
 struct MemoryKnowledgeView: View {
     @EnvironmentObject private var model: RecallAppModel
     let search: String
-    @State private var category = 0
+    @State private var category: MemoryLibraryCategory = .all
     @State private var includeHistory = false
+    @State private var includeUncertain = false
     @State private var visibleCount = 20
-    @State private var aliasVisibleCount = 20
     @State private var editing: MemoryClaim?
     @State private var adding = false
     @State private var source: CaptureRecord?
     @State private var forgetting: MemoryClaim?
     @State private var aliases: MemoryEntity?
-    @State private var choseInitialCategory = false
     @State private var showsDiagnostics = false
-    private var summary: MemoryOrganizationSummary { model.memoryWorkspace?.summary ?? MemoryOrganizationSummary() }
+    @State private var showsReferences = false
+    @State private var handledID: UUID?
 
     private var claims: [MemoryClaim] {
         model.state.memoryKnowledge.claims.filter { item in
             let matches = search.isEmpty || (item.title + item.content).localizedCaseInsensitiveContains(search)
-            let kind: Bool = switch category {
-            case 0: item.kind == .person
-            case 1: [.preference, .habit, .workflow].contains(item.kind)
-            case 2: item.kind == .experience
-            case 3: item.kind == .reference
-            default: [.goal, .constraint].contains(item.kind)
-            }
-            return matches && kind && (includeHistory || [.active, .conflicted, .tentative].contains(item.state))
-                && item.scope != .conversation
+            return matches && category.includes(item.kind) && item.scope != .conversation
+                && (item.usable() || (includeUncertain && [.tentative, .conflicted].contains(item.state)) || includeHistory)
         }.sorted { a, b in
-            if a.id == model.knowledgeToOpen { return true }
+            if a.id == model.knowledgeToOpen { return b.id != a.id }
             if b.id == model.knowledgeToOpen { return false }
-            return a.date == b.date ? a.id.uuidString < b.id.uuidString : a.date > b.date
+            return a.updatedAt == b.updatedAt ? a.id.uuidString < b.id.uuidString : a.updatedAt > b.updatedAt
         }
     }
-    private var entities: [MemoryEntity] {
-        model.state.memoryKnowledge.entities.filter { search.isEmpty || ($0.name + $0.aliases.joined()).localizedCaseInsensitiveContains(search) }
-    }
+    private var updating: Bool { model.isOrganizingMemory || model.isBuildingMatters }
     var body: some View {
         let rows = claims
-        VStack(alignment: .leading, spacing: 22) {
-            introduction
-            DisclosureGroup("查看整理详情", isExpanded: $showsDiagnostics) { organizationResults }
+        LazyVStack(alignment: .leading, spacing: 18) {
             controls
+            maintenanceStatus
             if let message = model.memoryMaintenanceMessage {
-                Label(message, systemImage: "info.circle").foregroundStyle(RecallPalette.secondary)
+                Text(message).font(.callout).foregroundStyle(RecallPalette.secondary)
             }
-            if let task = model.tasks.first(where: { $0.kind == "整理记忆" }) { RecallTaskStatusView(task: task) }
-            if rows.isEmpty && !model.isOrganizingMemory && !model.isBuildingMatters { emptyState }
+            if rows.isEmpty && !updating { emptyState }
             ForEach(Array(rows.prefix(visibleCount))) { claim in claimCard(claim) }
             if rows.count > visibleCount { Button("再显示 20 条") { visibleCount += 20 } }
-            topicAliases
-            retentionSettings
         }
-        .onChange(of: category) { _, _ in visibleCount = 20; choseInitialCategory = true }
-        .onChange(of: search) { _, _ in visibleCount = 20; aliasVisibleCount = 20 }
-        .onAppear { chooseInitialCategory() }
-        .onChange(of: model.memoryWorkspace?.revision) { _, _ in chooseInitialCategory() }
-        .onChange(of: model.knowledgeToOpen) { _, _ in choseInitialCategory = false; chooseInitialCategory() }
-        .onChange(of: model.navigationRevision) { _, _ in if case .knowledge = model.destination { choseInitialCategory = false; chooseInitialCategory() } }
+        .onChange(of: category) { _, _ in visibleCount = 20 }
+        .onChange(of: search) { _, _ in visibleCount = 20 }
+        .onAppear { openRequestedMemory() }
+        .onChange(of: model.knowledgeToOpen) { _, _ in handledID = nil; openRequestedMemory() }
+        .onChange(of: model.memoryWorkspace?.revision) { _, _ in openRequestedMemory() }
         .sheet(isPresented: $adding) {
-            MemoryAgreementEditor(claim: nil, topics: model.state.memoryKnowledge.entities) { content, scope, scopeID, until in
+            MemoryAgreementEditor(claim: nil, topics: model.state.memoryKnowledge.entities.filter { $0.kind == "topic" }) { content, scope, scopeID, until in
                 await model.saveMemoryAgreement(content: content, scope: scope, scopeID: scopeID, validUntil: until)
             }
         }
         .sheet(item: $editing) { claim in
-            MemoryAgreementEditor(claim: claim, topics: model.state.memoryKnowledge.entities) { content, scope, scopeID, until in
+            MemoryAgreementEditor(claim: claim, topics: model.state.memoryKnowledge.entities.filter { $0.kind == "topic" }) { content, scope, scopeID, until in
                 await model.saveMemoryAgreement(content: content, scope: scope, scopeID: scopeID, validUntil: until, replacing: claim)
             }
         }
@@ -74,12 +60,13 @@ struct MemoryKnowledgeView: View {
         .sheet(item: $aliases) { entity in
             MemoryAliasEditor(entity: entity) { await model.saveMemoryAliases(entity: entity, text: $0) }
         }
+        .sheet(isPresented: $showsDiagnostics) { MemoryOrganizationDetails().environmentObject(model) }
+        .sheet(isPresented: $showsReferences) { MemoryReferenceBrowser().environmentObject(model) }
         .confirmationDialog("忘记这条记忆及其关联记录？", isPresented: Binding(get: { forgetting != nil }, set: { if !$0 { forgetting = nil } })) {
             Button("移入最近删除", role: .destructive) {
                 if let item = forgetting {
                     let ids = Set(item.sourceIDs)
-                    let records = model.state.captures.filter { ids.contains($0.id) }
-                    model.deleteCaptures(records, reason: .noLongerNeeded, suppressSimilar: false)
+                    model.deleteCaptures(model.state.captures.filter { ids.contains($0.id) }, reason: .noLongerNeeded, suppressSimilar: false)
                 }
                 forgetting = nil
             }
@@ -88,138 +75,173 @@ struct MemoryKnowledgeView: View {
             Text("关联原始记录和依赖这些记录的总结、回答及提醒会一起移除，七天内可以在‘最近删除’恢复。")
         }
     }
-    private func chooseInitialCategory() {
-        guard !choseInitialCategory, model.memoryWorkspace != nil else { return }
-        choseInitialCategory = true
-        if case .knowledge(let id) = model.destination,
-           let claim = model.state.memoryKnowledge.claims.first(where: { $0.id == id }) {
-            category = claim.kind == .reference ? 3 : (claim.kind == .experience ? 2 : (claim.kind == .person ? 0 : ([.preference, .habit, .workflow].contains(claim.kind) ? 1 : 4)))
-            visibleCount = max(20, (claims.firstIndex { $0.id == id } ?? 0) + 1)
-        } else { category = 4 }
-    }
-    private var introduction: some View {
-        HStack(alignment: .top, spacing: 16) {
-            Image(systemName: "brain.head.profile").font(.system(size: 30)).foregroundStyle(RecallPalette.accent)
-            VStack(alignment: .leading, spacing: 8) {
-                Text("长期记忆").font(.title2.bold())
-                Text("回看保存内容的线索、明确约定、人物信息和历史经验。每条都保留依据，你可以随时停用或忘记。")
-                    .foregroundStyle(RecallPalette.secondary)
-                if let date = model.state.memoryKnowledge.updatedAt {
-                    Text("最近整理 " + date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(RecallPalette.secondary)
-                }
-            }
-            Spacer(minLength: 0)
-        }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
-            .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 20))
+    private func openRequestedMemory() {
+        guard let id = model.knowledgeToOpen, id != handledID,
+              let claim = model.state.memoryKnowledge.claims.first(where: { $0.id == id }) else { return }
+        handledID = id
+        if claim.kind == .reference { showsReferences = true; return }
+        category = .all
+        includeHistory = !claim.usable()
+        visibleCount = max(20, (claims.firstIndex { $0.id == id } ?? 0) + 1)
     }
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Picker("查看记忆", selection: $category) {
-                Text("事实与关系").tag(0); Text("偏好与习惯").tag(1); Text("目标与约定").tag(4); Text("历史经验").tag(2)
-            }.pickerStyle(.segmented).frame(maxWidth: 640)
-            Button("保存的资料与线索") { category = 3 }
-            HStack {
-                Toggle("显示旧版本和已停用内容", isOn: $includeHistory).toggleStyle(.checkbox)
-                Spacer()
-                Button("记下一条约定") { adding = true }.buttonStyle(.borderedProminent)
-                Button { model.organizeMemoryNow() } label: {
-                    Label(model.isOrganizingMemory || model.isBuildingMatters ? "正在更新…" : "更新长期记忆", systemImage: "arrow.triangle.2.circlepath")
-                }.disabled(model.isOrganizingMemory || model.isBuildingMatters)
-            }
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 20) { introduction; Spacer(); actions }
+            VStack(alignment: .leading, spacing: 16) { introduction; actions }
         }
     }
-    private var organizationResults: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("本地记录与整理结果").font(.headline)
-            Text("\(summary.records) 条原始记录 · \(summary.textRecords) 条含文字 · \(summary.attributedRecords) 条带本人归属标记")
+    private var introduction: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("以后交流时，Recall 会参考这些信息。").font(.title3.weight(.semibold))
+            Text("保留适用的背景和约定，你可以随时修改或停用。")
                 .font(.callout).foregroundStyle(RecallPalette.secondary)
-            Text("\(summary.matters) 个本人事项 · \(summary.references) 个记录主题 · \(summary.agreements) 条约定 · \(summary.people) 个人物线索 · \(summary.experiences) 项经验")
-                .font(.callout).fixedSize(horizontal: false, vertical: true)
-            Text("记录线索可用于回顾保存了什么；只有明确的本人表达才能形成偏好，问题、处理与结果齐全才形成经验。记录多不代表每一类都会有结果。")
-                .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
-        }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
-            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+    private var actions: some View {
+        HStack(spacing: 12) {
+            Picker("记忆分类", selection: $category) {
+                ForEach(MemoryLibraryCategory.allCases, id: \.self) { Text($0.title).tag($0) }
+            }.labelsHidden().frame(width: 140)
+            Button("记住一件事") { adding = true }.buttonStyle(.borderedProminent)
+            Menu {
+                Button("更新记忆") { model.organizeMemoryNow() }.disabled(updating)
+                Toggle("显示待核实的线索", isOn: $includeUncertain)
+                Toggle("显示旧版本和已停用内容", isOn: $includeHistory)
+                Divider()
+                Button("查看整理详情") { showsDiagnostics = true }
+            } label: { Image(systemName: "ellipsis.circle") }
+                .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("更多记忆选项")
+        }
+    }
+    private var maintenanceStatus: some View {
+        HStack(spacing: 10) {
+            if updating {
+                ProgressView().controlSize(.small).frame(width: 18, height: 18)
+                Text(model.tasks.first { $0.kind == "整理记忆" && $0.isRunning }?.phase ?? "正在更新记忆，已有内容仍可查看")
+            } else if let task = model.tasks.first(where: { $0.kind == "整理记忆" }), task.state == .failed {
+                Image(systemName: "exclamationmark.circle"); Text("更新未完成，可从更多菜单重试。")
+            } else if let date = model.state.memoryKnowledge.updatedAt {
+                Text("最近更新 " + date.formatted(date: .abbreviated, time: .shortened))
+            }
+            Spacer()
+        }.font(.caption).foregroundStyle(RecallPalette.secondary)
     }
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(search.isEmpty ? "还没有这一类记忆" : "没有找到相关记忆").font(.headline)
-            Text(category == 2 ? "目前还没有同时具备问题、处理经过与完成结果的经历。整理操作已完成也可能是零项；你仍可在记录线索中回看保存的内容。" :
-                 (category == 3 ? "文字为空、仅有界面菜单或内容被排除时，不会生成线索。可在时间线核对原始文字；明确的本人事项在‘进行中/全部主题’中查看。" : "你可以在问一问里说‘记住：以后工作周报简洁一点’，也可以直接补充约定。普通阅读材料不会被当作你的偏好。"))
-                .foregroundStyle(RecallPalette.secondary)
-            if category != 3 && summary.references > 0 { Button("查看记录线索（\(summary.references) 个主题）") { category = 3 } }
+            Text(search.isEmpty ? "暂时没有适用的记忆" : "没有找到相关记忆").font(.headline)
+            Text("明确的偏好、人物信息和约定会在这里保留。你也可以说‘记住：以后工作周报简洁一点’；临时要求和普通阅读材料不会自动成为长期偏好。")
+                .foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
-            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
+            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 14))
     }
     private func claimCard(_ claim: MemoryClaim) -> some View {
-        let sourceIDs = claim.sourceIDs
+        let context = claim.scopeID.flatMap { id in model.state.memoryKnowledge.entities.first { $0.id == id }?.name }
         return VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top) {
-                Text(claim.title).font(.headline).fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 16)
-                Text(claim.kind == .reference ? "记录线索" : claim.state.title).font(.caption).foregroundStyle(RecallPalette.secondary)
+            HStack(alignment: .top, spacing: 20) {
+                Text(claim.content).font(RecallTypography.body).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Text(claim.kind.title).font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize()
             }
-            if claim.content != claim.title { Text(claim.content).textSelection(.enabled) }
-            HStack(spacing: 16) {
-                Text(claim.scope.title)
-                Text(claim.kind == .reference ? "保存的内容，归属与实际状态未确认" : (claim.explicit ? "本人明确约定" : "来自本人表达与原始记录"))
-                Text(claim.date.formatted(date: .abbreviated, time: .omitted))
+            HStack(spacing: 12) {
+                Text(context.map { "适用于：" + $0 } ?? claim.scope.title)
+                if let until = claim.validUntil { Text("有效至 " + until.formatted(date: .abbreviated, time: .shortened)) }
+                if !claim.usable() { Text(claim.validUntil.map { $0 <= .now } == true ? "已过期" : claim.state.title) }
             }.font(.caption).foregroundStyle(RecallPalette.secondary)
-            if claim.state == .conflicted {
-                Text("发现了不同说法，当前不会作为稳定偏好使用。更正后可确定今后使用的版本。")
-                    .font(.callout).foregroundStyle(RecallPalette.warning)
+            if claim.state == .conflicted || claim.state == .tentative {
+                Text(claim.state == .conflicted ? "存在不同说法，暂不用于个性化回答。你可以修改为当前适用的内容。" : "目前只作线索，尚不用于个性化回答。")
+                    .font(.callout).foregroundStyle(RecallPalette.secondary)
             }
             if claim.kind == .experience {
-                Text("保留的是当时记录中的过程与结果；不代表本次问题具有相同原因。")
+                Text("这是当时的过程与结果，不代表本次问题具有相同原因。")
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
-            HStack {
-                Menu("查看依据（\(sourceIDs.count)）") {
-                    ForEach(sourceIDs.compactMap { model.memoryWorkspace?.sources[$0] }) { record in
+            HStack(spacing: 16) {
+                Menu("查看来源（\(claim.sourceIDs.count)）") {
+                    ForEach(claim.sourceIDs.compactMap { model.memoryWorkspace?.sources[$0] }) { record in
                         Button((record.sourceAppName ?? "原始记录") + " · " + record.createdAt.formatted()) { source = record }
                     }
                 }
-                if claim.kind != .reference { Button("更正") { editing = claim } }
+                Button("修改") { editing = claim }
                 Spacer()
                 Menu {
+                    if let entity = model.state.memoryKnowledge.entities.first(where: { $0.id == claim.subjectID && $0.kind == "person" }) {
+                        Button("管理人物别名") { aliases = entity }
+                    }
                     if claim.state == .active { Button("停用这条记忆") { model.retireMemory(claim) } }
-                    Button("忘记关联记录…", role: .destructive) { forgetting = claim }
+                    Button("删除关联记录…", role: .destructive) { forgetting = claim }
                 } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
             }
-        }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
-            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 18))
+        }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(RecallPalette.border, lineWidth: 1))
     }
-    private var topicAliases: some View {
-        DisclosureGroup("主题与人物的别名") {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("为常用简称或不同叫法建立关联，问一问会据此补查原始记录。")
-                    .font(.callout).foregroundStyle(RecallPalette.secondary)
-                ForEach(Array(entities.prefix(aliasVisibleCount))) { entity in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(entity.name)
-                            if !entity.aliases.isEmpty { Text(entity.aliases.joined(separator: "、")).font(.caption).foregroundStyle(RecallPalette.secondary) }
-                        }
-                        Spacer()
-                        Button("编辑别名") { aliases = entity }
-                    }
-                }
-                if entities.count > aliasVisibleCount { Button("再显示 20 个主题") { aliasVisibleCount += 20 } }
-            }.padding(.top, 16)
-        }.padding(20).background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
-    }
-    private var retentionSettings: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("整理与保留").font(.headline)
+}
+
+struct MemoryOrganizationSettings: View {
+    @EnvironmentObject private var model: RecallAppModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
             Toggle("在后台整理已有记录", isOn: Binding(get: { model.state.memoryKnowledgeSettings.automaticOrganization }, set: { value in
                 var settings = model.state.memoryKnowledgeSettings; settings.automaticOrganization = value; model.updateMemorySettings(settings)
             }))
-            Toggle("单独保留我明确要求记住的约定", isOn: Binding(get: { model.state.memoryKnowledgeSettings.retainExplicitMemories }, set: { value in
+            Toggle("单独保留我明确要求记住的内容", isOn: Binding(get: { model.state.memoryKnowledgeSettings.retainExplicitMemories }, set: { value in
                 var settings = model.state.memoryKnowledgeSettings; settings.retainExplicitMemories = value; model.updateMemorySettings(settings)
             }))
-            Text("后台只整理已保存的文本。原始截图与文本仍按‘记录管理’里的期限清理；明确约定单独保留必要文本依据，直到你停用、忘记或关闭此项。应用关闭时，到期内容会在下次启动后清理。")
-                .font(.caption).foregroundStyle(RecallPalette.secondary)
-        }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
-            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 18))
+            Text("只整理已保存的文本。截图与文本按记录管理中的期限清理；你明确要求记住的必要文字单独保留，直到停用、删除或关闭此项。应用关闭时，到期清理在下次启动后执行。")
+                .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+private struct MemoryOrganizationDetails: View {
+    @EnvironmentObject private var model: RecallAppModel
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        let summary = model.memoryWorkspace?.summary ?? MemoryOrganizationSummary()
+        VStack(alignment: .leading, spacing: 18) {
+            HStack { Text("记忆整理详情").font(.title2.bold()); Spacer(); Button("完成") { dismiss() } }
+            Text("\(summary.records) 条记录 · \(summary.textRecords) 条含文字 · \(summary.attributedRecords) 条带本人归属")
+            Text("\(summary.matters) 个本人事项 · \(summary.references) 个资料主题 · \(summary.agreements) 条明确记忆")
+                .foregroundStyle(RecallPalette.secondary)
+            Text("记录数量不等于有效记忆数量。临时表达、归属不明或存在冲突的内容不会直接用于个性化回答。")
+                .font(.callout).foregroundStyle(RecallPalette.secondary)
+            if let task = model.tasks.first(where: { $0.kind == "整理记忆" }) { RecallTaskStatusView(task: task) }
+            Spacer()
+        }.padding(28).frame(width: 620, height: 320)
+    }
+}
+
+struct MemoryReferenceBrowser: View {
+    @EnvironmentObject private var model: RecallAppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var limit = 20
+    @State private var selected: MemoryClaim?
+    var body: some View {
+        let rows = model.state.memoryKnowledge.claims.filter { claim in
+            claim.kind == .reference && claim.usable() && (query.isEmpty || (claim.title + claim.content).localizedCaseInsensitiveContains(query))
+        }
+        VStack(alignment: .leading, spacing: 18) {
+            HStack { Text("资料与线索").font(.title2.bold()); Spacer(); Button("完成") { dismiss() } }
+            Text("回看保存过的内容。资料中的观点和他人的话不会作为你的个人偏好。")
+                .foregroundStyle(RecallPalette.secondary)
+            TextField("搜索保存的内容", text: $query).textFieldStyle(.roundedBorder)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    if rows.isEmpty { Text("暂时没有匹配的资料，可以在时间线查看原始记录。").foregroundStyle(RecallPalette.secondary) }
+                    ForEach(Array(rows.prefix(limit))) { claim in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(claim.title).font(.headline)
+                            if claim.title != claim.content { Text(claim.content).lineLimit(5) }
+                            Button("查看原始来源") { selected = claim }
+                        }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    if rows.count > limit { Button("再显示 20 条") { limit += 20 } }
+                }
+            }
+        }.padding(28).frame(width: 720, height: 600).onChange(of: query) { _, _ in limit = 20 }
+            .sheet(item: $selected) { claim in RecallSourcesView(title: claim.title, ids: claim.sourceIDs).environmentObject(model) }
     }
 }
 
@@ -234,41 +256,67 @@ private struct MemoryAgreementEditor: View {
     @State private var expires = false
     @State private var until = Date.now.addingTimeInterval(86_400 * 7)
     @State private var saving = false
+    @State private var scopeChanged = false
+    @State private var expiryChanged = false
+    @State private var saveError: String?
+    private var suggested: MemoryDirective? { MemoryDirective.parse("记住：" + content) }
+    private var conversationRequest: Bool { suggested?.scope == .conversation }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(claim == nil ? "记下一条约定" : "更正记忆").font(.title2.bold())
+            Text(claim == nil ? "记住一件事" : "更正记忆").font(.title2.bold())
             Text("写下具体内容与适用范围。更正会保留旧版本，并停止使用依赖旧说法的结果。")
                 .foregroundStyle(RecallPalette.secondary)
             TextEditor(text: $content).font(.body).scrollContentBackground(.hidden).frame(height: 150).padding(10)
                 .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
-            Picker("适用范围", selection: $scope) {
+            Picker("适用范围", selection: Binding(get: { scope }, set: { scope = $0; scopeChanged = true })) {
                 ForEach(MemoryScope.allCases.filter { $0 != .conversation }, id: \.self) { Text($0.title).tag($0) }
             }
             if scope == .project {
                 Picker("适用主题", selection: $subjectID) {
                     Text("选择主题").tag("")
                     ForEach(topics) { Text($0.name).tag($0.id) }
+                    if !subjectID.isEmpty && !topics.contains(where: { $0.id == subjectID }) {
+                        Text("内容中提及的项目").tag(subjectID)
+                    }
                 }
             }
-            Toggle("设置有效期", isOn: $expires)
-            if expires { DatePicker("有效至", selection: $until, in: Date.now...) }
+            Toggle("设置有效期", isOn: Binding(get: { expires }, set: { expires = $0; expiryChanged = true }))
+            if expires { DatePicker("有效至", selection: Binding(get: { until }, set: { until = $0; expiryChanged = true }), in: Date.now...) }
+            if conversationRequest {
+                Text("‘这次/本次’的要求只适用于当前会话，请在问一问中输入。")
+                    .font(.callout).foregroundStyle(RecallPalette.secondary)
+            }
+            if let saveError { Text(saveError).font(.callout).foregroundStyle(RecallPalette.warning) }
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(saving ? "正在保存…" : "保存") {
                     saving = true
-                    Task { if await save(content, scope, scope == .project ? subjectID : nil, expires ? until : nil) { dismiss() }; saving = false }
-                }.buttonStyle(.borderedProminent).disabled(saving || content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || content.count > 800 || (scope == .project && subjectID.isEmpty))
+                    Task {
+                        if await save(content, scope, scope == .project ? subjectID : nil, expires ? until : nil) { dismiss() }
+                        else { saveError = "未能保存，请检查内容、适用范围与有效期后重试。" }
+                        saving = false
+                    }
+                }.buttonStyle(.borderedProminent).disabled(saving || conversationRequest || (expires && until <= .now) || content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || content.count > 800 || (scope == .project && subjectID.isEmpty))
             }
         }.padding(28).frame(width: 620).disabled(saving).interactiveDismissDisabled(saving)
             .onAppear {
                 content = claim?.content ?? ""; scope = claim?.scope ?? .global; subjectID = claim?.scopeID ?? ""
-                expires = claim?.validUntil != nil; until = claim?.validUntil ?? Date.now.addingTimeInterval(86_400 * 7)
+                expires = claim?.validUntil != nil; until = max(Date.now, claim?.validUntil ?? Date.now.addingTimeInterval(86_400 * 7))
+            }
+            .onChange(of: content) { _, _ in
+                saveError = nil
+                guard claim == nil, let suggested, !conversationRequest else { return }
+                if !scopeChanged { scope = suggested.scope; subjectID = suggested.scopeID ?? "" }
+                if !expiryChanged {
+                    expires = suggested.validUntil != nil
+                    if let date = suggested.validUntil { until = date }
+                }
             }
     }
 }
 
-private struct MemoryAliasEditor: View {
+struct MemoryAliasEditor: View {
     @Environment(\.dismiss) private var dismiss
     let entity: MemoryEntity
     let save: (String) async -> Bool

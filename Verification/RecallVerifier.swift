@@ -9,6 +9,7 @@ struct RecallVerifier {
             try await MemoryKnowledgeVerification.run()
             try await WeeklyReviewVerification.run()
             try await ReviewDigestVerification.run()
+            try await MemorySimplificationVerification.run()
             try await ReviewFlowVerification.run()
             try await RecordCoverageVerification.run()
             try await ReviewPerformanceVerification.run()
@@ -71,9 +72,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 97 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 105 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 96 integration checks.")
+                print("PASS: RecallVerifier completed 104 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
