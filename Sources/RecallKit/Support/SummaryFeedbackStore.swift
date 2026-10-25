@@ -178,6 +178,13 @@ extension FileMemoryStore {
                 state.weeklyReports.removeAll { $0.id == report.id }; state.weeklyReports.insert(report, at: 0)
                 entry.resultRevision = SummaryFeedbackLearning.hash(report)
             }
+            if var backup = entry.weeklyBefore {
+                // A week may contain thousands of ledger entries. Store only the changed rows and original order.
+                entry.weeklyOriginalItemOrder = backup.items.map(\.id)
+                let changed = Set(plan.resolution.changes.compactMap(\.itemID))
+                backup.items.removeAll { !changed.contains($0.id) }
+                entry.weeklyBefore = backup
+            }
             state.summaryFeedback[index] = entry
             try persist()
         } catch { state = before; throw error }
@@ -215,7 +222,8 @@ extension FileMemoryStore {
         guard let index = state.summaryFeedback.firstIndex(where: { $0.id == id && $0.state != .withdrawn }) else { return }
         let entry = state.summaryFeedback[index]
         let restoreDaily = state.dailySummaries.first { $0.id == entry.target.reportID }.map { SummaryFeedbackLearning.hash($0) == entry.resultRevision } ?? false
-        let restoreWeekly = state.weeklyReports.first { $0.id == entry.target.reportID }.map { SummaryFeedbackLearning.hash($0) == entry.resultRevision } ?? false
+        let currentWeekly = state.weeklyReports.first { $0.id == entry.target.reportID }
+        let restoreWeekly = currentWeekly.map { SummaryFeedbackLearning.hash($0) == entry.resultRevision } ?? false
         state.summaryFeedback[index].state = .withdrawn; state.summaryFeedback[index].lease = nil
         state.summaryFeedback[index].message = "已撤销这次反馈的调整及学习。"; state.summaryFeedback[index].updatedAt = .now
         var corrected = Set(entry.resolution?.corrections.map(\.sourceID) ?? [])
@@ -251,6 +259,11 @@ extension FileMemoryStore {
             state.dailySummaries.removeAll { $0.id == old.id }; state.dailySummaries.insert(old, at: 0)
         }
         if restoreWeekly, originalsUnchanged, var old = entry.weeklyBefore, old.sourceIDs.isSubset(of: live) {
+            if let order = entry.weeklyOriginalItemOrder, let currentWeekly {
+                var byID = Dictionary(uniqueKeysWithValues: currentWeekly.items.map { ($0.id, $0) })
+                for item in old.items { byID[item.id] = item }
+                old.items = order.compactMap { byID[$0] }
+            }
             old.sourceVersions = Dictionary(uniqueKeysWithValues: old.sourceIDs.compactMap { id in WeeklyReviewEngine.sourceVersion(id: id, state: state).map { (id, $0) } })
             state.weeklyReports.removeAll { $0.id == old.id }; state.weeklyReports.insert(old, at: 0)
         }

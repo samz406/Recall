@@ -150,6 +150,7 @@ public struct SummaryFeedback: Codable, Identifiable, Equatable, Sendable {
     public var resultRevision: String?
     public var dailyBefore: DailySummary?
     public var weeklyBefore: WeeklyReport?
+    public var weeklyOriginalItemOrder: [String]?
     public var disabledRuleIDs: [UUID] = []
     public init(target: SummaryFeedbackTarget, text: String, sourceVersions: [UUID: String]) {
         self.target = target; self.text = text; self.sourceVersions = sourceVersions

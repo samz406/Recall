@@ -231,6 +231,11 @@ enum SummaryFeedbackVerification {
         let response = String(decoding: try JSONSerialization.data(withJSONObject: json), as: UTF8.self)
         try await apply(f, job: job, response: response)
         let after = await f.store.snapshot()
-        try check(after.weeklyReports.first?.digestRows.contains { $0.title == "发布流程的步骤导航完成验收" } == true && after.summaryFeedback[0].weeklyBefore != nil, "周期回顾没有应用修订或保留旧稿")
+        try check(after.weeklyReports.first?.digestRows.contains { $0.title == "发布流程的步骤导航完成验收" } == true && after.summaryFeedback[0].weeklyBefore?.items.count == 1,
+                  "周期回顾没有应用修订，或把整周材料复制到每条反馈中")
+        try await f.store.withdrawSummaryFeedback(job.id)
+        let undone = await f.store.snapshot()
+        try check(undone.weeklyReports.first?.items == saved.items && undone.weeklyReports.first?.digestTopicIDs == saved.digestTopicIDs,
+                  "增量撤销没有恢复周报原条目、顺序与精选范围")
     }
 }
