@@ -949,6 +949,8 @@ public struct DailySummaryGenerator: Sendable {
         existingMemories: [UserMemory] = [],
         previousInsights: [PersonalInsight] = [],
         feedback: [InsightFeedback] = [],
+        feedbackInstructions: String = "",
+        feedbackRejectedActions: [SummaryFeedbackItem] = [],
         existingRoutines: [LearnedRoutine] = [],
         existingReminders: [ReminderCandidate] = [],
         memoryKnowledge: MemoryKnowledge = MemoryKnowledge(),
@@ -960,7 +962,12 @@ public struct DailySummaryGenerator: Sendable {
         let originalDayRecords = captures.filter {
             $0.eventTemplate != .dailyReview && calendar.isDate($0.createdAt, inSameDayAs: day)
         }
-        let priorityTodos = todos(from: originalDayRecords, existingReminders: existingReminders)
+        let priorityTodos = todos(from: originalDayRecords, existingReminders: existingReminders).filter { candidate in
+            !feedbackRejectedActions.contains { item in
+                item.title.filter { $0.isLetter || $0.isNumber }.lowercased() == candidate.title.filter { $0.isLetter || $0.isNumber }.lowercased()
+                    && !Set(item.sourceIDs).isDisjoint(with: candidate.sourceCaptureIDs)
+            }
+        }
         let extractedConsolidation = intelligenceEngine.consolidate(
             day: day,
             records: captures,
@@ -1022,7 +1029,7 @@ public struct DailySummaryGenerator: Sendable {
         }.prefix(8))
         let contextualSourceIDs = Set(contextualMemories.flatMap(\.evidenceIDs) + contextualProjects.flatMap(\.evidenceIDs))
         let answer = try await responder.answer(to: LLMRequest(
-            question: cloudPrompt(for: day, todos: reviewableActions),
+            question: cloudPrompt(for: day, todos: reviewableActions) + (feedbackInstructions.isEmpty ? "" : "\n" + PrivacyEngine().redact(feedbackInstructions)),
             context: records,
             supplementaryContext: structuredContext(
                 targetDay: day,

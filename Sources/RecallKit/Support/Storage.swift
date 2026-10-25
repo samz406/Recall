@@ -107,6 +107,8 @@ public struct RecallState: Codable, Sendable {
     public var recentlyDeletedMemories: [RecentlyDeletedMemory]
     public var memorySuppressionRules: [MemorySuppressionRule]
     public var matterCorrections: [MatterCorrection]
+    public var summaryFeedback: [SummaryFeedback] = []
+    public var summaryFeedbackSettings = SummaryFeedbackSettings()
     public var topicGroups: [MemoryTopicGroup] = []
     public var dismissedExperienceIDs: [String]
     public var experienceHintsEnabled: Bool
@@ -176,6 +178,7 @@ public struct RecallState: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case summaryFeedback, summaryFeedbackSettings
         case rules, captures, messages, reminders, reminderDiscoveryCheckpoint, reminderLearningProfile, dailySummaries, dailySummarySettings
         case privacy, llmConfiguration, conversationSummary, conversationSummaryCoveredMessageCount
         case weeklyReports, reviewTemplates, reviewSchedules, reviewCategories, memoryKnowledge, memoryKnowledgeSettings
@@ -185,6 +188,8 @@ public struct RecallState: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        summaryFeedback = try container.decodeIfPresent([SummaryFeedback].self, forKey: .summaryFeedback) ?? []
+        summaryFeedbackSettings = try container.decodeIfPresent(SummaryFeedbackSettings.self, forKey: .summaryFeedbackSettings) ?? SummaryFeedbackSettings()
         rules = try container.decodeIfPresent([EventRule].self, forKey: .rules) ?? EventRule.defaults()
         captures = try container.decodeIfPresent([CaptureRecord].self, forKey: .captures) ?? []
         messages = try container.decodeIfPresent([ConversationMessage].self, forKey: .messages) ?? []
@@ -490,6 +495,7 @@ public actor FileMemoryStore {
                                    schedule expected: ReviewSchedule? = nil, categories: [String: ReviewCategory]? = nil,
                                    now: Date = .now) throws -> WeeklyReport {
         try Task.checkCancellation()
+        guard submitted.feedbackRevision == nil || submitted.feedbackRevision == SummaryFeedbackLearning.revision(in: state) else { throw WeeklyReviewError.changedSources }
         guard WeeklyReviewEngine.sourcesUnchanged(submitted, in: state),
               categories == nil || categories == state.reviewCategories else { throw WeeklyReviewError.changedSources }
         if let expected {
@@ -585,6 +591,7 @@ public actor FileMemoryStore {
             state.reviewSchedules[i].lastReportID = nil
             state.reviewSchedules[i].retryAfter = nil; state.reviewSchedules[i].failureCount = 0
         }
+        forgetSummaryFeedback(reportID: id)
         state.weeklyReports.removeAll { $0.id == id }; state.recentlyDeletedMemories.insert(deleted, at: 0)
         do { try persist() } catch { state = before; throw error }
         return deleted
@@ -657,6 +664,7 @@ public actor FileMemoryStore {
     }
 
     public func deleteDailySummary(id: UUID) throws {
+        forgetSummaryFeedback(reportID: id)
         invalidateMemoryOutputs(sourceIDs: [id])
         state.dailySummaries.removeAll { $0.id == id }
         try persist()
@@ -782,6 +790,7 @@ public actor FileMemoryStore {
             summaries: [summary],
             affectedDays: [summary.day]
         )
+        forgetSummaryFeedback(reportID: id)
         state.dailySummaries.removeAll { $0.id == id }
         state.recentlyDeletedMemories.insert(transaction, at: 0)
         try persist()
@@ -919,6 +928,7 @@ public actor FileMemoryStore {
     }
 
     public func clearDailySummaries() throws {
+        for id in state.dailySummaries.map(\.id) { forgetSummaryFeedback(reportID: id) }
         state.dailySummaries = []
         try persist()
     }
@@ -959,6 +969,7 @@ public actor FileMemoryStore {
         state.recentlyDeletedMemories = []
         state.memorySuppressionRules = []
         state.matterCorrections = []
+        state.summaryFeedback = []
         state.dismissedExperienceIDs = []
         try persist()
         conversationID = UUID()
@@ -1161,6 +1172,13 @@ public actor FileMemoryStore {
 
     func persist() throws {
         let liveIDs = Set(state.captures.map(\.id))
+        let excludedIDs = Set(state.captures.filter { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id))
+        let droppedFeedback = state.summaryFeedback.filter { !Set($0.sourceVersions.keys).isSubset(of: liveIDs) || !Set($0.sourceVersions.keys).isDisjoint(with: excludedIDs) }
+        if !droppedFeedback.isEmpty {
+            let touched = Set(droppedFeedback.flatMap { $0.resolution?.corrections.map(\.sourceID) ?? [] })
+            state.summaryFeedback.removeAll { entry in droppedFeedback.contains { $0.id == entry.id } }
+            invalidateMemoryOutputs(sourceIDs: touched)
+        }
         state.topicGroups.removeAll { group in group.sourceIDs.map { Set($0).isDisjoint(with: liveIDs) } ?? false }
         invalidateWeeklyReports()
         applyKnowledge(MemoryKnowledgeEngine().reconcile(state, allowNew: false))

@@ -78,7 +78,7 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
 }
 
 public enum LLMRequestPurpose: Equatable, Sendable {
-    case chat, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup
+    case chat, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup, summaryFeedback, summaryFeedbackAudit
 }
 
 public struct LLMRequest: Sendable {
@@ -433,6 +433,8 @@ public struct CompatibleLLM: LLMResponding {
             switch request.purpose {
             case .weeklySelection: role = "挑选整份周期回顾的重要事项"
             case .weeklyAudit: role = "逐项核验周回顾草稿"
+            case .summaryFeedback: role = "按用户反馈提出有限的回顾修订"
+            case .summaryFeedbackAudit: role = "独立核验回顾反馈修订"
             default: role = "根据模板整理周回顾正文"
             }
             return """

@@ -59,7 +59,11 @@ struct RecallTaskHistory: View {
     @EnvironmentObject var model: RecallAppModel
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("最近的处理结果").font(.headline)
+            HStack {
+                Text("最近的处理结果").font(.headline)
+                Spacer()
+                Button("反馈记录") { model.showsSummaryFeedbackHistory = true }
+            }
             Text("保留本次打开应用后的任务；切换页面不会中断生成。")
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
             ScrollView {

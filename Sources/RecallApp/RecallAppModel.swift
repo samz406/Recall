@@ -24,6 +24,10 @@ final class RecallAppModel: ObservableObject {
     @Published var sourceToOpen: CaptureRecord?
     @Published var reminderDraft: ReminderCandidate?
     @Published var showsGlobalSearch = false
+    @Published var summaryFeedbackTarget: SummaryFeedbackTarget?
+    @Published var showsSummaryFeedbackHistory = false
+    var summaryFeedbackTask: Task<Void, Never>?
+    var summaryFeedbackTimer: Timer?
     @Published var dailyToOpen: UUID?
     @Published var topicToOpen: String?
     @Published var knowledgeToOpen: UUID?
@@ -112,6 +116,8 @@ final class RecallAppModel: ObservableObject {
                 Task { @MainActor [weak self] in await self?.refresh() }
             }
             Task {
+                do { try await store.recoverSummaryFeedbackJobs() }
+                catch { recordError(error, source: "Feedback", message: "恢复反馈任务失败，将稍后重试") }
                 await cleanupExpiredRecentlyDeleted()
                 await refresh()
                 try? notificationScheduler.configureReminderActions()
@@ -135,6 +141,7 @@ final class RecallAppModel: ObservableObject {
         generateMissedDailySummaryIfNeeded()
         armWeeklySchedules()
         runDueWeeklySchedule()
+        startSummaryFeedbackWorker()
         if memoryMaintenanceTimer == nil {
             memoryMaintenanceTimer = Timer.scheduledTimer(withTimeInterval: 5 * 60, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in await self?.refresh() }
@@ -272,7 +279,8 @@ final class RecallAppModel: ObservableObject {
                 report.scheduledFor = scheduledTrigger
                 let current = await store.snapshot()
                 guard current.privacy.cloudUseEnabled == snapshot.privacy.cloudUseEnabled,
-                      current.privacy.excludedBundleIdentifiers == snapshot.privacy.excludedBundleIdentifiers else { throw WeeklyReviewError.changedSources }
+                      current.privacy.excludedBundleIdentifiers == snapshot.privacy.excludedBundleIdentifiers,
+                      SummaryFeedbackLearning.revision(in: current) == SummaryFeedbackLearning.revision(in: snapshot) else { throw WeeklyReviewError.changedSources }
                 updateTask(taskID, phase: "保存回顾")
                 let saved = try await store.commitWeeklyReport(report, replacing: replacing, schedule: schedule, categories: snapshot.reviewCategories)
                 state = await store.snapshot()
@@ -967,7 +975,8 @@ final class RecallAppModel: ObservableObject {
                 let learningProfile = state.reminderLearningProfile
                 let availableIDs = Set(state.captures.map(\.id))
                 let newCandidates = extractedCandidates.compactMap { candidate -> ReminderCandidate? in
-                    guard candidate.sourceCaptureIDs.allSatisfy(availableIDs.contains) else { return nil }
+                    guard candidate.sourceCaptureIDs.allSatisfy(availableIDs.contains),
+                          !SummaryFeedbackLearning.rejectsAction(title: candidate.title, sourceIDs: candidate.sourceCaptureIDs, in: state) else { return nil }
                     var adjusted = candidate
                     adjusted.confidence = min(
                         max(candidate.confidence + learningProfile.confidenceAdjustment(for: reminderSemanticKey(candidate)), 0),
@@ -1361,6 +1370,10 @@ final class RecallAppModel: ObservableObject {
                     existingMemories: analysisState.userMemories.filter { Set($0.evidenceIDs).isSubset(of: allowedSourceIDs) },
                     previousInsights: analysisState.insights,
                     feedback: analysisState.insightFeedback,
+                    feedbackInstructions: SummaryFeedbackLearning.context(in: analysisState, kind: .daily),
+                    feedbackRejectedActions: analysisState.summaryFeedback.filter { $0.state == .applied && $0.resolution?.diagnosis == .action }.flatMap { entry in
+                        entry.target.items.filter { item in entry.resolution?.changes.contains { $0.itemID == item.id && $0.remove } ?? false }
+                    },
                     existingRoutines: analysisState.learnedRoutines,
                     existingReminders: analysisState.reminders,
                     memoryKnowledge: analysisState.memoryKnowledge,
@@ -1383,6 +1396,7 @@ final class RecallAppModel: ObservableObject {
                 guard current.privacy.cloudUseEnabled == analysisState.privacy.cloudUseEnabled,
                       current.privacy.excludedBundleIdentifiers == analysisState.privacy.excludedBundleIdentifiers,
                       current.matterCorrections.map(\.id) == analysisState.matterCorrections.map(\.id),
+                      SummaryFeedbackLearning.revision(in: current) == SummaryFeedbackLearning.revision(in: analysisState),
                       Set(summary.sourceCaptureIDs).isSubset(of: Set(current.captures.map(\.id))),
                       MemoryKnowledgeEngine().sourcesUsable(Set(summary.sourceCaptureIDs), in: current) else {
                     finishTask(taskID, state: .failed, message: "来源已变化，请重新生成")

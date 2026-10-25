@@ -180,7 +180,8 @@ struct WeeklyReviewComposition: Sendable {
                 let preferenceClaims = MemoryKnowledgeEngine().cloudEligibleClaims(in: state)
                 let questionScope = template.kind.requiresWorkScope ? "工作周报" : (template.kind == .learning ? "学习回顾" : "个人回顾")
                 let preferences = MemoryRetrievalEngine().preferenceContext(question: questionScope, claims: preferenceClaims, conversationID: nil, entities: Set(items.map(\.id)))
-                let question = prompt(template, period: period) + (preferences.map { "\n本次模板的明确设置优先，其余表达参考：\n" + privacy.redact($0) } ?? "")
+                let feedbackContext = SummaryFeedbackLearning.context(in: state, kind: .period, templateID: template.id, topicID: items.count == 1 ? items.first?.id : nil)
+                let question = prompt(template, period: period) + "\n" + privacy.redact(feedbackContext) + (preferences.map { "\n本次模板的明确设置优先，其余表达参考：\n" + privacy.redact($0) } ?? "")
                 let response = try await responder.answer(to: LLMRequest(question: question,
                     context: context, purpose: .weeklyComposition, outputTokenLimit: template.length == .detailed ? 6_000 : 4_000))
                 try Task.checkCancellation()
@@ -208,8 +209,9 @@ struct WeeklyReviewComposition: Sendable {
                 \(try encode(Drafts(items: valid)))
                 """
                 let validIDs = Set(valid.map(\.topicID))
+                let feedbackAudit = feedbackContext.isEmpty ? "" : "\n核对草稿遵守以下用户要求；不符合时 supported=false：\n" + privacy.redact(feedbackContext)
                 let auditContext = context.filter { validIDs.contains($0.contentHash) }
-                let auditResponse = try await responder.answer(to: LLMRequest(question: auditPrompt, context: auditContext,
+                let auditResponse = try await responder.answer(to: LLMRequest(question: auditPrompt + feedbackAudit, context: auditContext,
                     purpose: .weeklyAudit, outputTokenLimit: 2_000))
                 try Task.checkCancellation()
                 let audit: Audit = try decode(auditResponse.content)
