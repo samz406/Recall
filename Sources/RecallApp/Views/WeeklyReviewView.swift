@@ -257,29 +257,14 @@ struct WeeklyReviewView: View {
             } else if let edited = report.editedMarkdown {
                 MarkdownDocumentView(markdown: edited).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     .font(.system(size: 17)).lineSpacing(7)
-                Text("已保留你的修改。原始依据可从下方入口查看。")
-                    .font(.caption).foregroundStyle(RecallPalette.secondary)
                 DisclosureGroup("查看自动整理的小结") { reportSections(report).padding(.top, 18) }
             } else {
                 Text(report.overview).font(.system(size: 18, weight: .medium)).lineSpacing(7)
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 reportSections(report)
             }
-            if report.isReadable {
-                Button { materials = report } label: {
-                    Label("查看本期整理依据（\(report.items.filter { $0.memberTopicIDs == nil }.count) 组材料）", systemImage: "doc.text.magnifyingglass")
-                }.buttonStyle(.link)
-                Text("完整记录和过程保留在依据中，未写入正文不代表记录丢失。")
-                    .font(.caption).foregroundStyle(RecallPalette.secondary)
-            }
-            Text("保存于 \(report.createdAt.formatted()) · \(report.modelAssisted ? "模型整理与来源核对" : "本地事实整理")")
+            Text("创建于 \(report.createdAt.formatted(date: .abbreviated, time: .shortened))")
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
-            if report.refinementPending {
-                Text(report.canRefine(at: .now) && report.scheduleID != nil
-                     ? "部分内容尚未形成可靠小结，将在一天内有限重试；完整材料可在依据中查看。"
-                     : "部分内容尚未形成可靠小结，已收进整理依据。可以重新生成，原版本会保留。")
-                    .font(.caption).foregroundStyle(RecallPalette.secondary)
-            }
         }.padding(28).reviewSurface()
     }
     private func reportHeading(_ report: WeeklyReport) -> some View {
@@ -297,6 +282,8 @@ struct WeeklyReviewView: View {
             Button { editing = report } label: { Label("编辑", systemImage: "pencil") }.disabled(!report.isReadable)
             Button { exporting = report } label: { Label("复制与导出", systemImage: "square.and.arrow.up") }.disabled(!report.isReadable)
             Menu {
+                Button("查看本期来源") { materials = report }.disabled(!report.isReadable)
+                Divider()
                 Button("重新生成（保留原版本）") {
                     model.generateWeeklyReview(period: report.period, template: report.template, scope: report.scope,
                         useModel: useModel || (model.state.privacy.cloudUseEnabled && (report.modelAssisted || report.refinementPending)), replacing: nil)
@@ -308,10 +295,6 @@ struct WeeklyReviewView: View {
     private func reportSections(_ report: WeeklyReport) -> some View {
         let rows = report.digestRows
         return LazyVStack(alignment: .leading, spacing: 30) {
-            if rows.contains(where: \.isExtractive) {
-                Text("部分小结采用明确归属的简短事实；完整过程可展开依据核对。")
-                    .font(.caption).foregroundStyle(RecallPalette.secondary)
-            }
             ForEach(report.template.sections) { section in
                 let items = rows.filter { $0.item.section == section }
                 if !items.isEmpty {
@@ -336,10 +319,10 @@ struct WeeklyReviewView: View {
                 }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
                     .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 12))
             }
-            Button { sourceItem = row.item } label: {
-                Label("查看依据与完整过程（\(row.item.sourceIDs.count) 条来源）", systemImage: "link").font(.caption)
-            }.buttonStyle(.link)
         }.font(.system(size: 17)).lineSpacing(6).textSelection(.enabled).padding(.leading, 2)
+            .contextMenu {
+                Button("查看这条内容的来源") { sourceItem = row.item }
+            }
     }
     private func stamp(_ date: Date, report: WeeklyReport) -> String {
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "zh_CN")

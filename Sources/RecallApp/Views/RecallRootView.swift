@@ -1509,6 +1509,7 @@ private struct DailySummariesView: View {
     @State private var visibleSummaryCount = 12
     @State private var summaryBeingManaged: DailySummary?
     @State private var selectedDate = Calendar.current.date(byAdding: .day, value: -1, to: Date.now) ?? .now
+    @State private var showsDateCalendar = false
 
     private let pageSize = 12
 
@@ -1606,7 +1607,27 @@ private struct DailySummariesView: View {
         VStack(alignment: .leading, spacing: 0) {
             RecallPageHeader(title: "每日回顾", subtitle: "回看一天里值得记住的事") {
                 HStack(spacing: 12) {
-                    DatePicker("回顾日期", selection: $selectedDate, in: ...Date.now, displayedComponents: .date).labelsHidden()
+                    Button {
+                        showsDateCalendar.toggle()
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text(selectedDate.formatted(.dateTime.year().month().day()))
+                                .fontWeight(.medium)
+                            Image(systemName: "chevron.down")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(RecallPalette.secondary)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .help("选择回顾日期")
+                    .accessibilityLabel("选择回顾日期")
+                    .accessibilityValue(selectedDate.formatted(date: .complete, time: .omitted))
+                    .popover(isPresented: $showsDateCalendar, arrowEdge: .top) {
+                        TimelineCalendarPopover(selectedDay: selectedDate) { day in
+                            selectedDate = Calendar.current.startOfDay(for: day)
+                            showsDateCalendar = false
+                        }
+                    }
                     Button("生成回顾") { model.generateDailyReview(on: selectedDate) }
                         .buttonStyle(.borderedProminent).disabled(model.isGeneratingDailySummary)
                 }
