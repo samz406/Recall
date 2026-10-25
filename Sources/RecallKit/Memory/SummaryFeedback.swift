@@ -230,7 +230,12 @@ public enum SummaryFeedbackLearning {
                 && entry.resolution?.diagnosis != .expression
                 && Set(entry.sourceVersions.keys).isSubset(of: allowed)
                 && entry.sourceVersions.allSatisfy { id, version in
-                    state.captures.contains { $0.id == id && rawVersion($0) == version && !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }
+                    state.captures.contains { source in
+                        guard source.id == id, !state.privacy.excludedBundleIdentifiers.contains(source.sourceBundleIdentifier ?? "") else { return false }
+                        return rawVersion(source) == version || (entry.resolution?.corrections.contains {
+                            $0.sourceID == id && source.ocrText.contains($0.correctedQuote)
+                        } ?? false)
+                    }
                 }
         }.suffix(4).map { entry in
             "原回顾范围：" + entry.target.period.label + "；相关内容：" + entry.target.items.map(\.title).joined(separator: "；") + "；用户更正（仅限同一事项、同一历史状态，不扩展为新事实）：" + String(entry.text.prefix(400))

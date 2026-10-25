@@ -24,6 +24,14 @@ enum SummaryFeedbackVerification {
             return LLMAnswer(content: response, citedCaptureIDs: [])
         }
     }
+    private actor FutureResponder: LLMResponding {
+        var purposes: [LLMRequestPurpose] = []
+        func answer(to request: LLMRequest) async throws -> LLMAnswer {
+            purposes.append(request.purpose)
+            if request.purpose == .summaryFeedbackAudit { return LLMAnswer(content: "{\"accepted\":true}", citedCaptureIDs: []) }
+            return LLMAnswer(content: "{\"progress\":[{\"title\":\"Atlas 导出修复只完成联调\",\"detail\":\"当前尚未上线，需要保留状态边界。\"}],\"actions\":[],\"insights\":[]}", citedCaptureIDs: [])
+        }
+    }
     private static func fixture() async throws -> Fixture {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-feedback-" + UUID().uuidString))
         let store = try FileMemoryStore(storage: storage)
@@ -106,6 +114,14 @@ enum SummaryFeedbackVerification {
         let adjusted = state.correctedForAnalysis().captures.first { $0.id == f.source.id }
         try check(state.captures.contains(f.source) && adjusted?.ocrText.contains("只完成联调，尚未上线") == true && adjusted?.ocrText.contains("[聊天·对方] 明天核对分页边界。") == true, "片段纠错改了原图文字或吞掉邻近消息")
         try check(SummaryFeedbackLearning.correctionID(for: f.source.id, quote: "Atlas 导出修复只完成联调，尚未上线。", in: state) == job.id, "用户更正缺少独立来源标识")
+        let safe = state.correctedForAnalysis()
+        let instructions = SummaryFeedbackLearning.context(in: safe, kind: .daily)
+        try check(instructions.contains("只完成联调"), "分析投影丢失了历史纠错要求，后续回顾可能重复犯错")
+        let responder = FutureResponder()
+        let next = try await DailySummaryGenerator().generate(day: f.summary.day, from: safe.captures,
+            feedbackInstructions: instructions, responder: responder)
+        let purposes = await responder.purposes
+        try check(next.content.contains("只完成联调") && purposes.contains(.summaryFeedbackAudit), "后续每日回顾没有生成后核验反馈要求")
         let reloaded = try FileMemoryStore(storage: f.storage)
         let reloadedState = await reloaded.snapshot()
         try check(reloadedState.correctedForAnalysis().captures.first { $0.id == f.source.id }?.ocrText == adjusted?.ocrText, "重启丢失事实纠错")

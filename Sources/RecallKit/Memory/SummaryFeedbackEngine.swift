@@ -127,6 +127,7 @@ public struct SummaryFeedbackEngine: Sendable {
                 guard let id = change.itemID, items[id]?.section == change.section else { throw SummaryFeedbackError.invalid }
             }
         }
+        guard resolution.corrections.isEmpty || !resolution.changes.isEmpty else { throw SummaryFeedbackError.invalid }
         for correction in resolution.corrections {
             guard [.facts, .attribution].contains(resolution.diagnosis), let original = bySource[correction.sourceID],
                   (2...600).contains(correction.originalQuote.count), (2...600).contains(correction.correctedQuote.count),
