@@ -248,6 +248,7 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
     public var topicGrouping: [MemoryTopicGroup]? = nil
     /// Selected reading topics; all candidates/evidence remain in items. Nil denotes a legacy report.
     public var digestTopicIDs: [String]? = nil
+    public var feedbackRevision: String? = nil
     public var refinementPending: Bool = false
     public var scheduleID: UUID?
     public var scheduledFor: Date?
@@ -528,6 +529,7 @@ public struct WeeklyReviewEngine: Sendable {
         let versions = Dictionary(uniqueKeysWithValues: ids.compactMap { id in Self.sourceVersion(id: id, state: state).map { (id, $0) } })
         var report = WeeklyReport(createdAt: now, updatedAt: now, period: period, template: template, scope: scope,
             items: items, sourceVersions: versions, modelAssisted: assisted, refinementPending: pending)
+        report.feedbackRevision = SummaryFeedbackLearning.revision(in: state)
         report.topicGrouping = state.topicGroups
         report.digestTopicIDs = selectedIDs
         return report
@@ -549,7 +551,7 @@ public struct WeeklyReviewEngine: Sendable {
 
     public static func sourceVersion(id: UUID, state: RecallState) -> String? {
         guard let source = state.captures.first(where: { $0.id == id }) else { return nil }
-        return "memory2:" + MemoryKnowledgeEngine.version(of: source, corrections: state.matterCorrections)
+        return "memory2:" + MemoryKnowledgeEngine.version(of: SummaryFeedbackLearning.adjusted(source, in: state), corrections: state.matterCorrections)
     }
 
     private static func legacySourceVersion(id: UUID, state: RecallState) -> String? {

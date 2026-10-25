@@ -43,6 +43,7 @@ struct DailyReviewContentView: View {
                     }
                 }
             }
+            SummaryFeedbackFooter(target: .daily(summary))
             if let versions = summary.versions, !versions.isEmpty {
                 DisclosureGroup("历史版本（\(versions.count)）") {
                     ForEach(versions) { version in
@@ -78,6 +79,7 @@ struct DailyReviewContentView: View {
                 }
                 Spacer(minLength: 0)
                 Menu {
+                    Button("反馈这条内容") { model.summaryFeedbackTarget = .daily(summary, item: item) }
                     Button("从这份回顾移除") { model.removeSummaryItem(item, from: summary, reason: .noLongerNeeded) }
                     Button("核对来源并更正") { source = item }
                 } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()

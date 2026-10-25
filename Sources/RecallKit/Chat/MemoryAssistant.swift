@@ -71,7 +71,8 @@ public final class MemoryAssistant {
             let originalDate = originalState.captures.first { $0.id == capture.id }?.createdAt ?? capture.createdAt
             let explicitDate = originalState.matterCorrections.last { $0.kind == .eventDate && $0.evidenceIDs.contains(capture.id) }?.eventAt
             let dateNote = explicitDate.map { "用户确认发生时间：\($0.formatted())" } ?? "实际发生时间未确认，不能把记录时间当作发生时间。"
-            copy.ocrText = "记录时间：\(originalDate.formatted())；\(dateNote)\n" + copy.ocrText
+            let correctionNote = SummaryFeedbackLearning.adjusted(capture, in: originalState).ocrText != (originalState.captures.first { $0.id == capture.id }?.ocrText ?? capture.ocrText) ? "含用户反馈更正；原始截图文字仍保留在时间线。\n" : ""
+            copy.ocrText = correctionNote + "记录时间：\(originalDate.formatted())；\(dateNote)\n" + copy.ocrText
             return copy
         }
         let retrievalText = retrievalText(for: question, history: state.messages)
@@ -162,6 +163,7 @@ public final class MemoryAssistant {
             guard beforeCloud.privacy.excludedBundleIdentifiers == state.privacy.excludedBundleIdentifiers,
                   Set(state.captures.map(\.id)).isSubset(of: Set(beforeCloud.captures.map(\.id))),
                   beforeCloud.matterCorrections.map(\.id) == state.matterCorrections.map(\.id),
+                  SummaryFeedbackLearning.revision(in: beforeCloud) == SummaryFeedbackLearning.revision(in: state),
                   beforeCloud.memoryKnowledge.suppressedKeys == state.memoryKnowledge.suppressedKeys else {
                 throw LLMError.serviceError("记忆或隐私设置已更新，请重新提问。")
             }
@@ -191,6 +193,7 @@ public final class MemoryAssistant {
 
         let latestState = await store.snapshot()
         guard latestState.matterCorrections.map(\.id) == originalState.matterCorrections.map(\.id),
+              SummaryFeedbackLearning.revision(in: latestState) == SummaryFeedbackLearning.revision(in: originalState),
               Set(state.captures.map(\.id)).isSubset(of: Set(latestState.captures.map(\.id))) else {
             throw LLMError.serviceError("记忆已更正或删除，请重新提问以使用最新内容。")
         }

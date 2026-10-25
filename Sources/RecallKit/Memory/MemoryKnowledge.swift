@@ -320,7 +320,8 @@ public struct MemoryKnowledgeEngine: Sendable {
             let recorded = originals[record.id] ?? record.createdAt
             return MemoryEvidence(captureID: record.id, fragment: ordinal, quote: quote, speaker: speaker,
                 sourceVersion: versions[record.id.uuidString] ?? "", recordedAt: recorded, eventAt: eventAt,
-                sourceApp: record.sourceAppName, sourceBundle: record.sourceBundleIdentifier)
+                sourceApp: record.sourceAppName, sourceBundle: record.sourceBundleIdentifier,
+                correctedBy: SummaryFeedbackLearning.correctionID(for: record.id, quote: quote, in: state))
         }
         func claim(key: String, subject: String, title: String, content: String, kind: MemoryClaimKind,
                    scope: MemoryScope = .global, scopeID: String? = nil, evidence: [MemoryEvidence],

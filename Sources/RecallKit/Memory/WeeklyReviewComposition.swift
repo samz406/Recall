@@ -180,7 +180,14 @@ struct WeeklyReviewComposition: Sendable {
                 let preferenceClaims = MemoryKnowledgeEngine().cloudEligibleClaims(in: state)
                 let questionScope = template.kind.requiresWorkScope ? "工作周报" : (template.kind == .learning ? "学习回顾" : "个人回顾")
                 let preferences = MemoryRetrievalEngine().preferenceContext(question: questionScope, claims: preferenceClaims, conversationID: nil, entities: Set(items.map(\.id)))
-                let question = prompt(template, period: period) + (preferences.map { "\n本次模板的明确设置优先，其余表达参考：\n" + privacy.redact($0) } ?? "")
+                let generalFeedback = SummaryFeedbackLearning.context(in: state, kind: .period, templateID: template.id)
+                let topicFeedback = batch.compactMap { topic -> String? in
+                    let rules = SummaryFeedbackLearning.rules(in: state, kind: .period, templateID: template.id, topicID: topic.topicID).filter { $0.topicID == topic.topicID }
+                    guard !rules.isEmpty else { return nil }
+                    return "仅适用于 topicID=\(topic.topicID)：" + rules.map { $0.kind.instruction }.joined(separator: "；")
+                }.joined(separator: "\n")
+                let feedbackContext = generalFeedback + "\n" + topicFeedback
+                let question = prompt(template, period: period) + "\n" + privacy.redact(feedbackContext) + (preferences.map { "\n本次模板的明确设置优先，其余表达参考：\n" + privacy.redact($0) } ?? "")
                 let response = try await responder.answer(to: LLMRequest(question: question,
                     context: context, purpose: .weeklyComposition, outputTokenLimit: template.length == .detailed ? 6_000 : 4_000))
                 try Task.checkCancellation()
@@ -208,8 +215,9 @@ struct WeeklyReviewComposition: Sendable {
                 \(try encode(Drafts(items: valid)))
                 """
                 let validIDs = Set(valid.map(\.topicID))
+                let feedbackAudit = feedbackContext.isEmpty ? "" : "\n核对草稿遵守以下用户要求；不符合时 supported=false：\n" + privacy.redact(feedbackContext)
                 let auditContext = context.filter { validIDs.contains($0.contentHash) }
-                let auditResponse = try await responder.answer(to: LLMRequest(question: auditPrompt, context: auditContext,
+                let auditResponse = try await responder.answer(to: LLMRequest(question: auditPrompt + feedbackAudit, context: auditContext,
                     purpose: .weeklyAudit, outputTokenLimit: 2_000))
                 try Task.checkCancellation()
                 let audit: Audit = try decode(auditResponse.content)

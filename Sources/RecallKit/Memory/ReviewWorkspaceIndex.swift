@@ -151,6 +151,7 @@ public actor MemoryWorkspaceCache {
         let captures: [CaptureRecord]
         let episodes: [WorkEpisode]
         let corrections: [MatterCorrection]
+        let feedbackCorrections: [SummaryFactCorrection]
         let groups: [MemoryTopicGroup]
         let claims: [MemoryClaim]
         let versions: [String: String]
@@ -161,6 +162,7 @@ public actor MemoryWorkspaceCache {
         let excludedApps: Set<String>
         let timeZone: String
         init(_ state: RecallState, now: Date) {
+            feedbackCorrections = state.summaryFeedback.filter { $0.state == .applied }.flatMap { $0.resolution?.corrections ?? [] }
             captures = state.captures; episodes = state.episodes; corrections = state.matterCorrections; groups = state.topicGroups
             claims = state.memoryKnowledge.claims; versions = state.memoryKnowledge.sourceVersions
             initialized = state.memoryKnowledge.updatedAt != nil; organizationVersion = state.memoryKnowledge.organizationVersion

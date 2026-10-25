@@ -282,6 +282,7 @@ public extension RecallState {
     /// Corrections invalidate derived claims, not original records. Call before inference/retrieval.
     func correctedForAnalysis() -> RecallState {
         var result = self
+        result.captures = captures.map { SummaryFeedbackLearning.adjusted($0, in: self) }
         let invalid = Set(matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
         let touched = Set(matterCorrections.flatMap(\.evidenceIDs))
         if !matterCorrections.isEmpty {

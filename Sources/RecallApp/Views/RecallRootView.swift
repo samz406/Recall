@@ -87,6 +87,8 @@ struct RecallRootView: View {
             case .knowledge(let id): model.knowledgeToOpen = id; section = .matters
             }
         }
+        .sheet(item: $model.summaryFeedbackTarget) { SummaryFeedbackSheet(target: $0).environmentObject(model) }
+        .sheet(isPresented: $model.showsSummaryFeedbackHistory) { SummaryFeedbackHistoryView().environmentObject(model) }
         .sheet(isPresented: $model.showsGlobalSearch) { GlobalMemorySearchSheet().environmentObject(model) }
         .onChange(of: model.state.captures.map(\.id)) { _, ids in
             if let source = model.sourceToOpen, !ids.contains(source.id) { model.sourceToOpen = nil }

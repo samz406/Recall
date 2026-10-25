@@ -263,6 +263,7 @@ struct WeeklyReviewView: View {
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 reportSections(report)
             }
+            if report.isReadable { SummaryFeedbackFooter(target: .period(report)) }
             Text("创建于 \(report.createdAt.formatted(date: .abbreviated, time: .shortened))")
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
         }.padding(28).reviewSurface()
@@ -321,6 +322,7 @@ struct WeeklyReviewView: View {
             }
         }.font(.system(size: 17)).lineSpacing(6).textSelection(.enabled).padding(.leading, 2)
             .contextMenu {
+                Button("反馈这条内容") { model.summaryFeedbackTarget = .period(report, item: row.item) }
                 Button("查看这条内容的来源") { sourceItem = row.item }
             }
     }
