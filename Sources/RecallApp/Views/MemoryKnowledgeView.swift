@@ -256,6 +256,11 @@ private struct MemoryAgreementEditor: View {
     @State private var expires = false
     @State private var until = Date.now.addingTimeInterval(86_400 * 7)
     @State private var saving = false
+    @State private var scopeChanged = false
+    @State private var expiryChanged = false
+    @State private var saveError: String?
+    private var suggested: MemoryDirective? { MemoryDirective.parse("记住：" + content) }
+    private var conversationRequest: Bool { suggested?.scope == .conversation }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(claim == nil ? "记住一件事" : "更正记忆").font(.title2.bold())
@@ -263,29 +268,50 @@ private struct MemoryAgreementEditor: View {
                 .foregroundStyle(RecallPalette.secondary)
             TextEditor(text: $content).font(.body).scrollContentBackground(.hidden).frame(height: 150).padding(10)
                 .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
-            Picker("适用范围", selection: $scope) {
+            Picker("适用范围", selection: Binding(get: { scope }, set: { scope = $0; scopeChanged = true })) {
                 ForEach(MemoryScope.allCases.filter { $0 != .conversation }, id: \.self) { Text($0.title).tag($0) }
             }
             if scope == .project {
                 Picker("适用主题", selection: $subjectID) {
                     Text("选择主题").tag("")
                     ForEach(topics) { Text($0.name).tag($0.id) }
+                    if !subjectID.isEmpty && !topics.contains(where: { $0.id == subjectID }) {
+                        Text("内容中提及的项目").tag(subjectID)
+                    }
                 }
             }
-            Toggle("设置有效期", isOn: $expires)
-            if expires { DatePicker("有效至", selection: $until, in: Date.now...) }
+            Toggle("设置有效期", isOn: Binding(get: { expires }, set: { expires = $0; expiryChanged = true }))
+            if expires { DatePicker("有效至", selection: Binding(get: { until }, set: { until = $0; expiryChanged = true }), in: Date.now...) }
+            if conversationRequest {
+                Text("‘这次/本次’的要求只适用于当前会话，请在问一问中输入。")
+                    .font(.callout).foregroundStyle(RecallPalette.secondary)
+            }
+            if let saveError { Text(saveError).font(.callout).foregroundStyle(RecallPalette.warning) }
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(saving ? "正在保存…" : "保存") {
                     saving = true
-                    Task { if await save(content, scope, scope == .project ? subjectID : nil, expires ? until : nil) { dismiss() }; saving = false }
-                }.buttonStyle(.borderedProminent).disabled(saving || content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || content.count > 800 || (scope == .project && subjectID.isEmpty))
+                    Task {
+                        if await save(content, scope, scope == .project ? subjectID : nil, expires ? until : nil) { dismiss() }
+                        else { saveError = "未能保存，请检查内容、适用范围与有效期后重试。" }
+                        saving = false
+                    }
+                }.buttonStyle(.borderedProminent).disabled(saving || conversationRequest || (expires && until <= .now) || content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || content.count > 800 || (scope == .project && subjectID.isEmpty))
             }
         }.padding(28).frame(width: 620).disabled(saving).interactiveDismissDisabled(saving)
             .onAppear {
                 content = claim?.content ?? ""; scope = claim?.scope ?? .global; subjectID = claim?.scopeID ?? ""
-                expires = claim?.validUntil != nil; until = claim?.validUntil ?? Date.now.addingTimeInterval(86_400 * 7)
+                expires = claim?.validUntil != nil; until = max(Date.now, claim?.validUntil ?? Date.now.addingTimeInterval(86_400 * 7))
+            }
+            .onChange(of: content) { _, _ in
+                saveError = nil
+                guard claim == nil, let suggested, !conversationRequest else { return }
+                if !scopeChanged { scope = suggested.scope; subjectID = suggested.scopeID ?? "" }
+                if !expiryChanged {
+                    expires = suggested.validUntil != nil
+                    if let date = suggested.validUntil { until = date }
+                }
             }
     }
 }

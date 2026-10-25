@@ -101,6 +101,10 @@ enum MemorySimplificationVerification {
         var state = RecallState(captures: [first, repeatShot])
         let engine = MemoryKnowledgeEngine()
         var ledger = engine.reconcile(state, force: true, now: now)
+        let request = capture("[聊天·自己] 我希望这个输入框变小一点。", at: now)
+        let requestLedger = engine.reconcile(RecallState(captures: [request]), force: true, now: now)
+        try expect(!requestLedger.claims.contains { $0.kind == .goal }, "普通的我希望/我想要页面改动不能归为人生或长期目标")
+        try expect(MemoryDirective.parse("记住：我希望以后回答简洁一点")?.kind == .preference, "希望调整表达方式应保存为偏好而不是目标")
         let personal = ledger.claims.filter { $0.kind.isPersonal }
         try expect(personal.count == 1 && personal[0].state == .tentative, "跨日重拍同一对话不能把偶然表达变成稳定偏好；临时/他人/资料应排除")
         let independent = capture("[聊天·自己] 我喜欢简洁的说明。", at: now, title: "另一段独立讨论")
@@ -119,6 +123,13 @@ enum MemorySimplificationVerification {
         let other = reader.plan(question: "Nova 项目的页面怎么配色", state: state, fallback: [source], now: now)
         try expect(project.preferences?.contains("森林绿") == true && project.preferenceSourceIDs.contains(source.id), "项目记忆必须可在相关问题中使用并追溯")
         try expect(other.preferences == nil && other.evidence.isEmpty, "项目偏好不得经原始回退来源绕过范围进入别的项目")
+        var projectLength = state.memoryKnowledge.claims.first { $0.explicit }!
+        projectLength.content = "Atlas 项目回答简洁一点"; projectLength.kind = .preference
+        var domainLength = projectLength
+        domainLength.id = UUID(); domainLength.scope = .work; domainLength.scopeID = nil
+        domainLength.content = "工作回答详细一点"; domainLength.updatedAt = now.addingTimeInterval(30)
+        let specific = reader.preferenceContext(question: "Atlas 项目", claims: [domainLength, projectLength], conversationID: nil, entities: [directive.scopeID!], now: now) ?? ""
+        try expect(specific.contains("回答简洁") && !specific.contains("回答详细"), "更具体的项目约定应优先于较新但宽泛的工作偏好")
         let conversationID = UUID(), temporary = MemoryDirective.parse("记住：这次简洁一点", conversationID: conversationID)!
         try expect(temporary.scope == .conversation && temporary.scopeID == conversationID.uuidString, "记住前缀不能把这次要求变为永久要求")
     }

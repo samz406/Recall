@@ -79,7 +79,7 @@ public struct MemoryDirective: Codable, Hashable, Sendable {
         let key: String
         let kind: MemoryClaimKind
         if let name = personName(in: content) { key = "person:" + normalized(name) + (content.contains("生日") ? ":birthday" : ":relationship"); kind = .person }
-        else if ["我的目标", "我要成为", "我希望"].contains(where: content.contains) { key = "goal:" + normalized(content); kind = .goal }
+        else if ["我的目标", "我要成为", "长期目标"].contains(where: content.contains) { key = "goal:" + normalized(content); kind = .goal }
         else if ["我每天", "我每周", "我通常", "我习惯"].contains(where: content.contains) { key = "habit:" + normalized(content); kind = .habit }
         else if ["私人", "生活内容", "工作内容", "只写工作", "个人内容"].contains(where: content.contains) { key = "review-content"; kind = .constraint }
         else if ["简洁", "详细", "篇幅", "少换行", "精简", "简短"].contains(where: content.contains) { key = "response-length"; kind = .preference }
@@ -377,7 +377,7 @@ public struct MemoryKnowledgeEngine: Sendable {
         }
         let cueKinds: [(MemoryClaimKind, [String])] = [
             (.preference, ["我喜欢", "我更喜欢", "我不喜欢", "我不再喜欢", "我一直喜欢", "我长期偏好", "我偏好"]),
-            (.goal, ["我的目标", "我想要", "我希望", "我要成为"]),
+            (.goal, ["我的目标", "长期目标", "我要成为"]),
             (.constraint, ["我不能", "我的限制", "我要求"]),
             (.habit, ["我通常", "我习惯", "我每天", "我每周"]),
             (.workflow, ["我以后", "我下次", "老规矩"])

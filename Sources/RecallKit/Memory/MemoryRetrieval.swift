@@ -163,7 +163,9 @@ public struct MemoryRetrievalEngine: Sendable {
             [.preference, .constraint, .workflow].contains(claim.kind) && claim.usable(at: now)
                 && MemoryPersonalization.applies(claim, question: question, entities: entities, conversationID: conversationID)
         }.sorted { a, b in
-            func priority(_ item: MemoryClaim) -> Int { item.scope == .conversation ? 3 : (item.scope == .global ? 1 : 2) }
+            func priority(_ item: MemoryClaim) -> Int {
+                switch item.scope { case .conversation: 4; case .project: 3; case .global: 1; default: 2 }
+            }
             let x = priority(a), y = priority(b)
             return x == y ? a.updatedAt > b.updatedAt : x > y
         }
