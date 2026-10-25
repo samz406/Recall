@@ -92,7 +92,7 @@ public struct SummaryFeedbackTarget: Codable, Equatable, Identifiable, Sendable 
         let values = item.map { [$0] } ?? rows.map(\.item)
         return Self(kind: .period, reportID: report.id, itemID: item?.id, revision: SummaryFeedbackLearning.hash(report),
             title: report.displayName + " · " + report.period.label, period: report.period, templateID: report.template.id,
-            templateKind: report.template.kind, topicID: report.scope.useSelectedTopics && report.scope.topicIDs.count == 1 ? report.scope.topicIDs.first : nil,
+            templateKind: report.template.kind, topicID: item?.id ?? (report.scope.useSelectedTopics && report.scope.topicIDs.count == 1 ? report.scope.topicIDs.first : nil),
             items: values.map { value in
                 let row = rows.first { $0.id == value.id }
                 return SummaryFeedbackItem(id: value.id, title: row?.title ?? value.displayTitle,
@@ -144,6 +144,7 @@ public struct SummaryFeedback: Codable, Identifiable, Equatable, Sendable {
     public var processingRevision: String?
     public var processorVersion: Int?
     public var supplementCaptureID: UUID?
+    public var dependencyFeedbackIDs: [UUID]?
     public var sourceVersions: [UUID: String]
     public var resolution: SummaryFeedbackResolution?
     public var resultRevision: String?
@@ -222,12 +223,14 @@ public enum SummaryFeedbackLearning {
     }
     public static func context(in state: RecallState, kind: SummaryFeedbackKind, templateID: String? = nil, topicID: String? = nil) -> String {
         let policies = rules(in: state, kind: kind, templateID: templateID, topicID: topicID)
+        let allowed = Set(state.correctedForAnalysis().captures.map(\.id))
         let cases = state.summaryFeedback.filter { entry in
             entry.state == .applied && entry.target.kind == kind && entry.target.templateID == templateID
                 && (entry.target.topicID == nil || entry.target.topicID == topicID)
                 && entry.resolution?.diagnosis != .expression
-                && entry.sourceVersions.keys.allSatisfy { id in
-                    state.captures.contains { $0.id == id && !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }
+                && Set(entry.sourceVersions.keys).isSubset(of: allowed)
+                && entry.sourceVersions.allSatisfy { id, version in
+                    state.captures.contains { $0.id == id && rawVersion($0) == version && !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }
                 }
         }.suffix(4).map { entry in
             "原回顾范围：" + entry.target.period.label + "；相关内容：" + entry.target.items.map(\.title).joined(separator: "；") + "；用户更正（仅限同一事项、同一历史状态，不扩展为新事实）：" + String(entry.text.prefix(400))

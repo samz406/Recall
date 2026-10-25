@@ -180,7 +180,13 @@ struct WeeklyReviewComposition: Sendable {
                 let preferenceClaims = MemoryKnowledgeEngine().cloudEligibleClaims(in: state)
                 let questionScope = template.kind.requiresWorkScope ? "工作周报" : (template.kind == .learning ? "学习回顾" : "个人回顾")
                 let preferences = MemoryRetrievalEngine().preferenceContext(question: questionScope, claims: preferenceClaims, conversationID: nil, entities: Set(items.map(\.id)))
-                let feedbackContext = SummaryFeedbackLearning.context(in: state, kind: .period, templateID: template.id, topicID: items.count == 1 ? items.first?.id : nil)
+                let generalFeedback = SummaryFeedbackLearning.context(in: state, kind: .period, templateID: template.id)
+                let topicFeedback = batch.compactMap { topic -> String? in
+                    let rules = SummaryFeedbackLearning.rules(in: state, kind: .period, templateID: template.id, topicID: topic.topicID).filter { $0.topicID == topic.topicID }
+                    guard !rules.isEmpty else { return nil }
+                    return "仅适用于 topicID=\(topic.topicID)：" + rules.map { $0.kind.instruction }.joined(separator: "；")
+                }.joined(separator: "\n")
+                let feedbackContext = generalFeedback + "\n" + topicFeedback
                 let question = prompt(template, period: period) + "\n" + privacy.redact(feedbackContext) + (preferences.map { "\n本次模板的明确设置优先，其余表达参考：\n" + privacy.redact($0) } ?? "")
                 let response = try await responder.answer(to: LLMRequest(question: question,
                     context: context, purpose: .weeklyComposition, outputTokenLimit: template.length == .detailed ? 6_000 : 4_000))

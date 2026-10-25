@@ -39,6 +39,9 @@ extension FileMemoryStore {
     public func claimSummaryFeedback(now: Date = .now, modelAvailable: Bool) throws -> SummaryFeedback? {
         guard state.summaryFeedbackSettings.processingEnabled else { return nil }
         let before = state
+        for i in state.summaryFeedback.indices where state.summaryFeedback[i].state == .processing && now.timeIntervalSince(state.summaryFeedback[i].updatedAt) > 300 {
+            state.summaryFeedback[i].state = .retrying; state.summaryFeedback[i].lease = nil; state.summaryFeedback[i].retryAfter = now
+        }
         guard let i = state.summaryFeedback.firstIndex(where: {
             [.queued, .waiting, .retrying].contains($0.state) && ($0.retryAfter == nil || $0.retryAfter! <= now)
         }) else { return nil }
@@ -100,8 +103,12 @@ extension FileMemoryStore {
                 entry.sourceVersions[capture.id] = SummaryFeedbackLearning.rawVersion(capture)
             }
             for correction in plan.resolution.corrections {
-                guard let source = sources[correction.sourceID], source.ocrText.components(separatedBy: correction.originalQuote).count == 2 else { throw SummaryFeedbackError.changed }
+                guard let source = sources[correction.sourceID], SummaryFeedbackLearning.adjusted(source, in: before).ocrText.components(separatedBy: correction.originalQuote).count == 2 else { throw SummaryFeedbackError.changed }
             }
+            let correctedIDs = Set(plan.resolution.corrections.map(\.sourceID))
+            entry.dependencyFeedbackIDs = before.summaryFeedback.filter { old in
+                old.state == .applied && !(Set(old.resolution?.corrections.map(\.sourceID) ?? [])).isDisjoint(with: correctedIDs)
+            }.map(\.id)
             entry.state = .applied
             entry.message = plan.resolution.message.isEmpty ? "已按反馈调整。" : plan.resolution.message
             state.summaryFeedback[index] = entry
@@ -200,14 +207,33 @@ extension FileMemoryStore {
         do { try persist() } catch { state = before; throw error }
     }
     public func withdrawSummaryFeedback(_ id: UUID) throws {
-        guard let index = state.summaryFeedback.firstIndex(where: { $0.id == id && $0.state != .withdrawn }) else { return }
         let before = state
+        withdrawSummaryFeedbackState(id)
+        do { try persist() } catch { state = before; throw error }
+    }
+    private func withdrawSummaryFeedbackState(_ id: UUID) {
+        guard let index = state.summaryFeedback.firstIndex(where: { $0.id == id && $0.state != .withdrawn }) else { return }
         let entry = state.summaryFeedback[index]
         let restoreDaily = state.dailySummaries.first { $0.id == entry.target.reportID }.map { SummaryFeedbackLearning.hash($0) == entry.resultRevision } ?? false
         let restoreWeekly = state.weeklyReports.first { $0.id == entry.target.reportID }.map { SummaryFeedbackLearning.hash($0) == entry.resultRevision } ?? false
         state.summaryFeedback[index].state = .withdrawn; state.summaryFeedback[index].lease = nil
         state.summaryFeedback[index].message = "已撤销这次反馈的调整及学习。"; state.summaryFeedback[index].updatedAt = .now
         var corrected = Set(entry.resolution?.corrections.map(\.sourceID) ?? [])
+        var withdrawnIDs: Set<UUID> = [id]
+        for _ in state.summaryFeedback.indices {
+            let dependent = state.summaryFeedback.filter {
+                $0.state == .applied && !(Set($0.dependencyFeedbackIDs ?? [])).isDisjoint(with: withdrawnIDs)
+            }
+            if dependent.isEmpty { break }
+            for value in dependent {
+                withdrawnIDs.insert(value.id)
+                corrected.formUnion(value.resolution?.corrections.map(\.sourceID) ?? [])
+                if let i = state.summaryFeedback.firstIndex(where: { $0.id == value.id }) {
+                    state.summaryFeedback[i].state = .withdrawn
+                    state.summaryFeedback[i].message = "依赖的更正已撤销，这次调整已停用。"
+                }
+            }
+        }
         if let supplemental = entry.supplementCaptureID {
             corrected.insert(supplemental)
             state.captures.removeAll { $0.id == supplemental }
@@ -228,13 +254,17 @@ extension FileMemoryStore {
             old.sourceVersions = Dictionary(uniqueKeysWithValues: old.sourceIDs.compactMap { id in WeeklyReviewEngine.sourceVersion(id: id, state: state).map { (id, $0) } })
             state.weeklyReports.removeAll { $0.id == old.id }; state.weeklyReports.insert(old, at: 0)
         }
-        do { try persist() } catch { state = before; throw error }
     }
     public func deleteSummaryFeedback(_ id: UUID) throws {
         let before = state
         do {
-            try withdrawSummaryFeedback(id)
-            state.summaryFeedback.removeAll { $0.id == id }; try persist()
+            withdrawSummaryFeedbackState(id)
+            var removed: Set<UUID> = [id]
+            for _ in state.summaryFeedback.indices {
+                let descendants = Set(state.summaryFeedback.filter { !Set($0.dependencyFeedbackIDs ?? []).isDisjoint(with: removed) }.map(\.id))
+                if descendants.isSubset(of: removed) { break }; removed.formUnion(descendants)
+            }
+            state.summaryFeedback.removeAll { removed.contains($0.id) }; try persist()
         } catch { state = before; throw error }
     }
     public func disableSummaryRule(feedbackID: UUID, ruleID: UUID) throws {

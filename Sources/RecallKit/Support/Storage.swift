@@ -1173,7 +1173,17 @@ public actor FileMemoryStore {
     func persist() throws {
         let liveIDs = Set(state.captures.map(\.id))
         let excludedIDs = Set(state.captures.filter { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id))
-        let droppedFeedback = state.summaryFeedback.filter { !Set($0.sourceVersions.keys).isSubset(of: liveIDs) || !Set($0.sourceVersions.keys).isDisjoint(with: excludedIDs) }
+        let invalidIDs = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
+        let feedbackIDs = Set(state.summaryFeedback.map(\.id))
+        var droppedIDs = Set(state.summaryFeedback.filter {
+            !Set($0.sourceVersions.keys).isSubset(of: liveIDs) || !Set($0.sourceVersions.keys).isDisjoint(with: excludedIDs.union(invalidIDs))
+                || !Set($0.dependencyFeedbackIDs ?? []).isSubset(of: feedbackIDs)
+        }.map(\.id))
+        for _ in state.summaryFeedback.indices {
+            let more = Set(state.summaryFeedback.filter { !Set($0.dependencyFeedbackIDs ?? []).isDisjoint(with: droppedIDs) }.map(\.id))
+            if more.isSubset(of: droppedIDs) { break }; droppedIDs.formUnion(more)
+        }
+        let droppedFeedback = state.summaryFeedback.filter { droppedIDs.contains($0.id) }
         if !droppedFeedback.isEmpty {
             let touched = Set(droppedFeedback.flatMap { $0.resolution?.corrections.map(\.sourceID) ?? [] })
             state.summaryFeedback.removeAll { entry in droppedFeedback.contains { $0.id == entry.id } }

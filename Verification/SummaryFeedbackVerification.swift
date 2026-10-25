@@ -65,6 +65,7 @@ enum SummaryFeedbackVerification {
         try await deletionAndPause()
         try await periodRepair()
         try await supplementAndUndo()
+        try await correctionChain()
         print("PASS: feedback covers durable queue, bounded patches, exact facts, scoped learning, audit rejection, concurrency, pause, deletion and undo")
     }
     private static func persistenceAndRecovery() async throws {
@@ -154,6 +155,28 @@ enum SummaryFeedbackVerification {
         let state = await f.store.snapshot()
         try check(state.summaryFeedback.isEmpty, "删除来源后残留反馈文字、快照或规则")
     }
+    private static func correctionChain() async throws {
+        let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
+        let first = try await submit(f, text: "识别错了，我说的只完成联调，尚未上线。")
+        let a = "[聊天·自己] Atlas 导出修复只完成联调，尚未上线。"
+        let corrections: [[String: Any]] = [["sourceID": f.source.id.uuidString, "originalQuote": "[聊天·自己] Atlas 导出修复已完成上线。", "correctedQuote": a]]
+        try await apply(f, job: first, response: response(f, diagnosis: "facts", corrections: corrections))
+        let state = await f.store.snapshot()
+        let current = state.dailySummaries.first { $0.id == f.summary.id }!
+        _ = try await f.store.submitSummaryFeedback(target: .daily(current, item: current.items[0]), text: "再纠正一下：是完成开发，尚未联调，也没有上线。")
+        guard let second = try await f.store.claimSummaryFeedback(modelAvailable: true) else { throw Failure(text: "连续更正未进入队列") }
+        let correction: [[String: Any]] = [["sourceID": f.source.id.uuidString, "originalQuote": a, "correctedQuote": "[聊天·自己] Atlas 导出修复完成开发，尚未联调和上线。"]]
+        let json: [String: Any] = ["diagnosis": "facts", "message": "已更正开发状态。", "corrections": correction, "rules": [],
+            "changes": [["itemID": current.items[0].id.uuidString, "remove": false, "title": "Atlas 导出修复完成开发", "detail": "尚未进行联调和上线。", "section": "progress", "sourceIDs": [f.source.id.uuidString]]]]
+        try await apply(f, job: second, response: String(decoding: JSONSerialization.data(withJSONObject: json), as: UTF8.self))
+        let twice = await f.store.snapshot()
+        try check(twice.correctedForAnalysis().captures.first { $0.id == f.source.id }?.ocrText.contains("尚未联调和上线") == true,
+                  "第二次纠正不能应用在已更正的分析片段上")
+        try await f.store.withdrawSummaryFeedback(first.id)
+        let undone = await f.store.snapshot()
+        try check(undone.summaryFeedback.allSatisfy { $0.state == .withdrawn } && undone.correctedForAnalysis().captures.first { $0.id == f.source.id }?.ocrText == f.source.ocrText,
+                  "撤销前置更正后残留依赖它的错误事实")
+    }
     private static func supplementAndUndo() async throws {
         let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
         let text = "漏了一件事，我今天完成了 Atlas 订单接口的分页修复。"
@@ -181,6 +204,9 @@ enum SummaryFeedbackVerification {
         let period = ReviewPeriod(start: Calendar.current.startOfDay(for: .now), end: Date.now)
         let report = try await WeeklyReviewEngine().generate(in: state, period: period, template: ReviewTemplate(kind: .work))
         let saved = try await f.store.commitWeeklyReport(report)
+        let reopened = try FileMemoryStore(storage: f.storage)
+        let reopenedState = await reopened.snapshot()
+        try check(SummaryFeedbackLearning.targetIsCurrent(.period(saved), in: reopenedState), "重启重排来源字典后回顾版本指纹发生变化")
         guard let row = saved.digestRows.first else { throw Failure(text: "测试缺少周报条目") }
         _ = try await f.store.submitSummaryFeedback(target: .period(saved, item: row.item), text: "标题请明确写发布流程的步骤导航。")
         guard let job = try await f.store.claimSummaryFeedback(modelAvailable: true) else { throw Failure(text: "未领取周报反馈") }

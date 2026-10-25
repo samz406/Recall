@@ -42,7 +42,7 @@ public struct SummaryFeedbackEngine: Sendable {
         let privacy = PrivacyEngine()
         var context = sources.map { source -> CaptureRecord in
             var value = source
-            value.ocrText = "sourceID: " + source.id.uuidString + "\n" + privacy.redact(String(SummaryFeedbackLearning.adjusted(source, in: state).ocrText.prefix(1_600)))
+            value.ocrText = "sourceID: " + source.id.uuidString + "\n" + privacy.redact(excerpt(SummaryFeedbackLearning.adjusted(source, in: state).ocrText, feedback: feedback))
             value.imageRelativePath = nil; value.manualMatter = nil; value.memoryDirective = nil
             value.summary = nil; value.windowTitle = nil; value.tags = []
             return value
@@ -139,6 +139,9 @@ public struct SummaryFeedbackEngine: Sendable {
             var rule = resolution.rules[i]
             guard persistent, rule.quote.count >= 4, feedback.text.contains(rule.quote) else { throw SummaryFeedbackError.invalid }
             rule.reviewKind = feedback.target.kind; rule.templateID = feedback.target.templateID; rule.topicID = feedback.target.topicID
+            if feedback.target.kind == .daily, ["这件事", "该项目", "这个项目", "这个主题"].contains(where: rule.quote.contains), rule.topicID == nil {
+                throw SummaryFeedbackError.invalid
+            }
             rule.allReviews = rule.allReviews && (feedback.text.contains("所有总结") || feedback.text.contains("所有回顾"))
             if rule.allReviews { rule.topicID = nil; rule.templateID = nil }
             resolution.rules[i] = rule
@@ -146,6 +149,16 @@ public struct SummaryFeedbackEngine: Sendable {
         if resolution.diagnosis == .unclear {
             guard resolution.changes.isEmpty, resolution.corrections.isEmpty, resolution.rules.isEmpty, resolution.supplement == nil else { throw SummaryFeedbackError.invalid }
         }
+    }
+    private func excerpt(_ text: String, feedback: SummaryFeedback) -> String {
+        guard text.count > 1_600 else { return text }
+        let terms = MatterMemoryEngine.subjectTerms(feedback.text).filter { $0.count >= 2 }.sorted { $0.count > $1.count }
+        if let range = terms.compactMap({ text.range(of: $0, options: .caseInsensitive) }).first {
+            let start = text.index(range.lowerBound, offsetBy: -300, limitedBy: text.startIndex) ?? text.startIndex
+            let end = text.index(start, offsetBy: 1_600, limitedBy: text.endIndex) ?? text.endIndex
+            return String(text[start..<end])
+        }
+        return String(text.prefix(1_600))
     }
     private func json<T: Encodable>(_ value: T) throws -> String { String(decoding: try JSONEncoder().encode(value), as: UTF8.self) }
     private func decode<T: Decodable>(_ text: String) throws -> T {
