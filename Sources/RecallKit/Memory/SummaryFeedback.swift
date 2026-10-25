@@ -76,6 +76,7 @@ public struct SummaryFeedbackTarget: Codable, Equatable, Identifiable, Sendable 
     public var topicID: String?
     public var items: [SummaryFeedbackItem]
     public var editedText: String?
+    public var length: ReviewLength?
     public static func daily(_ summary: DailySummary, item: DailySummaryItem? = nil) -> Self {
         let day = Calendar.current.startOfDay(for: summary.day)
         return Self(kind: .daily, reportID: summary.id, itemID: item?.id.uuidString,
@@ -96,7 +97,7 @@ public struct SummaryFeedbackTarget: Codable, Equatable, Identifiable, Sendable 
                 let row = rows.first { $0.id == value.id }
                 return SummaryFeedbackItem(id: value.id, title: row?.title ?? value.displayTitle,
                     detail: row?.summary ?? value.narrative?.summary ?? "", section: value.section.rawValue, sourceIDs: value.sourceIDs)
-            }, editedText: item == nil ? report.editedMarkdown : nil)
+            }, editedText: item == nil ? report.editedMarkdown : nil, length: report.template.length)
     }
 }
 public struct SummaryFeedbackChange: Codable, Equatable, Sendable {
@@ -113,7 +114,16 @@ public struct SummaryFactCorrection: Codable, Equatable, Sendable {
     public var correctedQuote: String
     public var status: WorkEpisodeStatus?
 }
+public struct SummaryFeedbackSupplement: Codable, Equatable, Sendable {
+    public var title: String
+    public var detail: String
+    public var status: WorkEpisodeStatus
+    public var quote: String
+    /// Explicit date only; application verifies it against the user's words.
+    public var occurredOn: String
+}
 public struct SummaryFeedbackResolution: Codable, Equatable, Sendable {
+    public var supplement: SummaryFeedbackSupplement?
     public var diagnosis: SummaryFeedbackDiagnosis
     public var message: String
     public var changes: [SummaryFeedbackChange]
@@ -132,6 +142,8 @@ public struct SummaryFeedback: Codable, Identifiable, Equatable, Sendable {
     public var retryAfter: Date?
     public var lease: UUID?
     public var processingRevision: String?
+    public var processorVersion: Int?
+    public var supplementCaptureID: UUID?
     public var sourceVersions: [UUID: String]
     public var resolution: SummaryFeedbackResolution?
     public var resultRevision: String?
@@ -161,6 +173,32 @@ public enum SummaryFeedbackLearning {
     public static func hash<T: Encodable>(_ value: T) -> String {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; encoder.dateEncodingStrategy = .iso8601
         return SHA256.hash(data: (try? encoder.encode(value)) ?? Data()).map { String(format: "%02x", $0) }.joined()
+    }
+    public static func hash(_ report: WeeklyReport) -> String {
+        // UUID-keyed dictionaries and Sets otherwise encode in process-dependent order.
+        var body = report
+        body.sourceVersions = [:]; body.scope = ReviewScope()
+        let versions = report.sourceVersions.map { $0.key.uuidString + ":" + $0.value }.sorted()
+        return hash([hashBody(body), hash(versions), hash(report.scope.topicIDs.sorted()), hash(report.scope.useSelectedTopics)])
+    }
+    private static func hashBody<T: Encodable>(_ value: T) -> String { hash(value) }
+    public static func supplementDate(_ value: SummaryFeedbackSupplement, feedback: SummaryFeedback) -> Date? {
+        let calendar = feedback.target.period.calendar
+        let day = calendar.startOfDay(for: feedback.createdAt)
+        let text = feedback.text
+        let expected: Date?
+        if text.contains("前天") { expected = calendar.date(byAdding: .day, value: -2, to: day) }
+        else if text.contains("昨天") { expected = calendar.date(byAdding: .day, value: -1, to: day) }
+        else if text.contains("今天") { expected = day }
+        else {
+            let formatter = DateFormatter(); formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
+            formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"; formatter.isLenient = false
+            expected = text.contains(value.occurredOn) ? formatter.date(from: value.occurredOn) : nil
+        }
+        guard let expected, feedback.target.period.contains(expected), expected <= feedback.createdAt else { return nil }
+        let formatter = DateFormatter(); formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: expected) == value.occurredOn ? expected : nil
     }
     public static func rawVersion(_ source: CaptureRecord) -> String { MemoryKnowledgeEngine.version(of: source) }
     public static func revision(in state: RecallState) -> String {
@@ -192,7 +230,7 @@ public enum SummaryFeedbackLearning {
                     state.captures.contains { $0.id == id && !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }
                 }
         }.suffix(4).map { entry in
-            "此前对此范围的更正（仅限同一事项、同一历史状态，不扩展为新事实）：" + String(entry.text.prefix(400))
+            "原回顾范围：" + entry.target.period.label + "；相关内容：" + entry.target.items.map(\.title).joined(separator: "；") + "；用户更正（仅限同一事项、同一历史状态，不扩展为新事实）：" + String(entry.text.prefix(400))
         }
         guard !policies.isEmpty || !cases.isEmpty else { return "" }
         return "用户在相同回顾范围内明确提出的要求（不得改变事实、状态和归属；模板篇幅限制仍有效）：\n"
@@ -213,6 +251,7 @@ public enum SummaryFeedbackLearning {
                     note.title = note.title.replacingOccurrences(of: change.originalQuote, with: change.correctedQuote)
                     if let status = change.status { note.status = status }
                     result.manualMatter = note
+                    result.ocrText = "事情：\(note.title)\n状态：\(note.status.manualMatterLabel)\n\(note.detail)"
                 }
             }
         }

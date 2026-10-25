@@ -64,6 +64,7 @@ enum SummaryFeedbackVerification {
         try await rejectionAndRaces()
         try await deletionAndPause()
         try await periodRepair()
+        try await supplementAndUndo()
         print("PASS: feedback covers durable queue, bounded patches, exact facts, scoped learning, audit rejection, concurrency, pause, deletion and undo")
     }
     private static func persistenceAndRecovery() async throws {
@@ -153,19 +154,38 @@ enum SummaryFeedbackVerification {
         let state = await f.store.snapshot()
         try check(state.summaryFeedback.isEmpty, "删除来源后残留反馈文字、快照或规则")
     }
+    private static func supplementAndUndo() async throws {
+        let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
+        let text = "漏了一件事，我今天完成了 Atlas 订单接口的分页修复。"
+        _ = try await f.store.submitSummaryFeedback(target: .daily(f.summary), text: text)
+        guard let job = try await f.store.claimSummaryFeedback(modelAvailable: true) else { throw Failure(text: "未领取补记反馈") }
+        let formatter = DateFormatter(); formatter.calendar = job.target.period.calendar
+        formatter.timeZone = formatter.calendar.timeZone; formatter.dateFormat = "yyyy-MM-dd"
+        let json: [String: Any] = ["diagnosis": "omission", "message": "已保存用户补记并补入回顾。", "corrections": [], "rules": [],
+            "supplement": ["title": "Atlas 订单接口分页修复", "detail": "Atlas 订单接口的分页问题已经完成修复。", "status": "completed", "quote": "我今天完成了 Atlas 订单接口的分页修复", "occurredOn": formatter.string(from: job.createdAt)],
+            "changes": [["itemID": NSNull(), "remove": false, "title": "Atlas 订单接口分页修复完成", "detail": "用户补充：订单接口的分页问题已完成修复。", "section": "progress", "sourceIDs": [job.id.uuidString]]]]
+        try await apply(f, job: job, response: String(decoding: JSONSerialization.data(withJSONObject: json), as: UTF8.self))
+        let state = await f.store.snapshot()
+        try check(state.captures.first { $0.id == job.id }?.sourceAppName == "用户反馈补记" && state.dailySummaries.first?.items.count == 3,
+                  "明确补充没有保存为独立用户来源或没有加入总结")
+        try await f.store.withdrawSummaryFeedback(job.id)
+        let undone = await f.store.snapshot()
+        try check(!undone.captures.contains { $0.id == job.id } && undone.dailySummaries.first?.items == f.summary.items,
+                  "撤销补记留下了虚构的截图来源或没有恢复回顾")
+    }
     private static func periodRepair() async throws {
         let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
-        let period = ReviewPeriod(start: Calendar.current.startOfDay(for: .now), end: Date.now.addingTimeInterval(60))
         let source = try ManualMatterNote(title: "Atlas 发布流程改版", detail: "发布流程的步骤导航已通过验收。", status: .completed, eventAt: Date.now.addingTimeInterval(-60), reviewCategory: .work).capture()
         try await f.store.addCapture(source)
         let state = await f.store.snapshot()
+        let period = ReviewPeriod(start: Calendar.current.startOfDay(for: .now), end: Date.now)
         let report = try await WeeklyReviewEngine().generate(in: state, period: period, template: ReviewTemplate(kind: .work))
         let saved = try await f.store.commitWeeklyReport(report)
         guard let row = saved.digestRows.first else { throw Failure(text: "测试缺少周报条目") }
         _ = try await f.store.submitSummaryFeedback(target: .period(saved, item: row.item), text: "标题请明确写发布流程的步骤导航。")
         guard let job = try await f.store.claimSummaryFeedback(modelAvailable: true) else { throw Failure(text: "未领取周报反馈") }
         let json: [String: Any] = ["diagnosis": "expression", "message": "标题已调整。", "corrections": [], "rules": [],
-            "changes": [["itemID": row.id, "remove": false, "title": "发布流程的步骤导航完成验收", "detail": "导航调整已经验收。", "section": row.item.section.rawValue, "sourceIDs": row.item.sourceIDs.map(\.uuidString)]]]
+            "changes": [["itemID": row.id, "remove": false, "title": "发布流程的步骤导航完成验收", "detail": "发布流程的步骤导航调整已经通过验收。", "section": row.item.section.rawValue, "sourceIDs": row.item.sourceIDs.map(\.uuidString)]]]
         let response = String(decoding: try JSONSerialization.data(withJSONObject: json), as: UTF8.self)
         try await apply(f, job: job, response: response)
         let after = await f.store.snapshot()

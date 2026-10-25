@@ -58,6 +58,7 @@ extension FileMemoryStore {
         }
         state.summaryFeedback[i].state = .processing; state.summaryFeedback[i].lease = UUID()
         state.summaryFeedback[i].attempts += 1; state.summaryFeedback[i].updatedAt = now
+        state.summaryFeedback[i].processorVersion = 1
         state.summaryFeedback[i].processingRevision = SummaryFeedbackLearning.revision(in: state)
         state.summaryFeedback[i].message = "正在核对反馈与相关记录。"
         do { try persist() } catch { state = before; throw error }
@@ -77,16 +78,26 @@ extension FileMemoryStore {
         try Task.checkCancellation()
         try validateSummaryFeedbackJob(job, configuration: configuration, privacy: privacy)
         guard plan.learningRevision == SummaryFeedbackLearning.revision(in: state), let index = state.summaryFeedback.firstIndex(where: { $0.id == job.id }) else { throw SummaryFeedbackError.changed }
-        let sources = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
+        var sources = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
         guard plan.sourceVersions.allSatisfy({ id, version in sources[id].map { SummaryFeedbackLearning.rawVersion($0) == version && !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") } ?? false }) else { throw SummaryFeedbackError.changed }
         let before = state
         do {
             var entry = state.summaryFeedback[index]
             entry.resolution = plan.resolution; entry.updatedAt = now; entry.lease = nil
             entry.sourceVersions.merge(plan.sourceVersions) { _, new in new }
-            if plan.resolution.diagnosis == .unclear || (plan.resolution.changes.isEmpty && plan.resolution.corrections.isEmpty && plan.resolution.rules.isEmpty) {
+            if plan.resolution.diagnosis == .unclear || (plan.resolution.changes.isEmpty && plan.resolution.corrections.isEmpty && plan.resolution.rules.isEmpty && plan.resolution.supplement == nil) {
                 entry.state = .needsDetail; entry.message = plan.resolution.message.isEmpty ? "请补充哪一条不对，以及实际发生了什么。" : plan.resolution.message
                 state.summaryFeedback[index] = entry; try persist(); return
+            }
+            if let supplement = plan.resolution.supplement {
+                guard let day = SummaryFeedbackLearning.supplementDate(supplement, feedback: job) else { throw SummaryFeedbackError.invalid }
+                let note = ManualMatterNote(title: supplement.title, detail: supplement.detail, status: supplement.status,
+                    eventAt: day, reviewCategory: job.target.templateKind?.requiresWorkScope == true ? .work : nil)
+                var capture = try note.capture(recordedAt: job.createdAt)
+                capture.id = job.id; capture.sourceAppName = "用户反馈补记"
+                state.captures.insert(capture, at: 0); sources[capture.id] = capture
+                entry.supplementCaptureID = capture.id
+                entry.sourceVersions[capture.id] = SummaryFeedbackLearning.rawVersion(capture)
             }
             for correction in plan.resolution.corrections {
                 guard let source = sources[correction.sourceID], source.ocrText.components(separatedBy: correction.originalQuote).count == 2 else { throw SummaryFeedbackError.changed }
@@ -154,6 +165,9 @@ extension FileMemoryStore {
                 let ids = report.sourceIDs.union(plan.resolution.changes.flatMap(\.sourceIDs))
                 report.sourceVersions = Dictionary(uniqueKeysWithValues: ids.compactMap { id in WeeklyReviewEngine.sourceVersion(id: id, state: state).map { (id, $0) } })
                 report.updatedAt = now; report.refinementPending = false
+                for change in plan.resolution.changes where !change.remove {
+                    guard report.digestRows.contains(where: { $0.title == change.title && $0.summary == change.detail }) else { throw SummaryFeedbackError.invalid }
+                }
                 state.weeklyReports.removeAll { $0.id == report.id }; state.weeklyReports.insert(report, at: 0)
                 entry.resultRevision = SummaryFeedbackLearning.hash(report)
             }
@@ -193,13 +207,18 @@ extension FileMemoryStore {
         let restoreWeekly = state.weeklyReports.first { $0.id == entry.target.reportID }.map { SummaryFeedbackLearning.hash($0) == entry.resultRevision } ?? false
         state.summaryFeedback[index].state = .withdrawn; state.summaryFeedback[index].lease = nil
         state.summaryFeedback[index].message = "已撤销这次反馈的调整及学习。"; state.summaryFeedback[index].updatedAt = .now
-        let corrected = Set(entry.resolution?.corrections.map(\.sourceID) ?? [])
+        var corrected = Set(entry.resolution?.corrections.map(\.sourceID) ?? [])
+        if let supplemental = entry.supplementCaptureID {
+            corrected.insert(supplemental)
+            state.captures.removeAll { $0.id == supplemental }
+            state.summaryFeedback[index].sourceVersions.removeValue(forKey: supplemental)
+        }
         if !corrected.isEmpty {
             invalidateMemoryOutputs(sourceIDs: corrected)
             applyKnowledge(MemoryKnowledgeEngine().reconcile(state, force: true))
         }
         let live = Set(state.captures.map(\.id))
-        let originalsUnchanged = entry.sourceVersions.allSatisfy { id, version in
+        let originalsUnchanged = entry.sourceVersions.filter { $0.key != entry.supplementCaptureID }.allSatisfy { id, version in
             state.captures.first { $0.id == id }.map { SummaryFeedbackLearning.rawVersion($0) == version } ?? false
         }
         if restoreDaily, originalsUnchanged, let old = entry.dailyBefore, Set(old.sourceCaptureIDs).isSubset(of: live) {

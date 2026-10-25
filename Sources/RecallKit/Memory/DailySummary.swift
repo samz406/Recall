@@ -1066,6 +1066,19 @@ public struct DailySummaryGenerator: Sendable {
             ? unifiedActions(from: modelItems, ruleActions: reviewableActions, now: day)
             : Array(priorityTodos.prefix(3))
         let finalItems = replacingActionItems(in: extractedItems, with: actions)
+        if !feedbackInstructions.isEmpty {
+            let auditPrompt = """
+            独立核对以下每日回顾是否忠于提供的事实、归属、日期、完成状态，且解决了用户在相同范围内提出的要求；不得将历史更正泛化为新事实。任何不符或不确定都拒绝。
+            只输出 {"accepted":true} 或 {"accepted":false}。
+            用户要求数据：\(PrivacyEngine().redact(feedbackInstructions))
+            待核验回顾数据：\(PrivacyEngine().redact(DailySummaryItemParser.markdown(from: finalItems)))
+            """
+            let checked = try await responder.answer(to: LLMRequest(question: auditPrompt, context: records, purpose: .summaryFeedbackAudit, outputTokenLimit: 400))
+            struct Audit: Decodable { let accepted: Bool }
+            guard let a = checked.content.firstIndex(of: "{"), let b = checked.content.lastIndex(of: "}"), a <= b,
+                  let data = String(checked.content[a...b]).data(using: .utf8),
+                  let result = try? JSONDecoder().decode(Audit.self, from: data), result.accepted else { throw SummaryFeedbackError.rejected }
+        }
         return DailySummaryGeneration(
             content: DailySummaryItemParser.markdown(from: finalItems),
             sourceCaptureIDs: Array(Set(records.map(\.id)).union(contextualSourceIDs)).sorted { $0.uuidString < $1.uuidString },
