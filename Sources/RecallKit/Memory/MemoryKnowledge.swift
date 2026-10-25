@@ -496,8 +496,9 @@ public struct MemoryKnowledgeEngine: Sendable {
                       $0.explicit && $0.usable(at: now) && $0.scope == merged[i].scope && $0.scopeID == merged[i].scopeID
                           && $0.updatedAt >= merged[i].updatedAt && MemoryPersonalization.polarityObject($0.content) == object
                   }) else { continue }
+            let retiredID = merged[i].id
             merged[i].state = .superseded
-            if let j = merged.firstIndex(where: { $0.id == replacement.id }), !merged[j].supersedes.contains(merged[i].id) { merged[j].supersedes.append(merged[i].id) }
+            if let j = merged.firstIndex(where: { $0.id == replacement.id }), !merged[j].supersedes.contains(retiredID) { merged[j].supersedes.append(retiredID) }
         }
         let activeIDs = Set(merged.map(\.id))
         for file in files {

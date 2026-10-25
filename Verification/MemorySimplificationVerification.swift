@@ -38,11 +38,17 @@ enum MemorySimplificationVerification {
         let study = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .learning), now: now)
         try expect(all.sourceIDs == Set(records.map(\.id)), "普通回顾不能要求选择主题或只读取当天")
         try expect(work.sourceIDs == [records[0].id] && study.sourceIDs == [records[2].id], "工作/学习模板应自动找到适用内容并隔离生活")
+        for title in ["页面改版讨论覆盖布局、发布历史与资产变动", "流程页左侧导航样式与状态图标调整讨论", "流程页改版讨论聚焦当前步骤状态与图标"] {
+            try expect(ReviewCategoryIndex.inferredCategory(title: title, details: []) == .work, "同一次页面设计的不同表述不应因分类差异阻止归并")
+        }
         let files = engine.topics(in: state), index = ReviewWorkspaceIndex(state: state, topics: files)
         try expect(index.preview(in: period, kind: .work, scope: ReviewScope()).eligibleTopicCount == work.items.count, "生成按钮预览与实际自动分类必须一致")
         let selected = ReviewScope(topicIDs: [files.first { $0.evidenceIDs.contains(records[0].id) }!.id])
         let specific = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .project), scope: selected, now: now)
         try expect(specific.sourceIDs == [records[0].id], "主题详情中的单独回顾不得带入别的事")
+        let learningID = files.first { $0.evidenceIDs.contains(records[2].id) }!.id
+        let learningReview = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .learning), scope: ReviewScope(topicIDs: [learningID]), now: now)
+        try expect(learningReview.sourceIDs == [records[2].id], "非工作主题也能从详情单独生成回顾")
         let renewed = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .personal), now: now)
         try expect(renewed.sourceIDs.count == 3, "回到普通回顾不能遗留上次的主题限制")
     }

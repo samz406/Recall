@@ -145,7 +145,7 @@ struct MemoryKnowledgeView: View {
             HStack(spacing: 12) {
                 Text(context.map { "适用于：" + $0 } ?? claim.scope.title)
                 if let until = claim.validUntil { Text("有效至 " + until.formatted(date: .abbreviated, time: .shortened)) }
-                if !claim.usable() { Text(claim.state.title) }
+                if !claim.usable() { Text(claim.validUntil.map { $0 <= .now } == true ? "已过期" : claim.state.title) }
             }.font(.caption).foregroundStyle(RecallPalette.secondary)
             if claim.state == .conflicted || claim.state == .tentative {
                 Text(claim.state == .conflicted ? "存在不同说法，暂不用于个性化回答。你可以修改为当前适用的内容。" : "目前只作线索，尚不用于个性化回答。")

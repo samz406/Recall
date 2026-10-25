@@ -47,7 +47,7 @@ public struct ReviewCategoryIndex: Sendable {
         if text.range(of: #"家人|女儿|儿子|生日|家庭|马拉松|跑步|酒店预订|旅行计划|周末植物|陪家人"#, options: .regularExpression) != nil { return .personal }
         if text.range(of: #"阅读了|读完|学习了|练习了|学习笔记|英语练习|课程|读书|木刻|学习回顾"#, options: .regularExpression) != nil { return .learning }
         // Require a concrete professional object, not generic “完成/任务/明天”.
-        if text.range(of: #"(?:接口|数据库|生产环境|回归测试|客户端|服务端|工单|需求评审|交付验收|发布流程|页面改版|代码|合并请求|工作周报|客户方案|设计稿|项目验收|产品发布|订单服务|支付回调|发票下载|账单导出|导出接口)"#, options: .regularExpression) != nil { return .work }
+        if text.range(of: #"(?:接口|数据库|生产环境|回归测试|客户端|服务端|工单|需求评审|交付验收|发布流程|流程页|发布历史|步骤导航|界面改版|页面布局|页面改版|代码|合并请求|工作周报|客户方案|设计稿|项目验收|产品发布|订单服务|支付回调|发票下载|账单导出|导出接口)"#, options: .regularExpression) != nil { return .work }
         return .unclassified
     }
 }

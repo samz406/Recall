@@ -57,10 +57,9 @@ struct WeeklyReviewView: View {
         }
         .onAppear {
             rangeNow = .now
-            scope = model.reviewTopicToOpen.map { ReviewScope(topicIDs: [$0]) } ?? ReviewScope()
-            if model.reviewTopicToOpen != nil { template = ReviewTemplate(kind: .project) }
+            scope = ReviewScope()
             showsComposer = model.state.weeklyReports.isEmpty
-            if model.reviewTopicToOpen != nil { showsComposer = true }
+            if let id = model.reviewTopicToOpen { openTopicReview(id) }
             if let id = model.weeklyReportToOpen { selectedID = id }
             if !initializedModelChoice {
                 useModel = model.state.privacy.cloudUseEnabled
@@ -70,8 +69,7 @@ struct WeeklyReviewView: View {
             }
         }
         .onChange(of: model.reviewTopicToOpen) { _, id in
-            scope = id.map { ReviewScope(topicIDs: [$0]) } ?? ReviewScope()
-            if id != nil { template = ReviewTemplate(kind: .project); showsComposer = true }
+            if let id { openTopicReview(id) }
         }
         .onChange(of: selectedID) { _, id in if let id { model.weeklyReportToOpen = id } }
         .onChange(of: customStart) { _, start in if customEnd < start { customEnd = start } }
@@ -95,6 +93,14 @@ struct WeeklyReviewView: View {
         } message: { Text("原始记录会保留。这份回顾会进入最近删除，七天内可以恢复。") }
     }
 
+    private func openTopicReview(_ id: String) {
+        scope = ReviewScope(topicIDs: [id])
+        let category = model.reviewIndex.topics.first { $0.id == id }?.category
+        template = ReviewTemplate(kind: category == .work ? .project : (category == .learning ? .learning : .personal))
+        showsComposer = true
+        // Consume navigation intent: revisiting the ordinary tab must not inherit it.
+        model.reviewTopicToOpen = nil
+    }
     private var introduction: some View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .top, spacing: 20) { introductionText; Spacer(); utilityActions }
