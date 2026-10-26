@@ -341,7 +341,7 @@ public struct MemoryKnowledgeEngine: Sendable {
                 validUntil: nil, updatedAt: evidence.map(\.recordedAt).max() ?? now, explicit: explicit)
         }
         let understoodFacts = Dictionary(safe.captures.compactMap(\.understanding).flatMap(\.facts).map { ($0.eventID, $0) }, uniquingKeysWith: { first, next in
-            var merged = first; merged.evidence = Array(Set(first.evidence + next.evidence)).sorted { $0.blockID < $1.blockID }; return merged
+            var merged = first; merged.evidence = Array(Set(first.evidence + next.evidence)).sorted { $0.blockID == $1.blockID ? $0.quote < $1.quote : $0.blockID < $1.blockID }; return merged
         })
         let files = MatterMemoryEngine().observedFiles(in: safe)
         let references = MemoryReferenceEngine().files(in: safe, excluding: Set(files.flatMap(\.evidenceIDs)))

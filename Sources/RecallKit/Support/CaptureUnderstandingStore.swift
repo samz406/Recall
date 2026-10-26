@@ -73,11 +73,13 @@ extension FileMemoryStore {
             state.understandingJobs.remove(at: index)
             do { try persist() } catch { state = before; throw error }; return nil
         }
-        let configData = (try? JSONEncoder().encode(state.llmConfiguration)) ?? Data()
+        let configEncoder = JSONEncoder(); configEncoder.outputFormatting = [.sortedKeys]
+        let configData = (try? configEncoder.encode(state.llmConfiguration)) ?? Data()
         let configVersion = CaptureUnderstandingEngine.digest(configData.base64EncodedString())
-        if state.understandingJobs[index].sourceVersions != first.sourceVersions || state.understandingJobs[index].configurationVersion != configVersion {
+        if state.understandingJobs[index].sourceVersions != first.sourceVersions || state.understandingJobs[index].configurationVersion != configVersion || state.understandingJobs[index].processorVersion != CaptureUnderstandingEngine.version {
             state.understandingJobs[index] = CaptureUnderstandingJob(captureID: state.understandingJobs[index].captureID, now: now)
         }
+        state.understandingJobs[index].processorVersion = CaptureUnderstandingEngine.version
         state.understandingJobs[index].configurationVersion = configVersion
         state.understandingJobs[index].sourceVersions = first.sourceVersions
         state.understandingJobs[index].pageCount = pages.count
@@ -100,6 +102,7 @@ extension FileMemoryStore {
               state.llmConfiguration == configuration,
               let current = state.understandingJobs.first(where: { $0.id == job.id }),
               current.state == .processing, current.lease == job.lease, current.nextPage == job.nextPage,
+              job.processorVersion == CaptureUnderstandingEngine.version,
               !job.sourceVersions.isEmpty else { throw CaptureUnderstandingError.changed }
         let sources = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
         guard job.sourceVersions.allSatisfy({ id, signature in
@@ -117,7 +120,7 @@ extension FileMemoryStore {
         var updated = state.understandingJobs[index]
         for fact in result.facts {
             if let i = updated.facts.firstIndex(where: { $0.id == fact.id }) {
-                updated.facts[i].evidence = Array(Set(updated.facts[i].evidence + fact.evidence)).sorted { $0.blockID < $1.blockID }
+                updated.facts[i].evidence = Array(Set(updated.facts[i].evidence + fact.evidence)).sorted { $0.blockID == $1.blockID ? $0.quote < $1.quote : $0.blockID < $1.blockID }
             } else { updated.facts.append(fact) }
         }
         updated.coveredBlocks += result.covered; updated.uncertainBlocks += result.uncertain
@@ -132,7 +135,7 @@ extension FileMemoryStore {
             state.reminders.removeAll { $0.origin == .discovered && $0.status == .proposed && $0.sourceCaptureIDs.contains(job.captureID) }
             // Rebuild derived claims. Existing user-reviewed reports remain until regeneration;
             // source edits/deletions use the stronger invalidation path below.
-            applyKnowledge(MemoryKnowledgeEngine().reconcile(state, force: true))
+            state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state, force: true)
         }
         state.understandingJobs[index] = updated
         do { try persist() } catch { state = before; throw error }
@@ -173,7 +176,7 @@ extension FileMemoryStore {
             .map { ($0.id, CaptureUnderstandingEngine.sourceVersion($0, in: state)) })
         var invalid: Set<UUID> = []
         for i in state.captures.indices {
-            if let result = state.captures[i].understanding, result.processorVersion != CaptureUnderstandingEngine.version || !result.sourceVersions.allSatisfy({ signatures[$0.key] == $0.value }) {
+            if let result = state.captures[i].understanding, result.processorVersion != CaptureUnderstandingEngine.version || result.sourceVersions.isEmpty || !result.sourceVersions.allSatisfy({ signatures[$0.key] == $0.value }) {
                 invalid.insert(state.captures[i].id); state.captures[i].understanding = nil
             }
         }

@@ -85,6 +85,7 @@ public struct CaptureUnderstandingJob: Identifiable, Codable, Hashable, Sendable
     public var captureID: UUID
     public var sourceVersions: [UUID: String] = [:]
     public var configurationVersion: String?
+    public var processorVersion: Int?
     public var state: UnderstandingJobState = .queued
     public var lease: UUID?
     public var nextPage = 0
@@ -144,7 +145,7 @@ public enum CaptureUnderstandingEngine {
             && !state.matterCorrections.contains { $0.evidenceIDs.contains(source.id) && ($0.kind == .notMine || $0.kind == .inaccurate) }
     }
     public static func isCurrent(_ result: CaptureUnderstanding, in state: RecallState) -> Bool {
-        guard result.processorVersion == version else { return false }
+        guard result.processorVersion == version, !result.sourceVersions.isEmpty else { return false }
         let sources = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
         return result.sourceVersions.allSatisfy { id, signature in
             sources[id].map { eligible($0, in: state) && sourceVersion($0, in: state) == signature } ?? false
@@ -242,7 +243,11 @@ public enum CaptureUnderstandingEngine {
         let context = CaptureRecord(eventTemplate: .manualMoment, contentHash: "understanding", ocrText: try json(page.blocks))
         try Task.checkCancellation(); try await beforeCall()
         let answer = try await responder.answer(to: LLMRequest(question: instruction, context: [context], purpose: .captureUnderstanding, outputTokenLimit: 6_000))
-        let draft = try decode(Draft.self, answer.content)
+        var draft = try decode(Draft.self, answer.content)
+        for i in draft.facts.indices {
+            draft.facts[i].subject = DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: DailySummaryContentFormatter.removingCitationMarkers(from: draft.facts[i].subject)).trimmingCharacters(in: .whitespacesAndNewlines)
+            draft.facts[i].detail = DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: DailySummaryContentFormatter.removingCitationMarkers(from: draft.facts[i].detail)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         try validate(draft, page: page)
         // A separate call sees the evidence and proposed statements, not the first model's reasoning.
         let auditQuestion = """
