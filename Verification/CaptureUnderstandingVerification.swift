@@ -286,12 +286,26 @@ enum CaptureUnderstandingVerification {
     private static func dependencyDeletion() async throws {
         let f = try await fixture("[聊天·自己] 我会补充 Atlas 导出分页测试并提交评审。")
         defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
-        var earlier = f.source; earlier.id = UUID(); earlier.createdAt = f.source.createdAt.addingTimeInterval(-30)
+        var earlier = f.source; earlier.id = UUID(); earlier.createdAt = f.source.createdAt.addingTimeInterval(-30); earlier.eventTemplate = .webResearchClip
         earlier.ocrText += "\n[聊天·对方] 保留空页的边界用例。"
         try await f.store.addCapture(earlier)
-        _ = try await finish(f) { [fact($0)] }
+        _ = try await finish(f) { [fact($0, detail: "保留空页的边界用例，然后提交评审。") ] }
         let before = await f.store.snapshot()
         try expect(before.captures.first { $0.id == f.source.id }?.understanding?.sourceVersions[earlier.id] != nil, "上下文依赖没有登记")
+        let primary = before.captures.first { $0.id == f.source.id }!
+        var partial = before; partial.captures = [primary]
+        try expect(partial.correctedForAnalysis().captures[0].understanding == nil,
+            "部分来源范围仍使用依赖范围外内容的理解")
+        let daily = DailySummaryGenerator().sourceRecords(for: primary.createdAt, from: [primary])
+        try expect(!daily[0].ocrText.contains("空页"), "回顾通过理解结果间接读到了范围外上下文")
+        var restricted = before
+        if let index = restricted.rules.firstIndex(where: { $0.template == .webResearchClip }) { restricted.rules[index].participatesInChat = false }
+        let chat = MemoryRetrievalEngine().plan(question: "Atlas 导出测试", state: restricted, fallback: [primary])
+        try expect(!chat.evidence.contains { $0.ocrText.contains("空页") }, "取消参与问答的来源通过派生事实泄露进了上下文")
+        let lookup = try await MemorySemanticLookup().topics(for: "Atlas 导出测试", in: restricted, responder: Stub(draft: "", audit: ""))
+        try expect(lookup.isEmpty, "取消参与问答的来源通过主题名称进入了语义查询")
+        let reminders = ReminderExtractor().candidates(from: [primary], existing: [])
+        try expect(!reminders.contains { $0.detail.contains("空页") }, "提醒通过理解结果间接读取了范围外来源")
         _ = try await f.store.deleteCapture(id: earlier.id)
         let after = await f.store.snapshot()
         try expect(after.captures[0].understanding == nil && after.understandingJobs[0].facts.isEmpty, "删除上下文后仍保留依赖它的理解")

@@ -16,23 +16,27 @@ public struct MemoryRetrievalEngine: Sendable {
     public func plan(question: String, state: RecallState, fallback: [CaptureRecord], conversationID: UUID? = nil,
                      limit: Int = 14, now: Date = .now, resolvedEntityIDs: Set<String> = []) -> MemoryRetrievalPlan {
         let safe = state.correctedForAnalysis()
-        let allowed = safe.captures.filter { record in
+        let participating = safe.captures.filter { record in
             let participates = state.rules.first(where: { $0.template == record.eventTemplate })?.participatesInChat ?? true
             return participates && !state.privacy.excludedBundleIdentifiers.contains(record.sourceBundleIdentifier ?? "")
         }
+        let allowedIDs = Set(participating.map(\.id))
+        let allowed = participating.map { $0.scopingUnderstanding(to: allowedIDs) }
+        let restrictedUnderstandingIDs = Set(zip(participating, allowed).filter { $0.0.understanding != nil && $0.1.understanding == nil }.map { $0.0.id })
         let byID = Dictionary(uniqueKeysWithValues: allowed.map { ($0.id, $0) })
-        let allowedIDs = Set(byID.keys)
         let ledger = MemoryKnowledgeEngine().reconcile(state)
         let active = ledger.claims.filter { claim in
             ledger.organizationVersion == MemoryKnowledgeEngine.organizationVersion
                 && claim.usable(at: now) && !claim.sourceIDs.isEmpty && Set(claim.sourceIDs).isSubset(of: allowedIDs)
+                && Set(claim.sourceIDs).isDisjoint(with: restrictedUnderstandingIDs)
         }
         let retiredSources = Set(ledger.claims.filter { [.retracted, .superseded, .conflicted, .expired].contains($0.state) && ($0.kind.isPersonal || $0.kind == .reference) }.flatMap(\.sourceIDs))
         let time = MemoryTimeRangeResolver().resolve(question, now: now)
         let intent = MemoryQuestionIntent(question: question)
         var terms = MatterMemoryEngine.subjectTerms(question)
         let entities = ledger.entities.filter { entity in
-            resolvedEntityIDs.contains(entity.id) || ([entity.name] + entity.aliases).contains { !$0.isEmpty && question.localizedCaseInsensitiveContains($0) }
+            Set(entity.sourceIDs).isSubset(of: allowedIDs) && Set(entity.sourceIDs).isDisjoint(with: restrictedUnderstandingIDs)
+                && (resolvedEntityIDs.contains(entity.id) || ([entity.name] + entity.aliases).contains { !$0.isEmpty && question.localizedCaseInsensitiveContains($0) })
         }
         for entity in entities { terms.formUnion(MatterMemoryEngine.subjectTerms(entity.name)) }
         let matchingGroups = state.topicGroups.filter { question.localizedCaseInsensitiveContains($0.title) || resolvedEntityIDs.contains($0.id) }

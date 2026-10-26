@@ -52,6 +52,17 @@ public extension CaptureRecord {
     }
 }
 
+extension CaptureRecord {
+    func scopingUnderstanding(to allowedSourceIDs: Set<UUID>) -> CaptureRecord {
+        var copy = self
+        if let result = understanding, result.processorVersion != CaptureUnderstandingEngine.version
+            || result.sourceVersions.isEmpty || !Set(result.sourceVersions.keys).isSubset(of: allowedSourceIDs) {
+            copy.understanding = nil
+        }
+        return copy
+    }
+}
+
 extension CaptureUnderstandingEngine {
     /// Preserve full facts within a bounded request; never cut a title or sentence in half.
     private static func factsForContext(_ capture: CaptureRecord, question: String?) -> [UnderstoodFact] {

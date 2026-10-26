@@ -13,11 +13,15 @@ public struct MemorySemanticLookup: Sendable {
             let participates = state.rules.first(where: { $0.template == record.eventTemplate })?.participatesInChat ?? true
             return participates && !state.privacy.excludedBundleIdentifiers.contains(record.sourceBundleIdentifier ?? "")
         }.map(\.id))
+        let restricted = Set(safe.captures.filter { source in
+            allowed.contains(source.id) && source.understanding != nil && source.scopingUnderstanding(to: allowed).understanding == nil
+        }.map(\.id))
         let ledger = MemoryKnowledgeEngine().reconcile(state)
         let intent = MemoryQuestionIntent(question: question)
         let dates = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id, $0.createdAt) })
         let candidates = ledger.entities.filter {
-            !$0.sourceIDs.isEmpty && Set($0.sourceIDs).isSubset(of: allowed) && (intent == .recall || $0.kind == "topic")
+            !$0.sourceIDs.isEmpty && Set($0.sourceIDs).isSubset(of: allowed)
+                && Set($0.sourceIDs).isDisjoint(with: restricted) && (intent == .recall || $0.kind == "topic")
         }.sorted { a, b in
             let x = a.sourceIDs.compactMap { dates[$0] }.max() ?? .distantPast
             let y = b.sourceIDs.compactMap { dates[$0] }.max() ?? .distantPast

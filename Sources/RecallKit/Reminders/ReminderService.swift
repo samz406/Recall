@@ -12,6 +12,9 @@ public struct ReminderExtractor: Sendable {
         resolutionCaptures: [CaptureRecord] = []
     ) -> [ReminderCandidate] {
         guard !captures.isEmpty else { return [] }
+        let allowed = Set((captures + resolutionCaptures).map(\.id))
+        let captures = captures.map { $0.scopingUnderstanding(to: allowed) }
+        let resolutionCaptures = resolutionCaptures.map { $0.scopingUnderstanding(to: allowed) }
         var result: [ReminderCandidate] = []
         let resolutions = (captures + resolutionCaptures).flatMap { capture in
             RecordedText.segments(in: capture).compactMap { segment -> Resolution? in

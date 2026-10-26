@@ -856,7 +856,8 @@ public struct DailySummaryGenerator: Sendable {
     }
 
     public func sourceRecords(for day: Date, from captures: [CaptureRecord], calendar: Calendar = .current) -> [CaptureRecord] {
-        let candidates = captures
+        let scopeIDs = Set(captures.map(\.id))
+        let candidates = captures.map { $0.scopingUnderstanding(to: scopeIDs) }
             .filter { $0.eventTemplate != .dailyReview && calendar.isDate($0.createdAt, inSameDayAs: day) }
             .sorted { $0.createdAt < $1.createdAt }
         let selected: [CaptureRecord]
