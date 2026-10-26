@@ -26,6 +26,8 @@ final class RecallAppModel: ObservableObject {
     @Published var showsGlobalSearch = false
     @Published var summaryFeedbackTarget: SummaryFeedbackTarget?
     @Published var showsSummaryFeedbackHistory = false
+    var captureUnderstandingTask: Task<Void, Never>?
+    var captureUnderstandingTimer: Timer?
     var summaryFeedbackTask: Task<Void, Never>?
     var summaryFeedbackTimer: Timer?
     @Published var dailyToOpen: UUID?
@@ -116,7 +118,7 @@ final class RecallAppModel: ObservableObject {
                 Task { @MainActor [weak self] in await self?.refresh() }
             }
             Task {
-                do { try await store.recoverSummaryFeedbackJobs() }
+                do { try await store.recoverCaptureUnderstandingJobs(); try await store.recoverSummaryFeedbackJobs() }
                 catch { recordError(error, source: "Feedback", message: "恢复反馈任务失败，将稍后重试") }
                 await cleanupExpiredRecentlyDeleted()
                 await refresh()
@@ -142,6 +144,7 @@ final class RecallAppModel: ObservableObject {
         armWeeklySchedules()
         runDueWeeklySchedule()
         startSummaryFeedbackWorker()
+        startCaptureUnderstandingWorker()
         if memoryMaintenanceTimer == nil {
             memoryMaintenanceTimer = Timer.scheduledTimer(withTimeInterval: 5 * 60, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in await self?.refresh() }
@@ -457,7 +460,7 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
-    private func rebuildMatterFiles(announce: Bool = false, reorganize: Bool = false) {
+    func rebuildMatterFiles(announce: Bool = false, reorganize: Bool = false) {
         matterBuildTask?.cancel()
         isBuildingMatters = true
         let taskID = announce ? beginTask("整理记忆", target: "已保存记录", phase: "整理主题与来源") : nil
@@ -949,7 +952,7 @@ final class RecallAppModel: ObservableObject {
         let checkpoint = state.reminderDiscoveryCheckpoint
         let rescanAll = force || checkpoint.extractorVersion != ReminderExtractor.version
         let changed = rescanAll ? eligibleCaptures : eligibleCaptures.filter {
-            checkpoint.processedCaptureHashes[$0.id.uuidString] != $0.contentHash
+            checkpoint.processedCaptureHashes[$0.id.uuidString] != MemoryKnowledgeEngine.version(of: $0)
         }
         // 新证据可能完成/取消旧候选；把未确认候选的来源一并复核，已安排提醒不参与自动改写。
         let pendingSourceIDs = Set(state.reminders.filter { $0.status == .proposed && $0.origin == .discovered }.flatMap(\.sourceCaptureIDs))
@@ -999,7 +1002,7 @@ final class RecallAppModel: ObservableObject {
                     }
                 }.prefix(1_000).map { $0 }
                 var nextCheckpoint = checkpoint
-                nextCheckpoint.processedCaptureHashes = Dictionary(uniqueKeysWithValues: eligibleCaptures.map { ($0.id.uuidString, $0.contentHash) })
+                nextCheckpoint.processedCaptureHashes = Dictionary(uniqueKeysWithValues: eligibleCaptures.map { ($0.id.uuidString, MemoryKnowledgeEngine.version(of: $0)) })
                 nextCheckpoint.lastRunAt = completedAt
                 nextCheckpoint.eligibleRecordCount = eligibleCaptures.count
                 nextCheckpoint.analyzedRecordCount = captures.count

@@ -78,7 +78,7 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
 }
 
 public enum LLMRequestPurpose: Equatable, Sendable {
-    case chat, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup, summaryFeedback, summaryFeedbackAudit
+    case chat, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup, summaryFeedback, summaryFeedbackAudit, captureUnderstanding, captureUnderstandingAudit
 }
 
 public struct LLMRequest: Sendable {
@@ -246,7 +246,8 @@ public struct ConversationContextManager: Sendable {
         history: [ConversationMessage],
         existingSummary: String?,
         coveredMessageCount: Int,
-        retrievedEvidence: [CaptureRecord]
+        retrievedEvidence: [CaptureRecord],
+        question: String? = nil
     ) -> ConversationContextPlan {
         let safeCoveredCount = min(max(coveredMessageCount, 0), history.count)
         let archiveBoundary = max(history.count - maxRecentMessages, 0)
@@ -260,7 +261,11 @@ public struct ConversationContextManager: Sendable {
         }
         let evidence = retrievedEvidence.prefix(maxEvidenceRecords).map { record in
             var copy = record
-            copy.ocrText = copy.ocrText.bounded(to: maxEvidenceCharactersPerRecord)
+            if record.understanding != nil {
+                // Normalized meaning supplements search hits, while original excerpts remain inspectable.
+                copy.ocrText = CaptureUnderstandingEngine.context(record, limit: maxEvidenceCharactersPerRecord * 2 / 3, question: question)
+                    + "\n原始摘录：\n" + CaptureUnderstandingEngine.sourceExcerpt(record, question: question, limit: maxEvidenceCharactersPerRecord / 3)
+            } else { copy.ocrText = copy.ocrText.bounded(to: maxEvidenceCharactersPerRecord) }
             copy.summary = copy.summary?.bounded(to: 300)
             return copy
         }
@@ -433,6 +438,8 @@ public struct CompatibleLLM: LLMResponding {
             switch request.purpose {
             case .weeklySelection: role = "挑选整份周期回顾的重要事项"
             case .weeklyAudit: role = "逐项核验周回顾草稿"
+            case .captureUnderstanding: role = "从 OCR 整理有原文依据的结构化记忆"
+            case .captureUnderstandingAudit: role = "独立核对 OCR 结构化记忆的事实、角色和条件"
             case .summaryFeedback: role = "按用户反馈提出有限的回顾修订"
             case .summaryFeedbackAudit: role = "独立核验回顾反馈修订"
             default: role = "根据模板整理周回顾正文"

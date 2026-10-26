@@ -107,6 +107,8 @@ public struct RecallState: Codable, Sendable {
     public var recentlyDeletedMemories: [RecentlyDeletedMemory]
     public var memorySuppressionRules: [MemorySuppressionRule]
     public var matterCorrections: [MatterCorrection]
+    public var understandingJobs: [CaptureUnderstandingJob] = []
+    public var understandingSettings = CaptureUnderstandingSettings()
     public var summaryFeedback: [SummaryFeedback] = []
     public var summaryFeedbackSettings = SummaryFeedbackSettings()
     public var topicGroups: [MemoryTopicGroup] = []
@@ -178,6 +180,7 @@ public struct RecallState: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case understandingJobs, understandingSettings
         case summaryFeedback, summaryFeedbackSettings
         case rules, captures, messages, reminders, reminderDiscoveryCheckpoint, reminderLearningProfile, dailySummaries, dailySummarySettings
         case privacy, llmConfiguration, conversationSummary, conversationSummaryCoveredMessageCount
@@ -188,6 +191,8 @@ public struct RecallState: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        understandingJobs = try container.decodeIfPresent([CaptureUnderstandingJob].self, forKey: .understandingJobs) ?? []
+        understandingSettings = try container.decodeIfPresent(CaptureUnderstandingSettings.self, forKey: .understandingSettings) ?? CaptureUnderstandingSettings()
         summaryFeedback = try container.decodeIfPresent([SummaryFeedback].self, forKey: .summaryFeedback) ?? []
         summaryFeedbackSettings = try container.decodeIfPresent(SummaryFeedbackSettings.self, forKey: .summaryFeedbackSettings) ?? SummaryFeedbackSettings()
         rules = try container.decodeIfPresent([EventRule].self, forKey: .rules) ?? EventRule.defaults()
@@ -970,6 +975,7 @@ public actor FileMemoryStore {
         state.memorySuppressionRules = []
         state.matterCorrections = []
         state.summaryFeedback = []
+        state.understandingJobs = []
         state.dismissedExperienceIDs = []
         try persist()
         conversationID = UUID()
@@ -986,8 +992,9 @@ public actor FileMemoryStore {
     }
 
     public func addCapture(_ capture: CaptureRecord) throws {
+        let before = state
         state.captures.insert(capture, at: 0)
-        try persist()
+        do { try persist() } catch { state = before; throw error }
     }
 
     @discardableResult
@@ -1154,6 +1161,9 @@ public actor FileMemoryStore {
                 if let path = record.imageRelativePath { paths.insert(path) }
                 // Keep only the user's explicit agreement and minimal attribution, not the original screen.
                 state.captures[i].ocrText = directive.content
+                state.captures[i].recognition = nil
+                state.captures[i].understanding = nil
+                state.captures[i].correctedText = nil
                 state.captures[i].summary = nil
                 state.captures[i].windowTitle = nil
                 state.captures[i].tags = []
@@ -1189,6 +1199,7 @@ public actor FileMemoryStore {
             state.summaryFeedback.removeAll { entry in droppedFeedback.contains { $0.id == entry.id } }
             invalidateMemoryOutputs(sourceIDs: touched)
         }
+        reconcileCaptureUnderstanding()
         state.topicGroups.removeAll { group in group.sourceIDs.map { Set($0).isDisjoint(with: liveIDs) } ?? false }
         invalidateWeeklyReports()
         applyKnowledge(MemoryKnowledgeEngine().reconcile(state, allowNew: false))

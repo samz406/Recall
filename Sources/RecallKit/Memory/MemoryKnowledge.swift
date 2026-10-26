@@ -209,6 +209,8 @@ public struct MemoryKnowledgeEngine: Sendable {
         var bundle: String?
         var note: ManualMatterNote?
         var directive: MemoryDirective?
+        var correctedText: String?
+        var understanding: CaptureUnderstanding?
     }
     public init() {}
     public func canonicalConsolidation(day: Date, state: RecallState, fallback: IntelligenceConsolidation,
@@ -253,6 +255,10 @@ public struct MemoryKnowledgeEngine: Sendable {
         result.briefing.openLoops = open.map { BriefingItem(title: $0.projectName, detail: $0.nextAction ?? $0.action, confidence: 0.8, evidenceIDs: $0.evidenceIDs) }
         result.briefing.nextActions = Array(result.briefing.openLoops.prefix(3))
         result.briefing.episodeIDs = episodes.map(\.id)
+        // Heuristic OCR-density insights must not override independently checked semantics.
+        let understoodIDs = Set(state.captures.filter { $0.understanding != nil }.map(\.id))
+        result.insights.removeAll { !Set($0.evidenceIDs).isDisjoint(with: understoodIDs) }
+        result.briefing.insights.removeAll { !Set($0.evidenceIDs).isDisjoint(with: understoodIDs) }
         return result
     }
     public static func version(of capture: CaptureRecord, corrections: [MatterCorrection] = []) -> String {
@@ -261,7 +267,7 @@ public struct MemoryKnowledgeEngine: Sendable {
         encoder.dateEncodingStrategy = .iso8601
         let snapshot = SourceSnapshot(text: capture.ocrText, recordedAt: capture.createdAt, title: capture.windowTitle,
             origin: capture.textOrigin, app: capture.sourceAppName, bundle: capture.sourceBundleIdentifier,
-            note: capture.manualMatter, directive: capture.memoryDirective)
+            note: capture.manualMatter, directive: capture.memoryDirective, correctedText: capture.correctedText, understanding: capture.understanding)
         let source = (try? encoder.encode(snapshot)) ?? Data(capture.ocrText.utf8)
         let changes = (try? encoder.encode(corrections.filter { $0.evidenceIDs.contains(capture.id) })) ?? Data()
         return SHA256.hash(data: source + changes).map { String(format: "%02x", $0) }.joined()
@@ -334,6 +340,9 @@ public struct MemoryKnowledgeEngine: Sendable {
                 status: status, resultStatus: resultStatus, nextAction: nextAction, validFrom: first,
                 validUntil: nil, updatedAt: evidence.map(\.recordedAt).max() ?? now, explicit: explicit)
         }
+        let understoodFacts = Dictionary(safe.captures.compactMap(\.understanding).flatMap(\.facts).map { ($0.eventID, $0) }, uniquingKeysWith: { first, next in
+            var merged = first; merged.evidence = Array(Set(first.evidence + next.evidence)).sorted { $0.blockID == $1.blockID ? $0.quote < $1.quote : $0.blockID < $1.blockID }; return merged
+        })
         let files = MatterMemoryEngine().observedFiles(in: safe)
         let references = MemoryReferenceEngine().files(in: safe, excluding: Set(files.flatMap(\.evidenceIDs)))
         let contextEntities = (files + references).map { file in
@@ -349,6 +358,11 @@ public struct MemoryKnowledgeEngine: Sendable {
             for event in file.events {
                 let evidence = event.evidenceIDs.compactMap { sourceID -> MemoryEvidence? in
                     guard let source = sources[sourceID] else { return nil }
+                    if let fact = understoodFacts[event.id],
+                       let quoted = fact.evidence.first(where: { $0.blockID.hasPrefix(sourceID.uuidString) }) {
+                        return proof(source, quote: quoted.quote, ordinal: event.sequence,
+                            speaker: "本人陈述，非独立验证", eventAt: event.eventAt)
+                    }
                     let ordinal = RecordedText.segments(in: source).first { $0.text == event.detail }?.ordinal ?? event.sequence
                     var evidence = proof(source, quote: event.detail, ordinal: ordinal, speaker: "自己", eventAt: event.eventAt)
                     if let correction = state.matterCorrections.last(where: { $0.kind == .completed && $0.evidenceIDs.contains(sourceID) }) {
@@ -367,7 +381,13 @@ public struct MemoryKnowledgeEngine: Sendable {
         for file in references {
             for event in file.events {
                 let evidence = event.evidenceIDs.compactMap { id -> MemoryEvidence? in
-                    guard let source = sources[id], source.ocrText.contains(event.detail) else { return nil }
+                    guard let source = sources[id] else { return nil }
+                    if let fact = understoodFacts[event.id],
+                       let quoted = fact.evidence.first(where: { $0.blockID.hasPrefix(id.uuidString) }) {
+                        return proof(source, quote: quoted.quote, ordinal: event.sequence,
+                            speaker: fact.speaker == .other ? "对方陈述" : "角色未知", eventAt: nil)
+                    }
+                    guard source.ocrText.contains(event.detail) else { return nil }
                     return proof(source, quote: event.detail, ordinal: event.sequence,
                         speaker: "保存的内容，非本人行动结论", eventAt: event.eventAt)
                 }
@@ -397,6 +417,8 @@ public struct MemoryKnowledgeEngine: Sendable {
                 continue
             }
             for segment in RecordedText.segments(in: source) where segment.speaker == .user {
+                if let normalized = source.understanding,
+                   !normalized.facts.contains(where: { $0.isPersonalEvent && $0.evidence.contains(where: { $0.quote.contains(segment.text) }) }) { continue }
                 let text = segment.text
                 guard (5...220).contains(text.count), !MemoryPersonalization.isTemporary(text),
                       !["如果", "例如", "比如", "他说", "她说", "文章", "？", "?", "吗"].contains(where: text.contains) else { continue }
@@ -418,7 +440,12 @@ public struct MemoryKnowledgeEngine: Sendable {
         let actions = ReminderExtractor().candidates(from: safe.captures.filter { $0.memoryDirective == nil }, existing: [])
         for action in actions {
             let evidence = action.sourceCaptureIDs.compactMap { id -> MemoryEvidence? in
-                guard let source = sources[id], let segment = RecordedText.segments(in: source).first(where: {
+                guard let source = sources[id] else { return nil }
+                if let fact = source.understanding?.facts.first(where: { $0.isUserAction && $0.subject == action.title }),
+                   let quote = fact.evidence.first(where: { $0.blockID.hasPrefix(id.uuidString) }) {
+                    return proof(source, quote: quote.quote, ordinal: 0, speaker: "本人明确承诺")
+                }
+                guard let segment = RecordedText.segments(in: source).first(where: {
                     $0.text.localizedCaseInsensitiveContains(action.title) || action.title.localizedCaseInsensitiveContains($0.text)
                 }) else { return nil }
                 let speaker = segment.speaker == .user ? "自己" : "对方向本人提出的请求"

@@ -118,6 +118,7 @@ extension FileMemoryStore {
             else { entry.weeklyBefore = state.weeklyReports.first { $0.id == job.target.reportID } }
             if !changedSources.isEmpty {
                 invalidateMemoryOutputs(sourceIDs: changedSources)
+                reconcileCaptureUnderstanding()
                 applyKnowledge(MemoryKnowledgeEngine().reconcile(state, force: true))
                 state.reminderDiscoveryCheckpoint = ReminderDiscoveryCheckpoint()
                 // No automatic notification/state changes. Only weak discovered proposals are withdrawn.

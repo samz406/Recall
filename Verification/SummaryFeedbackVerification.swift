@@ -29,7 +29,7 @@ enum SummaryFeedbackVerification {
         func answer(to request: LLMRequest) async throws -> LLMAnswer {
             purposes.append(request.purpose)
             if request.purpose == .summaryFeedbackAudit { return LLMAnswer(content: "{\"accepted\":true}", citedCaptureIDs: []) }
-            return LLMAnswer(content: "{\"progress\":[{\"title\":\"Atlas 导出修复只完成联调\",\"detail\":\"当前尚未上线，需要保留状态边界。\"}],\"actions\":[],\"insights\":[]}", citedCaptureIDs: [])
+            return LLMAnswer(content: "{\"progress\":[{\"title\":\"Atlas 导出修复只完成联调\",\"detail\":\"当前尚未上线，需要保留状态边界。\",\"evidenceIndices\":[1]}],\"actions\":[],\"insights\":[]}", citedCaptureIDs: [])
         }
     }
     private static func fixture() async throws -> Fixture {

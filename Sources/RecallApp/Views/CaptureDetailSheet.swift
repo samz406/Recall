@@ -47,6 +47,7 @@ struct CaptureDetailSheet: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
                     }
+                    CaptureUnderstandingDetailView(captureID: capture.id).environmentObject(model)
                     VStack(alignment: .leading, spacing: 10) {
                         Text("内容摘要").font(.headline)
                         Text(presentation.summary)

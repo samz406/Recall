@@ -194,6 +194,20 @@ public struct MatterMemoryEngine: Sendable {
                 let proposed = safe.episodes.first { $0.evidenceIDs.contains(id) }?.projectName ?? record.windowTitle ?? ""
                 let corrections = state.matterCorrections.filter { $0.evidenceIDs.contains(id) }
                 let separated = corrections.last { $0.kind == .separate && !$0.text.isEmpty }
+                if let understood = record.understanding {
+                    for fact in understood.facts where fact.isPersonalEvent {
+                        let title = separated?.text ?? fact.subject
+                        let key = (separated == nil ? "topic:" : "user:") + MatterEvidence.key(title)
+                        var event = MatterEvent(id: fact.eventID, title: title, detail: fact.readableDetail,
+                            recordedAt: captured[id]?.createdAt ?? record.createdAt,
+                            eventAt: corrections.last { $0.kind == .eventDate }?.eventAt ?? fact.explicitEventDate,
+                            status: corrections.contains { $0.kind == .completed } ? .completed : fact.eventStatus, evidenceIDs: fact.sourceIDs,
+                            nextAction: fact.isUserAction ? fact.detail : nil)
+                        event.sequence = groups[key]?.count ?? 0
+                        groups[key, default: []].append(event); names[key] = title
+                    }
+                    continue
+                }
                 for entry in MatterEvidence.entries(in: record,
                     proposedTitle: separated?.text ?? proposed, userNamed: separated != nil) {
                     let key = (separated == nil ? "topic:" : "user:") + MatterEvidence.key(entry.title)
@@ -282,8 +296,9 @@ public extension RecallState {
     /// Corrections invalidate derived claims, not original records. Call before inference/retrieval.
     func correctedForAnalysis() -> RecallState {
         var result = self
-        result.captures = captures.map { SummaryFeedbackLearning.adjusted($0, in: self) }
         let invalid = Set(matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
+        let usable = Set(captures.filter { !privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id)).subtracting(invalid)
+        result.captures = captures.map { SummaryFeedbackLearning.adjusted($0, in: self).scopingUnderstanding(to: usable) }
         let touched = Set(matterCorrections.flatMap(\.evidenceIDs))
         if !matterCorrections.isEmpty {
             let cutoff = matterCorrections.map(\.createdAt).max() ?? .distantPast

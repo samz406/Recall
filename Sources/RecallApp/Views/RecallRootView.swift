@@ -3408,6 +3408,8 @@ private struct PrivacyAndModelView: View {
                     }
 
                     settingsCard(title: "记忆", icon: "brain.head.profile") {
+                        CaptureUnderstandingSettingsView().environmentObject(model)
+                        Divider().padding(.vertical, 8)
                         MemoryOrganizationSettings().environmentObject(model)
                     }
 

@@ -2,7 +2,7 @@ import Foundation
 import UserNotifications
 
 public struct ReminderExtractor: Sendable {
-    public static let version = 2
+    public static let version = 3
     public init() {}
 
     public func candidates(
@@ -12,6 +12,9 @@ public struct ReminderExtractor: Sendable {
         resolutionCaptures: [CaptureRecord] = []
     ) -> [ReminderCandidate] {
         guard !captures.isEmpty else { return [] }
+        let allowed = Set((captures + resolutionCaptures).map(\.id))
+        let captures = captures.map { $0.scopingUnderstanding(to: allowed) }
+        let resolutionCaptures = resolutionCaptures.map { $0.scopingUnderstanding(to: allowed) }
         var result: [ReminderCandidate] = []
         let resolutions = (captures + resolutionCaptures).flatMap { capture in
             RecordedText.segments(in: capture).compactMap { segment -> Resolution? in
@@ -21,6 +24,25 @@ public struct ReminderExtractor: Sendable {
         }
 
         for capture in captures.sorted(by: { $0.createdAt > $1.createdAt }) where !capture.ocrText.isEmpty && capture.memoryDirective == nil {
+            if let understood = capture.understanding {
+                for fact in understood.facts where fact.isUserAction {
+                    let closed = (captures + resolutionCaptures).contains { later in
+                        later.createdAt >= capture.createdAt && later.understanding?.facts.contains(where: {
+                            $0.actor == .user && [.completed, .cancelled].contains($0.status)
+                                && fingerprint($0.subject) == fingerprint(fact.subject)
+                        }) == true
+                    }
+                    guard !closed else { continue }
+                    let draft = ReminderCandidate(title: fact.subject, detail: fact.readableDetail,
+                        dueAt: fact.explicitDeadline, sourceCaptureIDs: fact.sourceIDs, confidence: 0.8,
+                        createdAt: capture.createdAt, origin: .discovered, semanticKey: fingerprint(fact.subject))
+                    guard !existing.contains(where: { blocks(candidate: draft, existing: $0, now: now) }) else { continue }
+                    if let i = result.firstIndex(where: { sameOccurrence($0, draft) }) {
+                        result[i].sourceCaptureIDs = Array(Set(result[i].sourceCaptureIDs + draft.sourceCaptureIDs))
+                    } else { result.append(draft) }
+                }
+                continue
+            }
             for segment in RecordedText.segments(in: capture) {
                 guard let analysis = analyze(segment, base: capture.createdAt) else { continue }
                 let semanticKey = fingerprint(analysis.title)
