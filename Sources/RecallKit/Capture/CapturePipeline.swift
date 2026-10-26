@@ -86,12 +86,22 @@ public final class ScreenCaptureService: ScreenCapturing {
     }
 }
 
+public struct RecognizedCaptureText: Sendable {
+    public var text: String
+    public var recognition: CaptureRecognition?
+    public init(text: String, recognition: CaptureRecognition? = nil) { self.text = text; self.recognition = recognition }
+}
+
 public protocol TextRecognizing: Sendable {
+    func recognizeCapture(in imageData: Data, context: TextRecognitionContext) async throws -> RecognizedCaptureText
     func recognizeText(in imageData: Data) async throws -> String
     func recognizeText(in imageData: Data, context: TextRecognitionContext) async throws -> String
 }
 
 public extension TextRecognizing {
+    func recognizeCapture(in imageData: Data, context: TextRecognitionContext) async throws -> RecognizedCaptureText {
+        RecognizedCaptureText(text: try await recognizeText(in: imageData, context: context))
+    }
     func recognizeText(in imageData: Data, context: TextRecognitionContext) async throws -> String {
         try await recognizeText(in: imageData)
     }
@@ -105,6 +115,10 @@ public final class VisionTextRecognizer: TextRecognizing, @unchecked Sendable {
     }
 
     public func recognizeText(in imageData: Data, context: TextRecognitionContext) async throws -> String {
+        try await recognizeCapture(in: imageData, context: context).text
+    }
+
+    public func recognizeCapture(in imageData: Data, context: TextRecognitionContext) async throws -> RecognizedCaptureText {
         guard let image = NSImage(data: imageData), let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             throw CapturePipelineError.screenshotUnavailable
         }
@@ -116,12 +130,19 @@ public final class VisionTextRecognizer: TextRecognizing, @unchecked Sendable {
                 }
                 let observations = request.results as? [VNRecognizedTextObservation] ?? []
                 let lines = observations.compactMap { observation -> PositionedTextLine? in
-                    guard let text = observation.topCandidates(1).first?.string else { return nil }
-                    return PositionedTextLine(text: text, boundingBox: observation.boundingBox)
+                    guard let candidate = observation.topCandidates(1).first else { return nil }
+                    return PositionedTextLine(text: candidate.string, boundingBox: observation.boundingBox, confidence: Double(candidate.confidence))
                 }
                 let layout = context.layoutStyle.flatMap { ConversationImageLayout.detect(in: cgImage, style: $0, lines: lines) }
                 let text = ConversationOCRFormatter.format(lines, context: context, layout: layout)
-                continuation.resume(returning: text)
+                // Store geometry only for text retained by the conversation formatter.
+                // Never reintroduce the discarded sidebar or an unredacted copy.
+                let kept = lines.filter { !$0.text.isEmpty && text.contains($0.text) }.map { line in
+                    CaptureRecognition.Line(text: PrivacyEngine().redact(line.text),
+                        x: Double(line.boundingBox.minX), y: Double(line.boundingBox.minY),
+                        width: Double(line.boundingBox.width), height: Double(line.boundingBox.height), confidence: line.confidence)
+                }
+                continuation.resume(returning: RecognizedCaptureText(text: text, recognition: CaptureRecognition(lines: kept)))
             }
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = true
@@ -178,13 +199,15 @@ public final class CapturePipeline {
         }
 
         let extractedText: String
+        var recognition: CaptureRecognition?
         if let userText, !userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             extractedText = userText
         } else if let imageData = payload.imageData {
-            extractedText = try await recognizer.recognizeText(
+            let recognized = try await recognizer.recognizeCapture(
                 in: imageData,
                 context: Self.recognitionContext(for: payload, scope: rule.scope)
             )
+            extractedText = recognized.text; recognition = recognized.recognition
         } else {
             extractedText = ""
         }
@@ -218,7 +241,8 @@ public final class CapturePipeline {
             ocrText: redactedText,
             summary: LocalSummary.make(from: redactedText),
             tags: LocalSummary.tags(from: redactedText),
-            textOrigin: userText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? .userInput : .screenOCR
+            textOrigin: userText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? .userInput : .screenOCR,
+            recognition: recognition
         )
         try await store.addCapture(record)
         return record

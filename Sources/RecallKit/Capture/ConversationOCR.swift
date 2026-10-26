@@ -33,7 +33,10 @@ public enum ConversationContentKind: Sendable { case message, reference, attachm
 public struct PositionedTextLine: Sendable, Equatable {
     public var text: String
     public var boundingBox: CGRect
-    public init(text: String, boundingBox: CGRect) { self.text = text; self.boundingBox = boundingBox }
+    public var confidence: Double?
+    public init(text: String, boundingBox: CGRect, confidence: Double? = nil) {
+        self.text = text; self.boundingBox = boundingBox; self.confidence = confidence
+    }
 }
 
 public struct ConversationBubble: Sendable {

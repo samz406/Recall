@@ -389,7 +389,8 @@ public enum DailySummaryItemParser {
     /// 新版模型协议使用结构化 JSON；字段缺失或模型包裹了代码块时也能安全解析。
     public static func itemsFromModelResponse(
         _ content: String,
-        defaultEvidenceIDs: [UUID]
+        defaultEvidenceIDs: [UUID],
+        strictEvidence: Bool = false
     ) -> [DailySummaryItem]? {
         guard let start = content.firstIndex(of: "{"),
               let end = content.lastIndex(of: "}"),
@@ -399,12 +400,18 @@ public enum DailySummaryItemParser {
             return nil
         }
         var items: [DailySummaryItem] = []
-        if let headline = response.headline?.trimmingCharacters(in: .whitespacesAndNewlines), !headline.isEmpty {
-            items.append(DailySummaryItem(section: .progress, title: headline, evidenceIDs: defaultEvidenceIDs))
+        let progress = response.progress.compactMap { value -> DailySummaryItem? in
+            let indices = Set(value.evidenceIndices ?? [])
+            guard indices.allSatisfy({ $0 >= 1 && $0 <= defaultEvidenceIDs.count }), !strictEvidence || !indices.isEmpty else { return nil }
+            let ids = indices.isEmpty ? defaultEvidenceIDs : indices.sorted().map { defaultEvidenceIDs[$0 - 1] }
+            return modelItem(value, section: .progress, evidenceIDs: ids)
         }
-        items.append(contentsOf: response.progress.compactMap { value in
-            modelItem(value, section: .progress, evidenceIDs: defaultEvidenceIDs)
-        })
+        if let headline = response.headline?.trimmingCharacters(in: .whitespacesAndNewlines), !headline.isEmpty,
+           !strictEvidence || !progress.isEmpty {
+            let ids = strictEvidence ? Array(Set(progress.flatMap(\.evidenceIDs))).sorted { $0.uuidString < $1.uuidString } : defaultEvidenceIDs
+            items.append(DailySummaryItem(section: .progress, title: headline, evidenceIDs: ids))
+        }
+        items.append(contentsOf: progress)
         items.append(contentsOf: response.actions.compactMap { value in
             modelItem(value, section: .actions, evidenceIDs: defaultEvidenceIDs)
         })
@@ -870,6 +877,11 @@ public struct DailySummaryGenerator: Sendable {
             var minimized = record
             minimized.imageRelativePath = nil
             minimized.windowTitle = nil
+            if record.understanding != nil {
+                minimized.ocrText = CaptureUnderstandingEngine.context(record, limit: maxCharactersPerRecord * 3)
+                minimized.summary = nil; minimized.recognition = nil
+                return minimized
+            }
             let rawExcerpt = String(record.ocrText.prefix(maxCharactersPerRecord))
             // 聊天角色标签比旧的本地纯文本摘要更可靠；不能让摘要再次抹掉“谁说的”。
             if !record.ocrText.contains("[聊天·"),
@@ -1041,7 +1053,7 @@ public struct DailySummaryGenerator: Sendable {
         ))
         let structuredItems = DailySummaryItemParser.itemsFromModelResponse(
             answer.content,
-            defaultEvidenceIDs: records.map(\.id)
+            defaultEvidenceIDs: records.map(\.id), strictEvidence: true
         )
         let modelItems = structuredItems ?? DailySummaryItemParser.items(
             from: answer.content,
@@ -1276,7 +1288,7 @@ public struct DailySummaryGenerator: Sendable {
         只输出一个合法 JSON 对象，不要输出 Markdown、代码围栏或解释文字。结构必须是：
         {
           "headline": "一句话概括今天真正推进的具体事情",
-          "progress": [{"title": "具体成果", "detail": "实际变化或可验证结果"}],
+          "progress": [{"title": "具体成果", "detail": "实际变化或可验证结果", "evidenceIndices": [1]}],
           "actions": [{"candidateID": "对应候选的 UUID", "title": "对象明确的可执行动作", "detail": "状态、截止或判断完成的标准"}],
           "insights": [{"title": "具体的新规律、风险或决策线索", "detail": "为什么值得留意", "confidence": 0.0, "evidenceIndices": [1, 2]}]
         }
@@ -1296,6 +1308,8 @@ public struct DailySummaryGenerator: Sendable {
         insights 与 actions 必须互斥。insights 表示会影响判断的事实、风险、规律或已形成的共识，不要求用户立即执行；如果一条内容已经能写成明确行动，只放入 actions，不要在 insights 重复。insights 的 title 要直接写结论，不写“跨证据比较”“行为模式”或算法评分。
 
         actions 只核查下方给出的候选，不得新增。逐个结合完整上下文判断主体是否为用户、是否已经完成/取消、是否只是助手提议；不成立就删除，允许全部删除。保留时原样返回 candidateID，title 可改写为自然完整的动作，detail 仅补充必要信息，不重复 title，不新增日期。insights 必须给出至少两条实际支撑结论的不同记忆编号 evidenceIndices；同一段文字的重复截图不算独立证据。缺少采集记录不等于项目没有进展，不能据此推断停滞。
+
+        progress 每项必须给出实际支撑它的记忆编号 evidenceIndices，不得把整份请求的来源一律挂给每个结论。
 
         总长度控制在 1,200 个汉字以内。
 

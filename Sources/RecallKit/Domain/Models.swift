@@ -176,6 +176,9 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
     public var manualMatter: ManualMatterNote?
     public var memoryDirective: MemoryDirective?
     public var isMemoryEvidenceArchive: Bool?
+    public var correctedText: String?
+    public var recognition: CaptureRecognition?
+    public var understanding: CaptureUnderstanding?
 
     public init(
         id: UUID = UUID(),
@@ -193,7 +196,9 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
         textOrigin: CaptureTextOrigin? = nil,
         manualMatter: ManualMatterNote? = nil,
         memoryDirective: MemoryDirective? = nil,
-        isMemoryEvidenceArchive: Bool? = nil
+        isMemoryEvidenceArchive: Bool? = nil,
+        recognition: CaptureRecognition? = nil,
+        understanding: CaptureUnderstanding? = nil
     ) {
         self.id = id
         self.eventTemplate = eventTemplate
@@ -211,6 +216,7 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
         self.manualMatter = manualMatter
         self.memoryDirective = memoryDirective
         self.isMemoryEvidenceArchive = isMemoryEvidenceArchive
+        self.recognition = recognition; self.understanding = understanding
     }
 }
 

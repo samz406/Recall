@@ -202,7 +202,10 @@ public enum SummaryFeedbackLearning {
         formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: expected) == value.occurredOn ? expected : nil
     }
-    public static func rawVersion(_ source: CaptureRecord) -> String { MemoryKnowledgeEngine.version(of: source) }
+    public static func rawVersion(_ source: CaptureRecord) -> String {
+        var raw = source; raw.understanding = nil
+        return MemoryKnowledgeEngine.version(of: raw)
+    }
     public static func revision(in state: RecallState) -> String {
         hash(state.summaryFeedback.filter { $0.state == .applied }.map { hash($0.resolution) + hash($0.disabledRuleIDs) }
             + [hash(state.summaryFeedbackSettings)])
@@ -248,6 +251,7 @@ public enum SummaryFeedbackLearning {
     /// Analysis-only overlay. Exact, versioned spans change; the saved capture remains inspectable.
     public static func adjusted(_ source: CaptureRecord, in state: RecallState) -> CaptureRecord {
         var result = source
+        if let text = source.correctedText { result.ocrText = text; result.summary = nil; result.recognition = nil }
         for entry in state.summaryFeedback where entry.state == .applied {
             guard entry.sourceVersions[source.id] == rawVersion(source) else { continue }
             for change in entry.resolution?.corrections ?? [] where change.sourceID == source.id {

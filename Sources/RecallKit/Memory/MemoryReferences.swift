@@ -14,9 +14,26 @@ public struct MemoryReferenceEngine: Sendable {
         var events: [String: [UUID: MatterEvent]] = [:]
         let originals = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
         for source in safe.captures {
-            guard !ownedSources.contains(source.id), !retired.contains(source.id), source.memoryDirective == nil,
+            guard !retired.contains(source.id), source.memoryDirective == nil,
                   source.manualMatter == nil, source.eventTemplate != .dailyReview,
                   !state.privacy.excludedBundleIdentifiers.contains(source.sourceBundleIdentifier ?? "") else { continue }
+            if let understood = source.understanding {
+                for fact in understood.facts where !fact.isPersonalEvent {
+                    let key = "reference:" + Self.hash(fact.subject)
+                    names[key] = fact.subject
+                    var event = MatterEvent(id: fact.eventID, title: fact.subject,
+                        detail: fact.statement, recordedAt: originals[source.id] ?? source.createdAt,
+                        eventAt: fact.explicitEventDate, status: .explored, evidenceIDs: fact.sourceIDs)
+                    event.isReference = true
+                    if var previous = events[key]?[fact.eventID] {
+                        previous.evidenceIDs = Array(Set(previous.evidenceIDs + fact.sourceIDs))
+                        previous.recordedAt = min(previous.recordedAt, event.recordedAt)
+                        events[key]?[fact.eventID] = previous
+                    } else { events[key, default: [:]][fact.eventID] = event }
+                }
+                continue
+            }
+            guard !ownedSources.contains(source.id) else { continue }
             let paragraphs = Self.paragraphs(source.ocrText)
             guard paragraphs.map({ $0.text.count }).reduce(0, +) >= 100 else { continue }
             let title = Self.title(source, paragraphs: paragraphs.map(\.text))
