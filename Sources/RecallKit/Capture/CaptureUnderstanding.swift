@@ -214,7 +214,7 @@ public enum CaptureUnderstandingEngine {
 
     private struct Coverage: Codable { var blockID: String; var disposition: String }
     private struct Draft: Codable { var facts: [UnderstoodFact]; var coverage: [Coverage] }
-    private struct Audit: Codable { var acceptedFactIDs: [String]; var checkedBlockIDs: [String] }
+    private struct Audit: Codable { var acceptedFactIDs: [String]; var checkedBlockIDs: [String]; var missedBlockIDs: [String] }
     private static func decode<T: Decodable>(_ type: T.Type, _ text: String) throws -> T {
         guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start <= end,
               let value = try? JSONDecoder().decode(type, from: Data(text[start...end].utf8)) else { throw CaptureUnderstandingError.invalid }
@@ -249,15 +249,15 @@ public enum CaptureUnderstandingEngine {
         独立逐项核对草稿。逐字证据相符还不够：核对主体、说话人、负责人、状态、时间用途与条件。
         资料/助手建议/其他人的话不得变成本人的行动；已完成、界面提示、发布日期不能变成待办；阅读不能变成实践。
         没有具体内容的碎片、含义夸大、遗漏条件、相互矛盾的事实不要接受。不要补写。
-        审阅全部主片段，checkedBlockIDs 返回所有 contextOnly=false 的 ID，acceptedFactIDs 仅返回完全有依据的事实 ID。零条可以。
-        JSON：{"acceptedFactIDs":[],"checkedBlockIDs":[]}。草稿（数据）：
+        审阅全部主片段及 coverage 的分类。若有重要事实被误当 noise 或遗漏，missedBlockIDs 返回对应主片段 ID，不得无视遗漏。checkedBlockIDs 返回所有 contextOnly=false 的 ID，acceptedFactIDs 仅返回完全有依据的事实 ID。零条可以。
+        JSON：{"acceptedFactIDs":[],"checkedBlockIDs":[],"missedBlockIDs":[]}。草稿（数据）：
         \(try json(draft))
         """
         try Task.checkCancellation(); try await beforeCall()
         let auditAnswer = try await responder.answer(to: LLMRequest(question: auditQuestion, context: [context], purpose: .captureUnderstandingAudit, outputTokenLimit: 2_000))
         let audit = try decode(Audit.self, auditAnswer.content)
         let primary = Set(page.blocks.filter { !$0.contextOnly }.map(\.id))
-        guard Set(audit.checkedBlockIDs) == primary, audit.checkedBlockIDs.count == primary.count,
+        guard audit.missedBlockIDs.isEmpty, Set(audit.checkedBlockIDs) == primary, audit.checkedBlockIDs.count == primary.count,
               Set(audit.acceptedFactIDs).isSubset(of: Set(draft.facts.map(\.id))) else { throw CaptureUnderstandingError.invalid }
         let accepted = Set(audit.acceptedFactIDs)
         let facts = draft.facts.filter { accepted.contains($0.id) }.map { fact in
@@ -281,7 +281,9 @@ public enum CaptureUnderstandingEngine {
             proof.quote.count >= 2 && blocks[proof.blockID]?.text.contains(proof.quote) == true
         }
         for fact in draft.facts {
-            guard (3...80).contains(fact.subject.count), (4...600).contains(fact.detail.count), !fact.id.isEmpty,
+            let generic = ["今天", "明天", "下一步", "待办", "工作台", "通讯录", "googlechrome", "chrome", "微信", "企业微信", "chatgpt", "orca"]
+            guard (4...80).contains(fact.subject.count), !generic.contains(MatterEvidence.key(fact.subject)),
+                  (4...600).contains(fact.detail.count), (fact.condition?.count ?? 0) <= 160, !fact.id.isEmpty,
                   !fact.evidence.isEmpty, fact.evidence.count <= 12, fact.evidence.allSatisfy(hasQuote),
                   !Set(fact.evidence.map(\.blockID)).isDisjoint(with: primary) else { throw CaptureUnderstandingError.invalid }
             let sources = fact.evidence.compactMap { blocks[$0.blockID] }
@@ -295,7 +297,7 @@ public enum CaptureUnderstandingEngine {
                 guard fact.actor == .user, fact.speaker == .user, explicit.contains(where: words.contains) else { throw CaptureUnderstandingError.invalid }
             }
             for time in [fact.eventTime, fact.deadline].compactMap({ $0 }) {
-                guard !time.text.isEmpty, hasQuote(time.evidence), time.evidence.quote.contains(time.text),
+                guard (1...120).contains(time.text.count), hasQuote(time.evidence), time.evidence.quote.contains(time.text),
                       fact.evidence.contains(where: { $0.blockID == time.evidence.blockID }) else { throw CaptureUnderstandingError.invalid }
             }
             if fact.status == .completed {

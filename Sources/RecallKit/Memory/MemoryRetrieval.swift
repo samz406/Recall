@@ -113,8 +113,14 @@ public struct MemoryRetrievalEngine: Sendable {
         }
         let poolLimit = time != nil && intent == .overview ? limit * 4 : limit
         for record in raw where evidence.count < poolLimit {
+            var selectedRecord = record
             let ids: [UUID]
-            if allowedIDs.contains(record.id) { ids = [record.id] }
+            if allowedIDs.contains(record.id) {
+                let dependencies = Set(record.understanding?.sourceVersions.keys.map { $0 } ?? [])
+                if !dependencies.isEmpty && dependencies.isSubset(of: allowedIDs) && dependencies.isDisjoint(with: retiredSources) {
+                    ids = dependencies.sorted { $0.uuidString < $1.uuidString }
+                } else { selectedRecord.understanding = nil; ids = [record.id] }
+            }
             else if let summary = safe.dailySummaries.first(where: { $0.id == record.id }) {
                 // Legacy reports remain labelled as unverified, deletable historical sources.
                 ids = summary.sourceCaptureIDs.isEmpty && state.matterCorrections.isEmpty
@@ -126,7 +132,7 @@ public struct MemoryRetrievalEngine: Sendable {
             else { continue }
             let legacy = ids == [record.id] && safe.dailySummaries.contains { $0.id == record.id && $0.sourceCaptureIDs.isEmpty }
             guard !ids.isEmpty, legacy || Set(ids).isSubset(of: allowedIDs), Set(ids).isDisjoint(with: retiredSources) else { continue }
-            evidence.append(record); sources[record.id] = ids
+            evidence.append(selectedRecord); sources[record.id] = ids
         }
         if time != nil && intent == .overview { evidence = temporalCoverage(evidence, limit: limit) }
         let preferences = preferenceContext(question: question, claims: active, conversationID: conversationID, entities: entityIDs, now: now)

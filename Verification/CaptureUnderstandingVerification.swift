@@ -55,7 +55,7 @@ enum CaptureUnderstandingVerification {
         let primary = page.blocks.filter { !$0.contextOnly }.map(\.id)
         let coverage = omitCoverage ? [] : primary.map { ["blockID": $0, "disposition": used.contains($0) ? "fact" : "noise"] }
         return try Stub(draft: json(["facts": facts, "coverage": coverage]),
-            audit: json(["acceptedFactIDs": accepted ?? facts.compactMap { $0["id"] as? String }, "checkedBlockIDs": auditIDs ?? primary]))
+            audit: json(["acceptedFactIDs": accepted ?? facts.compactMap { $0["id"] as? String }, "checkedBlockIDs": auditIDs ?? primary, "missedBlockIDs": []]))
     }
     private static func analyze(_ page: UnderstandingPage, facts: [[String: Any]], accepted: [String]? = nil) async throws -> UnderstandingPageResult {
         try await CaptureUnderstandingEngine.understand(page, responder: responder(page, facts: facts, accepted: accepted), beforeCall: {})
@@ -146,6 +146,9 @@ enum CaptureUnderstandingVerification {
         let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
         let (_, page) = try await claim(f)
         let result = try await analyze(page, facts: [fact(page)], accepted: [])
+        let omitted = try Stub(draft: responder(page, facts: []).draft,
+            audit: json(["acceptedFactIDs": [], "checkedBlockIDs": page.blocks.map(\.id), "missedBlockIDs": page.blocks.map(\.id)]))
+        try await rejected { _ = try await CaptureUnderstandingEngine.understand(page, responder: omitted, beforeCall: {}) }
         try expect(result.facts.isEmpty && result.covered == 1 && result.uncertain == 1, "复核否决的事实仍被保存为准确内容")
     }
     private static func conditionalAndCompletedWork() async throws {
@@ -221,6 +224,30 @@ enum CaptureUnderstandingVerification {
         let chat = ConversationContextManager().plan(history: [], existingSummary: nil, coveredMessageCount: 0, retrievedEvidence: [source])
         try expect(daily[0].ocrText.contains("补充 Atlas 导出分页测试") && chat.evidence[0].ocrText.contains("本人陈述"), "回顾或聊天仍只拿 OCR 前缀")
         try expect(SummaryFeedbackLearning.rawVersion(source) == SummaryFeedbackLearning.rawVersion(f.source), "新增理解结果破坏了旧反馈的原文版本")
+        var long = source
+        let base = source.understanding!.facts[0]
+        var facts = (0..<20).map { index in
+            var item = base; item.id = "synthetic-\(index)"; item.subject = "其他合成事项 \(index)"
+            item.detail = String(repeating: "这条内容与图像问题没有关联。", count: 15); return item
+        }
+        var target = base; target.id = "target"; target.subject = "Zephyr 图片透明区域问题"
+        target.detail = "上传时应保留 alpha 通道。"; facts.append(target)
+        long.understanding?.facts = facts
+        let matched = ConversationContextManager(maxEvidenceCharactersPerRecord: 900).plan(history: [], existingSummary: nil,
+            coveredMessageCount: 0, retrievedEvidence: [long], question: "Zephyr 图片透明区域出了什么问题")
+        try expect(matched.evidence[0].ocrText.contains(target.detail), "长记录检索到后，相关事实仍被前面的无关内容挤掉")
+        var duplicate = f.source; duplicate.id = UUID(); duplicate.createdAt = f.source.createdAt.addingTimeInterval(1)
+        try await f.store.addCapture(duplicate)
+        _ = try await f.store.enqueueCaptureUnderstanding(captureID: duplicate.id)
+        let repeated = Fixture(storage: f.storage, store: f.store, source: duplicate)
+        let updated = try await finish(repeated) { [fact($0)] }
+        let deduplicated = MatterMemoryEngine().files(in: updated)
+        try expect(deduplicated.count == 1 && deduplicated[0].events.count == 1 && Set(deduplicated[0].evidenceIDs) == [source.id, duplicate.id],
+            "重复截图制造了新进展或丢失可追溯来源")
+        let proof = MemoryKnowledgeEngine().reconcile(updated, force: true).claims.filter { $0.kind == .event }.flatMap(\.evidence)
+        try expect(Set(proof.map(\.captureID)) == [source.id, duplicate.id] && proof.allSatisfy { f.source.ocrText.contains($0.quote) },
+            "合并重复事实时使用了生成内容代替原始片段")
+
     }
     private static func validEmptyDoesNotResurrectNoise() async throws {
         let f = try await fixture("[聊天·自己] 我会在明天打开设置检查网络错误。\n[聊天·角色未知] 网络异常，请检查网络后重试。")

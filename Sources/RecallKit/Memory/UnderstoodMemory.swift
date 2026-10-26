@@ -54,12 +54,29 @@ public extension CaptureRecord {
 
 extension CaptureUnderstandingEngine {
     /// Preserve full facts within a bounded request; never cut a title or sentence in half.
-    static func context(_ capture: CaptureRecord, limit: Int) -> String {
+    private static func factsForContext(_ capture: CaptureRecord, question: String?) -> [UnderstoodFact] {
+        let facts = capture.understanding?.facts ?? []
+        let terms = MatterMemoryEngine.subjectTerms(question ?? "")
+        guard !terms.isEmpty else { return facts }
+        func score(_ fact: UnderstoodFact) -> Int {
+            terms.reduce(0) { $0 + (fact.subject.localizedCaseInsensitiveContains($1) ? 3 : fact.detail.localizedCaseInsensitiveContains($1) ? 1 : 0) }
+        }
+        return facts.enumerated().sorted { a, b in
+            let left = score(a.element), right = score(b.element)
+            return left == right ? a.offset < b.offset : left > right
+        }.map(\.element)
+    }
+    static func sourceExcerpt(_ capture: CaptureRecord, question: String?, limit: Int) -> String {
+        let proof = factsForContext(capture, question: question).flatMap(\.evidence)
+            .filter { $0.blockID.hasPrefix(capture.id.uuidString) }.map(\.quote)
+        return String((proof.isEmpty ? capture.ocrText : proof.joined(separator: "\n")).prefix(limit))
+    }
+    static func context(_ capture: CaptureRecord, limit: Int, question: String? = nil) -> String {
         guard let result = capture.understanding else { return String(capture.ocrText.prefix(limit)) }
         var lines: [String] = [], size = 0
-        for fact in result.facts {
+        for fact in factsForContext(capture, question: question) {
             let line = fact.statement
-            if size + line.count > max(limit, 900) { break }
+            if !lines.isEmpty && size + line.count > max(limit, 900) { continue }
             lines.append(line); size += line.count
         }
         let remaining = result.facts.count - lines.count

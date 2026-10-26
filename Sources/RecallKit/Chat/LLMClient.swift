@@ -246,7 +246,8 @@ public struct ConversationContextManager: Sendable {
         history: [ConversationMessage],
         existingSummary: String?,
         coveredMessageCount: Int,
-        retrievedEvidence: [CaptureRecord]
+        retrievedEvidence: [CaptureRecord],
+        question: String? = nil
     ) -> ConversationContextPlan {
         let safeCoveredCount = min(max(coveredMessageCount, 0), history.count)
         let archiveBoundary = max(history.count - maxRecentMessages, 0)
@@ -262,8 +263,8 @@ public struct ConversationContextManager: Sendable {
             var copy = record
             if record.understanding != nil {
                 // Normalized meaning supplements search hits, while original excerpts remain inspectable.
-                copy.ocrText = CaptureUnderstandingEngine.context(record, limit: maxEvidenceCharactersPerRecord * 2 / 3)
-                    + "\n原始摘录：\n" + String(record.ocrText.prefix(maxEvidenceCharactersPerRecord / 3))
+                copy.ocrText = CaptureUnderstandingEngine.context(record, limit: maxEvidenceCharactersPerRecord * 2 / 3, question: question)
+                    + "\n原始摘录：\n" + CaptureUnderstandingEngine.sourceExcerpt(record, question: question, limit: maxEvidenceCharactersPerRecord / 3)
             } else { copy.ocrText = copy.ocrText.bounded(to: maxEvidenceCharactersPerRecord) }
             copy.summary = copy.summary?.bounded(to: 300)
             return copy

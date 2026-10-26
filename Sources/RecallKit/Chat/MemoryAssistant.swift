@@ -132,7 +132,7 @@ public final class MemoryAssistant {
             history: state.messages,
             existingSummary: state.conversationSummary,
             coveredMessageCount: state.conversationSummaryCoveredMessageCount ?? 0,
-            retrievedEvidence: selectedEvidence
+            retrievedEvidence: selectedEvidence, question: retrievalText
         )
         if plan.rollingSummary != state.conversationSummary || plan.coveredMessageCount != (state.conversationSummaryCoveredMessageCount ?? 0) {
             try await store.updateConversationSummary(plan.rollingSummary, coveredMessageCount: plan.coveredMessageCount + originalState.messages.count - state.messages.count, inConversation: conversation.id)
