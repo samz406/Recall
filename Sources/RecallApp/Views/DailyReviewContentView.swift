@@ -5,7 +5,6 @@ struct DailyReviewContentView: View {
     @EnvironmentObject private var model: RecallAppModel
     let summary: DailySummary
     @State private var expandedSections: Set<DailySummarySection> = []
-    @State private var detailIDs: Set<UUID> = []
     @State private var source: DailySummaryItem?
     private var items: [DailySummaryItem] {
         let live = Set(model.state.captures.map(\.id))
@@ -61,13 +60,11 @@ struct DailyReviewContentView: View {
         return VStack(alignment: .leading, spacing: 9) {
             Text(text.title).font(RecallTypography.title).fixedSize(horizontal: false, vertical: true)
             if !text.detail.isEmpty {
-                if detailIDs.contains(item.id) { Text(text.detail).font(RecallTypography.body).textSelection(.enabled) }
-                else { Text(ReviewContentQuality.shortDetail(text.detail)).font(RecallTypography.body).foregroundStyle(RecallPalette.secondary) }
-                if ReviewContentQuality.shortDetail(text.detail) != text.detail {
-                    Button(detailIDs.contains(item.id) ? "收起详情" : "展开详情") {
-                        if !detailIDs.insert(item.id).inserted { detailIDs.remove(item.id) }
-                    }.font(.caption)
-                }
+                Text(text.detail)
+                    .font(RecallTypography.body)
+                    .foregroundStyle(RecallPalette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
             HStack(spacing: 16) {
                 if item.section == .actions, let action {
