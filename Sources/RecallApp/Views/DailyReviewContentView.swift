@@ -70,7 +70,6 @@ struct DailyReviewContentView: View {
                 }
             }
             HStack(spacing: 16) {
-                Button("查看依据（\(item.evidenceIDs.count)）") { source = item }.disabled(item.evidenceIDs.isEmpty)
                 if item.section == .actions, let action {
                     Button(model.reminder(for: action.title, sourceIDs: action.sourceCaptureIDs, candidateID: action.id) == nil ? "设为提醒" : "查看提醒") {
                         model.prepareReminder(title: action.title, detail: action.detail, sourceIDs: action.sourceCaptureIDs, candidateID: action.id)
