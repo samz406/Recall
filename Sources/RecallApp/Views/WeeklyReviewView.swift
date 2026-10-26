@@ -12,12 +12,9 @@ struct WeeklyReviewView: View {
     @State private var customStart = Calendar.current.date(byAdding: .day, value: -6, to: .now) ?? .now
     @State private var customEnd = Date.now
     @State private var scope = ReviewScope()
-    @State private var useModel = false
-    @State private var initializedModelChoice = false
     @State private var selectedID: UUID?
     @State private var historyCount = 8
     @State private var showsComposer = true
-    @State private var showsAdvanced = false
     @State private var showsTemplates = false
     @State private var showsSchedules = false
     @State private var editing: WeeklyReport?
@@ -37,6 +34,11 @@ struct WeeklyReviewView: View {
         model.state.weeklyReports.first { $0.id == selectedID } ?? model.state.weeklyReports.first(where: \.isReadable) ?? model.state.weeklyReports.first
     }
     private var allTemplates: [ReviewTemplate] { ReviewTemplate.builtIns + model.state.reviewTemplates }
+    private var useModel: Bool {
+        model.state.privacy.cloudUseEnabled
+            && model.state.llmConfiguration.provider != .localOnly
+            && !model.state.llmConfiguration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     var body: some View {
         let range = period
         let preview = model.reviewIndex.preview(in: range, kind: template.kind, scope: scope)
@@ -61,12 +63,6 @@ struct WeeklyReviewView: View {
             showsComposer = model.state.weeklyReports.isEmpty
             if let id = model.reviewTopicToOpen { openTopicReview(id) }
             if let id = model.weeklyReportToOpen { selectedID = id }
-            if !initializedModelChoice {
-                useModel = model.state.privacy.cloudUseEnabled
-                    && model.state.llmConfiguration.provider != .localOnly
-                    && !model.state.llmConfiguration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                initializedModelChoice = true
-            }
         }
         .onChange(of: model.reviewTopicToOpen) { _, id in
             if let id { openTopicReview(id) }
@@ -123,116 +119,113 @@ struct WeeklyReviewView: View {
         }.fixedSize()
     }
     private func composer(range: ReviewPeriod, preview: ReviewRangePreview) -> some View {
-        let coverage = preview.coverage
-        let eligibleTopicCount = preview.eligibleTopicCount
-        return VStack(alignment: .leading, spacing: 20) {
-            Picker("模板", selection: Binding(get: { template.id }, set: { id in
-                if let value = allTemplates.first(where: { $0.id == id }) { template = value }
-            })) {
-                ForEach(allTemplates) { Text($0.name).tag($0.id) }
-            }.frame(maxWidth: 340)
-            if scope.useSelectedTopics {
-                HStack(spacing: 12) {
-                    Label("回顾这件事：" + (model.reviewIndex.topics.first { scope.topicIDs.contains($0.id) }?.title ?? "指定事项"), systemImage: "text.book.closed")
-                        .font(.callout).fixedSize(horizontal: false, vertical: true)
-                    Spacer()
-                    Button("回顾全部内容") { scope = ReviewScope(); model.reviewTopicToOpen = nil }
-                }
-            }
+        VStack(alignment: .leading, spacing: 18) {
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 16) { rangeControls; Spacer(); generateButton(range: range, eligibleTopicCount: eligibleTopicCount) }
-                VStack(alignment: .leading, spacing: 16) { rangeControls; generateButton(range: range, eligibleTopicCount: eligibleTopicCount) }
+                HStack(alignment: .bottom, spacing: 20) {
+                    templateControl.frame(width: 220)
+                    rangeControl.frame(width: 200)
+                    Spacer(minLength: 20)
+                    generateButton(range: range, eligibleTopicCount: preview.eligibleTopicCount)
+                }
+                VStack(alignment: .leading, spacing: 18) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 16) { templateControl; rangeControl }
+                        VStack(alignment: .leading, spacing: 16) { templateControl; rangeControl }
+                    }
+                    HStack {
+                        Spacer(minLength: 0)
+                        generateButton(range: range, eligibleTopicCount: preview.eligibleTopicCount)
+                    }
+                }
             }
             if periodKind == .custom {
-                HStack(spacing: 20) {
-                    DatePicker("开始", selection: $customStart, in: ...Date.now, displayedComponents: .date)
-                    DatePicker("结束", selection: $customEnd, in: customStart...max(customStart, Date.now), displayedComponents: .date)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 20) { customStartControl; customEndControl; Spacer(minLength: 0) }
+                    VStack(alignment: .leading, spacing: 14) { customStartControl; customEndControl }
                 }
             }
-            DisclosureGroup("更多选项与范围说明", isExpanded: $showsAdvanced) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "calendar").foregroundStyle(RecallPalette.secondary)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(range.label).font(.callout.monospacedDigit())
-                    Text("全部 \(coverage.totalRecords) 条记录 · 所选日期 \(coverage.periodRecords) 条（\(coverage.textRecords) 条含文字）")
-                        .font(.caption).foregroundStyle(RecallPalette.secondary)
-                    Text(scope.useSelectedTopics ? "仅回顾这件事在所选日期内的记录；模板决定栏目和表达方式。" : "默认回顾所选日期内的全部适用记录，无需逐项选择；模板决定栏目和表达方式。")
-                        .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
-                    if template.kind.requiresWorkScope {
-                        Text("工作内容会自动识别；生活、学习及无法确定用途的内容不会进入工作回顾。")
-                            .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
+            if scope.useSelectedTopics {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Label("回顾这件事：" + (model.reviewIndex.topics.first { scope.topicIDs.contains($0.id) }?.title ?? "指定事项"), systemImage: "text.book.closed")
+                        .font(.callout).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button("回顾全部内容") { scope = ReviewScope(); model.reviewTopicToOpen = nil }.fixedSize()
                 }
-                Spacer()
             }
-            if model.isBuildingMatters {
-                Text("正在检查范围内的记录…").font(.caption).foregroundStyle(RecallPalette.secondary)
-            } else if eligibleTopicCount > 0 {
-                Label("将整理所选日期内的相关内容，生成后可查看每条依据。", systemImage: "checkmark.circle")
-                    .font(.caption).foregroundStyle(RecallPalette.secondary)
-            } else if template.kind.requiresWorkScope && preview.topicCount > 0 {
-                Text("这个范围内暂未识别出明确的工作内容。可以使用‘我的一周’回顾这段时间的全部内容。")
-                    .font(.caption).foregroundStyle(RecallPalette.secondary)
-            } else if coverage.periodRecords == 0 {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("所选日期内没有保存的记录；总记录数包含其他日期。")
-                        .font(.caption).foregroundStyle(RecallPalette.secondary)
-                    if let latest = coverage.latestRecordAt, latest <= .now {
-                        Text("最近记录于 " + latest.formatted()).font(.caption).foregroundStyle(RecallPalette.secondary)
-                        Button("查看最近有记录的一周") {
-                            customStart = Calendar.current.date(byAdding: .day, value: -6, to: latest) ?? latest
-                            customEnd = latest; periodKind = .custom
-                        }
-                    }
-                }
-            } else {
-                Text(scope.useSelectedTopics ? "这件事在所选日期内没有可用记录，可以调整日期或回顾全部内容。" :
-                    (coverage.textRecords == 0 ? "这些记录没有可读取的文字。请在时间线核对是否只有截图或文字识别未成功。" : "这些记录暂未形成可回顾的正文。可在时间线核对原始文字。"))
-                    .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            Toggle("使用已连接的模型整理正文", isOn: $useModel)
-                .font(.callout).disabled(!model.state.privacy.cloudUseEnabled && !useModel)
-                .help("仅发送范围内经过脱敏的事实，按用途和篇幅整理正文，再核对来源；不可靠或重复的条目只保留在整理依据中。关闭时仅展示能明确归属的简短事实。")
-            if !model.state.privacy.cloudUseEnabled {
-                Text("当前在本地整理；可在“设置”中开启模型文本使用。")
+            // Only explain a blocked action; ordinary generation has no diagnostic/configuration panel.
+            if !range.isValid {
+                Text("请选择不超过 31 天的有效日期范围。")
+                    .font(.caption).foregroundStyle(RecallPalette.warning)
+            } else if !model.isBuildingMatters && preview.eligibleTopicCount == 0 {
+                Text(template.kind.requiresWorkScope && preview.topicCount > 0
+                     ? "这段时间暂未找到可回顾的工作内容，可以换个模板或日期。"
+                     : "这段时间暂无可回顾的内容，可以换个日期。")
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
-        }
-        }.padding(24).reviewSurface()
+        }.padding(22).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()
     }
-    private func templateButton(_ kind: ReviewTemplateKind) -> some View {
-        let selected = template.kind == kind
-        return Button {
-            template = ReviewTemplate(kind: kind)
-        } label: {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Image(systemName: kind.symbol).font(.title3).foregroundStyle(selected ? RecallPalette.accent : RecallPalette.secondary)
-                    Spacer()
-                    if selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(RecallPalette.accent) }
-                }
-                Text(kind.title).font(.headline).foregroundStyle(RecallPalette.text)
-                Text(kind.subtitle).font(.caption).foregroundStyle(RecallPalette.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }.padding(16).frame(maxWidth: .infinity, minHeight: 126, alignment: .topLeading)
-                .background(selected ? RecallPalette.selected : RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(selected ? RecallPalette.accent.opacity(0.5) : RecallPalette.border, lineWidth: 1))
-                .contentShape(RoundedRectangle(cornerRadius: 16))
-        }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
-    }
-    private var rangeControls: some View {
-        HStack(spacing: 14) {
-            Picker("时间范围", selection: $periodKind) {
-                ForEach(ReviewPeriodKind.allCases) { Text($0.title).tag($0) }
-            }.labelsHidden().frame(maxWidth: 200)
 
+    private var templateControl: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("回顾模板").font(.caption).foregroundStyle(RecallPalette.secondary)
+            Menu {
+                ForEach(allTemplates) { option in
+                    Button { template = option } label: {
+                        if template.id == option.id { Label(option.name, systemImage: "checkmark") }
+                        else { Text(option.name) }
+                    }
+                }
+            } label: { selectionLabel(template.name, symbol: template.kind.symbol) }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .accessibilityLabel("回顾模板").accessibilityValue(template.name)
+                .help(template.name)
         }
+    }
+    private var rangeControl: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("时间范围").font(.caption).foregroundStyle(RecallPalette.secondary)
+            Menu {
+                ForEach(ReviewPeriodKind.allCases) { option in
+                    Button { periodKind = option; rangeNow = .now } label: {
+                        if periodKind == option { Label(option.title, systemImage: "checkmark") }
+                        else { Text(option.title) }
+                    }
+                }
+            } label: { selectionLabel(periodKind.title, symbol: "calendar") }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .accessibilityLabel("时间范围").accessibilityValue(periodKind.title)
+        }
+    }
+    private func selectionLabel(_ text: String, symbol: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol).font(.system(size: 15)).foregroundStyle(RecallPalette.secondary)
+            Text(text).font(.system(size: 15, weight: .medium)).lineLimit(1)
+            Spacer(minLength: 10)
+            Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(RecallPalette.secondary)
+        }
+        .foregroundStyle(RecallPalette.text).padding(.horizontal, 13)
+        .frame(minWidth: 160, maxWidth: .infinity, minHeight: 44)
+        .background(RecallPalette.background, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(RecallPalette.border, lineWidth: 1))
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+    }
+    private var customStartControl: some View {
+        DatePicker("开始日期", selection: $customStart, in: ...Date.now, displayedComponents: .date)
+            .controlSize(.regular).fixedSize()
+    }
+    private var customEndControl: some View {
+        DatePicker("结束日期", selection: $customEnd, in: customStart...max(customStart, Date.now), displayedComponents: .date)
+            .controlSize(.regular).fixedSize()
     }
     private func generateButton(range: ReviewPeriod, eligibleTopicCount: Int) -> some View {
         Button {
             model.generateWeeklyReview(period: range, template: template, scope: scope, useModel: useModel)
-        } label: { Label("生成回顾", systemImage: "sparkles").padding(.vertical, 4).padding(.horizontal, 6) }
-            .buttonStyle(.borderedProminent)
+        } label: {
+            Label("生成回顾", systemImage: "sparkles")
+                .font(.system(size: 15, weight: .semibold))
+                .padding(.horizontal, 8).frame(minHeight: 30)
+        }
+            .buttonStyle(.borderedProminent).controlSize(.large).frame(minHeight: 44).fixedSize()
             .disabled(model.isGeneratingWeeklyReview || model.isBuildingMatters || !range.isValid || eligibleTopicCount == 0)
     }
     private var emptyState: some View {
