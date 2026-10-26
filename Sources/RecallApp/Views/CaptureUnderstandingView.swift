@@ -115,10 +115,11 @@ struct CaptureUnderstandingDetailView: View {
                     ForEach(result.facts) { fact in
                         VStack(alignment: .leading, spacing: 6) {
                             Text(fact.subject).fontWeight(.semibold)
-                            Text(fact.detail).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                            Text(fact.speaker == .user ? "本人表达" : fact.speaker == .other ? "对方表达" : "说话人尚不明确")
+                            if fact.detail != fact.subject { Text(fact.detail).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
+                            Text(fact.kind == .reference ? "保存或引用的内容" : fact.speaker == .user ? "本人表达" : fact.speaker == .other ? "对方表达" : "说话人尚不明确")
                                 .font(.caption).foregroundStyle(RecallPalette.secondary)
                             if let condition = fact.condition { Text("前提：\(condition)").font(.callout).foregroundStyle(RecallPalette.secondary) }
+                            if let time = fact.messageTime { Text("原文消息时间：\(time.text)").font(.caption) }
                             if let time = fact.eventTime { Text("原文发生时间：\(time.text)").font(.caption) }
                             if let time = fact.deadline { Text("原文截止时间：\(time.text)").font(.caption) }
                             DisclosureGroup("原文片段") {

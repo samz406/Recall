@@ -172,6 +172,12 @@ enum CaptureUnderstandingVerification {
         try await rejected { try await f.store.finishCaptureUnderstandingPage(job, result: result, configuration: f.config, privacy: f.privacy) }
         let state = await f.store.snapshot()
         try expect(state.captures[0].understanding == nil && state.understandingJobs[0].lease == nil, "暂停后仍写入模型结果")
+        settings.enabled = true; try await f.store.updateCaptureUnderstandingSettings(settings)
+        var memorySettings = state.memoryKnowledgeSettings; memorySettings.automaticOrganization = false
+        try await f.store.updateMemoryKnowledgeSettings(memorySettings)
+        let resumed = try await finish(f) { [fact($0)] }
+        try expect(resumed.captures[0].understanding != nil && resumed.memoryKnowledge.claims.filter { $0.kind == .event }.isEmpty,
+            "记录理解绕过了用户暂停后台记忆整理的设置")
     }
     private static func durabilityAndRetry() async throws {
         let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
@@ -211,7 +217,11 @@ enum CaptureUnderstandingVerification {
     }
     private static func sharedMeaningAndExactEvidence() async throws {
         let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
+        try await f.store.organizeMemory(force: true)
+        let saved = DailySummary(day: f.source.createdAt, content: "已有的手工核对回顾", sourceCaptureIDs: [f.source.id], todos: [], generationKind: .localFallback)
+        try await f.store.upsertDailySummary(saved)
         let state = try await finish(f) { [fact($0)] }
+        try expect(state.dailySummaries.contains { $0.id == saved.id && $0.content == saved.content }, "首次理解记录偷偷删除或改写了历史回顾")
         let source = state.captures[0]
         try expect(source.ocrText == f.source.ocrText && source.understanding?.facts.count == 1, "理解覆盖了原文或没有保存结果")
         let reminders = ReminderExtractor().candidates(from: state.captures, existing: [])
@@ -299,13 +309,15 @@ enum CaptureUnderstandingVerification {
         try expect(count == 0, "启用/近30天整理上传了更早归档或已删除的理解")
     }
     private static func eventAndDeadlineTime() async throws {
-        let f = try await fixture("[聊天·自己] 2020-01-02 我已完成 Atlas 导出测试。")
+        let f = try await fixture("[聊天·自己] [时间·2026-10-20 11:23] 2020-01-02 我已完成 Atlas 导出测试。")
         defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
         let state = try await finish(f) { page in
             var value = fact(page, kind: "event", status: "completed", subject: "Atlas 导出测试完成", detail: "已完成分页边界测试。")
+            value["messageTime"] = ["text": "2026-10-20 11:23", "evidence": ["blockID": page.blocks[0].id, "quote": page.blocks[0].text]]
             value["eventTime"] = ["text": "2020-01-02", "evidence": ["blockID": page.blocks[0].id, "quote": page.blocks[0].text]]
             return [value]
         }
+        try expect(state.captures[0].understanding?.facts[0].messageTime?.text == "2026-10-20 11:23", "消息时间被抹掉或混作事情发生时间")
         let event = MatterMemoryEngine().files(in: state)[0].events[0]
         try expect(event.eventAt != nil && event.date < f.source.createdAt && event.recordedAt == f.source.createdAt, "采集时间替代了原文明确的历史发生日期")
         try expect(ReminderExtractor().candidates(from: state.captures, existing: []).isEmpty, "历史完成日期变成待办截止时间")

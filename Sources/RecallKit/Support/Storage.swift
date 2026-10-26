@@ -1161,6 +1161,9 @@ public actor FileMemoryStore {
                 if let path = record.imageRelativePath { paths.insert(path) }
                 // Keep only the user's explicit agreement and minimal attribution, not the original screen.
                 state.captures[i].ocrText = directive.content
+                state.captures[i].recognition = nil
+                state.captures[i].understanding = nil
+                state.captures[i].correctedText = nil
                 state.captures[i].summary = nil
                 state.captures[i].windowTitle = nil
                 state.captures[i].tags = []

@@ -135,7 +135,7 @@ extension FileMemoryStore {
             state.reminders.removeAll { $0.origin == .discovered && $0.status == .proposed && $0.sourceCaptureIDs.contains(job.captureID) }
             // Rebuild derived claims. Existing user-reviewed reports remain until regeneration;
             // source edits/deletions use the stronger invalidation path below.
-            state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state, force: true)
+            state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state)
         }
         state.understandingJobs[index] = updated
         do { try persist() } catch { state = before; throw error }

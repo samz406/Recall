@@ -42,6 +42,7 @@ public struct UnderstoodFact: Identifiable, Codable, Hashable, Sendable {
     public var actor: UnderstandingSpeaker
     public var status: UnderstandingStatus
     public var condition: String?
+    public var messageTime: UnderstandingTime?
     public var eventTime: UnderstandingTime?
     public var deadline: UnderstandingTime?
     public var evidence: [UnderstandingEvidence]
@@ -54,7 +55,7 @@ public struct UnderstoodFact: Identifiable, Codable, Hashable, Sendable {
         Array(Set(evidence.compactMap { UUID(uuidString: String($0.blockID.prefix(36))) })).sorted { $0.uuidString < $1.uuidString }
     }
     public var statement: String {
-        let attribution = speaker == .user ? "本人陈述" : speaker == .other ? "对方陈述" : "来源未明"
+        let attribution = kind == .reference ? "保存或引用的内容，非本人行动" : speaker == .user ? "本人陈述" : speaker == .other ? "对方陈述" : "来源未明"
         let state = switch status {
         case .completed: "声称已完成"
         case .inProgress: "正在推进"
@@ -65,6 +66,7 @@ public struct UnderstoodFact: Identifiable, Codable, Hashable, Sendable {
         }
         return "\(subject)：\(detail)（\(attribution)，\(state)）"
             + (condition.map { "；条件：\($0)" } ?? "")
+            + (messageTime.map { "；原文消息时间：\($0.text)" } ?? "")
             + (eventTime.map { "；原文发生时间：\($0.text)" } ?? "")
             + (deadline.map { "；原文截止时间：\($0.text)" } ?? "")
     }
@@ -234,10 +236,10 @@ public enum CaptureUnderstandingEngine {
         kind: event/decision/commitment/request/reference；status: unknown/inProgress/pending/blocked/completed/cancelled。
         仅本人明确承诺、且仍未完成的具体行动可用 commitment+pending。对方陈述或请求不能变成我的承诺。
         已完成输出是来源的陈述，不是独立验证。计划、条件句、待验证、部分完成不得升级为 completed。保留条件 condition，否则 null。
-        eventTime/deadline 只记录原文明确表示发生时间/截止时间的文字及证据（不是采集时间、文档发布日期或默认 9:00）。不能确定则 null。
+        messageTime/eventTime/deadline 分别是原文显示的消息时间、事情发生时间、截止时间，三者不能混用。只保留原文明示的文字及证据，不能用采集时间或文档发布日期补齐；不能确定则 null。
         菜单、会话列表、错误提示、广告、代码碎片只标 noise；重要但缺上下文/识别不清标 uncertain；不为了凑数量生成条目。
         对每个 contextOnly=false 的 block 返回且只返回一条 coverage。fact 必须有引用此块的事实；噪声 noise；无法判断 uncertain。contextOnly=true 只供上下文，不独立生成条目。
-        输出 JSON：{"facts":[{"id":"f1","subject":"具体事情","detail":"完整事实","kind":"event","speaker":"user","actor":"user","status":"inProgress","condition":null,"eventTime":null,"deadline":null,"evidence":[{"blockID":"原 ID","quote":"逐字片段"}]}],"coverage":[{"blockID":"原 ID","disposition":"fact|noise|uncertain"}]}。
+        输出 JSON：{"facts":[{"id":"f1","subject":"具体事情","detail":"完整事实","kind":"event","speaker":"user","actor":"user","status":"inProgress","condition":null,"messageTime":null,"eventTime":null,"deadline":null,"evidence":[{"blockID":"原 ID","quote":"逐字片段"}]}],"coverage":[{"blockID":"原 ID","disposition":"fact|noise|uncertain"}]}。
         时间结构：{"text":"原文时间","evidence":{"blockID":"原 ID","quote":"含时间及其用途的原文"}}。
         """
         let context = CaptureRecord(eventTemplate: .manualMoment, contentHash: "understanding", ocrText: try json(page.blocks))
@@ -268,7 +270,7 @@ public enum CaptureUnderstandingEngine {
         let facts = draft.facts.filter { accepted.contains($0.id) }.map { fact in
             var copy = fact
             // Stable across retries and duplicate screenshots; sources remain attached separately.
-            copy.id = digest([fact.subject, fact.detail, fact.kind.rawValue, fact.speaker.rawValue, fact.actor.rawValue, fact.status.rawValue, fact.condition ?? "", fact.eventTime?.text ?? "", fact.deadline?.text ?? ""].joined(separator: "|"))
+            copy.id = digest([fact.subject, fact.detail, fact.kind.rawValue, fact.speaker.rawValue, fact.actor.rawValue, fact.status.rawValue, fact.condition ?? "", fact.messageTime?.text ?? "", fact.eventTime?.text ?? "", fact.deadline?.text ?? ""].joined(separator: "|"))
             return copy
         }
         let supported = Set(facts.flatMap { $0.evidence.map(\.blockID) })
@@ -301,7 +303,7 @@ public enum CaptureUnderstandingEngine {
                 let explicit = ["我会", "我来", "我要", "我明天", "我需要", "待办：", "待办:", "提醒我", "请提醒", "i will", "i need", "i’ll", "i'll"]
                 guard fact.actor == .user, fact.speaker == .user, explicit.contains(where: words.contains) else { throw CaptureUnderstandingError.invalid }
             }
-            for time in [fact.eventTime, fact.deadline].compactMap({ $0 }) {
+            for time in [fact.messageTime, fact.eventTime, fact.deadline].compactMap({ $0 }) {
                 guard (1...120).contains(time.text.count), hasQuote(time.evidence), time.evidence.quote.contains(time.text),
                       fact.evidence.contains(where: { $0.blockID == time.evidence.blockID }) else { throw CaptureUnderstandingError.invalid }
             }
