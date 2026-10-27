@@ -137,12 +137,13 @@ extension FileMemoryStore {
                             title: change.title, detail: change.detail, evidenceIDs: change.sourceIDs))
                     } else { throw SummaryFeedbackError.changed }
                 }
-                summary.items = DailySummaryItemParser.sanitized(summary.items)
+                summary.items = summary.modelCoverage == nil ? DailySummaryItemParser.sanitized(summary.items) : DailySummaryItemParser.modelValidated(summary.items)
+                summary.modelOverview = nil
                 summary.todos = summary.todos.compactMap { old in
-                    guard let item = summary.items.first(where: { $0.actionCandidateID == old.id && $0.section == .actions }) else { return nil }
+                    guard let item = summary.items.first(where: { ($0.actionCandidateID == old.id || $0.title == old.title) && $0.section == .actions }) else { return nil }
                     var todo = old; todo.title = item.title; todo.detail = item.detail; return todo
                 }
-                summary.content = DailySummaryItemParser.markdown(from: summary.items); summary.briefing = nil
+                summary.content = summary.modelCoverage == nil ? DailySummaryItemParser.markdown(from: summary.items) : DailySummaryItemParser.reviewedMarkdown(from: summary.items); summary.briefing = nil
                 summary.sourceCaptureIDs = Array(Set(summary.sourceCaptureIDs + summary.items.flatMap(\.evidenceIDs)))
                 state.dailySummaries.removeAll { $0.id == summary.id }; state.dailySummaries.insert(summary, at: 0)
                 entry.resultRevision = SummaryFeedbackLearning.hash(summary)
@@ -172,7 +173,7 @@ extension FileMemoryStore {
                 }
                 let ids = report.sourceIDs.union(plan.resolution.changes.flatMap(\.sourceIDs))
                 report.sourceVersions = Dictionary(uniqueKeysWithValues: ids.compactMap { id in WeeklyReviewEngine.sourceVersion(id: id, state: state).map { (id, $0) } })
-                report.updatedAt = now; report.refinementPending = false
+                report.updatedAt = now; report.refinementPending = false; report.modelOverview = nil
                 for change in plan.resolution.changes where !change.remove {
                     guard report.digestRows.contains(where: { $0.title == change.title && $0.summary == change.detail }) else { throw SummaryFeedbackError.invalid }
                 }

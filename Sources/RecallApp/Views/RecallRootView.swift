@@ -1695,6 +1695,7 @@ private struct DailySummaryCard: View {
         if summary.generationKind == .localFallback, let briefing = summary.briefing {
             return DailySummaryContentFormatter.removingCitationMarkers(from: briefing.headline)
         }
+        if let overview = summary.modelOverview, !overview.isEmpty { return overview }
         let text = displayContent
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -1719,6 +1720,7 @@ private struct DailySummaryCard: View {
                                 .font(.headline)
                             HStack(spacing: 8) {
                                 Label("更新于 " + summary.createdAt.formatted(date: .omitted, time: .shortened), systemImage: "clock")
+                                if summary.generationKind == .localFallback { Text("历史记录摘录") }
                                 if activeActionCount > 0 {
                                     Label("\(activeActionCount) 项待处理", systemImage: "checklist")
                                 }
@@ -1740,6 +1742,9 @@ private struct DailySummaryCard: View {
             }
             if isExpanded {
                 Divider()
+                if let overview = summary.modelOverview, !overview.isEmpty {
+                    Text(overview).font(.system(size: 15, weight: .medium)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                }
                 if !summary.items.isEmpty {
                     DailyReviewContentView(summary: summary)
                         .textSelection(.enabled)

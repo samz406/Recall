@@ -8,8 +8,8 @@ struct CaptureUnderstandingSettingsView: View {
     private var failed: Int { model.state.understandingJobs.filter { $0.state == .failed }.count }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle("用已连接的模型理解新记录", isOn: Binding(get: { model.state.understandingSettings.enabled }, set: { value in model.setCaptureUnderstandingEnabled(value) }))
-            Text("先保存识别文字，再在后台核对事情、说话人和行动。仅使用脱敏文本，不发送截图；可随时暂停，原始记录始终保留。")
+            Toggle("采集后自动理解新记录", isOn: Binding(get: { model.state.understandingSettings.enabled }, set: { value in model.setCaptureUnderstandingEnabled(value) }))
+            Text("先保存识别文字，再用模型核对事情、角色和状态。回顾会复用这些结果；未完成的历史记录会在生成回顾时补齐。仅发送脱敏文本，可暂停自动处理。")
                 .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
             if model.state.understandingSettings.enabled && (!model.state.privacy.cloudUseEnabled || model.state.llmConfiguration.apiKey.isEmpty) {
                 Label("连接模型并允许使用脱敏文本后开始整理", systemImage: "pause.circle")

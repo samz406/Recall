@@ -279,7 +279,22 @@ struct MatterWorkspaceView: View {
                 Text(file.needsStatusUpdate() ? "状态待更新" : file.latest.status.matterLabel)
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
-            if resume {
+            if let review = model.state.topicReviews.first(where: { $0.id == file.id }) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(review.overview).textSelection(.enabled)
+                    ForEach(Array(review.points.enumerated()), id: \.offset) { _, point in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(point.title).fontWeight(.semibold)
+                            Text(point.detail).foregroundStyle(RecallPalette.secondary)
+                        }.textSelection(.enabled)
+                    }
+                    Text("更新于 " + review.createdAt.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption).foregroundStyle(RecallPalette.secondary)
+                    if !Set(file.evidenceIDs).isSubset(of: Set(review.sourceVersions.keys)) {
+                        Text("有新的记录，可以重新生成小结。 ").font(.caption).foregroundStyle(RecallPalette.secondary)
+                    }
+                }
+            } else if resume {
                 VStack(alignment: .leading, spacing: 6) {
                     Text((file.resumeProgress.status == .pending && file.resumeNextAction == nil ? "待处理事项" : "上次进展")
                         + " · " + file.resumeProgress.date.formatted(date: .abbreviated, time: .omitted))
@@ -310,6 +325,18 @@ struct MatterWorkspaceView: View {
             if file.needsStatusUpdate() {
                 Text("此后暂无新的进展记录，当前状态仍待确认。")
                     .font(.callout).foregroundStyle(RecallPalette.secondary)
+            }
+            HStack {
+                Button(model.state.topicReviews.contains(where: { $0.id == file.id }) ? "重新生成小结" : "生成主题小结") {
+                    model.generateTopicReview(file)
+                }.disabled(model.generatingTopicID != nil)
+                if model.generatingTopicID == file.id {
+                    ProgressView().controlSize(.small)
+                    Button("取消") { model.cancelTopicReview() }
+                }
+            }
+            if let task = model.tasks.first(where: { $0.kind == "主题小结" && $0.target == file.title }) {
+                RecallTaskStatusView(task: task, cancel: model.cancelTopicReview)
             }
             Text("最近记录于 \(file.latest.date.formatted(date: .abbreviated, time: .omitted)) · \(file.evidenceIDs.count) 条来源")
                 .font(.caption).foregroundStyle(RecallPalette.secondary)

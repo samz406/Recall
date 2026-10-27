@@ -504,6 +504,29 @@ public enum DailySummaryItemParser {
     }
 
     /// 将旧版七类总结迁移到三个用户维度，并在迁移过程中清理重复和算法术语。
+    /// Model-reviewed text has already passed semantic checks. Do not reclassify it
+    /// with the legacy keyword heuristics or repair titles by slicing the body.
+    public static func modelValidated(_ items: [DailySummaryItem]) -> [DailySummaryItem] {
+        var seen: Set<String> = []
+        return items.compactMap { original in
+            var item = original
+            item.section = item.section.canonical
+            item.title = sanitizedText(item.title).trimmingCharacters(in: .whitespacesAndNewlines)
+            item.detail = sanitizedText(item.detail).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !item.title.isEmpty, !item.evidenceIDs.isEmpty,
+                  seen.insert(item.section.rawValue + "|" + item.title + "|" + item.detail).inserted else { return nil }
+            return item
+        }
+    }
+    public static func reviewedMarkdown(from items: [DailySummaryItem]) -> String {
+        DailySummarySection.displaySections.compactMap { section in
+            let lines = modelValidated(items).filter { $0.section == section }.map { item in
+                item.detail.isEmpty ? "- \(item.title)" : "- \(item.title)：\(item.detail)"
+            }
+            return lines.isEmpty ? nil : "## \(section.title)\n\n" + lines.joined(separator: "\n")
+        }.joined(separator: "\n\n")
+    }
+
     public static func sanitized(_ items: [DailySummaryItem]) -> [DailySummaryItem] {
         var result: [DailySummaryItem] = []
         for original in items {
@@ -717,6 +740,8 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
     public var items: [DailySummaryItem]
     public var formatVersion: Int? = 2
     public var versions: [DailyReviewVersion]? = nil
+    public var modelCoverage: ModelReviewCoverage? = nil
+    public var modelOverview: String? = nil
 
     public init(
         id: UUID = UUID(),
@@ -752,21 +777,24 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, day, createdAt, content, sourceCaptureIDs, todos, generationKind, briefing, items, formatVersion, versions
+        case id, day, createdAt, content, sourceCaptureIDs, todos, generationKind, briefing, items, formatVersion, versions, modelCoverage, modelOverview
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         versions = try container.decodeIfPresent([DailyReviewVersion].self, forKey: .versions)
+        modelCoverage = try container.decodeIfPresent(ModelReviewCoverage.self, forKey: .modelCoverage)
+        modelOverview = try container.decodeIfPresent(String.self, forKey: .modelOverview)
         formatVersion = try container.decodeIfPresent(Int.self, forKey: .formatVersion)
         id = try container.decode(UUID.self, forKey: .id)
         day = Calendar.current.startOfDay(for: try container.decode(Date.self, forKey: .day))
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         content = try container.decode(String.self, forKey: .content)
         sourceCaptureIDs = try container.decodeIfPresent([UUID].self, forKey: .sourceCaptureIDs) ?? []
-        todos = (try container.decodeIfPresent([DailySummaryTodo].self, forKey: .todos) ?? []).filter {
+        let decodedTodos = try container.decodeIfPresent([DailySummaryTodo].self, forKey: .todos) ?? []
+        todos = modelCoverage == nil ? decodedTodos.filter {
             DailySummaryContentFormatter.isUsableAction(title: $0.title, detail: $0.detail)
-        }
+        } : decodedTodos
         generationKind = try container.decodeIfPresent(DailySummaryGenerationKind.self, forKey: .generationKind) ?? .localFallback
         briefing = try container.decodeIfPresent(DailyBriefing.self, forKey: .briefing)
         let persistedItems = try container.decodeIfPresent([DailySummaryItem].self, forKey: .items) ?? []
@@ -778,7 +806,7 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
                 defaultEvidenceIDs: sourceCaptureIDs
             )
             : persistedItems
-        items = DailySummaryItemParser.sanitized(decodedItems)
+        items = modelCoverage == nil ? DailySummaryItemParser.sanitized(decodedItems) : DailySummaryItemParser.modelValidated(decodedItems)
     }
 }
 
@@ -809,6 +837,8 @@ public struct DailySummaryGeneration: Sendable {
     public var items: [DailySummaryItem]
     public var formatVersion: Int? = 2
     public var versions: [DailyReviewVersion]? = nil
+    public var modelCoverage: ModelReviewCoverage? = nil
+    public var modelOverview: String? = nil
     public var generationKind: DailySummaryGenerationKind
     public var briefing: DailyBriefing
     public var consolidation: IntelligenceConsolidation
@@ -835,7 +865,8 @@ public struct DailySummaryGeneration: Sendable {
     }
 }
 
-/// 为每日总结准备最小化的本地证据，并在云端模型不可用时提供可追溯的本地摘要。
+/// Legacy excerpt generator retained for old storage/tools. New formal reviews use ModelReviewEngine.
+/// 为兼容工具准备本地证据；本地摘录不再作为应用正式回顾的回退结果。
 /// 调用方必须自行确认用户已启用云端文本使用；本类型不会读取截图或写入持久化存储。
 public struct DailySummaryGenerator: Sendable {
     public let maxRecords: Int

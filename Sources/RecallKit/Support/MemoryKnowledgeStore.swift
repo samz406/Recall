@@ -97,6 +97,7 @@ extension RecallState {
     mutating func invalidateMemoryOutputs(sourceIDs: Set<UUID>) {
         guard !sourceIDs.isEmpty else { return }
         dailySummaries.removeAll { !Set($0.sourceCaptureIDs).isDisjoint(with: sourceIDs) }
+        topicReviews.removeAll { !Set($0.sourceVersions.keys).isDisjoint(with: sourceIDs) }
         messages.removeAll { $0.role == .assistant && !Set($0.citations).isDisjoint(with: sourceIDs) }
         episodes.removeAll { !Set($0.evidenceIDs).isDisjoint(with: sourceIDs) }
         projects.removeAll { !Set($0.evidenceIDs).isDisjoint(with: sourceIDs) }

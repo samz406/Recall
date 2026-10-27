@@ -78,7 +78,7 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
 }
 
 public enum LLMRequestPurpose: Equatable, Sendable {
-    case chat, dailySummary, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup, summaryFeedback, summaryFeedbackAudit, captureUnderstanding, captureUnderstandingAudit
+    case chat, dailySummary, reviewSynthesis, reviewAudit, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup, summaryFeedback, summaryFeedbackAudit, captureUnderstanding, captureUnderstandingAudit
 }
 
 public struct LLMRequest: Sendable {
@@ -349,7 +349,7 @@ public struct CompatibleLLM: LLMResponding {
         urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = try JSONEncoder().encode(body)
-        if request.purpose == .dailySummary { urlRequest.timeoutInterval = 180 }
+        if [.dailySummary, .reviewSynthesis, .reviewAudit, .captureUnderstanding, .captureUnderstandingAudit].contains(request.purpose) { urlRequest.timeoutInterval = 180 }
         let data = try await perform(urlRequest, outputLimit: body.maxTokens)
         let content = try ModelResponseDecoding.text(from: data, provider: configuration.provider, outputLimit: body.maxTokens, requiresCompleteOutput: request.purpose != .chat)
         return LLMAnswer(content: content, citedCaptureIDs: request.context.map(\.id))
@@ -376,7 +376,7 @@ public struct CompatibleLLM: LLMResponding {
         urlRequest.setValue(configuration.anthropicVersion, forHTTPHeaderField: "anthropic-version")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = try JSONEncoder().encode(body)
-        if request.purpose == .dailySummary { urlRequest.timeoutInterval = 180 }
+        if [.dailySummary, .reviewSynthesis, .reviewAudit, .captureUnderstanding, .captureUnderstandingAudit].contains(request.purpose) { urlRequest.timeoutInterval = 180 }
         let data = try await perform(urlRequest, outputLimit: body.maxTokens)
         let content = try ModelResponseDecoding.text(from: data, provider: configuration.provider, outputLimit: body.maxTokens, requiresCompleteOutput: request.purpose != .chat)
         return LLMAnswer(content: content, citedCaptureIDs: request.context.map(\.id))

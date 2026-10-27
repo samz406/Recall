@@ -26,6 +26,8 @@ final class RecallAppModel: ObservableObject {
     @Published var showsGlobalSearch = false
     @Published var summaryFeedbackTarget: SummaryFeedbackTarget?
     @Published var showsSummaryFeedbackHistory = false
+    @Published var generatingTopicID: String?
+    var topicReviewTask: Task<Void, Never>?
     var captureUnderstandingTask: Task<Void, Never>?
     var captureUnderstandingTimer: Timer?
     var summaryFeedbackTask: Task<Void, Never>?
@@ -69,7 +71,6 @@ final class RecallAppModel: ObservableObject {
     private let pipeline: CapturePipeline
     private let assistant: MemoryAssistant
     private let reminderExtractor = ReminderExtractor()
-    private let dailySummaryGenerator = DailySummaryGenerator()
     private let notificationScheduler = LocalNotificationScheduler()
     private let enterKeyRecorder = GlobalEnterKeyRecorder()
     private var dailySummaryTimer: Timer?
@@ -262,23 +263,38 @@ final class RecallAppModel: ObservableObject {
     }
 
     func generateWeeklyReview(period: ReviewPeriod, template: ReviewTemplate, scope: ReviewScope,
-                              useModel: Bool, replacing: UUID? = nil, schedule: ReviewSchedule? = nil) {
-        guard !isGeneratingWeeklyReview else { return }
+                              replacing: UUID? = nil, schedule: ReviewSchedule? = nil) {
+        guard !isGeneratingWeeklyReview, !isGeneratingDailySummary, generatingTopicID == nil else {
+            weeklyReviewMessage = "另一份回顾正在生成，完成后可以继续。"; return
+        }
         isGeneratingWeeklyReview = true
         weeklyReviewMessage = nil
         let taskID = beginTask("周期回顾", target: period.label, phase: "读取适用记录")
-        let snapshot = state
-        let responder = useModel ? dailySummaryResponder() : nil
+        guard let responder = dailySummaryResponder() else {
+            isGeneratingWeeklyReview = false
+            weeklyReviewMessage = ModelReviewError.unavailable.localizedDescription
+            finishTask(taskID, state: .failed, message: ModelReviewError.unavailable.localizedDescription)
+            if let schedule { Task {
+                do { try await store.deferReviewSchedule(schedule, noEvidence: false); state = await store.snapshot() }
+                catch { recordError(error, source: "WeeklyReview", message: "保存计划重试状态失败") }
+            } }
+            return
+        }
         let scheduledTrigger = schedule?.effectiveTrigger(at: .now)
         weeklyReviewTask = Task {
-            defer { isGeneratingWeeklyReview = false; weeklyReviewTask = nil }
+            defer { isGeneratingWeeklyReview = false; weeklyReviewTask = nil; processNextDailySummary() }
             do {
-                let job = Task.detached(priority: .userInitiated) {
-                    try await WeeklyReviewEngine().generate(in: snapshot, period: period, template: template, scope: scope, responder: responder, onPhase: { phase in await self.updateTask(taskID, phase: phase) })
-                }
-                var report = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
+                let modelStore = store
+                let scopedIDs: Set<UUID>? = scope.useSelectedTopics ? Set(matterFiles.filter { scope.topicIDs.contains(WeeklyReviewEngine.topicID(for: $0)) }.flatMap(\.evidenceIDs)) : nil
+                let snapshot = try await modelStore.prepareModelReview(period: period, sourceIDs: scopedIDs,
+                    responder: responder, onPhase: { phase in await self.updateTask(taskID, phase: phase) })
+                state = snapshot
+                let result = try await ModelReviewEngine().generate(in: snapshot, period: period, template: template, sourceIDs: scopedIDs,
+                    beforeCall: { try await modelStore.validateModelReview(snapshot, period: period, sourceIDs: scopedIDs) },
+                    onPhase: { phase in await self.updateTask(taskID, phase: phase) }, responder: responder)
                 try Task.checkCancellation()
-                if useModel && responder == nil { report.refinementPending = true }
+                guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
+                var report = result.weeklyReport(period: period, template: template, scope: scope, in: snapshot)
                 report.scheduledFor = scheduledTrigger
                 let current = await store.snapshot()
                 guard current.privacy.cloudUseEnabled == snapshot.privacy.cloudUseEnabled,
@@ -400,44 +416,11 @@ final class RecallAppModel: ObservableObject {
                 return
             }
             generateWeeklyReview(period: schedule.period(at: trigger), template: schedule.template, scope: schedule.scope,
-                useModel: schedule.useModel, replacing: report?.id, schedule: schedule)
+                replacing: report?.id, schedule: schedule)
         case .refine(let report, let schedule):
-            refineWeeklyReport(report, schedule: schedule)
-        }
-    }
-
-    private func refineWeeklyReport(_ original: WeeklyReport, schedule: ReviewSchedule) {
-        guard !isGeneratingWeeklyReview, let responder = dailySummaryResponder() else { return }
-        let taskID = beginTask("周期回顾", target: original.period.label, phase: "更新正文并核对来源")
-        let snapshot = state
-        isGeneratingWeeklyReview = true
-        weeklyReviewTask = Task {
-            defer { isGeneratingWeeklyReview = false; weeklyReviewTask = nil }
-            do {
-                let job = Task.detached(priority: .utility) {
-                    try await WeeklyReviewEngine().refine(original, in: snapshot, responder: responder)
-                }
-                let report = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
-                let current = await store.snapshot()
-                guard current.privacy.cloudUseEnabled == snapshot.privacy.cloudUseEnabled,
-                      current.privacy.excludedBundleIdentifiers == snapshot.privacy.excludedBundleIdentifiers else { throw WeeklyReviewError.changedSources }
-                let saved = try await store.commitWeeklyRefinement(report, expected: original, schedule: schedule, categories: snapshot.reviewCategories)
-                state = await store.snapshot()
-                let hasDigest = !saved.digestRows.isEmpty
-                finishTask(taskID, state: saved.refinementPending || !hasDigest ? .partial : .succeeded,
-                    message: hasDigest ? "正文已更新" : "材料已保留，暂无可靠小结", destination: .review(saved.id))
-                if saved.refinementPending {
-                    recordDiagnostic(.warning, source: "WeeklyReview", message: "回顾正文核对未通过，保留来源事实", metadata: [:])
-                } else if schedule.notifyWhenReady && hasDigest {
-                    do { try await notificationScheduler.deliverWeeklyReview(saved) }
-                    catch { recordError(error, source: "WeeklyReview", message: "回顾整理完成，通知投递失败") }
-                }
-            } catch is CancellationError { finishTask(taskID, state: .cancelled, message: "已取消正文更新") }
-            catch {
-                finishTask(taskID, state: .failed, message: "正文更新失败，原版本保留")
-                recordError(error, source: "WeeklyReview", message: "回顾正文重试失败")
-                do { try await store.deferWeeklyRefinement(original, schedule: schedule); state = await store.snapshot() }
-                catch { recordError(error, source: "WeeklyReview", message: "保存正文重试状态失败") }
+            Task {
+                do { try await store.stopLegacyReviewRefinement(report, schedule: schedule); state = await store.snapshot() }
+                catch { recordError(error, source: "WeeklyReview", message: "更新旧回顾状态失败") }
             }
         }
     }
@@ -1304,7 +1287,7 @@ final class RecallAppModel: ObservableObject {
                 }
                 try await store.updateLLMConfiguration(updatedConfiguration)
                 await refresh()
-                noticeMessage = configuration.provider == .localOnly ? "已切换为本地摘要模式。" : "云端模型配置已保存；只有检索到的文本片段会在提问时发送。"
+                noticeMessage = configuration.provider == .localOnly ? "已切换为本地检索模式；正式回顾需要连接模型。" : "模型配置已保存；允许云端文本使用后，只发送当前任务需要的脱敏文本。"
             } catch {
                 recordError(error, source: "Model", message: "保存模型配置失败")
             }
@@ -1340,111 +1323,55 @@ final class RecallAppModel: ObservableObject {
     }
 
     private func generateDailySummary(for day: Date, reason: DailySummaryReason) {
-        if isGeneratingDailySummary {
+        if isGeneratingDailySummary || isGeneratingWeeklyReview || generatingTopicID != nil {
             guard !pendingDailySummaries.contains(where: { Calendar.current.isDate($0.day, inSameDayAs: day) }) else { return }
-            pendingDailySummaries.append((day, reason))
-            pendingDailySummaries.sort { $0.day < $1.day }
+            pendingDailySummaries.append((day, reason)); pendingDailySummaries.sort { $0.day < $1.day }; return
+        }
+        let taskID = beginTask("每日回顾", target: day.formatted(date: .abbreviated, time: .omitted), phase: "准备记录理解")
+        guard let responder = dailySummaryResponder() else {
+            finishTask(taskID, state: .failed, message: ModelReviewError.unavailable.localizedDescription)
             return
         }
         isGeneratingDailySummary = true
-        let taskID = beginTask("每日回顾", target: day.formatted(date: .abbreviated, time: .omitted), phase: "读取适用记录")
-        let analysisState = state.correctedForAnalysis()
-        let captures = analysisState.captures.filter {
-            !analysisState.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "")
-        }
-        let allowedSourceIDs = Set(captures.map(\.id))
-        let previousSummaries = analysisState.dailySummaries
-        let responder = dailySummaryResponder()
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: day)
+        let end = min(calendar.date(byAdding: .day, value: 1, to: start) ?? day, .now)
+        let period = ReviewPeriod(start: start, end: end, timeZoneIdentifier: calendar.timeZone.identifier)
         let modelStore = store
         dailyReviewTask = Task {
-            defer {
-                isGeneratingDailySummary = false
-                dailyReviewTask = nil
-                processNextDailySummary()
-            }
+            defer { isGeneratingDailySummary = false; dailyReviewTask = nil; processNextDailySummary() }
             do {
-                guard captures.contains(where: { Calendar.current.isDate($0.createdAt, inSameDayAs: day) && !$0.ocrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { throw WeeklyReviewError.noEvidence }
-                updateTask(taskID, phase: "整理并核对当天记录")
-                let generation = try await dailySummaryGenerator.generate(
-                    day: day,
-                    from: captures,
-                    previousSummaries: previousSummaries,
-                    existingEpisodes: analysisState.episodes,
-                    previousProjects: analysisState.projects.filter { Set($0.evidenceIDs).isSubset(of: allowedSourceIDs) },
-                    existingMemories: analysisState.userMemories.filter { Set($0.evidenceIDs).isSubset(of: allowedSourceIDs) },
-                    previousInsights: analysisState.insights,
-                    feedback: analysisState.insightFeedback,
-                    feedbackInstructions: SummaryFeedbackLearning.context(in: analysisState, kind: .daily),
-                    feedbackRejectedActions: analysisState.summaryFeedback.filter { $0.state == .applied && $0.resolution?.diagnosis == .action }.flatMap { entry in
-                        entry.target.items.filter { item in entry.resolution?.changes.contains { $0.itemID == item.id && $0.remove } ?? false }
-                    },
-                    existingRoutines: analysisState.learnedRoutines,
-                    existingReminders: analysisState.reminders,
-                    memoryKnowledge: analysisState.memoryKnowledge,
-                    memoryKnowledgeSettings: analysisState.memoryKnowledgeSettings,
-                    responder: responder,
-                    beforeModelCall: { ids in try await modelStore.validateDailySummaryModelCall(sourceIDs: ids, expected: analysisState) }
-                )
+                let prepared = try await modelStore.prepareModelReview(period: period, responder: responder,
+                    onPhase: { phase in await self.updateTask(taskID, phase: phase) })
+                state = prepared
+                let result = try await ModelReviewEngine().generate(in: prepared, period: period,
+                    beforeCall: { try await modelStore.validateModelReview(prepared, period: period) },
+                    onPhase: { phase in await self.updateTask(taskID, phase: phase) }, responder: responder)
                 try Task.checkCancellation()
+                guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
+                let summary = result.dailySummary(day: day)
                 updateTask(taskID, phase: "保存回顾")
-                let summary = DailySummary(
-                    day: day,
-                    content: generation.content,
-                    sourceCaptureIDs: generation.sourceCaptureIDs,
-                    todos: generation.todos,
-                    generationKind: generation.generationKind,
-                    briefing: generation.briefing,
-                    items: generation.items
-                )
-                guard !summary.items.isEmpty else { throw WeeklyReviewError.noEvidence }
-                let current = await store.snapshot()
-                guard current.privacy.cloudUseEnabled == analysisState.privacy.cloudUseEnabled,
-                      current.privacy.excludedBundleIdentifiers == analysisState.privacy.excludedBundleIdentifiers,
-                      current.matterCorrections.map(\.id) == analysisState.matterCorrections.map(\.id),
-                      SummaryFeedbackLearning.revision(in: current) == SummaryFeedbackLearning.revision(in: analysisState),
-                      Set(summary.sourceCaptureIDs).isSubset(of: Set(current.captures.map(\.id))),
-                      MemoryKnowledgeEngine().sourcesUsable(Set(summary.sourceCaptureIDs), in: current) else {
-                    finishTask(taskID, state: .failed, message: "来源已变化，请重新生成")
-                    return
-                }
-                if responder != nil { try await modelStore.validateDailySummaryModelCall(sourceIDs: Set(summary.sourceCaptureIDs), expected: analysisState) }
-                try await store.commitDailySummary(summary, consolidation: generation.consolidation)
-                if let issue = generation.modelIssue {
-                    recordDiagnostic(.warning, source: "DailySummary", message: "模型回顾格式无效，已使用有来源的本地回顾", metadata: issue.diagnosticMetadata)
-                }
-                finishTask(taskID, state: responder != nil && summary.generationKind != .cloud ? .partial : .succeeded, message: summary.generationKind == .cloud ? "回顾已保存" : generation.modelIssue != nil ? "模型未按回顾格式完成，已保存本地回顾" : "本地回顾已保存", destination: .daily(summary.id))
+                try await modelStore.commitModelDailySummary(summary, expected: prepared, period: period)
+                finishTask(taskID, state: .succeeded, message: "回顾已保存", destination: .daily(summary.id))
                 if reason == .manual { dailyToOpen = summary.id }
                 await refresh()
                 if state.dailySummarySettings.notifyWhenReady == true {
-                    do {
-                        try await notificationScheduler.deliverDailyBriefing(summary)
-                    } catch {
-                        recordDiagnostic(.warning, source: "DailySummary", message: "个人简报已保存，但系统通知投递失败", metadata: ["error": recallSafeErrorCode(error)])
-                    }
+                    do { try await notificationScheduler.deliverDailyBriefing(summary) }
+                    catch { recordError(error, source: "DailySummary", message: "回顾已保存，通知投递失败") }
                 }
-                if !summary.todos.isEmpty {
-                    discoverReminders(force: false, announce: false)
-                }
-                let mode = summary.generationKind == .cloud ? "模型总结" : "本地回退摘要"
-                if reason != .rebuildAfterDeletion {
-                    noticeMessage = "已生成 \(day.formatted(date: .abbreviated, time: .omitted)) 的\(mode)。"
-                }
-                recordDiagnostic(.info, source: "DailySummary", message: "每日回顾已生成", metadata: [
-                    "reason": reason == .scheduled ? "scheduled" : (reason == .manual ? "manual" : "deletionRebuild"),
-                    "generation": summary.generationKind.rawValue,
-                    "sourceCount": "\(summary.sourceCaptureIDs.count)",
-                    "todoCount": "\(summary.todos.count)"
-                ])
+                discoverReminders(force: false, announce: false)
+                recordDiagnostic(.info, source: "DailySummary", message: "模型回顾已生成", metadata: [
+                    "generation": "model-first", "sourceCount": "\(result.coverage.sourceCount)", "factCount": "\(result.coverage.factCount)"])
             } catch {
-                finishTask(taskID, state: error is CancellationError ? .cancelled : .failed, message: error is CancellationError ? "已取消，已有回顾保持不变" : error.localizedDescription)
-                var diagnostic = ["error": recallSafeErrorCode(error)]
-                if let failure = error as? LLMResponseFailure { diagnostic.merge(failure.diagnosticMetadata) { _, new in new } }
-                recordDiagnostic(.error, source: "DailySummary", message: "每日回顾生成失败", metadata: diagnostic)
+                finishTask(taskID, state: error is CancellationError ? .cancelled : .failed,
+                    message: error is CancellationError ? "已取消，已有回顾保持不变" : error.localizedDescription)
+                recordError(error, source: "DailySummary", message: "回顾未完成，未用本地摘录替换")
+                state = await store.snapshot()
             }
         }
     }
 
-    private func processNextDailySummary() {
+    func processNextDailySummary() {
         guard !isGeneratingDailySummary, !pendingDailySummaries.isEmpty else { return }
         let next = pendingDailySummaries.removeFirst()
         generateDailySummary(for: next.day, reason: next.reason)
@@ -1490,7 +1417,7 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
-    private func dailySummaryResponder() -> (any LLMResponding)? {
+    func dailySummaryResponder() -> (any LLMResponding)? {
         let configuration = state.llmConfiguration
         let apiKey = configuration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard state.privacy.cloudUseEnabled,
