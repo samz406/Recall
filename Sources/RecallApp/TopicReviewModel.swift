@@ -14,11 +14,13 @@ extension RecallAppModel {
         guard let start = dates.min() else { finishTask(taskID, state: .failed, message: "来源已变化，请更新主题"); return }
         let period = ReviewPeriod(start: start, end: .now)
         let modelStore = store
+        let requestState = state
         generatingTopicID = file.id
         topicReviewTask = Task {
             defer { generatingTopicID = nil; topicReviewTask = nil; processNextDailySummary() }
             do {
                 let prepared = try await modelStore.prepareModelReview(period: period, sourceIDs: ids, responder: responder,
+                    expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
                     onPhase: { phase in await self.updateTask(taskID, phase: phase) })
                 state = prepared
                 let refreshed = MatterMemoryEngine().files(in: prepared)

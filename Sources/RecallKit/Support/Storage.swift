@@ -751,6 +751,7 @@ public actor FileMemoryStore {
         knowledgeSnapshot.suppressedKeys = state.memoryKnowledge.suppressedKeys.filter(affectedKeys.contains)
         transaction.memoryKnowledge = knowledgeSnapshot
         transaction.weeklyReports = state.weeklyReports.filter { !$0.sourceIDs.isDisjoint(with: actualIDs) }
+        transaction.topicReviews = state.topicReviews.filter { !Set($0.sourceVersions.keys).isDisjoint(with: actualIDs) }
         transaction.topicGroups = state.topicGroups.filter { !Set($0.sourceIDs ?? []).isDisjoint(with: actualIDs) }
         transaction.matterCorrections = state.matterCorrections.filter { !Set($0.evidenceIDs).isDisjoint(with: actualIDs) }
         state.matterCorrections.removeAll { !Set($0.evidenceIDs).isDisjoint(with: actualIDs) }
@@ -859,6 +860,7 @@ public actor FileMemoryStore {
         let restoredGroups = (transaction.topicGroups ?? []).filter { Set($0.memberIDs).isDisjoint(with: groupedMembers) }
         Self.restoreUnique(restoredGroups, to: &state.topicGroups, id: \.id)
         Self.restoreUnique(transaction.weeklyReports ?? [], to: &state.weeklyReports, id: \.id)
+        Self.restoreUnique(transaction.topicReviews ?? [], to: &state.topicReviews, id: \.id)
         Self.restoreUnique(transaction.messages, to: &state.messages, id: \.id)
         state.messages.sort { $0.createdAt < $1.createdAt }
         Self.restoreUnique(transaction.reminders, to: &state.reminders, id: \.id)
@@ -1207,7 +1209,8 @@ public actor FileMemoryStore {
         reconcileCaptureUnderstanding()
         state.topicGroups.removeAll { group in group.sourceIDs.map { Set($0).isDisjoint(with: liveIDs) } ?? false }
         invalidateWeeklyReports()
-        state.topicReviews.removeAll { !$0.sourcesUnchanged(in: state) }
+        let topicState = state
+        state.topicReviews.removeAll { !$0.sourcesUnchanged(in: topicState) }
         applyKnowledge(MemoryKnowledgeEngine().reconcile(state, allowNew: false))
         if let previous { preserveReviewHistory(from: previous) }
         state.memoryKnowledge.dependencies = MemoryKnowledgeEngine().dependencies(in: state, claims: state.memoryKnowledge.claims)

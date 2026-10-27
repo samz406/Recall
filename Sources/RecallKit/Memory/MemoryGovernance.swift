@@ -137,6 +137,7 @@ public struct RecentlyDeletedMemory: Identifiable, Codable, Sendable {
     public var addedSuppressionRuleIDs: [UUID]
     public var topicGroups: [MemoryTopicGroup]? = nil
     public var matterCorrections: [MatterCorrection]?
+    public var topicReviews: [TopicModelReview]? = nil
     public var weeklyReports: [WeeklyReport]?
     public var memoryKnowledge: MemoryKnowledge?
 

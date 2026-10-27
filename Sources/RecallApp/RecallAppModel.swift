@@ -280,6 +280,7 @@ final class RecallAppModel: ObservableObject {
             } }
             return
         }
+        let requestState = state
         let scheduledTrigger = schedule?.effectiveTrigger(at: .now)
         weeklyReviewTask = Task {
             defer { isGeneratingWeeklyReview = false; weeklyReviewTask = nil; processNextDailySummary() }
@@ -287,7 +288,8 @@ final class RecallAppModel: ObservableObject {
                 let modelStore = store
                 let scopedIDs: Set<UUID>? = scope.useSelectedTopics ? Set(matterFiles.filter { scope.topicIDs.contains(WeeklyReviewEngine.topicID(for: $0)) }.flatMap(\.evidenceIDs)) : nil
                 let snapshot = try await modelStore.prepareModelReview(period: period, sourceIDs: scopedIDs,
-                    responder: responder, onPhase: { phase in await self.updateTask(taskID, phase: phase) })
+                    responder: responder, expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
+                    onPhase: { phase in await self.updateTask(taskID, phase: phase) })
                 state = snapshot
                 let result = try await ModelReviewEngine().generate(in: snapshot, period: period, template: template, sourceIDs: scopedIDs,
                     beforeCall: { try await modelStore.validateModelReview(snapshot, period: period, sourceIDs: scopedIDs) },
@@ -1338,10 +1340,12 @@ final class RecallAppModel: ObservableObject {
         let end = min(calendar.date(byAdding: .day, value: 1, to: start) ?? day, .now)
         let period = ReviewPeriod(start: start, end: end, timeZoneIdentifier: calendar.timeZone.identifier)
         let modelStore = store
+        let requestState = state
         dailyReviewTask = Task {
             defer { isGeneratingDailySummary = false; dailyReviewTask = nil; processNextDailySummary() }
             do {
                 let prepared = try await modelStore.prepareModelReview(period: period, responder: responder,
+                    expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
                     onPhase: { phase in await self.updateTask(taskID, phase: phase) })
                 state = prepared
                 let result = try await ModelReviewEngine().generate(in: prepared, period: period,

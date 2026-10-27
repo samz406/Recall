@@ -70,15 +70,10 @@ public enum ModelReviewEvidence {
         for record in records {
             let additions: [ModelReviewFact]
             if let note = record.manualMatter, record.textOrigin == .userInput, note.isValid {
-                var manual = [ModelReviewFact(id: record.id.uuidString, title: note.title, detail: note.detail,
-                    attribution: "本人主动补记", kind: "event", status: note.status.rawValue, recordedAt: record.createdAt,
-                    eventTime: note.eventAt.map { ISO8601DateFormatter().string(from: $0) }, condition: nil, deadline: nil,
-                    sourceIDs: [record.id], quotes: [record.ocrText], isAction: false)]
-                if let action = note.nextAction, !action.isEmpty, note.status != .completed {
-                    manual.append(ModelReviewFact(id: record.id.uuidString + ":action", title: note.title, detail: action,
-                        attribution: "本人主动填写的后续行动", kind: "commitment", status: "pending", recordedAt: record.createdAt,
-                        eventTime: nil, condition: nil, deadline: nil, sourceIDs: [record.id], quotes: [record.ocrText], isAction: true))
-                }
+                let manual = [ModelReviewFact(id: record.id.uuidString, title: note.title, detail: note.detail,
+                    attribution: "本人主动补记", kind: note.status == .pending ? "commitment" : "event", status: note.status.rawValue, recordedAt: record.createdAt,
+                    eventTime: ISO8601DateFormatter().string(from: note.eventAt), condition: nil, deadline: nil,
+                    sourceIDs: [record.id], quotes: [record.ocrText], isAction: note.status == .pending)]
                 additions = manual
             } else {
                 guard let understood = record.understanding, CaptureUnderstandingEngine.isCurrent(understood, in: state) else { throw ModelReviewError.incomplete }

@@ -5,9 +5,12 @@ extension FileMemoryStore {
     /// prevent a user-requested review; the cloud permission always applies to every call.
     public func prepareModelReview(period: ReviewPeriod, sourceIDs: Set<UUID>? = nil,
                                    responder: any LLMResponding,
+                                   expectedConfiguration: LLMConfiguration? = nil, expectedPrivacy: PrivacySettings? = nil,
                                    onPhase: (@Sendable (String) async -> Void)? = nil) async throws -> RecallState {
         guard state.privacy.cloudUseEnabled, state.llmConfiguration.provider != .localOnly,
               !state.llmConfiguration.apiKey.isEmpty else { throw ModelReviewError.unavailable }
+        guard expectedConfiguration == nil || state.llmConfiguration == expectedConfiguration,
+              expectedPrivacy == nil || state.privacy == expectedPrivacy else { throw ModelReviewError.changed }
         let baseline = state
         let records = ModelReviewEvidence.records(in: baseline, period: period, sourceIDs: sourceIDs)
         guard !records.isEmpty else { throw WeeklyReviewError.noEvidence }
