@@ -6,6 +6,7 @@ import RecallKit
 struct RecallVerifier {
     static func main() async {
         do {
+            try await ModelResponseVerification.run()
             try await CaptureUnderstandingVerification.run()
             try await SummaryFeedbackVerification.run()
             try await MemoryKnowledgeVerification.run()
@@ -74,9 +75,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 130 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 141 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 129 integration checks.")
+                print("PASS: RecallVerifier completed 140 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)

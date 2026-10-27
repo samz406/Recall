@@ -812,6 +812,7 @@ public struct DailySummaryGeneration: Sendable {
     public var generationKind: DailySummaryGenerationKind
     public var briefing: DailyBriefing
     public var consolidation: IntelligenceConsolidation
+    public var modelIssue: LLMResponseFailure?
 
     public init(
         content: String,
@@ -820,7 +821,8 @@ public struct DailySummaryGeneration: Sendable {
         items: [DailySummaryItem] = [],
         generationKind: DailySummaryGenerationKind,
         briefing: DailyBriefing,
-        consolidation: IntelligenceConsolidation
+        consolidation: IntelligenceConsolidation,
+        modelIssue: LLMResponseFailure? = nil
     ) {
         self.content = content
         self.sourceCaptureIDs = sourceCaptureIDs
@@ -829,6 +831,7 @@ public struct DailySummaryGeneration: Sendable {
         self.generationKind = generationKind
         self.briefing = briefing
         self.consolidation = consolidation
+        self.modelIssue = modelIssue
     }
 }
 
@@ -969,6 +972,7 @@ public struct DailySummaryGenerator: Sendable {
         memoryKnowledge: MemoryKnowledge = MemoryKnowledge(),
         memoryKnowledgeSettings: MemoryKnowledgeSettings = MemoryKnowledgeSettings(),
         responder: (any LLMResponding)? = nil,
+        beforeModelCall: @Sendable (Set<UUID>) async throws -> Void = { _ in },
         calendar: Calendar = .current
     ) async throws -> DailySummaryGeneration {
         let records = sourceRecords(for: day, from: captures, calendar: calendar)
@@ -1041,31 +1045,42 @@ public struct DailySummaryGenerator: Sendable {
             activeProjectKeys.contains($0.projectKey) && $0.lastActiveAt >= earliestContextDay && isUsableHistoricalProject($0)
         }.prefix(8))
         let contextualSourceIDs = Set(contextualMemories.flatMap(\.evidenceIDs) + contextualProjects.flatMap(\.evidenceIDs))
-        let answer = try await responder.answer(to: LLMRequest(
-            question: cloudPrompt(for: day, todos: reviewableActions) + (feedbackInstructions.isEmpty ? "" : "\n" + PrivacyEngine().redact(feedbackInstructions)),
-            context: records,
-            supplementaryContext: structuredContext(
-                targetDay: day,
-                activeProjectKeys: activeProjectKeys,
-                previousProjects: contextualProjects,
-                memories: contextualMemories,
-                calendar: calendar
-            )
-        ))
-        let structuredItems = DailySummaryItemParser.itemsFromModelResponse(
-            answer.content,
-            defaultEvidenceIDs: records.map(\.id), strictEvidence: true
-        )
-        let modelItems = structuredItems ?? DailySummaryItemParser.items(
-            from: answer.content,
-            defaultEvidenceIDs: records.map(\.id)
-        )
+        let modelSourceIDs = Set(records.map(\.id)).union(contextualSourceIDs)
+        let question = cloudPrompt(for: day, todos: reviewableActions) + (feedbackInstructions.isEmpty ? "" : "\n" + PrivacyEngine().redact(feedbackInstructions))
+        let background = structuredContext(targetDay: day, activeProjectKeys: activeProjectKeys,
+            previousProjects: contextualProjects, memories: contextualMemories, calendar: calendar)
+        var structuredItems: [DailySummaryItem]?
+        var modelIssue: LLMResponseFailure?
+        // A fresh bounded attempt, never an appended continuation of partial JSON/reasoning.
+        // The caller rechecks privacy and source versions before every external request.
+        for attempt in 0..<2 {
+            try Task.checkCancellation()
+            try await beforeModelCall(modelSourceIDs)
+            do {
+                let repair = attempt == 0 ? "" : "\n上次未完成本任务。本次只返回规定的完整 JSON 对象，保留必要事实与来源编号，不要输出解释、推理过程或 Markdown。"
+                let answer = try await responder.answer(to: LLMRequest(question: question + repair,
+                    context: records, supplementaryContext: background, purpose: .dailySummary,
+                    outputTokenLimit: attempt == 0 ? 6_000 : 8_000))
+                if let parsed = DailySummaryItemParser.itemsFromModelResponse(answer.content,
+                    defaultEvidenceIDs: records.map(\.id), strictEvidence: true) {
+                    structuredItems = parsed; modelIssue = nil; break
+                }
+                modelIssue = LLMResponseFailure(reason: .structuredFormat)
+            } catch let failure as LLMResponseFailure where attempt == 0 && [.truncated, .reasoningOnly].contains(failure.reason) {
+                modelIssue = failure
+            }
+        }
+        // Failed regeneration must not replace a user's existing report with a weaker fallback.
+        if structuredItems == nil, previousSummaries.contains(where: { calendar.isDate($0.day, inSameDayAs: day) }) {
+            throw modelIssue ?? LLMResponseFailure(reason: .structuredFormat)
+        }
+        let modelItems = structuredItems ?? []
         let fallbackItems = localItems(
             briefing: consolidation.briefing,
             todos: priorityTodos,
             defaultEvidenceIDs: records.map(\.id)
         )
-        let hasValidModelResponse = structuredItems != nil || !modelItems.isEmpty
+        let hasValidModelResponse = structuredItems != nil
         let evidenceByID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, actionKey($0.ocrText)) })
         let groundedModelItems = modelItems.filter { item in
             guard item.section == .insights else { return true }
@@ -1086,11 +1101,22 @@ public struct DailySummaryGenerator: Sendable {
             用户要求数据：\(PrivacyEngine().redact(feedbackInstructions))
             待核验回顾数据：\(PrivacyEngine().redact(DailySummaryItemParser.markdown(from: finalItems)))
             """
-            let checked = try await responder.answer(to: LLMRequest(question: auditPrompt, context: records, purpose: .summaryFeedbackAudit, outputTokenLimit: 400))
             struct Audit: Decodable { let accepted: Bool }
-            guard let a = checked.content.firstIndex(of: "{"), let b = checked.content.lastIndex(of: "}"), a <= b,
-                  let data = String(checked.content[a...b]).data(using: .utf8),
-                  let result = try? JSONDecoder().decode(Audit.self, from: data), result.accepted else { throw SummaryFeedbackError.rejected }
+            var accepted: Bool?
+            for attempt in 0..<2 {
+                try Task.checkCancellation()
+                try await beforeModelCall(modelSourceIDs)
+                do {
+                    let checked = try await responder.answer(to: LLMRequest(question: auditPrompt,
+                        context: records, purpose: .summaryFeedbackAudit, outputTokenLimit: attempt == 0 ? 4_000 : 8_000))
+                    if let a = checked.content.firstIndex(of: "{"), let b = checked.content.lastIndex(of: "}"), a <= b,
+                       let data = String(checked.content[a...b]).data(using: .utf8),
+                       let result = try? JSONDecoder().decode(Audit.self, from: data) {
+                        accepted = result.accepted; break
+                    }
+                } catch let failure as LLMResponseFailure where attempt == 0 && [.truncated, .reasoningOnly].contains(failure.reason) { continue }
+            }
+            guard accepted == true else { throw SummaryFeedbackError.rejected }
         }
         return DailySummaryGeneration(
             content: DailySummaryItemParser.markdown(from: finalItems),
@@ -1099,7 +1125,8 @@ public struct DailySummaryGenerator: Sendable {
             items: finalItems,
             generationKind: hasValidModelResponse ? .cloud : .localFallback,
             briefing: consolidation.briefing,
-            consolidation: consolidation
+            consolidation: consolidation,
+            modelIssue: modelIssue
         )
     }
 
