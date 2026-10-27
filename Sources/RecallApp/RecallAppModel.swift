@@ -701,6 +701,11 @@ final class RecallAppModel: ObservableObject {
     }
 
     func record(rule: EventRule, userText: String? = nil, diagnosticSource: String = "Capture") {
+        if rule.template == .dailyReview {
+            guard rule.isEnabled else { noticeMessage = "请先启用这条记录规则。"; return }
+            generateDailyReview(on: .now)
+            return
+        }
         isRecording = true
         recordDiagnostic(
             .info,
@@ -711,8 +716,7 @@ final class RecallAppModel: ObservableObject {
         Task {
             defer { isRecording = false }
             do {
-                let resolvedText = rule.template == .dailyReview ? makeDailyReviewText() : userText
-                let record = try await pipeline.record(using: rule, userText: resolvedText)
+                let record = try await pipeline.record(using: rule, userText: userText)
                 await refresh()
                 recordDiagnostic(
                     .info,
@@ -1487,19 +1491,6 @@ final class RecallAppModel: ObservableObject {
 
     private func dailySummaryTimeText(_ settings: DailySummarySettings) -> String {
         String(format: "%02d:%02d", settings.hour, settings.minute)
-    }
-
-    private func makeDailyReviewText() -> String {
-        let start = Calendar.current.startOfDay(for: .now)
-        let todaysCaptures = state.captures.filter { $0.createdAt >= start && $0.eventTemplate != .dailyReview }
-        guard !todaysCaptures.isEmpty else {
-            return "每日回顾：今天还没有可汇总的显式记录。"
-        }
-        let lines = todaysCaptures.prefix(12).map { capture in
-            let source = capture.sourceAppName ?? "未知来源"
-            return "- \(source)：\(capture.summary ?? String(capture.ocrText.prefix(120)))"
-        }
-        return "每日回顾（\(todaysCaptures.count) 条显式记录）：\n" + lines.joined(separator: "\n")
     }
 
     func clearAllData() {
