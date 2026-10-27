@@ -23,7 +23,6 @@ public struct MemoryRetrievalEngine: Sendable {
         let allowedIDs = Set(participating.map(\.id))
         let allowed = participating.map { $0.scopingUnderstanding(to: allowedIDs) }
         let restrictedUnderstandingIDs = Set(zip(participating, allowed).filter { $0.0.understanding != nil && $0.1.understanding == nil }.map { $0.0.id })
-        let byID = Dictionary(uniqueKeysWithValues: allowed.map { ($0.id, $0) })
         let ledger = MemoryKnowledgeEngine().reconcile(state)
         let active = ledger.claims.filter { claim in
             ledger.organizationVersion == MemoryKnowledgeEngine.organizationVersion
