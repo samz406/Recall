@@ -109,8 +109,9 @@ enum ModelReviewVerification {
         try await emptyUnderstanding()
         try await discardedUnderstanding()
         try await persistenceAndDeletion()
+        try await explicitCategoryScope()
         try migrationAndSchedule()
-        print("PASS: 13 model-first review scenarios (full range, model-only narratives, audit, reuse, resume, privacy and deletion)")
+        print("PASS: 14 model-first review scenarios (full range, model-only narratives, audit, reuse, resume, privacy and deletion)")
     }
     static func fullRangeAndReuse() async throws {
         let f = try await fixture(count: 40, raw: true); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
@@ -242,6 +243,18 @@ enum ModelReviewVerification {
         try await reopened.correctCaptureText(f.records[0].id, text: "[聊天·自己] 更正：Atlas 验证尚未完成。")
         let changed = await reopened.snapshot()
         try expect(changed.topicReviews.isEmpty && changed.weeklyReports.first?.isReadable == false, "来源更正后仍保留失效的模型总结")
+    }
+    static func explicitCategoryScope() async throws {
+        let f = try await fixture(count: 2); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
+        var state = await f.store.snapshot()
+        state.captures[0].manualMatter?.reviewCategory = .personal
+        state.captures[1].manualMatter?.reviewCategory = .work
+        let privateID = state.captures[0].id
+        let model = Model()
+        let result = try await ModelReviewEngine().generate(in: state, period: f.period, template: ReviewTemplate(kind: .work), responder: model)
+        try expect(result.facts.count == 1 && !result.facts.flatMap(\.sourceIDs).contains(privateID), "工作模板忽略了用户明确的生活分类")
+        let requests = await model.log()
+        try expect(!requests.contains { $0.context.contains { $0.ocrText.contains(privateID.uuidString) } }, "已明确排除的分类仍进入回顾模型上下文")
     }
     static func migrationAndSchedule() throws {
         let state = try JSONDecoder().decode(RecallState.self, from: Data("{}".utf8))

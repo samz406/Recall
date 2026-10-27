@@ -36,6 +36,7 @@ public struct ModelReviewFact: Codable, Hashable, Identifiable, Sendable {
     public var sourceIDs: [UUID]
     public var quotes: [String]
     public var isAction: Bool
+    public var category: String? = nil
 }
 public struct ModelReviewItem: Codable, Hashable, Sendable {
     public var section: String
@@ -65,6 +66,14 @@ public enum ModelReviewEvidence {
     }
     public static func facts(in state: RecallState, records: [CaptureRecord]) throws -> [ModelReviewFact] {
         var result: [ModelReviewFact] = []
+        var explicitCategories: [UUID: String] = [:]
+        if !state.reviewCategories.isEmpty {
+            for file in MatterMemoryEngine().files(in: state) {
+                if let category = state.reviewCategories[WeeklyReviewEngine.topicID(for: file)], category != .unclassified {
+                    for event in file.events { explicitCategories[event.id] = category.rawValue }
+                }
+            }
+        }
         // Deduplicate literal meaning only; preserve the original dates, ownership and all source IDs.
         var indices: [String: Int] = [:]
         for record in records {
@@ -74,22 +83,26 @@ public enum ModelReviewEvidence {
                     attribution: "本人主动补记", kind: note.status == .pending ? "commitment" : "event", status: note.status.rawValue, recordedAt: record.createdAt,
                     eventTime: ISO8601DateFormatter().string(from: note.eventAt), condition: nil, deadline: nil,
                     sourceIDs: [record.id], quotes: [record.ocrText], isAction: note.status == .pending)]
-                additions = manual
+                additions = manual.map { value in
+                    var fact = value; fact.category = note.reviewCategory?.rawValue ?? explicitCategories[record.id]; return fact
+                }
             } else {
                 guard let understood = record.understanding, CaptureUnderstandingEngine.isCurrent(understood, in: state) else { throw ModelReviewError.incomplete }
                 additions = understood.facts.map { fact in
-                    ModelReviewFact(id: fact.id, title: fact.subject, detail: fact.detail,
+                    var value = ModelReviewFact(id: fact.id, title: fact.subject, detail: fact.detail,
                         attribution: "speaker=\(fact.speaker.rawValue),actor=\(fact.actor.rawValue)", kind: fact.kind.rawValue,
                         status: fact.status.rawValue, recordedAt: record.createdAt, eventTime: fact.eventTime?.text,
                         condition: fact.condition, deadline: fact.deadline?.text, sourceIDs: fact.sourceIDs,
                         quotes: fact.evidence.map(\.quote), isAction: fact.isUserAction)
+                    value.category = explicitCategories[fact.eventID]
+                    return value
                 }
             }
             for var fact in additions {
                 // A stable input ID is independent of model-provided naming and duplicate screenshots.
                 let date = fact.eventTime ?? String(ISO8601DateFormatter().string(from: fact.recordedAt).prefix(10))
                 let key = [fact.title, fact.detail, fact.attribution, fact.kind, fact.status, date,
-                    fact.condition ?? "", fact.deadline ?? ""].joined(separator: "\u{1f}")
+                    fact.condition ?? "", fact.deadline ?? "", fact.category ?? ""].joined(separator: "\u{1f}")
                 if let index = indices[key] {
                     result[index].sourceIDs = Array(Set(result[index].sourceIDs + fact.sourceIDs)).sorted { $0.uuidString < $1.uuidString }
                     result[index].quotes = Array(Set(result[index].quotes + fact.quotes)).sorted()
@@ -132,7 +145,11 @@ public struct ModelReviewEngine: Sendable {
         guard state.privacy.cloudUseEnabled, (topic == nil ? period.isValid : (period.start < period.end && TimeZone(identifier: period.timeZoneIdentifier) != nil)) else { throw ModelReviewError.unavailable }
         let records = ModelReviewEvidence.records(in: state, period: period, sourceIDs: sourceIDs)
         guard !records.isEmpty else { throw WeeklyReviewError.noEvidence }
-        let facts = try ModelReviewEvidence.facts(in: state, records: records)
+        let facts = try ModelReviewEvidence.facts(in: state, records: records).filter { fact in
+            if template?.kind.requiresWorkScope == true { return fact.category != "personal" && fact.category != "learning" }
+            if template?.kind == .learning { return fact.category != "personal" && fact.category != "work" }
+            return true
+        }
         let dependencyIDs = Set(records.map(\.id)).union(facts.flatMap(\.sourceIDs))
         let versions = Dictionary(uniqueKeysWithValues: dependencyIDs.compactMap { id in WeeklyReviewEngine.sourceVersion(id: id, state: state).map { (id, $0) } })
         guard versions.count == dependencyIDs.count else { throw ModelReviewError.changed }
@@ -158,6 +175,7 @@ public struct ModelReviewEngine: Sendable {
         为 Recall 生成\(PrivacyEngine().redact(task))。记录范围：\(period.label)。输入是逐条经过模型理解和核对的记录，不是全新的独立事实。
         本范围有 \(coverage.uncertainBlockCount) 个片段未能可靠理解；没有归纳出事实不等于没有发生，不得声称已覆盖用户全部经历，也不能据缺少记录推断项目停滞。
         \(template.map { "模板：\($0.kind.rawValue)，语气：\($0.tone.rawValue)。仅总结此模板相关内容；工作模板排除生活、学习材料，学习模板不能把阅读当作掌握。" } ?? "")
+        明确设置的 category 分类优先于自行推测；未分类内容再按模板判断是否相关。
         同一件事合并描述实际变化和最终状态；不同主体、对象和目标不能因同日或同一工具而拼接。保存资料、他人和助手的话不能当作用户已完成、已决定、偏好或承诺。
         recordedAt 是采集时间；eventTime 才是原文显示的发生时间，未知时不得杜撰日期；保留条件、部分完成、待验证与否定。消息时间、发布日期、提交哈希、菜单、代码碎片都不是行动。
         正文使用简体中文自然完整句。标题独立概括具体事情（3–70字），不截取正文前半句；正文补充变化、结果或限制，不重复标题。不显示 Markdown 标记、引用数字、置信度或算法术语。

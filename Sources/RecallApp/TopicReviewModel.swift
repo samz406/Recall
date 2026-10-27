@@ -23,7 +23,8 @@ extension RecallAppModel {
                     expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
                     onPhase: { phase in await self.updateTask(taskID, phase: phase) })
                 state = prepared
-                let refreshed = MatterMemoryEngine().files(in: prepared)
+                let refreshed = await Task.detached(priority: .utility) { MatterMemoryEngine().files(in: prepared) }.value
+                try Task.checkCancellation()
                 guard let target = refreshed.first(where: { $0.id == file.id })
                     ?? refreshed.first(where: { Set($0.evidenceIDs) == ids }) else { throw ModelReviewError.changed }
                 let result = try await ModelReviewEngine().generate(in: prepared, period: period, topic: target.title, sourceIDs: ids,

@@ -286,7 +286,16 @@ final class RecallAppModel: ObservableObject {
             defer { isGeneratingWeeklyReview = false; weeklyReviewTask = nil; processNextDailySummary() }
             do {
                 let modelStore = store
-                let scopedIDs: Set<UUID>? = scope.useSelectedTopics ? Set(matterFiles.filter { scope.topicIDs.contains(WeeklyReviewEngine.topicID(for: $0)) }.flatMap(\.evidenceIDs)) : nil
+                let chosen = scope.useSelectedTopics ? Set(matterFiles.filter { scope.topicIDs.contains(WeeklyReviewEngine.topicID(for: $0)) }.flatMap(\.evidenceIDs)) : nil
+                let hidden = Set(matterFiles.filter { file in
+                    guard let category = requestState.reviewCategories[WeeklyReviewEngine.topicID(for: file)] else { return false }
+                    return template.kind.requiresWorkScope ? [.personal, .learning].contains(category) : (template.kind == .learning && [.work, .personal].contains(category))
+                }.flatMap(\.evidenceIDs))
+                let scopedIDs = Set(ModelReviewEvidence.records(in: requestState, period: period, sourceIDs: chosen).filter { record in
+                    if hidden.contains(record.id) { return false }
+                    guard let category = record.manualMatter?.reviewCategory else { return true }
+                    return template.kind.requiresWorkScope ? ![.personal, .learning].contains(category) : (template.kind != .learning || ![.work, .personal].contains(category))
+                }.map(\.id))
                 let snapshot = try await modelStore.prepareModelReview(period: period, sourceIDs: scopedIDs,
                     responder: responder, expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
                     onPhase: { phase in await self.updateTask(taskID, phase: phase) })

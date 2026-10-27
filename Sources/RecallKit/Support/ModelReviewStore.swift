@@ -122,6 +122,7 @@ extension FileMemoryStore {
         for report in previous.dailySummaries where unchanged(Set(report.sourceCaptureIDs)) {
             if !state.dailySummaries.contains(where: { $0.id == report.id }) { state.dailySummaries.append(report) }
         }
+        state.dailySummaries.sort { $0.day > $1.day }
         for var report in previous.weeklyReports where report.isReadable && unchanged(report.sourceIDs) {
             guard let i = state.weeklyReports.firstIndex(where: { $0.id == report.id }) else { continue }
             report.sourceVersions = Dictionary(uniqueKeysWithValues: report.sourceIDs.compactMap { id in
