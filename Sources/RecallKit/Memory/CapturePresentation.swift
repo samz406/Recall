@@ -8,6 +8,12 @@ public struct CapturePresentation: Sendable {
     public let tags: [String]
 
     public init(capture: CaptureRecord) {
+        if let understanding = capture.understanding {
+            title = understanding.facts.first?.subject ?? "这条记录暂无明确事项"
+            summary = understanding.facts.prefix(3).map(\.statement).joined(separator: "\n")
+            tags = Array(Set(understanding.facts.map(\.subject))).sorted()
+            return
+        }
         let evidence = capture.ocrText.trimmingCharacters(in: .whitespacesAndNewlines)
         let text = evidence.isEmpty ? (capture.summary ?? "") : evidence
         let ranked = LocalSummary.rankedSentences(from: text)

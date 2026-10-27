@@ -245,6 +245,8 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
     public var editedMarkdown: String?
     public var invalidatedAt: Date?
     public var modelAssisted: Bool = false
+    public var modelCoverage: ModelReviewCoverage? = nil
+    public var modelOverview: String? = nil
     public var topicGrouping: [MemoryTopicGroup]? = nil
     /// Selected reading topics; all candidates/evidence remain in items. Nil denotes a legacy report.
     public var digestTopicIDs: [String]? = nil
@@ -269,7 +271,7 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
     }
     public var sourceIDs: Set<UUID> { Set(sourceVersions.keys) }
     public var isReadable: Bool { invalidatedAt == nil }
-    public var overview: String { isReadable ? digestOverview : "" }
+    public var overview: String { isReadable ? (modelOverview ?? (modelCoverage == nil ? digestOverview : "")) : "" }
 
     public var displayName: String {
         let long = (period.calendar.dateComponents([.day], from: period.start, to: period.end).day ?? 0) > 7 || period.calendar.dateInterval(of: .month, for: period.start)?.start == period.start
@@ -306,7 +308,7 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
     }
     /// Remove dependent text, including user edits, instead of merely concealing it in the UI.
     public mutating func invalidate(at date: Date = .now) {
-        items = []; digestTopicIDs = nil; editedMarkdown = nil; sourceVersions = [:]; invalidatedAt = date; refinementPending = false
+        items = []; digestTopicIDs = nil; editedMarkdown = nil; modelOverview = nil; modelCoverage = nil; sourceVersions = [:]; invalidatedAt = date; refinementPending = false
     }
 }
 
@@ -322,7 +324,7 @@ public struct ReviewSchedule: Codable, Identifiable, Equatable, Sendable {
     public var periodKind: ReviewPeriodKind = .currentWeek
     public var template: ReviewTemplate
     public var scope: ReviewScope
-    public var useModel: Bool = false
+    public var useModel: Bool = true
     public var notifyWhenReady: Bool = false
     public var nextRunAt: Date?
     public var retryAfter: Date?

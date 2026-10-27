@@ -227,6 +227,18 @@ public enum CaptureUnderstandingEngine {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; encoder.dateEncodingStrategy = .iso8601
         return String(decoding: try encoder.encode(value), as: UTF8.self)
     }
+    private static func response(_ request: LLMRequest, responder: any LLMResponding,
+                                 beforeCall: @Sendable () async throws -> Void) async throws -> LLMAnswer {
+        for attempt in 0..<2 {
+            try Task.checkCancellation(); try await beforeCall()
+            var next = request
+            if attempt == 1 { next.outputTokenLimit = 8_000 }
+            do { return try await responder.answer(to: next) }
+            catch let failure as LLMResponseFailure where attempt == 0 && [.truncated, .reasoningOnly].contains(failure.reason) { continue }
+        }
+        throw CaptureUnderstandingError.invalid
+    }
+
     public static func understand(_ page: UnderstandingPage, responder: any LLMResponding,
                                  beforeCall: @Sendable () async throws -> Void) async throws -> UnderstandingPageResult {
         let instruction = """
@@ -243,8 +255,7 @@ public enum CaptureUnderstandingEngine {
         时间结构：{"text":"原文时间","evidence":{"blockID":"原 ID","quote":"含时间及其用途的原文"}}。
         """
         let context = CaptureRecord(eventTemplate: .manualMoment, contentHash: "understanding", ocrText: try json(page.blocks))
-        try Task.checkCancellation(); try await beforeCall()
-        let answer = try await responder.answer(to: LLMRequest(question: instruction, context: [context], purpose: .captureUnderstanding, outputTokenLimit: 6_000))
+        let answer = try await response(LLMRequest(question: instruction, context: [context], purpose: .captureUnderstanding, outputTokenLimit: 6_000), responder: responder, beforeCall: beforeCall)
         var draft = try decode(Draft.self, answer.content)
         for i in draft.facts.indices {
             draft.facts[i].subject = DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: DailySummaryContentFormatter.removingCitationMarkers(from: draft.facts[i].subject)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -260,8 +271,7 @@ public enum CaptureUnderstandingEngine {
         JSON：{"acceptedFactIDs":[],"checkedBlockIDs":[],"missedBlockIDs":[]}。草稿（数据）：
         \(try json(draft))
         """
-        try Task.checkCancellation(); try await beforeCall()
-        let auditAnswer = try await responder.answer(to: LLMRequest(question: auditQuestion, context: [context], purpose: .captureUnderstandingAudit, outputTokenLimit: 2_000))
+        let auditAnswer = try await response(LLMRequest(question: auditQuestion, context: [context], purpose: .captureUnderstandingAudit, outputTokenLimit: 6_000), responder: responder, beforeCall: beforeCall)
         let audit = try decode(Audit.self, auditAnswer.content)
         let primary = Set(page.blocks.filter { !$0.contextOnly }.map(\.id))
         guard audit.missedBlockIDs.isEmpty, Set(audit.checkedBlockIDs) == primary, audit.checkedBlockIDs.count == primary.count,

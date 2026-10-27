@@ -8,7 +8,8 @@ struct DailyReviewContentView: View {
     @State private var source: DailySummaryItem?
     private var items: [DailySummaryItem] {
         let live = Set(model.state.captures.map(\.id))
-        return DailySummaryItemParser.sanitized(summary.items).filter { item in
+        let presented = summary.modelCoverage == nil ? DailySummaryItemParser.sanitized(summary.items) : DailySummaryItemParser.modelValidated(summary.items)
+        return presented.filter { item in
             guard Set(item.evidenceIDs).isSubset(of: live) else { return false }
             if item.section == .actions,
                let reminder = model.reminder(for: item.title, sourceIDs: item.evidenceIDs, candidateID: item.actionCandidateID),

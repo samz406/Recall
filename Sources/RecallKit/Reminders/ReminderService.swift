@@ -749,7 +749,7 @@ public final class LocalNotificationScheduler {
         }
         let content = UNMutableNotificationContent()
         content.title = "Recall 已生成个人简报"
-        content.body = summary.briefing?.headline ?? "昨天的关键进展、未闭环事项和个性化建议已整理完成。"
+        content.body = summary.modelOverview ?? summary.briefing?.headline ?? "每日回顾已生成，可以打开查看。"
         content.sound = .default
         content.userInfo = ["dailySummaryID": summary.id.uuidString]
         let identifier = "im.recall.app.daily-summary.\(Int(summary.day.timeIntervalSince1970))"

@@ -34,11 +34,6 @@ struct WeeklyReviewView: View {
         model.state.weeklyReports.first { $0.id == selectedID } ?? model.state.weeklyReports.first(where: \.isReadable) ?? model.state.weeklyReports.first
     }
     private var allTemplates: [ReviewTemplate] { ReviewTemplate.builtIns + model.state.reviewTemplates }
-    private var useModel: Bool {
-        model.state.privacy.cloudUseEnabled
-            && model.state.llmConfiguration.provider != .localOnly
-            && !model.state.llmConfiguration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
     var body: some View {
         let range = period
         let preview = model.reviewIndex.preview(in: range, kind: template.kind, scope: scope)
@@ -219,7 +214,7 @@ struct WeeklyReviewView: View {
     }
     private func generateButton(range: ReviewPeriod, eligibleTopicCount: Int) -> some View {
         Button {
-            model.generateWeeklyReview(period: range, template: template, scope: scope, useModel: useModel)
+            model.generateWeeklyReview(period: range, template: template, scope: scope)
         } label: {
             Label("生成回顾", systemImage: "sparkles")
                 .font(.system(size: 15, weight: .semibold))
@@ -280,7 +275,7 @@ struct WeeklyReviewView: View {
                 Divider()
                 Button("重新生成（保留原版本）") {
                     model.generateWeeklyReview(period: report.period, template: report.template, scope: report.scope,
-                        useModel: useModel || (model.state.privacy.cloudUseEnabled && (report.modelAssisted || report.refinementPending)), replacing: nil)
+                        replacing: nil)
                 }.disabled(model.isGeneratingWeeklyReview)
                 Button("删除回顾", role: .destructive) { deleting = report }
             } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
@@ -686,7 +681,8 @@ private struct ReviewScheduleEditor: View {
             }
             Text("使用 \(schedule.timeZoneIdentifier) 时区。选择‘本周’时，只总结到计划生成时刻；需要完整周一至周日，可在周一生成‘上一个完整周’。")
                 .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
-            Toggle("使用模型按模板整理成文", isOn: $schedule.useModel).disabled(!model.state.privacy.cloudUseEnabled && !schedule.useModel)
+            Text("回顾由已连接的模型生成。生成前会先补齐这段时间的记录理解；模型不可用时保留原回顾，稍后重试。")
+                .font(.caption).foregroundStyle(RecallPalette.secondary)
             Toggle("生成后发送系统通知", isOn: $schedule.notifyWhenReady)
             Text("支持暂停或删除计划；失败会记录日志并重试，不自动发送周报或创建提醒。")
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
@@ -696,6 +692,7 @@ private struct ReviewScheduleEditor: View {
                 Button(saving ? "保存中…" : "保存计划") {
                     saving = true
                     Task {
+                        schedule.useModel = true
                         if await model.saveReviewSchedule(schedule) { dismiss() }
                         else { error = "保存失败，请检查时间与模板设置后重试。" }
                         saving = false

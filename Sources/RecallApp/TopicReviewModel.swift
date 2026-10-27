@@ -1,0 +1,50 @@
+import Foundation
+import RecallKit
+
+@MainActor
+extension RecallAppModel {
+    func generateTopicReview(_ file: MatterFile) {
+        guard topicReviewTask == nil, !isGeneratingDailySummary, !isGeneratingWeeklyReview else { noticeMessage = "另一份回顾正在生成，完成后可以继续。"; return }
+        let taskID = beginTask("主题小结", target: file.title, phase: "准备主题记录")
+        guard let responder = dailySummaryResponder() else {
+            finishTask(taskID, state: .failed, message: ModelReviewError.unavailable.localizedDescription); return
+        }
+        let ids = Set(file.evidenceIDs)
+        let dates = state.captures.filter { ids.contains($0.id) }.map(\.createdAt)
+        guard let start = dates.min() else { finishTask(taskID, state: .failed, message: "来源已变化，请更新主题"); return }
+        let period = ReviewPeriod(start: start, end: .now)
+        let modelStore = store
+        let requestState = state
+        generatingTopicID = file.id
+        topicReviewTask = Task {
+            defer { generatingTopicID = nil; topicReviewTask = nil; processNextDailySummary() }
+            do {
+                let prepared = try await modelStore.prepareModelReview(period: period, sourceIDs: ids, responder: responder,
+                    expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
+                    onPhase: { phase in await self.updateTask(taskID, phase: phase) })
+                state = prepared
+                let refreshed = await Task.detached(priority: .utility) { MatterMemoryEngine().files(in: prepared) }.value
+                try Task.checkCancellation()
+                guard let target = refreshed.first(where: { $0.id == file.id })
+                    ?? refreshed.first(where: { Set($0.evidenceIDs) == ids }) else { throw ModelReviewError.changed }
+                let result = try await ModelReviewEngine().generate(in: prepared, period: period, topic: target.title, sourceIDs: ids,
+                    beforeCall: { try await modelStore.validateModelReview(prepared, period: period, sourceIDs: ids) },
+                    onPhase: { phase in await self.updateTask(taskID, phase: phase) }, responder: responder)
+                try Task.checkCancellation()
+                guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
+                try await modelStore.validateModelReview(prepared, period: period, sourceIDs: ids)
+                try await modelStore.commitTopicReview(TopicModelReview(topicID: target.id, result: result))
+                state = await modelStore.snapshot()
+                rebuildMatterFiles()
+                finishTask(taskID, state: .succeeded, message: "主题小结已更新", destination: .topic(target.id))
+            } catch {
+                finishTask(taskID, state: error is CancellationError ? .cancelled : .failed,
+                    message: error is CancellationError ? "已取消，原小结保持不变" : error.localizedDescription)
+                recordError(error, source: "TopicReview", message: "主题小结未完成，原内容保留")
+                state = await modelStore.snapshot()
+                rebuildMatterFiles()
+            }
+        }
+    }
+    func cancelTopicReview() { topicReviewTask?.cancel() }
+}

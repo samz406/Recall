@@ -26,8 +26,8 @@ extension FileMemoryStore {
 
     /// Explicit backfill is bounded by date. No silent upload of the entire archive on enable.
     @discardableResult
-    public func enqueueCaptureUnderstanding(since: Date? = nil, captureID: UUID? = nil, force: Bool = false, now: Date = .now) throws -> Int {
-        guard state.understandingSettings.enabled else { throw CaptureUnderstandingError.unavailable }
+    public func enqueueCaptureUnderstanding(since: Date? = nil, captureID: UUID? = nil, force: Bool = false, forReview: Bool = false, now: Date = .now) throws -> Int {
+        guard forReview || state.understandingSettings.enabled else { throw CaptureUnderstandingError.unavailable }
         let before = state
         let eligible = state.captures.filter {
             CaptureUnderstandingEngine.eligible($0, in: state) && (captureID == nil || $0.id == captureID)
@@ -56,8 +56,8 @@ extension FileMemoryStore {
         do { try persist() } catch { state = before; throw error }
     }
 
-    public func claimCaptureUnderstanding(now: Date = .now) throws -> CaptureUnderstandingJob? {
-        guard state.understandingSettings.enabled, state.privacy.cloudUseEnabled,
+    public func claimCaptureUnderstanding(captureID: UUID? = nil, forReview: Bool = false, now: Date = .now) throws -> CaptureUnderstandingJob? {
+        guard (forReview || state.understandingSettings.enabled), state.privacy.cloudUseEnabled,
               state.llmConfiguration.provider != .localOnly, !state.llmConfiguration.apiKey.isEmpty else { return nil }
         let before = state
         for i in state.understandingJobs.indices where state.understandingJobs[i].state == .processing && now.timeIntervalSince(state.understandingJobs[i].updatedAt) > 600 {
@@ -66,6 +66,7 @@ extension FileMemoryStore {
         // Older queued records first prevents starvation during an explicit backfill.
         guard let index = state.understandingJobs.indices.filter({
             [.queued, .retrying].contains(state.understandingJobs[$0].state)
+                && (captureID == nil || state.understandingJobs[$0].captureID == captureID)
                 && (state.understandingJobs[$0].retryAt ?? .distantPast) <= now
         }).min(by: { state.understandingJobs[$0].updatedAt < state.understandingJobs[$1].updatedAt }) else { return nil }
         let pages = CaptureUnderstandingEngine.pages(for: state.understandingJobs[index].captureID, in: state)
@@ -97,8 +98,8 @@ extension FileMemoryStore {
         return pages[job.nextPage]
     }
 
-    public func validateCaptureUnderstandingJob(_ job: CaptureUnderstandingJob, configuration: LLMConfiguration, privacy: PrivacySettings) throws {
-        guard state.understandingSettings.enabled, state.privacy.cloudUseEnabled, state.privacy == privacy,
+    public func validateCaptureUnderstandingJob(_ job: CaptureUnderstandingJob, configuration: LLMConfiguration, privacy: PrivacySettings, forReview: Bool = false) throws {
+        guard (forReview || state.understandingSettings.enabled), state.privacy.cloudUseEnabled, state.privacy == privacy,
               state.llmConfiguration == configuration,
               let current = state.understandingJobs.first(where: { $0.id == job.id }),
               current.state == .processing, current.lease == job.lease, current.nextPage == job.nextPage,
@@ -111,9 +112,9 @@ extension FileMemoryStore {
     }
 
     public func finishCaptureUnderstandingPage(_ job: CaptureUnderstandingJob, result: UnderstandingPageResult,
-                                               configuration: LLMConfiguration, privacy: PrivacySettings, now: Date = .now) throws {
+                                               configuration: LLMConfiguration, privacy: PrivacySettings, forReview: Bool = false, now: Date = .now) throws {
         try Task.checkCancellation()
-        try validateCaptureUnderstandingJob(job, configuration: configuration, privacy: privacy)
+        try validateCaptureUnderstandingJob(job, configuration: configuration, privacy: privacy, forReview: forReview)
         guard let index = state.understandingJobs.firstIndex(where: { $0.id == job.id }),
               let captureIndex = state.captures.firstIndex(where: { $0.id == job.captureID }) else { throw CaptureUnderstandingError.changed }
         let before = state
@@ -138,7 +139,7 @@ extension FileMemoryStore {
             state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state)
         }
         state.understandingJobs[index] = updated
-        do { try persist() } catch { state = before; throw error }
+        do { try persist(preservingReviewsFrom: before) } catch { state = before; throw error }
     }
 
     public func failCaptureUnderstanding(_ job: CaptureUnderstandingJob, changed: Bool, now: Date = .now) throws {

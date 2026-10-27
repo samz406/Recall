@@ -42,7 +42,7 @@ extension RecallAppModel {
                 Task { @MainActor [weak self] in self?.startCaptureUnderstandingWorker() }
             }
         }
-        guard captureUnderstandingTask == nil, state.understandingSettings.enabled else { return }
+        guard captureUnderstandingTask == nil, !isGeneratingDailySummary, !isGeneratingWeeklyReview, topicReviewTask == nil, state.understandingSettings.enabled else { return }
         captureUnderstandingTask = Task { [weak self] in
             guard let self else { return }
             defer { self.captureUnderstandingTask = nil }
