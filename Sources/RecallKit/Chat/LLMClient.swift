@@ -351,7 +351,7 @@ public struct CompatibleLLM: LLMResponding {
         urlRequest.httpBody = try JSONEncoder().encode(body)
         if request.purpose == .dailySummary { urlRequest.timeoutInterval = 180 }
         let data = try await perform(urlRequest, outputLimit: body.maxTokens)
-        let content = try ModelResponseDecoding.text(from: data, provider: configuration.provider, outputLimit: body.maxTokens)
+        let content = try ModelResponseDecoding.text(from: data, provider: configuration.provider, outputLimit: body.maxTokens, requiresCompleteOutput: request.purpose != .chat)
         return LLMAnswer(content: content, citedCaptureIDs: request.context.map(\.id))
     }
 
@@ -378,7 +378,7 @@ public struct CompatibleLLM: LLMResponding {
         urlRequest.httpBody = try JSONEncoder().encode(body)
         if request.purpose == .dailySummary { urlRequest.timeoutInterval = 180 }
         let data = try await perform(urlRequest, outputLimit: body.maxTokens)
-        let content = try ModelResponseDecoding.text(from: data, provider: configuration.provider, outputLimit: body.maxTokens)
+        let content = try ModelResponseDecoding.text(from: data, provider: configuration.provider, outputLimit: body.maxTokens, requiresCompleteOutput: request.purpose != .chat)
         return LLMAnswer(content: content, citedCaptureIDs: request.context.map(\.id))
     }
 

@@ -211,11 +211,21 @@ enum ModelResponseVerification {
         }
     }
     private static func chatBudgetUnchanged() async throws {
-        let (responder, session) = try client(.openAICompatible, replies: [reply(.openAICompatible, text: "正常聊天回答")])
-        defer { session.invalidateAndCancel() }
-        let answer = try await responder.answer(to: LLMRequest(question: "测试", context: []))
-        let used = try budgets()
-        try expect(answer.content == "正常聊天回答" && used == [1_000], "每日回顾额度意外改动了聊天设置")
+        for provider in [LLMProviderKind.openAICompatible, .anthropicCompatible] {
+            let (responder, session) = try client(provider, replies: [reply(provider, text: "正常聊天回答")])
+            defer { session.invalidateAndCancel() }
+            let answer = try await responder.answer(to: LLMRequest(question: "测试", context: []))
+            let used = try budgets()
+            try expect(answer.content == "正常聊天回答" && used == [1_000], "每日回顾额度意外改动了聊天设置")
+            // Chat has always allowed a readable partial answer. Strict structured-output
+            // validation must not turn this separate interaction into a new error.
+            let stopped = provider == .openAICompatible ? "length" : "max_tokens"
+            let (partial, partialSession) = try client(provider, replies: [reply(provider, text: "可读的聊天段落", stop: stopped)])
+            defer { partialSession.invalidateAndCancel() }
+            let text = try await partial.answer(to: LLMRequest(question: "测试", context: []))
+            try expect(text.content == "可读的聊天段落" && ResponseURLProtocol.requests().count == 1,
+                "每日回顾的严格完整性要求破坏了已有聊天行为")
+        }
     }
     private static func diagnosticPrivacy() async throws {
         let (responder, session) = try client(.anthropicCompatible, replies: [reply(.anthropicCompatible, stop: "synthetic-private-stop", thinking: true)])

@@ -56,7 +56,7 @@ public struct LLMResponseFailure: LocalizedError, Sendable {
 }
 
 enum ModelResponseDecoding {
-    static func text(from data: Data, provider: LLMProviderKind, outputLimit: Int) throws -> String {
+    static func text(from data: Data, provider: LLMProviderKind, outputLimit: Int, requiresCompleteOutput: Bool = true) throws -> String {
         guard let root = object(data) else {
             throw LLMResponseFailure(reason: .invalidFormat, provider: provider, outputLimit: outputLimit)
         }
@@ -99,7 +99,8 @@ enum ModelResponseDecoding {
             LLMResponseFailure(reason: reason, provider: provider, outputLimit: outputLimit, stop: stop, generatedTokens: tokens)
         }
         // Even nonempty text can be a cut JSON document or an unfinished claim.
-        if stop == "length" || stop == "max_tokens" { throw failure(.truncated) }
+        let reachedLimit = stop == "length" || stop == "max_tokens"
+        if reachedLimit && requiresCompleteOutput { throw failure(.truncated) }
         if stop == "model_context_window_exceeded" { throw failure(.contextLimit) }
         if refusal || stop == "refusal" || stop == "content_filter" { throw failure(.refusal) }
         if tools || ["tool_calls", "function_call", "tool_use", "pause_turn"].contains(stop ?? "") { throw failure(.toolRequest) }
@@ -112,7 +113,7 @@ enum ModelResponseDecoding {
             }.joined(separator: "\n"))
         } else if content == nil || content is NSNull { answer = nil }
         else { throw failure(.invalidFormat) }
-        guard let answer else { throw failure(reasoning ? .reasoningOnly : .empty) }
+        guard let answer else { throw failure(reachedLimit ? .truncated : reasoning ? .reasoningOnly : .empty) }
         return answer
     }
     static func httpFailure(_ data: Data, status: Int, provider: LLMProviderKind, outputLimit: Int) -> LLMResponseFailure {
