@@ -1355,6 +1355,7 @@ final class RecallAppModel: ObservableObject {
         let allowedSourceIDs = Set(captures.map(\.id))
         let previousSummaries = analysisState.dailySummaries
         let responder = dailySummaryResponder()
+        let modelStore = store
         dailyReviewTask = Task {
             defer {
                 isGeneratingDailySummary = false
@@ -1381,7 +1382,8 @@ final class RecallAppModel: ObservableObject {
                     existingReminders: analysisState.reminders,
                     memoryKnowledge: analysisState.memoryKnowledge,
                     memoryKnowledgeSettings: analysisState.memoryKnowledgeSettings,
-                    responder: responder
+                    responder: responder,
+                    beforeModelCall: { ids in try await modelStore.validateDailySummaryModelCall(sourceIDs: ids, expected: analysisState) }
                 )
                 try Task.checkCancellation()
                 updateTask(taskID, phase: "保存回顾")
@@ -1405,8 +1407,12 @@ final class RecallAppModel: ObservableObject {
                     finishTask(taskID, state: .failed, message: "来源已变化，请重新生成")
                     return
                 }
+                if responder != nil { try await modelStore.validateDailySummaryModelCall(sourceIDs: Set(summary.sourceCaptureIDs), expected: analysisState) }
                 try await store.commitDailySummary(summary, consolidation: generation.consolidation)
-                finishTask(taskID, state: responder != nil && summary.generationKind != .cloud ? .partial : .succeeded, message: summary.generationKind == .cloud ? "回顾已保存" : "本地回顾已保存", destination: .daily(summary.id))
+                if let issue = generation.modelIssue {
+                    recordDiagnostic(.warning, source: "DailySummary", message: "模型回顾格式无效，已使用有来源的本地回顾", metadata: issue.diagnosticMetadata)
+                }
+                finishTask(taskID, state: responder != nil && summary.generationKind != .cloud ? .partial : .succeeded, message: summary.generationKind == .cloud ? "回顾已保存" : generation.modelIssue != nil ? "模型未按回顾格式完成，已保存本地回顾" : "本地回顾已保存", destination: .daily(summary.id))
                 if reason == .manual { dailyToOpen = summary.id }
                 await refresh()
                 if state.dailySummarySettings.notifyWhenReady == true {
@@ -1431,7 +1437,9 @@ final class RecallAppModel: ObservableObject {
                 ])
             } catch {
                 finishTask(taskID, state: error is CancellationError ? .cancelled : .failed, message: error is CancellationError ? "已取消，已有回顾保持不变" : error.localizedDescription)
-                recordDiagnostic(.error, source: "DailySummary", message: "每日回顾生成失败", metadata: ["error": recallSafeErrorCode(error)])
+                var diagnostic = ["error": recallSafeErrorCode(error)]
+                if let failure = error as? LLMResponseFailure { diagnostic.merge(failure.diagnosticMetadata) { _, new in new } }
+                recordDiagnostic(.error, source: "DailySummary", message: "每日回顾生成失败", metadata: diagnostic)
             }
         }
     }
