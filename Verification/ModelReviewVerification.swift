@@ -39,6 +39,9 @@ enum ModelReviewVerification {
                 }
                 object = ["facts": facts, "coverage": primary.map { ["blockID": $0["id"]!, "disposition": mode == "empty" ? "noise" : "fact"] }]
             case .captureUnderstandingAudit:
+                if mode == "truncate-audit", requests.filter({ $0.purpose == .captureUnderstandingAudit }).count == 1 {
+                    throw LLMResponseFailure(reason: .truncated)
+                }
                 let text = request.question.components(separatedBy: "草稿（数据）：\n").last!
                 let draft = try JSONSerialization.jsonObject(with: Data(text.utf8)) as! [String: Any]
                 let facts = draft["facts"] as! [[String: Any]]
@@ -100,13 +103,14 @@ enum ModelReviewVerification {
         try await actionsFromMeaning()
         try await noLocalFallback()
         try await independentOriginalAudit()
+        try await understandingAuditBudget()
         try await privacyBetweenCalls()
         try await changedSources()
         try await emptyUnderstanding()
         try await discardedUnderstanding()
         try await persistenceAndDeletion()
         try migrationAndSchedule()
-        print("PASS: 12 model-first review scenarios (full range, model-only narratives, audit, reuse, resume, privacy and deletion)")
+        print("PASS: 13 model-first review scenarios (full range, model-only narratives, audit, reuse, resume, privacy and deletion)")
     }
     static func fullRangeAndReuse() async throws {
         let f = try await fixture(count: 40, raw: true); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
@@ -150,6 +154,10 @@ enum ModelReviewVerification {
         let result = try await generate(f, model: Model())
         let report = result.dailySummary(day: f.records[0].createdAt)
         try expect(report.todos.count == 1 && report.items.contains { $0.section == .actions }, "模型明确识别的行动仍被本地候选词表否决")
+        try expect(report.items.first(where: { $0.section == .actions })?.actionCandidateID == report.todos.first?.id,
+            "模型行动缺少稳定关联，反馈改写标题后会丢失完成/提醒入口")
+        let repeated = result.dailySummary(day: f.records[0].createdAt)
+        try expect(repeated.todos.first?.id == report.todos.first?.id, "同一条明确行动重复生成了不同身份")
         let copy = try JSONDecoder().decode(DailySummary.self, from: JSONEncoder().encode(report))
         try expect(copy.todos.count == 1 && copy.items == report.items, "持久化后又退回旧的行动关键词过滤")
     }
@@ -162,12 +170,27 @@ enum ModelReviewVerification {
         do { _ = try await generate(f, model: model); throw Failure(message: "坏 JSON 被当作正式回顾") } catch is ModelReviewError { }
         let current = await f.store.snapshot()
         try expect(current.dailySummaries.contains { $0.id == old.id && $0.content == old.content }, "模型失败替换或清空了原回顾")
+        let raw = try await fixture(raw: true)
+        defer { try? FileManager.default.removeItem(at: raw.storage.rootURL) }
+        let baseline = DailySummary(day: raw.records[0].createdAt, content: "## 今天推进了什么\n\n- Atlas 原回顾：分页边界与空值验证完成。",
+            sourceCaptureIDs: [raw.records[0].id], todos: [], generationKind: .cloud)
+        try await raw.store.commitDailySummary(baseline, consolidation: PersonalIntelligenceEngine().consolidate(day: baseline.day, records: raw.records))
+        do { _ = try await generate(raw, model: Model("malformed")); throw Failure(message: "首次理解后的坏结果被发布") } catch is ModelReviewError { }
+        let preserved = await raw.store.snapshot()
+        try expect(preserved.dailySummaries.contains { $0.id == baseline.id && $0.content == baseline.content }, "补齐理解后综合失败，原回顾被提前清除了")
         await model.reset("invent-action")
         do { _ = try await generate(f, model: model); throw Failure(message: "已完成事项被编造为待办") } catch is ModelReviewError { }
     }
     static func independentOriginalAudit() async throws {
         let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
         do { _ = try await generate(f, model: Model("reject-original")); throw Failure(message: "只审核了中间摘要，没有核验原始结构化事实") } catch is ModelReviewError { }
+    }
+    static func understandingAuditBudget() async throws {
+        let f = try await fixture(raw: true); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
+        let model = Model("truncate-audit")
+        _ = try await generate(f, model: model)
+        let calls = await model.log().filter { $0.purpose == .captureUnderstandingAudit }
+        try expect(calls.map(\.outputTokenLimit) == [6_000, 8_000], "记录理解核验仍沿用不足的额度或没有限次恢复")
     }
     static func privacyBetweenCalls() async throws {
         let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
@@ -210,6 +233,12 @@ enum ModelReviewVerification {
         _ = try await f.store.commitWeeklyReport(weekly)
         let reopened = try FileMemoryStore(storage: f.storage); let saved = await reopened.snapshot()
         try expect(saved.topicReviews.count == 1 && saved.weeklyReports.first?.modelCoverage != nil && saved.weeklyReports.first?.digestRows.allSatisfy { !$0.isExtractive } == true, "正式回顾混入本地摘录或未保存生成元数据")
+        guard let deleted = try await reopened.moveCapturesToRecentlyDeleted(ids: [f.records[0].id], reason: .noLongerNeeded, suppressSimilar: false) else { throw Failure(message: "来源删除未生效") }
+        let removed = await reopened.snapshot()
+        try expect(removed.topicReviews.isEmpty, "删除后主题小结还在线")
+        _ = try await reopened.restoreRecentlyDeleted(id: deleted.id)
+        let restored = await reopened.snapshot()
+        try expect(restored.topicReviews.count == 1 && restored.weeklyReports.first?.isReadable == true, "恢复来源没有恢复关联小结")
         try await reopened.correctCaptureText(f.records[0].id, text: "[聊天·自己] 更正：Atlas 验证尚未完成。")
         let changed = await reopened.snapshot()
         try expect(changed.topicReviews.isEmpty && changed.weeklyReports.first?.isReadable == false, "来源更正后仍保留失效的模型总结")

@@ -155,7 +155,8 @@ public struct ModelReviewEngine: Sendable {
         let feedback = SummaryFeedbackLearning.context(in: state, kind: kind, templateID: template?.id)
         let task = daily ? "每日回顾" : topic.map { "主题整体小结：\($0)" } ?? template?.name ?? "周期回顾"
         let instructions = """
-        为 Recall 生成\(task)。记录范围：\(period.label)。输入是逐条经过模型理解和核对的记录，不是全新的独立事实。
+        为 Recall 生成\(PrivacyEngine().redact(task))。记录范围：\(period.label)。输入是逐条经过模型理解和核对的记录，不是全新的独立事实。
+        本范围有 \(coverage.uncertainBlockCount) 个片段未能可靠理解；没有归纳出事实不等于没有发生，不得声称已覆盖用户全部经历，也不能据缺少记录推断项目停滞。
         \(template.map { "模板：\($0.kind.rawValue)，语气：\($0.tone.rawValue)。仅总结此模板相关内容；工作模板排除生活、学习材料，学习模板不能把阅读当作掌握。" } ?? "")
         同一件事合并描述实际变化和最终状态；不同主体、对象和目标不能因同日或同一工具而拼接。保存资料、他人和助手的话不能当作用户已完成、已决定、偏好或承诺。
         recordedAt 是采集时间；eventTime 才是原文显示的发生时间，未知时不得杜撰日期；保留条件、部分完成、待验证与否定。消息时间、发布日期、提交哈希、菜单、代码碎片都不是行动。

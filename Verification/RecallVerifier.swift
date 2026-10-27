@@ -76,9 +76,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 153 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 154 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 152 integration checks.")
+                print("PASS: RecallVerifier completed 153 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)

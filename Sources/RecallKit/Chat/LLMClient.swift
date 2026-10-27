@@ -431,6 +431,8 @@ public struct CompatibleLLM: LLMResponding {
             let role: String
             switch request.purpose {
             case .dailySummary: role = "整理指定日期的每日回顾"
+            case .reviewSynthesis: role = "综合指定范围的结构化记忆，生成正式回顾"
+            case .reviewAudit: role = "独立核验回顾与原始结构化事实"
             case .weeklySelection: role = "挑选整份周期回顾的重要事项"
             case .weeklyAudit: role = "逐项核验周回顾草稿"
             case .captureUnderstanding: role = "从 OCR 整理有原文依据的结构化记忆"

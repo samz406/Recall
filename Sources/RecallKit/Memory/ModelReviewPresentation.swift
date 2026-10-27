@@ -2,12 +2,15 @@ import Foundation
 
 public extension ModelReviewResult {
     func dailySummary(day: Date, now: Date = .now) -> DailySummary {
+        func actionID(_ item: ModelReviewItem) -> UUID {
+            MatterEvidence.eventID(source: sourceIDs(for: item).first ?? UUID(), topic: item.factIDs.sorted().joined(separator: "|"), ordinal: 0)
+        }
         let values = items.compactMap { item -> DailySummaryItem? in
             guard let section = DailySummarySection(rawValue: item.section) else { return nil }
-            return DailySummaryItem(section: section, title: item.title, detail: item.detail, evidenceIDs: sourceIDs(for: item))
+            return DailySummaryItem(section: section, title: item.title, detail: item.detail, evidenceIDs: sourceIDs(for: item), actionCandidateID: section == .actions ? actionID(item) : nil)
         }
         let actions = items.filter { $0.section == "actions" }.map { item in
-            DailySummaryTodo(title: item.title, detail: item.detail, sourceCaptureIDs: sourceIDs(for: item), priority: .normal)
+            DailySummaryTodo(id: actionID(item), title: item.title, detail: item.detail, sourceCaptureIDs: sourceIDs(for: item), priority: .normal)
         }
         var report = DailySummary(day: day, createdAt: now, content: DailySummaryItemParser.reviewedMarkdown(from: values),
             sourceCaptureIDs: Array(sourceVersions.keys).sorted { $0.uuidString < $1.uuidString },
