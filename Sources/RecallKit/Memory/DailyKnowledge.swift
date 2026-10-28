@@ -128,6 +128,27 @@ public struct DailyKnowledgeEngine: Sendable {
         }.sorted { $0.updatedAt > $1.updatedAt }
     }
 
+    /// Topics whose name the question mentions. Matching uses the topic's identifying words, not the whole question,
+    /// so "后台理解流程" reaches the topic "Recall 后台理解流程" and a bare word like "进展" reaches nothing.
+    public func topics(matching question: String, in state: RecallState, limit: Int = 3) -> [MatterFile] {
+        let wanted = Set(QuestionTerms.topicTerms(question).filter { $0.count >= 2 })
+        guard !wanted.isEmpty else { return [] }
+        let asked = question.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        let scored = matterFiles(in: state).compactMap { file -> (MatterFile, Int)? in
+            let name = file.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            var score = 0
+            if asked.contains(name) { score += 100 }
+            // Longer shared pieces say more than short ones; one short piece alone is too weak to select a topic.
+            let own = Set(QuestionTerms.topicTerms(file.title).filter { $0.count >= 2 })
+            let shared = wanted.intersection(own)
+            score += shared.reduce(0) { $0 + $1.count * 3 }
+            let long = shared.filter { $0.count >= 3 }.count
+            guard score >= 100 || (long >= 1 && shared.count >= 2) || shared.count >= 3 else { return nil }
+            return (file, score)
+        }
+        return scored.sorted { $0.1 == $1.1 ? $0.0.latest.date > $1.0.latest.date : $0.1 > $1.1 }.prefix(limit).map(\.0)
+    }
+
     private static func eventID(_ entry: Entry, key: String) -> UUID {
         MatterEvidence.eventID(source: entry.summary.id, topic: key + "|" + entry.item.id.uuidString, ordinal: 0)
     }

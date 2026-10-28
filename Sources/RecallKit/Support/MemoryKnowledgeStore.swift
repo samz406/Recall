@@ -12,6 +12,26 @@ extension FileMemoryStore {
         } catch { state = previous; throw error }
     }
 
+    /// Whether the saved ledger still matches the captures and daily reviews it was derived from. Cheap
+    /// compared with a full reconcile: one pass over ids and versions that are already stored.
+    public func isMemoryLedgerCurrent() -> Bool {
+        let knowledge = state.memoryKnowledge
+        guard knowledge.updatedAt != nil, knowledge.organizationVersion == MemoryKnowledgeEngine.organizationVersion,
+              knowledge.dailyFingerprint == DailyKnowledgeEngine().fingerprint(in: state.correctedForAnalysis()) else { return false }
+        // Versions hash each capture's text and corrections, so an edit, correction, deletion or new capture all show.
+        // The ledger stores them for the same filtered set it reconciles.
+        var safe = state.correctedForAnalysis()
+        safe.captures.removeAll { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }
+        guard safe.captures.count == knowledge.sourceVersions.count else { return false }
+        return safe.captures.allSatisfy { knowledge.sourceVersions[$0.id.uuidString] == MemoryKnowledgeEngine.version(of: $0, corrections: state.matterCorrections) }
+    }
+
+    /// Chat only needs the ledger to be current. Reconciling scans every capture, so it runs when something changed.
+    public func organizeMemoryIfNeeded() throws {
+        guard !isMemoryLedgerCurrent() else { return }
+        try organizeMemory()
+    }
+
     public func updateMemoryKnowledgeSettings(_ settings: MemoryKnowledgeSettings) throws {
         let previous = state
         do { state.memoryKnowledgeSettings = settings; try persist() }

@@ -36,6 +36,9 @@ enum SummaryAccuracyVerification {
         try await overclaimedOwnershipIsDemoted()
         try await unmarkedScreenWorkIsTheUsers()
         try await templatesSeparateTopicsByCategory()
+        try timeRangesAreResolved()
+        try await ledgerCurrencyCheckIsCheap()
+        try await questionTermsAndTopicRetrieval()
         print("PASS: summary accuracy covers near-duplicate captures, fast writes, chat markers, quote repair and repeated lines")
     }
 
@@ -331,5 +334,103 @@ extension SummaryAccuracyVerification {
         try expect(personal.count == 4, "我的一周没有覆盖全部主题：\(personal)")
         let prepared = try PeriodReviewFromDaily().prepare(in: state, period: period, template: ReviewTemplate(kind: .personal))
         try expect(prepared.categories().contains("work") && prepared.categories().contains("learning"), "类别没有进入传给模型的内容")
+    }
+}
+
+extension SummaryAccuracyVerification {
+    static func timeRangesAreResolved() throws {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!; calendar.firstWeekday = 2
+        // Wednesday, 28 October 2026, 15:00.
+        let now = calendar.date(from: DateComponents(year: 2026, month: 10, day: 28, hour: 15))!
+        func resolve(_ text: String) -> (String, String)? {
+            guard let range = MemoryTimeRangeResolver().resolve(text, now: now, calendar: calendar) else { return nil }
+            let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone; f.dateFormat = "MM-dd"
+            return (f.string(from: range.startDate), f.string(from: min(range.endDate, now)))
+        }
+        try expect(resolve("10月25日做了什么")?.0 == "10-25" && resolve("10月25日做了什么")?.1 == "10-26", "具体日期没有解析为当天")
+        try expect(resolve("2026年10月20日的记录")?.0 == "10-20", "带年份的日期没有解析")
+        try expect(resolve("上周三我在做什么")?.0 == "10-21", "上周三没有解析为上周的周三")
+        try expect(resolve("周二做了什么")?.0 == "10-27", "周二没有解析为本周已过的周二")
+        try expect(resolve("周五做了什么")?.0 == "10-23", "尚未到来的周五应取上一个周五")
+        try expect(resolve("前天做了什么")?.0 == "10-26", "前天没有解析")
+        try expect(resolve("10月份的进展")?.0 == "10-01", "整月没有解析")
+        try expect(resolve("上个月做了什么")?.0 == "09-01" && resolve("上个月做了什么")?.1 == "10-01", "上个月没有解析为整月")
+        // A date later in the year than today has not happened yet; the question can only mean last year's.
+        let past = MemoryTimeRangeResolver().resolve("12月25日", now: now, calendar: calendar)
+        try expect(past.map { calendar.component(.year, from: $0.startDate) == 2025 } == true, "还没到的日期不应解析到今年")
+        try expect(resolve("妙妙什么时候过生日") == nil, "没有时间词的问题被当作带时间范围")
+        try expect(resolve("今天记录了什么")?.0 == "10-28", "原有的今天解析被破坏")
+        try expect(resolve("最近三天做了什么")?.0 == "10-26", "原有的最近N天解析被破坏")
+        print("PASS: time expressions cover dates, weekdays, months and the previous behaviour")
+    }
+}
+
+extension SummaryAccuracyVerification {
+    static func ledgerCurrencyCheckIsCheap() async throws {
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-ledger-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        var state = RecallState()
+        state.captures = (0..<2400).map { index in
+            CaptureRecord(eventTemplate: .workCheckpoint, createdAt: Date.now.addingTimeInterval(-Double(index) * 60), sourceAppName: "合成",
+                sourceBundleIdentifier: "example.synthetic", contentHash: "h\(index)",
+                ocrText: String(repeating: "合成记录正文，用来衡量整库检查的耗时。\(index) ", count: 40), textOrigin: .screenOCR)
+        }
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(state).write(to: storage.stateURL)
+        let store = try FileMemoryStore(storage: storage)
+        try await store.organizeMemory()
+        let begin = Date.now
+        let current = await store.isMemoryLedgerCurrent()
+        let currentMs = Int(Date.now.timeIntervalSince(begin) * 1000)
+        try expect(current, "刚整理过的账本被判为过期")
+        let before = Date.now
+        try await store.organizeMemoryIfNeeded()
+        let skipMs = Int(Date.now.timeIntervalSince(before) * 1000)
+        try expect(skipMs < 1500, "账本最新时仍然花了 \(skipMs) 毫秒")
+        // A new capture makes the ledger stale, and the next question reconciles it.
+        try await store.addCapture(CaptureRecord(eventTemplate: .workCheckpoint, sourceAppName: "合成", sourceBundleIdentifier: "example.synthetic",
+            contentHash: "new", ocrText: "新增的一条记录内容", textOrigin: .screenOCR))
+        let stale = await store.isMemoryLedgerCurrent()
+        try expect(!stale, "新增记录后账本没有被判为过期")
+        print("PASS: ledger currency check on 2400 records took \(currentMs) ms, skipped reconcile in \(skipMs) ms")
+    }
+}
+
+extension SummaryAccuracyVerification {
+    static func questionTermsAndTopicRetrieval() async throws {
+        let terms = QuestionTerms.topicTerms("关于 Recall 后台理解流程，请找回上次的进展、已确认的结论和仍缺少的信息。")
+        try expect(terms.contains("recall") && terms.contains("后台理解流程") && terms.contains("理解"), "主题词没有保留：\(terms)")
+        let generic = ["上次", "进展", "结论", "信息", "已确", "确认", "缺少", "仍缺", "找回"]
+        try expect(generic.allSatisfy { !terms.contains($0) }, "模板词仍然参与检索：\(terms)")
+        try expect(QuestionTerms.topicTerms("今天记录了什么").isEmpty || !QuestionTerms.topicTerms("今天记录了什么").contains("什么"), "停用词没有剔除")
+        // A topic named in the question is found by its identifying words, and its first and latest states both come back.
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-topic-q-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let store = try FileMemoryStore(storage: storage)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        var records: [CaptureRecord] = []
+        let names = [("Recall 后台理解流程", "inProgress"), ("Recall 后台理解流程", "blocked"), ("Recall 后台理解流程", "completed"), ("英语口语练习", "completed")]
+        for (index, entry) in names.enumerated() {
+            let day = calendar.date(byAdding: .day, value: -(names.count - index), to: today)!
+            let record = CaptureRecord(eventTemplate: .workCheckpoint, createdAt: day.addingTimeInterval(36_000), sourceAppName: "Orca",
+                sourceBundleIdentifier: "example.orca", contentHash: UUID().uuidString, ocrText: "\(entry.0) 第 \(index + 1) 天的记录与说明文字内容", textOrigin: .screenOCR)
+            try await store.addCapture(record); records.append(record)
+            let knowledge = DailyItemKnowledge(topic: entry.0, kind: .matter, status: entry.1, ownedByUser: true, quotes: [record.ocrText], category: "work")
+            let item = DailySummaryItem(section: .progress, title: "\(entry.0)第\(index + 1)天进展", detail: "当天的状态已经记录并保存下来。", evidenceIDs: [record.id], knowledge: knowledge)
+            var summary = DailySummary(day: day, content: "x", sourceCaptureIDs: [record.id], todos: [], generationKind: .cloud, items: [item])
+            summary.items = [item]
+            try await store.commitDailySummary(summary, consolidation: PersonalIntelligenceEngine().consolidate(day: day, records: [record]))
+        }
+        try await store.organizeMemory(force: true)
+        let state = await store.snapshot()
+        let found = DailyKnowledgeEngine().topics(matching: "关于后台理解流程，请找回上次的进展", in: state)
+        try expect(found.map(\.title) == ["Recall 后台理解流程"], "提到主题名的问题没有找到该主题：\(found.map(\.title))")
+        try expect(DailyKnowledgeEngine().topics(matching: "请找回上次的进展和结论", in: state).isEmpty, "只有模板词的问题不应命中任何主题")
+        let plan = MemoryRetrievalEngine().plan(question: "关于后台理解流程，请找回上次的进展", state: state, fallback: [])
+        let titles = plan.evidence.map(\.ocrText).joined(separator: "\n")
+        try expect(titles.contains("第1天") && titles.contains("第3天"), "主题的最早与最新状态没有同时进入证据")
+        try expect(!titles.contains("英语口语练习"), "无关主题混入了证据")
+        print("PASS: question terms drop template words and a named topic returns its first, changed and latest states")
     }
 }

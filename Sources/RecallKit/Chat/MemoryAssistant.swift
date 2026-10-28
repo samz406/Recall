@@ -59,7 +59,7 @@ public final class MemoryAssistant {
             return answer
             }
         }
-        try await store.organizeMemory()
+        try await store.organizeMemoryIfNeeded()
         var state = (await store.snapshot()).correctedForAnalysis()
         state.messages.removeAll { $0.id == userMessage.id }
 

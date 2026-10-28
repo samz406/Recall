@@ -385,7 +385,7 @@ public struct MemoryEvidenceSelector: Sendable {
     public func select(_ records: [CaptureRecord], question: String, limit: Int = 12) -> [CaptureRecord] {
         guard limit > 0 else { return [] }
         let intent = MemoryQuestionIntent(question: question)
-        let terms = MatterMemoryEngine.subjectTerms(question)
+        let terms = Set(QuestionTerms.topicTerms(question)).union(MatterMemoryEngine.subjectTerms(QuestionTerms.stripped(question)))
         var hashes: Set<String> = []
         let unique = records.filter {
             let content = $0.ocrText.hasPrefix("记录时间：") ? $0.ocrText.split(separator: "\n").dropFirst().joined(separator: "\n") : $0.ocrText
