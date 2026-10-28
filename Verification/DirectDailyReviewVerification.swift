@@ -182,9 +182,10 @@ enum DirectDailyReviewVerification {
         let calls = await model.log()
         try expect(output.metrics.cacheHits > 0 && calls.count == 1, "重启重试又重新请求已完成的分组")
         // Simulate an idle app with expired checkpoints still on disk, before maintenance.
-        var archive = try JSONSerialization.jsonObject(with: JSONEncoder().encode(before)) as! [String: Any]
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        var archive = try JSONSerialization.jsonObject(with: encoder.encode(before)) as! [String: Any]
         var checkpoints = archive["dailyReviewCheckpoints"] as! [[String: Any]]
-        for i in checkpoints.indices { checkpoints[i]["createdAt"] = Date.now.addingTimeInterval(-8 * 86_400).timeIntervalSinceReferenceDate }
+        for i in checkpoints.indices { checkpoints[i]["createdAt"] = ISO8601DateFormatter().string(from: Date.now.addingTimeInterval(-8 * 86_400)) }
         archive["dailyReviewCheckpoints"] = checkpoints
         try JSONSerialization.data(withJSONObject: archive).write(to: f.storage.stateURL)
         let expired = try FileMemoryStore(storage: f.storage), fresh = Model()
