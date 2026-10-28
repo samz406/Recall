@@ -53,15 +53,16 @@ extension FileMemoryStore {
                 let detail = "准备第 \(offset + 1)/\(records.count) 条记录 · 第 \(job.nextPage + 1)/\(job.pageCount) 段；已保存的段落不会重复处理。"
                 await onProgress?(ReviewGenerationProgress(.preparing, detail: detail))
                 do {
-                    let page = try captureUnderstandingPage(job)
-                    let result = try await CaptureUnderstandingEngine.understand(page, responder: responder, beforeCall: {
+                    let outcome = try await processCaptureUnderstandingPage(job, responder: responder,
+                        configuration: baseline.llmConfiguration, privacy: baseline.privacy, forReview: true, beforeCall: {
                         try await self.validateReviewPreparation(expected, baseline: baseline)
-                        try await self.validateCaptureUnderstandingJob(job, configuration: baseline.llmConfiguration, privacy: baseline.privacy, forReview: true)
                     }, onRepair: { issue in
                         await onProgress?(ReviewGenerationProgress(.preparing, detail: "\(detail)\n\(issue.explanation)，正在自动修正一次。"))
                     })
-                    try validateReviewPreparation(expected, baseline: baseline)
-                    try finishCaptureUnderstandingPage(job, result: result, configuration: baseline.llmConfiguration, privacy: baseline.privacy, forReview: true)
+                    if case .subdivided = outcome {
+                        await onProgress?(ReviewGenerationProgress(.preparing,
+                            detail: "第 \(offset + 1)/\(records.count) 条记录超出模型单次容量，已拆成更小段继续；原文和已完成进度保留。"))
+                    }
                 } catch {
                     // Preserve cursor and accepted pages on cancellation. Changed sources will
                     // be reset by the normal source-version reconciliation.

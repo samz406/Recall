@@ -343,7 +343,7 @@ public struct CompatibleLLM: LLMResponding {
             model: configuration.model,
             messages: openAIMessages(for: request),
             temperature: 0.2,
-            maxTokens: min(8_000, max(256, request.outputTokenLimit ?? configuration.maxOutputTokens))
+            maxTokens: outputLimit(for: request)
         )
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
@@ -360,7 +360,7 @@ public struct CompatibleLLM: LLMResponding {
         let endpoint = try endpoint(for: .anthropicCompatible)
         let body = AnthropicRequest(
             model: configuration.model,
-            maxTokens: min(8_000, max(256, request.outputTokenLimit ?? configuration.maxOutputTokens)),
+            maxTokens: outputLimit(for: request),
             temperature: 0.2,
             system: systemInstruction(for: request),
             messages: anthropicMessages(for: request)
@@ -381,6 +381,11 @@ public struct CompatibleLLM: LLMResponding {
         let data = try await perform(urlRequest, outputLimit: body.maxTokens)
         let content = try ModelResponseDecoding.text(from: data, provider: configuration.provider, outputLimit: body.maxTokens, requiresCompleteOutput: request.purpose != .chat)
         return LLMAnswer(content: content, citedCaptureIDs: request.context.map(\.id))
+    }
+
+    private func outputLimit(for request: LLMRequest) -> Int {
+        let ceiling = [.captureUnderstanding, .captureUnderstandingAudit].contains(request.purpose) ? 16_000 : 8_000
+        return min(ceiling, max(256, request.outputTokenLimit ?? configuration.maxOutputTokens))
     }
 
     private func perform(_ request: URLRequest, outputLimit: Int) async throws -> Data {

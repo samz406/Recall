@@ -102,7 +102,12 @@ extension FileMemoryStore {
         state.understandingJobs[index].processorVersion = CaptureUnderstandingEngine.version
         state.understandingJobs[index].configurationVersion = configVersion
         state.understandingJobs[index].sourceVersions = first.sourceVersions
-        state.understandingJobs[index].pageCount = pages.count
+        let counts = state.understandingJobs[index].pageBlockCounts ?? pages.map { $0.blocks.filter { !$0.contextOnly }.count }
+        guard counts.allSatisfy({ (1...24).contains($0) }),
+              counts.reduce(0, +) == pages.reduce(0, { $0 + $1.blocks.filter { !$0.contextOnly }.count }),
+              counts.indices.contains(state.understandingJobs[index].nextPage) else { state = before; throw CaptureUnderstandingError.changed }
+        state.understandingJobs[index].pageBlockCounts = counts
+        state.understandingJobs[index].pageCount = counts.count
         state.understandingJobs[index].state = .processing
         state.understandingJobs[index].isReviewPreparation = forReview
         state.understandingJobs[index].lease = UUID()
@@ -113,9 +118,52 @@ extension FileMemoryStore {
     }
 
     public func captureUnderstandingPage(_ job: CaptureUnderstandingJob) throws -> UnderstandingPage {
-        let pages = CaptureUnderstandingEngine.pages(for: job.captureID, in: state)
+        let pages = CaptureUnderstandingEngine.pages(for: job.captureID, in: state, blockCounts: job.pageBlockCounts)
         guard pages.indices.contains(job.nextPage), pages[job.nextPage].sourceVersions == job.sourceVersions else { throw CaptureUnderstandingError.changed }
         return pages[job.nextPage]
+    }
+
+    /// The same recovery path is used by explicit reviews and the automatic worker.
+    /// A clipped response is never decoded or saved. Split only on capacity failures,
+    /// not authentication, quota, transport, semantic rejection or cancellation.
+    public func processCaptureUnderstandingPage(_ job: CaptureUnderstandingJob, responder: any LLMResponding,
+                                               configuration: LLMConfiguration, privacy: PrivacySettings,
+                                               forReview: Bool = false,
+                                               beforeCall: @escaping @Sendable () async throws -> Void = {},
+                                               onRepair: (@Sendable (ModelValidationIssue) async -> Void)? = nil) async throws -> UnderstandingPageOutcome {
+        try await beforeCall()
+        try validateCaptureUnderstandingJob(job, configuration: configuration, privacy: privacy, forReview: forReview)
+        let page = try captureUnderstandingPage(job)
+        do {
+            let result = try await CaptureUnderstandingEngine.understand(page, responder: responder, beforeCall: {
+                try await beforeCall()
+                try await self.validateCaptureUnderstandingJob(job, configuration: configuration, privacy: privacy, forReview: forReview)
+            }, onRepair: onRepair)
+            try await beforeCall()
+            try finishCaptureUnderstandingPage(job, result: result, configuration: configuration, privacy: privacy, forReview: forReview)
+            return .saved
+        } catch let failure as LLMResponseFailure where [.truncated, .reasoningOnly, .contextLimit].contains(failure.reason) {
+            try await beforeCall()
+            try validateCaptureUnderstandingJob(job, configuration: configuration, privacy: privacy, forReview: forReview)
+            var counts = job.pageBlockCounts ?? CaptureUnderstandingEngine.pages(for: job.captureID, in: state).map { $0.blocks.filter { !$0.contextOnly }.count }
+            guard counts.indices.contains(job.nextPage), counts[job.nextPage] > 1 else { throw failure }
+            let count = counts[job.nextPage], left = count / 2
+            counts.replaceSubrange(job.nextPage...job.nextPage, with: [left, count - left])
+            guard let index = state.understandingJobs.firstIndex(where: { $0.id == job.id }) else { throw CaptureUnderstandingError.changed }
+            let before = state
+            state.understandingJobs[index].pageBlockCounts = counts
+            state.understandingJobs[index].pageCount = counts.count
+            state.understandingJobs[index].state = .queued
+            state.understandingJobs[index].lease = nil
+            state.understandingJobs[index].retryAt = nil
+            state.understandingJobs[index].attempts = 0
+            state.understandingJobs[index].lastFailureCode = nil
+            state.understandingJobs[index].lastFailureReason = nil
+            // Keep explicit ownership so a background worker cannot race the review.
+            state.understandingJobs[index].isReviewPreparation = forReview ? true : nil
+            do { try Task.checkCancellation(); try persist(preservingReviewsFrom: before) } catch { state = before; throw error }
+            return .subdivided
+        }
     }
 
     public func validateCaptureUnderstandingJob(_ job: CaptureUnderstandingJob, configuration: LLMConfiguration, privacy: PrivacySettings, forReview: Bool = false) throws {
