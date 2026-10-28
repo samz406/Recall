@@ -4,6 +4,7 @@ extension FileMemoryStore {
     public func organizeMemory(force: Bool = false, now: Date = .now) throws {
         let previous = state
         do {
+            finishPendingDailyReviewMaintenance()
             applyKnowledge(MemoryKnowledgeEngine().reconcile(state, force: force, now: now))
             try persist()
         } catch { state = previous; throw error }
@@ -95,6 +96,7 @@ extension FileMemoryStore {
 
 extension RecallState {
     mutating func invalidateMemoryOutputs(sourceIDs: Set<UUID>) {
+        dailyReviewCheckpoints.removeAll { !Set($0.sourceVersions.keys).isDisjoint(with: sourceIDs) }
         guard !sourceIDs.isEmpty else { return }
         dailySummaries.removeAll { !Set($0.sourceCaptureIDs).isDisjoint(with: sourceIDs) }
         topicReviews.removeAll { !Set($0.sourceVersions.keys).isDisjoint(with: sourceIDs) }

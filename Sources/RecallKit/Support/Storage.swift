@@ -110,6 +110,8 @@ public struct RecallState: Codable, Sendable {
     public var topicReviews: [TopicModelReview] = []
     public var understandingJobs: [CaptureUnderstandingJob] = []
     public var understandingSettings = CaptureUnderstandingSettings()
+    public var dailyReviewCheckpoints: [DailyReviewCheckpoint] = []
+    public var pendingDailyReviewMaintenance: [UUID] = []
     public var summaryFeedback: [SummaryFeedback] = []
     public var summaryFeedbackSettings = SummaryFeedbackSettings()
     public var topicGroups: [MemoryTopicGroup] = []
@@ -181,7 +183,7 @@ public struct RecallState: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case topicReviews, understandingJobs, understandingSettings
+        case topicReviews, understandingJobs, understandingSettings, dailyReviewCheckpoints, pendingDailyReviewMaintenance
         case summaryFeedback, summaryFeedbackSettings
         case rules, captures, messages, reminders, reminderDiscoveryCheckpoint, reminderLearningProfile, dailySummaries, dailySummarySettings
         case privacy, llmConfiguration, conversationSummary, conversationSummaryCoveredMessageCount
@@ -195,6 +197,8 @@ public struct RecallState: Codable, Sendable {
         topicReviews = try container.decodeIfPresent([TopicModelReview].self, forKey: .topicReviews) ?? []
         understandingJobs = try container.decodeIfPresent([CaptureUnderstandingJob].self, forKey: .understandingJobs) ?? []
         understandingSettings = try container.decodeIfPresent(CaptureUnderstandingSettings.self, forKey: .understandingSettings) ?? CaptureUnderstandingSettings()
+        dailyReviewCheckpoints = try container.decodeIfPresent([DailyReviewCheckpoint].self, forKey: .dailyReviewCheckpoints) ?? []
+        pendingDailyReviewMaintenance = try container.decodeIfPresent([UUID].self, forKey: .pendingDailyReviewMaintenance) ?? []
         summaryFeedback = try container.decodeIfPresent([SummaryFeedback].self, forKey: .summaryFeedback) ?? []
         summaryFeedbackSettings = try container.decodeIfPresent(SummaryFeedbackSettings.self, forKey: .summaryFeedbackSettings) ?? SummaryFeedbackSettings()
         rules = try container.decodeIfPresent([EventRule].self, forKey: .rules) ?? EventRule.defaults()
@@ -636,7 +640,7 @@ public actor FileMemoryStore {
         do { try Task.checkCancellation(); try persist() } catch { state = before; throw error }
     }
 
-    private func applyIntelligenceState(_ consolidation: IntelligenceConsolidation, for day: Date) {
+    func applyIntelligenceState(_ consolidation: IntelligenceConsolidation, for day: Date) {
         let calendar = Calendar.current
         state.episodes.removeAll { calendar.isDate($0.day, inSameDayAs: day) }
         state.episodes.append(contentsOf: consolidation.episodes)
@@ -1188,6 +1192,7 @@ public actor FileMemoryStore {
     }
 
     func persist(preservingReviewsFrom previous: RecallState? = nil) throws {
+        reconcileDailyReviewCheckpoints()
         let liveIDs = Set(state.captures.map(\.id))
         let excludedIDs = Set(state.captures.filter { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id))
         let invalidIDs = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
@@ -1220,6 +1225,14 @@ public actor FileMemoryStore {
             else { try intelligenceIndex?.synchronize(with: state) }
             indexNeedsRebuild = false
         } catch { indexNeedsRebuild = true }
+    }
+
+    /// Only review-owned fields changed. Full reconciliation/index maintenance follows
+    /// on the existing maintenance cycle; queries use their memory fallback meanwhile.
+    func persistReviewState(indexChanged: Bool = false) throws {
+        try Task.checkCancellation()
+        try Self.write(state, encoder: encoder, to: storage.stateURL)
+        if indexChanged { indexNeedsRebuild = true }
     }
 
     private static func write(_ state: RecallState, encoder: JSONEncoder, to url: URL) throws {

@@ -1383,29 +1383,26 @@ final class RecallAppModel: ObservableObject {
         dailyReviewTask = Task {
             defer { isGeneratingDailySummary = false; dailyReviewTask = nil; dailyReviewStatusID = nil; processNextDailySummary() }
             do {
-                let prepared = try await modelStore.prepareModelReview(period: period, responder: responder,
+                let outcome = try await modelStore.generateDirectDailyReview(day: day, period: period, responder: responder,
                     expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
-                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) })
-                state = prepared
-                let result = try await ModelReviewEngine().generate(in: prepared, period: period,
-                    beforeCall: { try await modelStore.validateModelReview(prepared, period: period) },
-                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder)
+                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) },
+                    onMetrics: { metrics in
+                        await self.recordDiagnostic(.info, source: "DailySummary", message: "每日回顾处理统计", metadata: metrics.diagnosticMetadata)
+                    })
                 try Task.checkCancellation()
-                guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
-                let summary = result.dailySummary(day: day)
-                updateReviewTask(taskID, progress: ReviewGenerationProgress(.saving, detail: "核对完成，正在保存回顾。"))
-                try await modelStore.commitModelDailySummary(summary, expected: prepared, period: period)
-                finishTask(taskID, state: result.coverage.uncertainBlockCount > 0 ? .partial : .succeeded,
-                    message: result.coverage.uncertainBlockCount > 0 ? "回顾已保存，部分原文暂无法确认" : "回顾已保存", destination: .daily(summary.id))
+                let summary = outcome.summary
+                let partial = (summary.modelCoverage?.uncertainBlockCount ?? 0) > 0
+                state = await modelStore.snapshot()
+                finishTask(taskID, state: partial ? .partial : .succeeded,
+                    message: partial ? "回顾已保存，部分原文暂无法确认" : "回顾已保存", destination: .daily(summary.id), detail: outcome.metrics.detail)
                 if reason == .manual { dailyToOpen = summary.id }
-                await refresh()
+                // Do not run whole-archive maintenance in the user's completion path.
+                // Pending local derived work is drained on the existing maintenance cycle.
                 if !Task.isCancelled, state.dailySummarySettings.notifyWhenReady == true {
                     do { try await notificationScheduler.deliverDailyBriefing(summary) }
                     catch { recordError(error, source: "DailySummary", message: "回顾已保存，通知投递失败") }
                 }
                 if !Task.isCancelled { discoverReminders(force: false, announce: false) }
-                recordDiagnostic(.info, source: "DailySummary", message: "模型回顾已生成", metadata: [
-                    "generation": "model-first", "sourceCount": "\(result.coverage.sourceCount)", "factCount": "\(result.coverage.factCount)"])
             } catch {
                 let cancelled = ModelCallCancellation.isCancellation(error)
                 finishTask(taskID, state: cancelled ? .cancelled : .failed,
