@@ -81,7 +81,7 @@ public struct CaptureUnderstanding: Codable, Hashable, Sendable {
     public var uncertainBlockCount: Int
 }
 
-public enum UnderstandingJobState: String, Codable, Sendable { case queued, processing, retrying, failed, completed, discarded }
+public enum UnderstandingJobState: String, Codable, Sendable { case queued, processing, retrying, paused, failed, completed, discarded }
 public struct CaptureUnderstandingJob: Identifiable, Codable, Hashable, Sendable {
     public var id = UUID()
     public var captureID: UUID

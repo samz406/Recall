@@ -63,7 +63,7 @@ private struct CaptureUnderstandingQueueView: View {
                                 }
                             }
                             Spacer()
-                            if job.state == .failed {
+                            if job.state == .failed || job.state == .paused {
                                 Button("重试") { model.queueCaptureUnderstanding(captureID: job.captureID) }
                                     .disabled(!model.state.understandingSettings.enabled)
                             }
@@ -83,6 +83,7 @@ private extension CaptureUnderstandingJob {
         case .queued: nextPage > 0 ? "已整理 \(nextPage) / \(pageCount) 段，等待继续" : "等待整理"
         case .processing: "正在核对第 \(nextPage + 1) / \(pageCount) 段"
         case .retrying: "稍后自动重试（已尝试 \(attempts) 次）"
+        case .paused: "已暂停，保留 \(nextPage)/\(pageCount) 段进度；可重试继续"
         case .failed: "已停止自动重试，原文保留"
         case .completed: "整理完成"
         case .discarded: "整理结果已删除，可手动重新整理"

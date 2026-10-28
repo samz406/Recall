@@ -21,7 +21,7 @@ extension RecallAppModel {
                     for job in state.understandingJobs where job.state == .failed {
                         count += try await store.retryCaptureUnderstanding(job.captureID)
                     }
-                } else if let captureID, state.understandingJobs.contains(where: { $0.captureID == captureID && [.failed, .retrying].contains($0.state) }) {
+                } else if let captureID, state.understandingJobs.contains(where: { $0.captureID == captureID && [.failed, .retrying, .paused].contains($0.state) }) {
                     count = try await store.retryCaptureUnderstanding(captureID)
                 } else {
                     let start = Calendar.current.date(byAdding: .day, value: -30, to: .now) ?? .now

@@ -33,7 +33,7 @@ extension FileMemoryStore {
             // Reuse completed pages after interruption. An explicitly retried failed job
             // resumes from its last saved page rather than restarting a long document.
             if let i = state.understandingJobs.firstIndex(where: { $0.captureID == record.id }),
-               [.failed, .retrying, .completed].contains(state.understandingJobs[i].state) {
+               [.failed, .retrying, .paused, .completed].contains(state.understandingJobs[i].state) {
                 let before = state
                 if state.understandingJobs[i].state == .completed { state.understandingJobs[i] = CaptureUnderstandingJob(captureID: record.id) }
                 else { state.understandingJobs[i].state = .queued; state.understandingJobs[i].attempts = 0; state.understandingJobs[i].retryAt = nil }
@@ -66,7 +66,7 @@ extension FileMemoryStore {
                     // Preserve cursor and accepted pages on cancellation. Changed sources will
                     // be reset by the normal source-version reconciliation.
                     if ModelCallCancellation.isCancellation(error) {
-                        try releaseCaptureUnderstanding(job)
+                        try releaseCaptureUnderstanding(job, pause: true)
                         throw CancellationError()
                     }
                     let changed = (error as? CaptureUnderstandingError).map { if case .changed = $0 { true } else { false } } ?? false

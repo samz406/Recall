@@ -139,9 +139,13 @@ enum ReviewCancellationVerification {
         let state = await f.store.snapshot(), result = await completion.value()
         try expect(blocked && acknowledged && result.1, "取消仍在等待不响应取消的模型服务")
         try expect(state.understandingJobs[0].nextPage == 1 && state.understandingJobs[0].lease == nil
-            && state.understandingJobs[0].state == .queued && state.understandingJobs[0].attempts == 0
+            && state.understandingJobs[0].state == .paused && state.understandingJobs[0].attempts == 0
             && state.understandingJobs[0].lastFailureCode == nil, "取消丢失分页、占用租约或被记为失败")
         try expect(state.captures[0].understanding == nil && state.dailySummaries.contains { $0.id == old.id && $0.content == old.content }, "迟到结果覆盖了旧理解或回顾")
+        var settings = CaptureUnderstandingSettings(); settings.enabled = true
+        try await f.store.updateCaptureUnderstandingSettings(settings)
+        let background = try await f.store.claimCaptureUnderstanding()
+        try expect(background == nil, "后台整理接走了用户刚取消的历史记录，擅自继续处理")
         let resumed = ModelReviewVerification.Model()
         _ = try await f.store.prepareModelReview(period: f.period, responder: resumed)
         let log = await resumed.log().filter { $0.purpose == .captureUnderstanding }
@@ -188,7 +192,7 @@ enum ReviewCancellationVerification {
         do { _ = try await f.store.prepareModelReview(period: f.period, responder: model); throw ModelReviewVerification.Failure(message: "网络取消没有抛出取消") }
         catch is CancellationError { }
         let state = await f.store.snapshot(), log = await model.log()
-        try expect(log.count == 1 && state.understandingJobs[0].state == .queued && state.understandingJobs[0].lastFailureCode == nil,
+        try expect(log.count == 1 && state.understandingJobs[0].state == .paused && state.understandingJobs[0].lastFailureCode == nil,
             "URLError.cancelled 被记为连接失败或自动重试")
     }
     static func cancellationDuringRepair() async throws {
