@@ -6,7 +6,8 @@ extension FileMemoryStore {
     public func prepareModelReview(period: ReviewPeriod, sourceIDs: Set<UUID>? = nil,
                                    responder: any LLMResponding,
                                    expectedConfiguration: LLMConfiguration? = nil, expectedPrivacy: PrivacySettings? = nil,
-                                   onPhase: (@Sendable (String) async -> Void)? = nil) async throws -> RecallState {
+                                   onPhase: (@Sendable (String) async -> Void)? = nil,
+                                   onProgress: (@Sendable (ReviewGenerationProgress) async -> Void)? = nil) async throws -> RecallState {
         guard state.privacy.cloudUseEnabled, state.llmConfiguration.provider != .localOnly,
               !state.llmConfiguration.apiKey.isEmpty else { throw ModelReviewError.unavailable }
         guard expectedConfiguration == nil || state.llmConfiguration == expectedConfiguration,
@@ -14,6 +15,12 @@ extension FileMemoryStore {
         let baseline = state
         let records = ModelReviewEvidence.records(in: baseline, period: period, sourceIDs: sourceIDs)
         guard !records.isEmpty else { throw WeeklyReviewError.noEvidence }
+        let reused = records.filter { record in
+            (record.manualMatter != nil && record.textOrigin == .userInput)
+                || record.understanding.map { CaptureUnderstandingEngine.isCurrent($0, in: baseline) } == true
+        }.count
+        await onPhase?("准备记录")
+        await onProgress?(ReviewGenerationProgress(.preparing, detail: "范围内有 \(records.count) 条记录，\(reused) 条可直接复用；仅补齐未处理的记录。"))
         let expected = Dictionary(uniqueKeysWithValues: records.map { ($0.id, CaptureUnderstandingEngine.sourceVersion($0, in: baseline)) })
         for (offset, record) in records.enumerated() {
             try Task.checkCancellation()
@@ -22,11 +29,10 @@ extension FileMemoryStore {
             if let result = state.captures.first(where: { $0.id == record.id })?.understanding,
                CaptureUnderstandingEngine.isCurrent(result, in: state) { continue }
             if state.understandingJobs.contains(where: { $0.captureID == record.id && $0.state == .discarded }) { throw ModelReviewError.declined }
-            await onPhase?("理解记录 \(offset + 1)/\(records.count)")
             // Reuse completed pages after interruption. An explicitly retried failed job
             // resumes from its last saved page rather than restarting a long document.
             if let i = state.understandingJobs.firstIndex(where: { $0.captureID == record.id }),
-               [.failed, .completed].contains(state.understandingJobs[i].state) {
+               [.failed, .retrying, .completed].contains(state.understandingJobs[i].state) {
                 let before = state
                 if state.understandingJobs[i].state == .completed { state.understandingJobs[i] = CaptureUnderstandingJob(captureID: record.id) }
                 else { state.understandingJobs[i].state = .queued; state.understandingJobs[i].attempts = 0; state.understandingJobs[i].retryAt = nil }
@@ -43,12 +49,15 @@ extension FileMemoryStore {
                     }
                     throw ModelReviewError.incomplete
                 }
-                await onPhase?("理解记录 \(offset + 1)/\(records.count) · 第 \(job.nextPage + 1)/\(job.pageCount) 段")
+                let detail = "准备第 \(offset + 1)/\(records.count) 条记录 · 第 \(job.nextPage + 1)/\(job.pageCount) 段；已保存的段落不会重复处理。"
+                await onProgress?(ReviewGenerationProgress(.preparing, detail: detail))
                 do {
                     let page = try captureUnderstandingPage(job)
                     let result = try await CaptureUnderstandingEngine.understand(page, responder: responder, beforeCall: {
                         try await self.validateReviewPreparation(expected, baseline: baseline)
                         try await self.validateCaptureUnderstandingJob(job, configuration: baseline.llmConfiguration, privacy: baseline.privacy, forReview: true)
+                    }, onRepair: { issue in
+                        await onProgress?(ReviewGenerationProgress(.preparing, detail: "\(detail)\n\(issue.explanation)，正在自动修正一次。"))
                     })
                     try validateReviewPreparation(expected, baseline: baseline)
                     try finishCaptureUnderstandingPage(job, result: result, configuration: baseline.llmConfiguration, privacy: baseline.privacy, forReview: true)
@@ -61,8 +70,14 @@ extension FileMemoryStore {
                             state.understandingJobs[i].lease = nil; state.understandingJobs[i].state = .queued
                             do { try persist() } catch { state = before; throw error }
                         }
-                    } else { try failCaptureUnderstanding(job, changed: (error as? CaptureUnderstandingError).map { if case .changed = $0 { true } else { false } } ?? false) }
-                    throw error
+                        throw error
+                    }
+                    let changed = (error as? CaptureUnderstandingError).map { if case .changed = $0 { true } else { false } } ?? false
+                    let reviewChanged = (error as? ModelReviewError).map { if case .changed = $0 { true } else { false } } ?? false
+                    try failCaptureUnderstanding(job, changed: changed || reviewChanged, error: error)
+                    if changed || reviewChanged { throw error }
+                    throw ReviewPreparationFailure(record: offset + 1, total: records.count, page: job.nextPage + 1,
+                        pageCount: job.pageCount, reason: ReviewProcessingDiagnostics.reason(for: error), code: ReviewProcessingDiagnostics.code(for: error))
                 }
             }
         }

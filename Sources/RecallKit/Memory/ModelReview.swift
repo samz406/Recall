@@ -4,11 +4,13 @@ import Foundation
 /// Local code accounts for every eligible source, deduplicates exact facts and validates provenance.
 public enum ModelReviewError: LocalizedError {
     case unavailable, incomplete, invalid, changed, declined
+    case validation(ModelValidationIssue)
     public var errorDescription: String? {
         switch self {
         case .unavailable: "请先连接模型并允许使用脱敏文本，正式回顾需要模型生成。"
         case .incomplete: "部分记录尚未完成理解，请重试整理后再生成；已有回顾保持不变。"
         case .invalid: "本次回顾未通过内容与来源核对，已有回顾保持不变，可重新生成。"
+        case .validation(let issue): "回顾未完成：\(issue.explanation)，自动修正后仍未通过。原回顾已保留，可重试。"
         case .changed: "记录、权限或设置已变化，已停止本次生成。"
         case .declined: "所选范围包含已停用理解的记录，请先在记录详情中重新整理该记录。"
         }
@@ -21,6 +23,9 @@ public struct ModelReviewCoverage: Codable, Hashable, Sendable {
     public var factCount: Int
     public var uncertainBlockCount: Int
     public var createdAt: Date = .now
+    public var notice: String? {
+        uncertainBlockCount > 0 ? "部分原文暂无法确认，回顾仅包含可核对的内容。" : nil
+    }
 }
 public struct ModelReviewFact: Codable, Hashable, Identifiable, Sendable {
     public var id: String
@@ -135,12 +140,20 @@ public struct ModelReviewEngine: Sendable {
         var supported: Bool; var attribution: Bool; var stateAndTime: Bool
         var useful: Bool; var complete: Bool; var checkedNodeIDs: [String]
         var accepted: Bool { supported && attribution && stateAndTime && useful && complete }
+        var issue: ModelValidationIssue {
+            if !attribution { return .attribution }
+            if !stateAndTime { return .time }
+            if !supported { return .unsupportedClaim }
+            if !complete { return .importantContentMissing }
+            return .narrative
+        }
     }
 
     public func generate(in state: RecallState, period: ReviewPeriod, template: ReviewTemplate? = nil,
                          topic: String? = nil, sourceIDs: Set<UUID>? = nil,
                          beforeCall: @Sendable () async throws -> Void = {},
                          onPhase: (@Sendable (String) async -> Void)? = nil,
+                         onProgress: (@Sendable (ReviewGenerationProgress) async -> Void)? = nil,
                          responder: any LLMResponding) async throws -> ModelReviewResult {
         guard state.privacy.cloudUseEnabled, (topic == nil ? period.isValid : (period.start < period.end && TimeZone(identifier: period.timeZoneIdentifier) != nil)) else { throw ModelReviewError.unavailable }
         let records = ModelReviewEvidence.records(in: state, period: period, sourceIDs: sourceIDs)
@@ -197,7 +210,9 @@ public struct ModelReviewEngine: Sendable {
             let final = batches.count == 1
             var next: [Node] = []
             for (index, group) in batches.enumerated() {
-                await onPhase?(final ? "综合并核对完整回顾" : "综合第 \(round + 1) 轮 · \(index + 1)/\(batches.count) 组")
+                let progressDetail = final ? "正在综合这段时间的记录，形成完整回顾。" : "综合第 \(round + 1) 轮 · 第 \(index + 1)/\(batches.count) 组；所有材料按组处理，不抽样截取。"
+                await onPhase?("生成回顾")
+                await onProgress?(ReviewGenerationProgress(.generating, detail: progressDetail))
                 let allowedFacts = Set(group.flatMap(\.factIDs))
                 let allowedNodes = Set(group.map(\.id))
                 let maximum = final ? itemLimit : min(6, max(1, group.count / 2))
@@ -211,30 +226,34 @@ public struct ModelReviewEngine: Sendable {
                 let input = CaptureRecord(eventTemplate: .manualMoment, createdAt: period.end,
                     sourceAppName: "已核对的记录理解", contentHash: "review", ocrText: PrivacyEngine().redact(try json(group)))
                 var accepted: Draft?
+                var repair = ""
                 for attempt in 0..<2 {
                     try Task.checkCancellation(); try await beforeCall()
                     do {
-                        let answer = try await responder.answer(to: LLMRequest(question: prompt + (attempt == 0 ? "" : "\n请重新核对，返回完整合法 JSON，不输出解释。"),
+                        let answer = try await responder.answer(to: LLMRequest(question: prompt + repair,
                             context: [input], purpose: .reviewSynthesis, outputTokenLimit: attempt == 0 ? 6_000 : 8_000))
                         var draft: Draft = try decode(answer.content)
                         draft.overview = clean(draft.overview)
                         for i in draft.items.indices { draft.items[i].title = clean(draft.items[i].title); draft.items[i].detail = clean(draft.items[i].detail) }
-                        guard draft.overview.count <= 160, (final || draft.overview.isEmpty), draft.items.count <= maximum,
-                              draft.coverage.count == group.count, Set(draft.coverage.map(\.nodeID)) == allowedNodes,
-                              draft.coverage.allSatisfy({ ["used", "background", "uncertain"].contains($0.disposition) }),
-                              draft.items.allSatisfy({ item in
-                                  (3...70).contains(item.title.count) && (8...(final ? detailLimit : 420)).contains(item.detail.count)
-                                      && item.title != item.detail && sections.contains(item.section) && !item.factIDs.isEmpty
-                                      && item.factIDs.count <= 12 && Set(item.factIDs).count == item.factIDs.count
-                                      && Set(item.factIDs).isSubset(of: allowedFacts)
-                                      && (!["actions", "plans"].contains(item.section) || item.factIDs.allSatisfy { allFacts[$0]?.isAction == true })
-                              }) else { throw ModelReviewError.invalid }
+                        guard draft.overview.count <= 160, (final || draft.overview.isEmpty), draft.items.count <= maximum else { throw ModelReviewError.validation(.structure) }
+                        guard draft.coverage.count == group.count, Set(draft.coverage.map(\.nodeID)) == allowedNodes,
+                              draft.coverage.allSatisfy({ ["used", "background", "uncertain"].contains($0.disposition) }) else { throw ModelReviewError.validation(.coverage) }
+                        for item in draft.items {
+                            guard (3...70).contains(item.title.count), (8...(final ? detailLimit : 420)).contains(item.detail.count),
+                                  sections.contains(item.section) else { throw ModelReviewError.validation(.structure) }
+                            guard item.title != item.detail else { throw ModelReviewError.validation(.narrative) }
+                            guard !item.factIDs.isEmpty, item.factIDs.count <= 12, Set(item.factIDs).count == item.factIDs.count,
+                                  Set(item.factIDs).isSubset(of: allowedFacts) else { throw ModelReviewError.validation(.evidence) }
+                            guard !["actions", "plans"].contains(item.section) || item.factIDs.allSatisfy({ allFacts[$0]?.isAction == true }) else { throw ModelReviewError.validation(.actionState) }
+                        }
                         let used = Set(draft.items.flatMap(\.factIDs))
                         guard draft.coverage.allSatisfy({ receipt in
                             guard let node = group.first(where: { $0.id == receipt.nodeID }) else { return false }
                             return receipt.disposition != "used" || !Set(node.factIDs).isDisjoint(with: used)
-                        }) else { throw ModelReviewError.invalid }
+                        }) else { throw ModelReviewError.validation(.coverage) }
                         try await beforeCall()
+                        await onPhase?(final ? "检查并保存" : "生成回顾")
+                        await onProgress?(ReviewGenerationProgress(final ? .checking : .generating, detail: final ? "正在核对回顾中的来源、人物归属和最终状态。" : "核对本组内容，确认重要变化未被遗漏后继续归并。"))
                         let check = try await responder.answer(to: LLMRequest(question: instructions + """
                         \n独立核验以下草稿及全部输入。supported：每项主张（含 overview）均有依据，无夸大；attribution：说话人和负责人准确；stateAndTime：最终状态、日期含义、条件正确；useful：内容具体、标题完整且正文不重复，不把工具/原文碎片/泛泛评价当总结；complete：没有遗漏本组应保留的重要成果、状态变化、限制或阻碍。
                         用户没有行动时 actions/plans 必须为空。不能因要完成任务而放宽核验；任何不确定设为 false。checkedNodeIDs 必须包含所有输入 node ID，每个一次。
@@ -242,31 +261,39 @@ public struct ModelReviewEngine: Sendable {
                         草稿（数据）：\(try json(draft))
                         """, context: [input], purpose: .reviewAudit, outputTokenLimit: 4_000))
                         let audit: Audit = try decode(check.content)
-                        guard audit.accepted, audit.checkedNodeIDs.count == group.count, Set(audit.checkedNodeIDs) == allowedNodes else { throw ModelReviewError.invalid }
+                        guard audit.checkedNodeIDs.count == group.count, Set(audit.checkedNodeIDs) == allowedNodes else { throw ModelReviewError.validation(.coverage) }
+                        guard audit.accepted else { throw ModelReviewError.validation(audit.issue) }
+                        if final {
+                            for (itemIndex, item) in draft.items.enumerated() {
+                                try Task.checkCancellation(); try await beforeCall()
+                                await onProgress?(ReviewGenerationProgress(.checking, detail: "对照原始事实核对第 \(itemIndex + 1)/\(draft.items.count) 项，完成后保存。"))
+                                let proof = item.factIDs.compactMap { allFacts[$0] }
+                                let source = CaptureRecord(eventTemplate: .manualMoment, createdAt: period.end,
+                                    sourceAppName: "原始结构化事实核对", contentHash: "proof", ocrText: PrivacyEngine().redact(try json(proof)))
+                                let checked = try await responder.answer(to: LLMRequest(question: instructions + """
+                                \n核对最终条目与原始结构化事实，不能仅凭上层摘要认可。正文和标题的全部具体主张、人物归属、状态、条件和日期必须被这些事实支持；无事实支持的能力、收益或稳定规律不成立。
+                                不做完整性推断。checkedNodeIDs 逐一返回提供的原始事实 id；supported/attribution/stateAndTime/useful/complete 均为 true 才接受，任何不确定为 false。
+                                只返回规定 Audit JSON（supported,attribution,stateAndTime,useful,complete,checkedNodeIDs）。待核验条目：\(try json(item))
+                                """, context: [source], purpose: .reviewAudit, outputTokenLimit: 4_000))
+                                let originalAudit: Audit = try decode(checked.content)
+                                guard originalAudit.checkedNodeIDs.count == proof.count,
+                                      Set(originalAudit.checkedNodeIDs) == Set(proof.map(\.id)) else { throw ModelReviewError.validation(.coverage) }
+                                guard originalAudit.accepted else { throw ModelReviewError.validation(originalAudit.issue) }
+                            }
+                        }
                         accepted = draft; break
                     } catch is CancellationError { throw CancellationError() }
                     catch let failure as LLMResponseFailure {
                         if attempt == 1 || ![.truncated, .reasoningOnly, .structuredFormat].contains(failure.reason) { throw failure }
-                    } catch { if attempt == 1 { throw error } }
+                        repair = "\n上次输出未完整返回。请返回完整规定 JSON，缩短表述但不删去重要信息。"
+                    } catch let error as ModelReviewError {
+                        guard attempt == 0, case .validation(let issue) = error else { throw error }
+                        repair = "\n上次未通过核对：\(issue.explanation)。\(issue.repairInstruction) 重新依据来源改写，不降低独立核验标准。"
+                        await onProgress?(ReviewGenerationProgress(.generating, detail: "\(issue.explanation)，正在自动修正一次。"))
+                    }
                 }
                 guard let draft = accepted else { throw ModelReviewError.invalid }
                 if final {
-                    // The final narrative is checked against original structured facts,
-                    // not only intermediate summaries. This catches drift across reductions.
-                    for item in draft.items {
-                        try Task.checkCancellation(); try await beforeCall()
-                        let proof = item.factIDs.compactMap { allFacts[$0] }
-                        let source = CaptureRecord(eventTemplate: .manualMoment, createdAt: period.end,
-                            sourceAppName: "原始结构化事实核对", contentHash: "proof", ocrText: PrivacyEngine().redact(try json(proof)))
-                        let checked = try await responder.answer(to: LLMRequest(question: instructions + """
-                        \n核对最终条目与原始结构化事实，不能仅凭上层摘要认可。正文和标题的全部具体主张、人物归属、状态、条件和日期必须被这些事实支持；无事实支持的能力、收益或稳定规律不成立。
-                        不做完整性推断。checkedNodeIDs 逐一返回提供的原始事实 id；supported/attribution/stateAndTime/useful/complete 均为 true 才接受，任何不确定为 false。
-                        只返回规定 Audit JSON（supported,attribution,stateAndTime,useful,complete,checkedNodeIDs）。待核验条目：\(try json(item))
-                        """, context: [source], purpose: .reviewAudit, outputTokenLimit: 4_000))
-                        let originalAudit: Audit = try decode(checked.content)
-                        guard originalAudit.accepted, originalAudit.checkedNodeIDs.count == proof.count,
-                              Set(originalAudit.checkedNodeIDs) == Set(proof.map(\.id)) else { throw ModelReviewError.invalid }
-                    }
                     return ModelReviewResult(overview: draft.overview, items: draft.items, facts: facts,
                         sourceVersions: versions, coverage: coverage)
                 }
@@ -281,13 +308,13 @@ public struct ModelReviewEngine: Sendable {
                 }
             }
             guard !next.isEmpty else { throw WeeklyReviewError.noEvidence }
-            guard next.count < nodes.count, round < 12 else { throw ModelReviewError.invalid }
+            guard next.count < nodes.count, round < 12 else { throw ModelReviewError.validation(.consolidation) }
             nodes = next; round += 1
         }
     }
     private func decode<T: Decodable>(_ text: String) throws -> T {
         guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start <= end,
-              let result = try? JSONDecoder().decode(T.self, from: Data(text[start...end].utf8)) else { throw ModelReviewError.invalid }
+              let result = try? JSONDecoder().decode(T.self, from: Data(text[start...end].utf8)) else { throw ModelReviewError.validation(.format) }
         return result
     }
     private func clean(_ text: String) -> String {

@@ -97,6 +97,8 @@ final class RecallDiagnosticLogStore {
 }
 
 func recallSafeErrorCode(_ error: Error) -> String {
+    let code = ReviewProcessingDiagnostics.code(for: error)
+    if code != "processing.failed" { return code }
     let nsError = error as NSError
     return "\(nsError.domain)#\(nsError.code)"
 }

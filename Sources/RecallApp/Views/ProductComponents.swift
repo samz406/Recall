@@ -29,6 +29,7 @@ struct RecallPageHeader<Actions: View>: View {
 }
 
 struct RecallTaskStatusView: View {
+    @EnvironmentObject private var model: RecallAppModel
     let task: RecallTaskStatus
     var cancel: (() -> Void)? = nil
     var body: some View {
@@ -38,9 +39,19 @@ struct RecallTaskStatusView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(task.kind + " · " + task.target).font(.subheadline.weight(.medium))
                 Text(task.phase).font(.callout).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
+                if let detail = task.detail, !detail.isEmpty {
+                    DisclosureGroup("处理详情") {
+                        Text(detail).font(.caption).foregroundStyle(RecallPalette.secondary)
+                            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled).padding(.top, 4)
+                    }.font(.caption).foregroundStyle(RecallPalette.secondary)
+                }
             }
             Spacer(minLength: 8)
             if task.isRunning, let cancel { Button("取消", action: cancel) }
+            if !task.isRunning, model.taskRetryActions[task.id] != nil {
+                Button("重试") { model.retryTask(task.id) }
+                    .disabled(model.isGeneratingDailySummary || model.isGeneratingWeeklyReview || model.generatingTopicID != nil)
+            }
         }.padding(16).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 12))
             .accessibilityElement(children: .contain)
     }

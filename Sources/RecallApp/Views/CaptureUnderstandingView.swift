@@ -57,6 +57,10 @@ private struct CaptureUnderstandingQueueView: View {
                                         .font(.caption).foregroundStyle(RecallPalette.secondary)
                                 }
                                 Text(job.label).font(.caption).foregroundStyle(RecallPalette.secondary)
+                                if let reason = job.lastFailureReason {
+                                    Text(reason).font(.caption).foregroundStyle(RecallPalette.warning)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             Spacer()
                             if job.state == .failed {

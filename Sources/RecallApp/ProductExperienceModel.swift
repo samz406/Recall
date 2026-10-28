@@ -4,20 +4,33 @@ import RecallKit
 @MainActor
 extension RecallAppModel {
     @discardableResult
-    func beginTask(_ kind: String, target: String, phase: String) -> UUID {
+    func beginTask(_ kind: String, target: String, phase: String, retry: (() -> Void)? = nil) -> UUID {
         let task = RecallTaskStatus(kind: kind, target: target, phase: phase)
         tasks.removeAll { !$0.isRunning && Date.now.timeIntervalSince($0.startedAt) > 86_400 }
         if tasks.count >= 20, let index = tasks.lastIndex(where: { !$0.isRunning }) { tasks.remove(at: index) }
         tasks.insert(task, at: 0)
+        taskRetryActions = taskRetryActions.filter { id, _ in tasks.contains { $0.id == id } }
+        taskRetryActions[task.id] = retry
         return task.id
     }
-    func updateTask(_ id: UUID, phase: String) {
+    func updateTask(_ id: UUID, phase: String, detail: String? = nil) {
         guard let i = tasks.firstIndex(where: { $0.id == id && $0.isRunning }) else { return }
         tasks[i].phase = phase
+        tasks[i].detail = detail
     }
-    func finishTask(_ id: UUID, state: RecallTaskState, message: String, destination: MemorySearchDestination? = nil) {
+    func updateReviewTask(_ id: UUID, progress: ReviewGenerationProgress) {
+        updateTask(id, phase: progress.title, detail: progress.detail)
+    }
+    func retryTask(_ id: UUID) {
+        guard !isGeneratingDailySummary, !isGeneratingWeeklyReview, topicReviewTask == nil,
+              tasks.contains(where: { $0.id == id && !$0.isRunning }), let retry = taskRetryActions.removeValue(forKey: id) else { return }
+        retry()
+    }
+    func finishTask(_ id: UUID, state: RecallTaskState, message: String, destination: MemorySearchDestination? = nil, detail: String? = nil) {
         guard let i = tasks.firstIndex(where: { $0.id == id && $0.isRunning }) else { return }
         tasks[i].state = state; tasks[i].phase = message; tasks[i].destination = destination
+        tasks[i].detail = detail
+        if state == .succeeded || state == .partial { taskRetryActions[id] = nil }
     }
     func mergeTopics(title: String, members: Set<String>) async -> Bool {
         guard members.count >= 2, members.isSubset(of: Set(matterFiles.map(\.id))) else { return false }

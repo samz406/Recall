@@ -155,7 +155,8 @@ enum CaptureUnderstandingVerification {
         let f = try await fixture("[聊天·自己] 如果联调通过，我会提交 Atlas 导出修复；目前尚未完成。")
         defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
         let (_, page) = try await claim(f)
-        try await rejected { _ = try await analyze(page, facts: [fact(page, kind: "event", status: "completed")]) }
+        let denied = try await analyze(page, facts: [fact(page, kind: "event", status: "completed")], accepted: [])
+        try expect(denied.facts.isEmpty && denied.uncertain == 1, "独立核对否决的完成判断仍被写入")
         let result = try await analyze(page, facts: [fact(page, condition: "联调通过后")])
         try expect(!result.facts[0].isUserAction && result.facts[0].condition == "联调通过后", "条件性计划被升级为立即待办")
     }

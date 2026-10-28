@@ -17,7 +17,7 @@ extension FileMemoryStore {
         if next.enabled && next.enabledSince == nil { next.enabledSince = now }
         state.understandingSettings = next
         if !next.enabled {
-            for i in state.understandingJobs.indices where state.understandingJobs[i].state == .processing {
+            for i in state.understandingJobs.indices where state.understandingJobs[i].state == .processing && state.understandingJobs[i].isReviewPreparation != true {
                 state.understandingJobs[i].state = .queued; state.understandingJobs[i].lease = nil
             }
         }
@@ -56,6 +56,22 @@ extension FileMemoryStore {
         do { try persist() } catch { state = before; throw error }
     }
 
+    /// Retry the failed page without discarding previously accepted pages. Changed input
+    /// or configuration will still reset the checkpoint when a new lease is claimed.
+    @discardableResult
+    public func retryCaptureUnderstanding(_ captureID: UUID, forReview: Bool = false) throws -> Int {
+        guard forReview || state.understandingSettings.enabled else { throw CaptureUnderstandingError.unavailable }
+        guard let index = state.understandingJobs.firstIndex(where: { $0.captureID == captureID }),
+              [.failed, .retrying].contains(state.understandingJobs[index].state) else { return 0 }
+        let before = state
+        state.understandingJobs[index].state = .queued
+        state.understandingJobs[index].attempts = 0
+        state.understandingJobs[index].retryAt = nil
+        state.understandingJobs[index].lease = nil
+        do { try persist() } catch { state = before; throw error }
+        return 1
+    }
+
     public func claimCaptureUnderstanding(captureID: UUID? = nil, forReview: Bool = false, now: Date = .now) throws -> CaptureUnderstandingJob? {
         guard (forReview || state.understandingSettings.enabled), state.privacy.cloudUseEnabled,
               state.llmConfiguration.provider != .localOnly, !state.llmConfiguration.apiKey.isEmpty else { return nil }
@@ -85,6 +101,7 @@ extension FileMemoryStore {
         state.understandingJobs[index].sourceVersions = first.sourceVersions
         state.understandingJobs[index].pageCount = pages.count
         state.understandingJobs[index].state = .processing
+        state.understandingJobs[index].isReviewPreparation = forReview
         state.understandingJobs[index].lease = UUID()
         state.understandingJobs[index].attempts += 1
         state.understandingJobs[index].updatedAt = now
@@ -126,6 +143,7 @@ extension FileMemoryStore {
         }
         updated.coveredBlocks += result.covered; updated.uncertainBlocks += result.uncertain
         updated.nextPage += 1; updated.attempts = 0; updated.lease = nil; updated.retryAt = nil; updated.updatedAt = now
+        updated.lastFailureCode = nil; updated.lastFailureReason = nil; updated.isReviewPreparation = nil
         updated.state = updated.nextPage == updated.pageCount ? .completed : .queued
         if updated.state == .completed {
             state.captures[captureIndex].understanding = CaptureUnderstanding(processorVersion: CaptureUnderstandingEngine.version,
@@ -142,7 +160,7 @@ extension FileMemoryStore {
         do { try persist(preservingReviewsFrom: before) } catch { state = before; throw error }
     }
 
-    public func failCaptureUnderstanding(_ job: CaptureUnderstandingJob, changed: Bool, now: Date = .now) throws {
+    public func failCaptureUnderstanding(_ job: CaptureUnderstandingJob, changed: Bool, error: Error? = nil, now: Date = .now) throws {
         guard let i = state.understandingJobs.firstIndex(where: { $0.id == job.id && $0.lease == job.lease }) else { return }
         let before = state
         if changed {
@@ -151,6 +169,12 @@ extension FileMemoryStore {
             state.understandingJobs[i].lease = nil
             state.understandingJobs[i].state = job.attempts >= 3 ? .failed : .retrying
             state.understandingJobs[i].retryAt = now.addingTimeInterval(pow(2, Double(job.attempts)) * 30)
+            state.understandingJobs[i].updatedAt = now
+            state.understandingJobs[i].isReviewPreparation = nil
+            if let error {
+                state.understandingJobs[i].lastFailureCode = ReviewProcessingDiagnostics.code(for: error)
+                state.understandingJobs[i].lastFailureReason = ReviewProcessingDiagnostics.reason(for: error)
+            }
         }
         do { try persist() } catch { state = before; throw error }
     }

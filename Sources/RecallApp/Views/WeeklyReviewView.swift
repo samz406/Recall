@@ -239,6 +239,9 @@ struct WeeklyReviewView: View {
                 VStack(alignment: .leading, spacing: 16) { reportHeading(report); reportActions(report) }
             }
             Divider()
+            if report.isReadable, let notice = report.modelCoverage?.notice {
+                Label(notice, systemImage: "info.circle").font(.callout).foregroundStyle(RecallPalette.secondary)
+            }
             if !report.isReadable {
                 Label("来源已删除、更正或重新分类，旧内容已移除。更新后可重新阅读。", systemImage: "arrow.triangle.2.circlepath")
                     .foregroundStyle(RecallPalette.secondary)

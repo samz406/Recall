@@ -20,6 +20,9 @@ struct DailyReviewContentView: View {
     var body: some View {
         let rows = items
         VStack(alignment: .leading, spacing: 24) {
+            if let notice = summary.modelCoverage?.notice {
+                Label(notice, systemImage: "info.circle").font(.callout).foregroundStyle(RecallPalette.secondary)
+            }
             if summary.formatVersion != 2 {
                 Text("这份回顾使用较早的整理规则，可以重新生成；原版本会保留。")
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
