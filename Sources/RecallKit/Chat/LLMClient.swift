@@ -358,12 +358,26 @@ public struct CompatibleLLM: LLMResponding {
 
     private func anthropicAnswer(to request: LLMRequest) async throws -> LLMAnswer {
         let endpoint = try endpoint(for: .anthropicCompatible)
+        // Hidden reasoning is counted in max_tokens and dominates latency for structured tasks:
+        // a 93 KB review took 28 s with DeepSeek thinking and 5 s without; MiniMax at default effort
+        // spent 11999/12000 tokens thinking and returned no JSON. Chat keeps the provider default.
+        // MiniMax-M3.1 rejects `thinking: disabled` (HTTP 400), so it only gets a lower effort.
+        let structured = request.purpose != .chat
+        let host = endpoint.host?.lowercased() ?? ""
+        let miniMax = usesMiniMaxAuthenticationFallback(for: endpoint)
+        let disableThinking = structured && (host == "api.deepseek.com" || host.hasSuffix(".deepseek.com"))
+        return try await anthropicAnswer(to: request, endpoint: endpoint, lowEffort: structured && miniMax, disableThinking: disableThinking)
+    }
+
+    private func anthropicAnswer(to request: LLMRequest, endpoint: URL, lowEffort: Bool, disableThinking: Bool) async throws -> LLMAnswer {
         let body = AnthropicRequest(
             model: configuration.model,
             maxTokens: outputLimit(for: request),
             temperature: 0.2,
             system: systemInstruction(for: request),
-            messages: anthropicMessages(for: request)
+            messages: anthropicMessages(for: request),
+            outputConfig: lowEffort ? .init(effort: "low") : nil,
+            thinking: disableThinking ? .init(type: "disabled") : nil
         )
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
@@ -384,7 +398,7 @@ public struct CompatibleLLM: LLMResponding {
     }
 
     private func outputLimit(for request: LLMRequest) -> Int {
-        let ceiling = [.captureUnderstanding, .captureUnderstandingAudit].contains(request.purpose) ? 16_000 : 8_000
+        let ceiling = [.captureUnderstanding, .captureUnderstandingAudit, .reviewSynthesis].contains(request.purpose) ? 16_000 : 8_000
         return min(ceiling, max(256, request.outputTokenLimit ?? configuration.maxOutputTokens))
     }
 
@@ -557,9 +571,16 @@ private struct AnthropicRequest: Encodable {
     let temperature: Double
     let system: String
     let messages: [Message]
+    var outputConfig: OutputConfig? = nil
+
+    var thinking: Thinking? = nil
+
+    struct OutputConfig: Encodable { let effort: String }
+    struct Thinking: Encodable { let type: String }
 
     enum CodingKeys: String, CodingKey {
         case model, temperature, system, messages
+        case outputConfig = "output_config", thinking
         case maxTokens = "max_tokens"
     }
 }

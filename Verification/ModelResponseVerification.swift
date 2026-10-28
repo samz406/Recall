@@ -114,7 +114,7 @@ enum ModelResponseVerification {
             defer { session.invalidateAndCancel() }
             let output = try await f.store.generateDirectDailyReview(day: f.records[0].createdAt, period: f.period, responder: responder)
             let used = try budgets()
-            try expect(used == [6_000] && output.metrics.modelCalls == 1 && output.summary.generationKind == .cloud,
+            try expect(used == [12_000] && output.metrics.modelCalls == 1 && output.summary.generationKind == .cloud,
                 "直接生成在真实 HTTP 适配器中仍发出多次请求或未保存模型结果")
         }
     }

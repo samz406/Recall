@@ -564,10 +564,11 @@ public struct WeeklyReviewEngine: Sendable {
         return SHA256.hash(data: data + corrections).map { String(format: "%02x", $0) }.joined()
     }
 
-    public static func sourcesUnchanged(_ report: WeeklyReport, in state: RecallState) -> Bool {
+    public static func sourcesUnchanged(_ report: WeeklyReport, in state: RecallState, knowledge: MemoryKnowledge? = nil) -> Bool {
         (report.topicGrouping == nil || report.topicGrouping == state.topicGroups) && report.sourceVersions.allSatisfy { id, version in
             version.hasPrefix("memory2:") ? sourceVersion(id: id, state: state) == version : legacySourceVersion(id: id, state: state) == version
-        } && MemoryKnowledgeEngine().sourcesUsable(report.sourceIDs, in: state)
+        } && (knowledge.map { MemoryKnowledgeEngine().sourcesUsable(report.sourceIDs, in: state, knowledge: $0) }
+            ?? MemoryKnowledgeEngine().sourcesUsable(report.sourceIDs, in: state))
     }
 
     private func excerpt(_ event: MatterEvent) -> ReviewExcerpt {

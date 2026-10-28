@@ -274,8 +274,13 @@ public struct MemoryKnowledgeEngine: Sendable {
     }
 
     public func sourcesUsable(_ ids: Set<UUID>, in state: RecallState) -> Bool {
+        sourcesUsable(ids, in: state, knowledge: reconcile(state))
+    }
+
+    /// `knowledge` must be `reconcile(state)` for this exact state; callers checking several
+    /// reports against one state compute it once because reconciling scans the whole archive.
+    public func sourcesUsable(_ ids: Set<UUID>, in state: RecallState, knowledge: MemoryKnowledge) -> Bool {
         let sources = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
-        let knowledge = reconcile(state)
         let active = Set(knowledge.claims.filter { $0.usable() }.flatMap(\.sourceIDs))
         let retiredReferences = Set(knowledge.claims.filter { $0.kind == .reference && !$0.usable() }.flatMap(\.sourceIDs))
         return ids.allSatisfy { id in

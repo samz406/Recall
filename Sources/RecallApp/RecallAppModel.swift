@@ -650,7 +650,9 @@ final class RecallAppModel: ObservableObject {
     }
 
     func recordError(_ error: Error, source: String, message: String) {
-        recordDiagnostic(.error, source: source, message: message, metadata: ["error": recallSafeErrorCode(error)])
+        var metadata = ["error": recallSafeErrorCode(error)]
+        if let failure = error as? LLMResponseFailure { metadata.merge(failure.diagnosticMetadata) { current, _ in current } }
+        recordDiagnostic(.error, source: source, message: message, metadata: metadata)
     }
 
     private func updateEnterKeyRecorder() {

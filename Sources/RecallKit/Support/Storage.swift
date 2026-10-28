@@ -435,8 +435,10 @@ public actor FileMemoryStore {
     }
 
     private func invalidateWeeklyReports() {
+        // Reconciling scans every capture; do it once per state instead of once per report.
+        let knowledge = state.weeklyReports.contains { $0.isReadable } ? MemoryKnowledgeEngine().reconcile(state) : nil
         for i in state.weeklyReports.indices where state.weeklyReports[i].isReadable {
-            if !WeeklyReviewEngine.sourcesUnchanged(state.weeklyReports[i], in: state) { state.weeklyReports[i].invalidate() }
+            if !WeeklyReviewEngine.sourcesUnchanged(state.weeklyReports[i], in: state, knowledge: knowledge) { state.weeklyReports[i].invalidate() }
             else {
                 let ids = state.weeklyReports[i].sourceIDs
                 state.weeklyReports[i].sourceVersions = Dictionary(uniqueKeysWithValues: ids.compactMap { id in
@@ -451,8 +453,9 @@ public actor FileMemoryStore {
             let existing = Set(state.captures.map(\.id))
             restorationState.captures += state.recentlyDeletedMemories[i].captures.filter { !existing.contains($0.id) }
             restorationState.matterCorrections += state.recentlyDeletedMemories[i].matterCorrections ?? []
+            let restorationKnowledge = reports.contains { $0.isReadable } ? MemoryKnowledgeEngine().reconcile(restorationState) : nil
             for j in reports.indices where reports[j].isReadable {
-                if !WeeklyReviewEngine.sourcesUnchanged(reports[j], in: restorationState) { reports[j].invalidate() }
+                if !WeeklyReviewEngine.sourcesUnchanged(reports[j], in: restorationState, knowledge: restorationKnowledge) { reports[j].invalidate() }
             }
             state.recentlyDeletedMemories[i].weeklyReports = reports
         }

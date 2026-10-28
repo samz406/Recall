@@ -161,7 +161,7 @@ enum DirectDailyReviewVerification {
     static func boundedParallelBatchesAndFullTail() async throws {
         let f = try await largeFixture()
         defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
-        let model = Model(), output = try await generate(f, model: model, limits: DailyReviewLimits(inputBytes: 18_000))
+        let model = Model(), output = try await generate(f, model: model, limits: DailyReviewLimits(inputBytes: 18_000, concurrency: 2))
         let calls = await model.log(), peak = await model.maximumActive()
         let bodies = calls.map { $0.context[0].ocrText }.joined()
         try expect(peak == 2 && output.metrics.modelCalls == calls.count && calls.count > 1,
