@@ -367,6 +367,9 @@ public struct DailySummaryItem: Identifiable, Codable, Hashable, Sendable {
     public var evidenceIDs: [UUID]
     /// 模型只能核准/改写已提取的具体行动，不能通过自由文本新增待办。
     public var actionCandidateID: UUID?
+    /// 当天回顾由模型一次性给出的结构化理解，主题、周期回顾和长期记忆都以它为输入。
+    /// 旧数据没有这些字段，读取时为 nil。
+    public var knowledge: DailyItemKnowledge?
 
     public init(
         id: UUID = UUID(),
@@ -374,7 +377,8 @@ public struct DailySummaryItem: Identifiable, Codable, Hashable, Sendable {
         title: String,
         detail: String = "",
         evidenceIDs: [UUID] = [],
-        actionCandidateID: UUID? = nil
+        actionCandidateID: UUID? = nil,
+        knowledge: DailyItemKnowledge? = nil
     ) {
         self.id = id
         self.section = section
@@ -382,6 +386,26 @@ public struct DailySummaryItem: Identifiable, Codable, Hashable, Sendable {
         self.detail = detail
         self.evidenceIDs = evidenceIDs
         self.actionCandidateID = actionCandidateID
+        self.knowledge = knowledge
+    }
+}
+
+/// 类型：事项进展、偏好、约定、人物、资料。只有模型能依据原文判断归属，本地规则不再猜测。
+public enum DailyItemKind: String, Codable, CaseIterable, Sendable {
+    case matter, preference, agreement, person, reference
+}
+
+public struct DailyItemKnowledge: Codable, Hashable, Sendable {
+    /// 事项所属主题，跨天用同一名字；资料类可为空。
+    public var topic: String?
+    public var kind: DailyItemKind
+    public var status: String
+    /// 模型认为这是用户本人（而非资料、对方或助手）的事项。
+    public var ownedByUser: Bool
+    /// 逐字引用，用于回到截图与来源核对。
+    public var quotes: [String]
+    public init(topic: String?, kind: DailyItemKind, status: String, ownedByUser: Bool, quotes: [String]) {
+        self.topic = topic; self.kind = kind; self.status = status; self.ownedByUser = ownedByUser; self.quotes = quotes
     }
 }
 

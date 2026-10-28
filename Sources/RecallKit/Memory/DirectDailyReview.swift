@@ -58,6 +58,10 @@ struct DailyReviewDraft: Codable, Sendable {
         var owner: UnderstandingSpeaker; var status: UnderstandingStatus
         var explicitCommitment: Bool; var condition: String?
         var evidence: [Evidence]
+        /// Stable, specific name of the matter this belongs to; reused across days. Optional so older drafts decode.
+        var topic: String? = nil
+        /// matter / preference / agreement / person / reference
+        var kind: String? = nil
     }
     struct Coverage: Codable, Sendable { var id: String; var disposition: String }
     var overview: String
@@ -186,7 +190,7 @@ func directReviewJSON<T: Encodable>(_ value: T) throws -> String {
 
 /// One synthesis for a normal day. Model-based independent audits are deliberately
 /// absent; source/role/state/format guards are local and a bad batch gets one repair.
-struct DirectDailyReviewEngine: Sendable {
+public struct DirectDailyReviewEngine: Sendable {
     let limits: DailyReviewLimits
     init(limits: DailyReviewLimits) { self.limits = limits }
 
@@ -247,7 +251,8 @@ struct DirectDailyReviewEngine: Sendable {
         标题为独立完整短句，3–70字；detail 8–300字补充结果、变化或限制，不重复或截取标题。overview 不超过160字。每项必须引用原文最短充分连续片段，quote 逐字存在于该材料的原文/quotes，4–180字，每项1–8条。不要输出 Markdown、引用数字、置信度、行为模式等术语。
         owner/status 如实使用 user/other/unknown 和 unknown/inProgress/pending/blocked/completed/cancelled；仅有本人明确承诺才把 explicitCommitment 设为 true。条件放 condition，未明示为 null，不编造日期。actions 必须 owner=user,status=pending,explicitCommitment=true,condition=null，且证据包含明确的本人原话。
         每个输入 id 必须恰好返回一条 coverage，disposition=used/background/uncertain；used 需在条目中引用。原文缺上下文用 uncertain，菜单或无新增价值用 background，不得丢掉重要结果和未解决限制。
-        输出：{"overview":"概括","items":[{"section":"progress","title":"具体事情","detail":"完整摘要","owner":"unknown","status":"unknown","explicitCommitment":false,"condition":null,"evidence":[{"id":"输入id","quote":"逐字原文"}]}],"coverage":[{"id":"输入id","disposition":"used"}]}。
+        每项还要给出：topic=这件事所属主题的稳定名称（4–30字，具体到对象，如“发布流程页面改版”，不要用应用名、日期或“工作”这类泛称；同一件事在不同日子用同一个名字）；kind=matter（本人事项进展）、preference（本人明确表达的偏好）、agreement（本人明确的约定或规则）、person（人物与关系）、reference（读到的资料、文章、他人内容，不是本人的事）。资料类 topic 可以为 null。偏好和约定只在原文是本人明确说出时才用。
+        输出：{"overview":"概括","items":[{"section":"progress","title":"具体事情","detail":"完整摘要","topic":"所属主题","kind":"matter","owner":"unknown","status":"unknown","explicitCommitment":false,"condition":null,"evidence":[{"id":"输入id","quote":"逐字原文"}]}],"coverage":[{"id":"输入id","disposition":"used"}]}。
         用户已生效的纠错要求：\(input.feedback)
         """
     }
@@ -458,11 +463,29 @@ struct DirectDailyReviewEngine: Sendable {
                     deadline: nil, sourceIDs: p.sourceIDs, quotes: [p.text], isAction: item.section == "actions")
                 return id
             }
-            items.append(ModelReviewItem(section: item.section, title: item.title, detail: item.detail, factIDs: Array(Set(ids)).sorted()))
+            let own = proofs.contains { !$0.isReference && $0.speaker == .user && $0.actor != .other }
+            items.append(ModelReviewItem(section: item.section, title: item.title, detail: item.detail, factIDs: Array(Set(ids)).sorted(),
+                topic: Self.cleanTopic(item.topic), kind: Self.cleanKind(item.kind, owned: own),
+                status: item.status.rawValue, ownedByUser: own))
         }
         return ModelReviewResult(overview: draft.overview, items: items, facts: facts.values.sorted { $0.id < $1.id },
             sourceVersions: input.sourceVersions, coverage: ModelReviewCoverage(sourceCount: input.recordIDs.count,
                 factCount: facts.count, uncertainBlockCount: uncertain + (draft.localUncertainCount ?? 0)))
+    }
+    /// A topic must be a short, specific name. Generic labels and sentence-length strings become nil.
+    public static func cleanTopic(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = text.lowercased().filter { $0.isLetter || $0.isNumber }
+        let generic: Set<String> = ["工作", "学习", "生活", "其他", "未分类", "项目", "任务", "事情", "日常", "资料", "null", "无"]
+        guard (3...30).contains(text.count), !generic.contains(key), !text.contains("\n") else { return nil }
+        return text
+    }
+    /// Preferences and agreements describe the user; the model's label is only trusted when the quote is the user's own.
+    public static func cleanKind(_ value: String?, owned: Bool) -> String {
+        guard let value, DailyItemKind(rawValue: value) != nil else { return owned ? "matter" : "reference" }
+        if !owned, ["matter", "preference", "agreement"].contains(value) { return "reference" }
+        return value
     }
     private func clean(_ value: String) -> String {
         DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: DailySummaryContentFormatter.removingCitationMarkers(from: value))

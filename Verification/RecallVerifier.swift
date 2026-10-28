@@ -1469,11 +1469,14 @@ struct RecallVerifier {
         let indexed = await store.indexedCaptureIDs(matching: "RecallUniqueFTSTerm")
         try expect(indexed == [capture.id], "FTS5 没有检索到已持久化的记录")
 
+        // Anchored to the capture's own day: offsets from `now` cross midnight in the evening and the
+        // consolidation only counts records from the same day.
+        let dayStart = Calendar.current.startOfDay(for: capture.createdAt)
         let insightRecords = [capture] + (1...3).map { index in
             makeCapture(
                 text: "项目：Persistence\(index) 推进独立验证事项",
                 app: "Verifier",
-                createdAt: capture.createdAt.addingTimeInterval(Double(index) * 70 * 60)
+                createdAt: dayStart.addingTimeInterval(Double(index) * 70 * 60 + 3600)
             )
         }
         for record in insightRecords.dropFirst() { try await store.addCapture(record) }

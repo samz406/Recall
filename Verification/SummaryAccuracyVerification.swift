@@ -30,6 +30,7 @@ enum SummaryAccuracyVerification {
         try await captureDeduplicationAndFastWrite()
         try await conversationMarkers()
         try await evidenceCleanupAndRepeatedLines()
+        try await structuredDailyKnowledge()
         print("PASS: summary accuracy covers near-duplicate captures, fast writes, chat markers, quote repair and repeated lines")
     }
 
@@ -84,5 +85,36 @@ enum SummaryAccuracyVerification {
         try expect(bodies.count == 1 && bodies[0].components(separatedBy: "Atlas 分页边界验证第一条结论").count == 2, "重复的 OCR 行被多次发送")
         // Cross-line quote repaired locally, empty condition normalized, no repair round needed.
         try expect(output.metrics.modelCalls == 1 && output.summary.generationKind == .cloud, "跨行引用没有在本地修复而是触发了额外请求")
+    }
+}
+
+extension SummaryAccuracyVerification {
+    /// Model that returns a topic and kind for each item so the structured result can feed other tabs.
+    actor TopicModel: LLMResponding {
+        func answer(to request: LLMRequest) async throws -> LLMAnswer {
+            let docs = try JSONSerialization.jsonObject(with: Data(request.context[0].ocrText.utf8)) as! [[String: Any]]
+            let id = docs[0]["id"] as! String
+            let line = (docs[0]["text"] as! String).components(separatedBy: "\n").first { $0.hasPrefix("[聊天·自己]") || $0.hasPrefix("Atlas") } ?? ""
+            let own = line.replacingOccurrences(of: "[聊天·自己] ", with: "")
+            let item: [String: Any] = ["section": "progress", "title": "Atlas 分页验证已完成", "detail": "边界与空值用例已完成，原始结果已保留。",
+                "topic": "Atlas 分页", "kind": "matter", "owner": "user", "status": "completed", "explicitCommitment": false,
+                "condition": NSNull(), "evidence": [["id": id, "quote": String(own.prefix(60))]]]
+            let coverage = docs.map { ["id": $0["id"]!, "disposition": "used"] as [String: Any] }
+            let value: [String: Any] = ["overview": "完成分页验证。", "items": [item], "coverage": coverage]
+            return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self), citedCaptureIDs: [])
+        }
+    }
+    static func structuredDailyKnowledge() async throws {
+        let f = try await ModelReviewVerification.fixture(count: 3, raw: true)
+        defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
+        let output = try await f.store.generateDirectDailyReview(day: f.records[0].createdAt, period: f.period, responder: TopicModel())
+        let item = output.summary.items.first
+        try expect(item?.knowledge?.topic == "Atlas 分页" && item?.knowledge?.kind == .matter && item?.knowledge?.ownedByUser == true,
+            "每日回顾没有保存主题、类型和归属")
+        let reopened = try FileMemoryStore(storage: f.storage)
+        let saved = await reopened.snapshot().dailySummaries.first?.items.first
+        try expect(saved?.knowledge?.topic == "Atlas 分页" && saved?.knowledge?.quotes.isEmpty == false, "结构化理解没有随回顾保存并读回")
+        try expect(DirectDailyReviewEngine.cleanTopic("工作") == nil && DirectDailyReviewEngine.cleanTopic("发布流程页面改版") == "发布流程页面改版", "泛称主题没有被拒绝")
+        try expect(DirectDailyReviewEngine.cleanKind("preference", owned: false) == "reference", "非本人内容被标成偏好")
     }
 }

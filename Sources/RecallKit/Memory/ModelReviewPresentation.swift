@@ -7,7 +7,14 @@ public extension ModelReviewResult {
         }
         let values = items.compactMap { item -> DailySummaryItem? in
             guard let section = DailySummarySection(rawValue: item.section) else { return nil }
-            return DailySummaryItem(section: section, title: item.title, detail: item.detail, evidenceIDs: sourceIDs(for: item), actionCandidateID: section == .actions ? actionID(item) : nil)
+            var knowledge: DailyItemKnowledge?
+            if let kind = item.kind.flatMap(DailyItemKind.init(rawValue:)) {
+                let quotes = facts.filter { item.factIDs.contains($0.id) }.flatMap(\.quotes)
+                knowledge = DailyItemKnowledge(topic: item.topic, kind: kind, status: item.status ?? "unknown",
+                    ownedByUser: item.ownedByUser ?? false, quotes: Array(Set(quotes)).sorted())
+            }
+            return DailySummaryItem(section: section, title: item.title, detail: item.detail, evidenceIDs: sourceIDs(for: item),
+                actionCandidateID: section == .actions ? actionID(item) : nil, knowledge: knowledge)
         }
         let actions = items.filter { $0.section == "actions" }.map { item in
             DailySummaryTodo(id: actionID(item), title: item.title, detail: item.detail, sourceCaptureIDs: sourceIDs(for: item), priority: .normal)
