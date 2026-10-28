@@ -50,6 +50,16 @@ public struct MemoryTimeRangeResolver: Sendable {
             let start = calendar.date(byAdding: .day, value: -(boundedDays - 1), to: today) ?? today
             return ResolvedMemoryTimeRange(startDate: start, endDate: now, requestedDayCount: boundedDays)
         }
+        if let day = explicitDay(in: normalized, now: now, calendar: calendar),
+           let interval = calendar.dateInterval(of: .day, for: day) {
+            return ResolvedMemoryTimeRange(startDate: interval.start, endDate: min(interval.end, now), requestedDayCount: 1)
+        }
+        if let range = weekdayRange(in: normalized, now: now, calendar: calendar) { return range }
+        if let range = monthRange(in: normalized, now: now, calendar: calendar) { return range }
+        if normalized.contains("前天") {
+            guard let day = calendar.date(byAdding: .day, value: -2, to: now), let interval = calendar.dateInterval(of: .day, for: day) else { return nil }
+            return ResolvedMemoryTimeRange(startDate: interval.start, endDate: interval.end, requestedDayCount: 1)
+        }
         if normalized.contains("上周") || normalized.localizedCaseInsensitiveContains("last week") {
             guard let thisWeek = calendar.dateInterval(of: .weekOfYear, for: now),
                   let previousWeek = calendar.dateInterval(of: .weekOfYear, for: thisWeek.start.addingTimeInterval(-1)) else { return nil }
@@ -70,6 +80,77 @@ public struct MemoryTimeRangeResolver: Sendable {
             return ResolvedMemoryTimeRange(startDate: interval.start, endDate: interval.end, requestedDayCount: 1)
         }
         return nil
+    }
+
+    /// "10月25日", "10月25号", "2026年10月25日", "10/25", "2026-10-25". Never a day in the future.
+    private func explicitDay(in text: String, now: Date, calendar: Calendar) -> Date? {
+        let patterns: [(String, Bool)] = [
+            (#"(\d{4})\s*[年\-/.]\s*(\d{1,2})\s*[月\-/.]\s*(\d{1,2})\s*(?:日|号)?"#, true),
+            (#"(?<![\d])(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)"#, false),
+            (#"(?<![\d])(\d{1,2})\s*/\s*(\d{1,2})(?![\d/])"#, false)
+        ]
+        for (pattern, hasYear) in patterns {
+            guard let expression = try? NSRegularExpression(pattern: pattern),
+                  let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { continue }
+            func value(_ index: Int) -> Int? { Range(match.range(at: index), in: text).flatMap { Int(text[$0]) } }
+            var components = DateComponents()
+            if hasYear { components.year = value(1); components.month = value(2); components.day = value(3) }
+            else { components.year = calendar.component(.year, from: now); components.month = value(1); components.day = value(2) }
+            guard let candidate = calendar.date(from: components), calendar.component(.day, from: candidate) == components.day else { continue }
+            if candidate > now {
+                // "10月25日" asked in January means last year's.
+                guard !hasYear, let previous = calendar.date(byAdding: .year, value: -1, to: candidate) else { continue }
+                return previous
+            }
+            return candidate
+        }
+        return nil
+    }
+
+    /// "上周三", "周二", "星期五": the most recent such day, or last week's for "上周".
+    private func weekdayRange(in text: String, now: Date, calendar: Calendar) -> ResolvedMemoryTimeRange? {
+        guard let expression = try? NSRegularExpression(pattern: #"(上上?|这|本)?\s*(?:周|星期|礼拜)\s*([一二三四五六日天])"#),
+              let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let dayRange = Range(match.range(at: 2), in: text) else { return nil }
+        let names: [Character: Int] = ["日": 1, "天": 1, "一": 2, "二": 3, "三": 4, "四": 5, "五": 6, "六": 7]
+        guard let weekday = text[dayRange].first.flatMap({ names[$0] }) else { return nil }
+        let prefix = Range(match.range(at: 1), in: text).map { String(text[$0]) } ?? ""
+        let today = calendar.startOfDay(for: now)
+        let weeksBack = prefix == "上上" ? 2 : (prefix == "上" ? 1 : 0)
+        guard let thisWeek = calendar.dateInterval(of: .weekOfYear, for: today),
+              let weekStart = calendar.date(byAdding: .day, value: -7 * weeksBack, to: thisWeek.start) else { return nil }
+        var offset = (weekday - calendar.component(.weekday, from: weekStart) + 7) % 7
+        if weeksBack == 0 {
+            // Without "上", a weekday that has not happened yet this week means its previous occurrence.
+            var candidate = calendar.date(byAdding: .day, value: offset, to: weekStart) ?? today
+            if candidate > today { candidate = calendar.date(byAdding: .day, value: -7, to: candidate) ?? candidate }
+            offset = calendar.dateComponents([.day], from: weekStart, to: candidate).day ?? offset
+        }
+        guard let day = calendar.date(byAdding: .day, value: offset, to: weekStart), day <= now,
+              let interval = calendar.dateInterval(of: .day, for: day) else { return nil }
+        return ResolvedMemoryTimeRange(startDate: interval.start, endDate: min(interval.end, now), requestedDayCount: 1)
+    }
+
+    /// "10月" / "10月份" / "上个月" / "本月" as a whole month. A month that has not started yet is not a range.
+    private func monthRange(in text: String, now: Date, calendar: Calendar) -> ResolvedMemoryTimeRange? {
+        var start: Date?
+        if text.contains("上个月") || text.contains("上月") {
+            start = calendar.date(byAdding: .month, value: -1, to: calendar.dateInterval(of: .month, for: now)?.start ?? now)
+        } else if text.contains("这个月") || text.contains("本月") {
+            start = calendar.dateInterval(of: .month, for: now)?.start
+        } else if let expression = try? NSRegularExpression(pattern: #"(?<![\d])(\d{1,2})\s*月(?:份)?(?!\s*\d)"#),
+                  let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                  let range = Range(match.range(at: 1), in: text), let month = Int(text[range]), (1...12).contains(month) {
+            var components = DateComponents(); components.year = calendar.component(.year, from: now); components.month = month; components.day = 1
+            if var candidate = calendar.date(from: components) {
+                if candidate > now { candidate = calendar.date(byAdding: .year, value: -1, to: candidate) ?? candidate }
+                start = candidate
+            }
+        }
+        guard let start, let interval = calendar.dateInterval(of: .month, for: start) else { return nil }
+        let end = min(interval.end, now)
+        let days = max(calendar.dateComponents([.day], from: interval.start, to: end).day ?? 1, 1)
+        return ResolvedMemoryTimeRange(startDate: interval.start, endDate: end, requestedDayCount: min(days, 31))
     }
 
     private func explicitRecentDayCount(in text: String) -> Int? {
@@ -150,38 +231,17 @@ public struct MemorySearchEngine: Sendable {
     }
 
     private func normalizedTerms(from text: String) -> [String] {
-        let stopWords: Set<String> = ["我", "的", "了", "和", "是", "在", "有", "什么", "哪些", "一下", "帮我", "请", "内容", "the", "a", "an", "is", "are", "to", "of", "and", "for"]
-        let stopPhrases = ["什么时候", "什么时间", "哪一天", "哪天", "几号", "请问", "告诉我", "帮我查", "帮我找", "看一下", "看下"]
-        var normalized = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-        for phrase in stopPhrases {
-            normalized = normalized.replacingOccurrences(of: phrase, with: " ")
-        }
-
-        var terms: [String] = []
-        for token in normalized.split(whereSeparator: { $0.isWhitespace || $0.isPunctuation }).map(String.init) {
-            guard token.count > 1, !stopWords.contains(token) else { continue }
-            terms.append(token)
-            // 中文没有天然空格。为较长问句补充二字词召回，避免把
-            // “妙妙什么时候过生日”作为一个永远无法命中的完整关键词。
-            if token.contains(where: isHanCharacter), token.count > 2 {
-                let characters = Array(token)
-                for index in 0..<(characters.count - 1) {
-                    let pair = String(characters[index...index + 1])
-                    if pair.allSatisfy(isHanCharacter), !stopWords.contains(pair) {
-                        terms.append(pair)
-                    }
-                }
-            }
-        }
-
-        var seen: Set<String> = []
-        return terms.filter { seen.insert($0).inserted }
+        // Template words ("上次", "进展", "请找回") carry no topic information and are removed first.
+        let stopPhrases = ["什么时候", "什么时间", "哪一天", "哪天", "几号"]
+        var normalized = text
+        for phrase in stopPhrases { normalized = normalized.replacingOccurrences(of: phrase, with: " ") }
+        return QuestionTerms.topicTerms(normalized)
     }
 
     private func isHanCharacter(_ character: Character) -> Bool {
         character.unicodeScalars.allSatisfy { scalar in
             switch scalar.value {
-            case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF:
+            case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF, 0x20000...0x2FA1F:
                 true
             default:
                 false

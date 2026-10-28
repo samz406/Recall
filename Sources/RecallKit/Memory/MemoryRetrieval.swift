@@ -32,7 +32,7 @@ public struct MemoryRetrievalEngine: Sendable {
         let retiredSources = Set(ledger.claims.filter { [.retracted, .superseded, .conflicted, .expired].contains($0.state) && ($0.kind.isPersonal || $0.kind == .reference) }.flatMap(\.sourceIDs))
         let time = MemoryTimeRangeResolver().resolve(question, now: now)
         let intent = MemoryQuestionIntent(question: question)
-        var terms = MatterMemoryEngine.subjectTerms(question)
+        var terms = Set(QuestionTerms.topicTerms(question)).union(MatterMemoryEngine.subjectTerms(QuestionTerms.stripped(question)))
         let entities = ledger.entities.filter { entity in
             Set(entity.sourceIDs).isSubset(of: allowedIDs) && Set(entity.sourceIDs).isDisjoint(with: restrictedUnderstandingIDs)
                 && (resolvedEntityIDs.contains(entity.id) || ([entity.name] + entity.aliases).contains { !$0.isEmpty && question.localizedCaseInsensitiveContains($0) })
@@ -58,6 +58,9 @@ public struct MemoryRetrievalEngine: Sendable {
             let x = relevance(a), y = relevance(b)
             return x == y ? a.date > b.date : x > y
         }
+        // Topics named in the question come first: their whole timeline (first and latest state included) is
+        // the answer's backbone, ahead of anything a keyword happened to hit.
+        let namedTopics = DailyKnowledgeEngine().topics(matching: question, in: state)
         var selected: [MemoryClaim] = []
         if let time, intent == .overview {
             let calendar = Calendar.current
@@ -74,7 +77,19 @@ public struct MemoryRetrievalEngine: Sendable {
             if let earliest = related.first { selected.append(earliest) }
             if let latest = related.last, latest.id != selected.first?.id { selected.append(latest) }
         }
+        var topicClaims: [MemoryClaim] = []
+        for topic in namedTopics {
+            let events = active.filter { $0.kind == .event && $0.subjectID == topic.id }.sorted { $0.date < $1.date }
+            // Up to the earliest, the latest, and the points where the status changed in between.
+            var picked: [MemoryClaim] = []
+            for (index, event) in events.enumerated() {
+                let changed = index == 0 || index == events.count - 1 || event.status != events[index - 1].status
+                if changed { picked.append(event) }
+            }
+            topicClaims += picked.suffix(6)
+        }
         var chosen = Set(selected.map(\.id))
+        for claim in topicClaims where chosen.insert(claim.id).inserted { selected.insert(claim, at: 0) }
         for item in candidates where selected.count < max(limit - 2, 2) {
             if chosen.insert(item.id).inserted { selected.append(item) }
         }

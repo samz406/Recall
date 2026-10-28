@@ -238,7 +238,7 @@ public struct ReminderExtractor: Sendable {
     }
 
     private func isDirectRequestToUser(_ text: String) -> Bool {
-        text.range(of: #"(?:请你|请您|麻烦你|麻烦您|需要你|需要您|你能|您能|帮我|替我|给我)(?:.{0,24})(?:回复|提交|确认|处理|发送|准备|联系|安排|检查|修复|完成)"#, options: .regularExpression) != nil
+        text.range(of: #"(?:请你|请您|麻烦你|麻烦您|需要你|需要您|你能|您能|帮我|替我|给我)(?:.{0,40})(?:回复|提交|确认|处理|发送|准备|联系|安排|检查|修复|完成|整理|补充|更新|跟进|提供|反馈|评审)"#, options: .regularExpression) != nil
     }
 
     private func looksLikeTechnicalPolicy(_ text: String) -> Bool {

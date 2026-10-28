@@ -50,6 +50,7 @@ public enum ChannelOCRFormatter {
             let kind = ConversationContentClassifier.classify(text)
             let type: String = switch kind { case .message: author == nil ? "[内容·片段] " : ""; case .reference: "[内容·资料] "; case .attachment: "[内容·附件] " }
             let meta = metadata()
+            // An identified author is a named sender, not floating text; whether it is the user stays unknown.
             result.append("[聊天·角色未知] " + (meta.isEmpty ? "" : meta + " ") + type + text)
             pending.removeAll(keepingCapacity: true)
         }
@@ -78,7 +79,7 @@ public enum ChannelOCRFormatter {
     }
 
     private static func senderHeader(_ text: String) -> (name: String, time: String)? {
-        let pattern = #"^(.{1,48}?)\s+((?:(?:上午|下午|早上|晚上|AM|PM)\s*)?\d{1,2}[:：]\d{2}(?:\s*(?:AM|PM))?)(?:\s*(?:\(edited\)|已编辑|\(已编辑\)))?$"#
+        let pattern = #"^(.{1,80}?)\s+((?:(?:上午|下午|早上|晚上|AM|PM)\s*)?\d{1,2}[:：]\d{2}(?:\s*(?:AM|PM))?)(?:\s*(?:\(edited\)|已编辑|\(已编辑\)))?$"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               let nameRange = Range(match.range(at: 1), in: text), let timeRange = Range(match.range(at: 2), in: text) else { return nil }

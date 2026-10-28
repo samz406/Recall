@@ -160,7 +160,14 @@ public struct MatterMemoryEngine: Sendable {
     public init() {}
 
     public func files(in state: RecallState, calendar: Calendar = .current) -> [MatterFile] {
-        MemoryTopicGroup.applying(state.topicGroups, to: MemoryKnowledgeEngine().files(in: state) ?? observedFiles(in: state, calendar: calendar))
+        // Topics come from what the model understood of each whole day. The pattern-based extractor
+        // can neither tell whose words OCR text is nor name a matter, so it only serves archives that
+        // have no structured daily review yet.
+        let daily = DailyKnowledgeEngine()
+        if daily.hasStructuredReviews(in: state) {
+            return MemoryTopicGroup.applying(state.topicGroups, to: daily.matterFiles(in: state))
+        }
+        return MemoryTopicGroup.applying(state.topicGroups, to: MemoryKnowledgeEngine().files(in: state) ?? observedFiles(in: state, calendar: calendar))
     }
 
     func observedFiles(in state: RecallState, calendar: Calendar = .current) -> [MatterFile] {
@@ -378,7 +385,7 @@ public struct MemoryEvidenceSelector: Sendable {
     public func select(_ records: [CaptureRecord], question: String, limit: Int = 12) -> [CaptureRecord] {
         guard limit > 0 else { return [] }
         let intent = MemoryQuestionIntent(question: question)
-        let terms = MatterMemoryEngine.subjectTerms(question)
+        let terms = Set(QuestionTerms.topicTerms(question)).union(MatterMemoryEngine.subjectTerms(QuestionTerms.stripped(question)))
         var hashes: Set<String> = []
         let unique = records.filter {
             let content = $0.ocrText.hasPrefix("记录时间：") ? $0.ocrText.split(separator: "\n").dropFirst().joined(separator: "\n") : $0.ocrText

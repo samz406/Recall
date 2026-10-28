@@ -74,11 +74,16 @@ public final class ScreenCaptureService: ScreenCapturing {
             guard let display = content.displays.first else { throw CapturePipelineError.noShareableWindow }
             let filter = SCContentFilter(display: display, excludingWindows: [])
             let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+            // Without a title a full-display record cannot be linked to the same session's window captures.
+            let frontTitle = content.windows.first(where: { window in
+                window.owningApplication?.bundleIdentifier == bundleIdentifier && window.isOnScreen && window.windowLayer == 0
+                    && window.frame.width > 80 && window.frame.height > 80 && window.title?.isEmpty == false
+            })?.title
             return CapturePayload(
                 imageData: NSImage(cgImage: image, size: .zero).pngData(),
                 sourceAppName: appName,
                 sourceBundleIdentifier: bundleIdentifier,
-                windowTitle: nil
+                windowTitle: frontTitle
             )
         case .textOnly:
             fatalError("Text-only scope returns before ScreenCaptureKit is used.")
@@ -108,6 +113,7 @@ public extension TextRecognizing {
 }
 
 public final class VisionTextRecognizer: TextRecognizing, @unchecked Sendable {
+    static let minimumConfidence: Float = 0.35
     public init() {}
 
     public func recognizeText(in imageData: Data) async throws -> String {
@@ -131,6 +137,8 @@ public final class VisionTextRecognizer: TextRecognizing, @unchecked Sendable {
                 let observations = request.results as? [VNRecognizedTextObservation] ?? []
                 let lines = observations.compactMap { observation -> PositionedTextLine? in
                     guard let candidate = observation.topCandidates(1).first else { return nil }
+                    // Garbled low-confidence recognition is indistinguishable from content once stored.
+                    guard candidate.confidence >= Self.minimumConfidence else { return nil }
                     return PositionedTextLine(text: candidate.string, boundingBox: observation.boundingBox, confidence: Double(candidate.confidence))
                 }
                 let layout = context.layoutStyle.flatMap { ConversationImageLayout.detect(in: cgImage, style: $0, lines: lines) }
@@ -217,9 +225,15 @@ public final class CapturePipeline {
         }) else {
             throw CapturePipelineError.suppressedByUser
         }
-        let digestSource = payload.imageData ?? Data(redactedText.utf8)
+        // Hash the recognized text: pixel hashes differ for a cursor blink or clock tick. Fall back to the
+        // image only when nothing was recognized.
+        let normalizedText = CaptureTextFingerprint.normalized(redactedText)
+        let digestSource = normalizedText.isEmpty ? (payload.imageData ?? Data()) : Data(normalizedText.utf8)
         let contentHash = SHA256.hash(data: digestSource).map { String(format: "%02x", $0) }.joined()
         guard !(await store.hasRecentHash(contentHash)) else { throw CapturePipelineError.duplicateCapture }
+        if userText == nil, await store.hasRecentNearDuplicate(text: redactedText, bundleIdentifier: payload.sourceBundleIdentifier) {
+            throw CapturePipelineError.duplicateCapture
+        }
 
         let captureID = UUID()
         let imageRelativePath: String?

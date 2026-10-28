@@ -1042,7 +1042,19 @@ public actor FileMemoryStore {
     public func addCapture(_ capture: CaptureRecord) throws {
         let before = state
         state.captures.insert(capture, at: 0)
-        do { try persist() } catch { state = before; throw error }
+        do { try persistAppended() } catch { state = before; throw error }
+    }
+
+    /// A new capture cannot change an existing source version, so existing reviews, feedback and
+    /// understanding stay valid. The whole-archive reconciliation in `persist()` runs on the
+    /// maintenance cycle (`organizeMemory`) instead of blocking every recording.
+    private func persistAppended() throws {
+        try Self.write(state, encoder: encoder, to: storage.stateURL)
+        do {
+            if indexNeedsRebuild { try intelligenceIndex?.replace(with: state) }
+            else { try intelligenceIndex?.synchronize(with: state) }
+            indexNeedsRebuild = false
+        } catch { indexNeedsRebuild = true }
     }
 
     @discardableResult
@@ -1184,11 +1196,29 @@ public actor FileMemoryStore {
         try persist()
     }
 
+    /// New captures are inserted at index 0, so a 12-second window only needs the newest records.
     public func hasRecentHash(_ hash: String, within seconds: TimeInterval = 12, now: Date = .now) -> Bool {
-        state.captures.contains { record in
+        state.captures.prefix(Self.recentCaptureWindow).contains { record in
             record.contentHash == hash && now.timeIntervalSince(record.createdAt) <= seconds
         }
     }
+
+    /// Consecutive screenshots of the same screen differ by a clock tick or cursor, so an exact hash
+    /// misses them. A capture from the same app within the window whose lines are almost all already
+    /// recorded adds nothing but duplicate evidence.
+    public func hasRecentNearDuplicate(text: String, bundleIdentifier: String?, within seconds: TimeInterval = 12,
+                                       threshold: Double = 0.9, now: Date = .now) -> Bool {
+        let lines = CaptureTextFingerprint.lines(text)
+        guard lines.count >= 4 else { return false }
+        return state.captures.prefix(Self.recentCaptureWindow).contains { record in
+            guard now.timeIntervalSince(record.createdAt) <= seconds, record.eventTemplate != .dailyReview,
+                  record.sourceBundleIdentifier == bundleIdentifier else { return false }
+            let other = CaptureTextFingerprint.lines(record.ocrText)
+            guard !other.isEmpty else { return false }
+            return Double(lines.intersection(other).count) / Double(lines.count) >= threshold
+        }
+    }
+    private static let recentCaptureWindow = 64
 
     public func prune(now: Date = .now) throws -> [String] {
         let previous = state
@@ -1275,5 +1305,20 @@ public actor FileMemoryStore {
     private static func write(_ state: RecallState, encoder: JSONEncoder, to url: URL) throws {
         let data = try encoder.encode(state)
         try data.write(to: url, options: .atomic)
+    }
+}
+
+enum CaptureTextFingerprint {
+    /// Normalized, order-independent set of meaningful lines.
+    static func lines(_ text: String) -> Set<String> {
+        Set(text.components(separatedBy: .newlines).compactMap { raw in
+            let line = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            return line.count >= 4 ? line : nil
+        })
+    }
+    static func normalized(_ text: String) -> String {
+        text.components(separatedBy: .newlines)
+            .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+            .filter { !$0.isEmpty }.joined(separator: "\n")
     }
 }

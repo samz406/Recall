@@ -48,6 +48,12 @@ public struct ModelReviewItem: Codable, Hashable, Sendable {
     public var title: String
     public var detail: String
     public var factIDs: [String]
+    /// Present only for the direct daily review; other review kinds leave these nil.
+    public var topic: String? = nil
+    public var kind: String? = nil
+    public var status: String? = nil
+    public var ownedByUser: Bool? = nil
+    public var category: String? = nil
 }
 public struct ModelReviewResult: Sendable {
     public var overview: String

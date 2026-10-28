@@ -331,13 +331,31 @@ final class RecallAppModel: ObservableObject {
                     guard let category = record.manualMatter?.reviewCategory else { return true }
                     return template.kind.requiresWorkScope ? ![.personal, .learning].contains(category) : (template.kind != .learning || ![.work, .personal].contains(category))
                 }.map(\.id))
-                let snapshot = try await modelStore.prepareModelReview(period: period, sourceIDs: scopedIDs,
-                    responder: responder, expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
-                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) })
-                state = snapshot
-                let result = try await ModelReviewEngine().generate(in: snapshot, period: period, template: template, sourceIDs: scopedIDs,
-                    beforeCall: { try await modelStore.validateModelReview(snapshot, period: period, sourceIDs: scopedIDs) },
-                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder)
+                // Prefer the structured daily reviews: one call over already verified conclusions. Without
+                // them (older archives) keep the per-record path, which needs full understanding first.
+                let dailyState = await modelStore.snapshot()
+                // With structured daily reviews the period review is built only from them. Falling back to
+                // per-record understanding would show an unrelated failure and cost hundreds of model calls.
+                let fromDaily = period.isValid && DailyKnowledgeEngine().hasStructuredReviews(in: dailyState)
+                    && !scope.useSelectedTopics
+                let snapshot: RecallState
+                let result: ModelReviewResult
+                if fromDaily {
+                    snapshot = dailyState; state = snapshot
+                    let generated = try await PeriodReviewFromDaily().generate(in: snapshot, period: period, template: template,
+                        beforeCall: { try await modelStore.validateDailyDerivedReview(snapshot) },
+                        onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder)
+                    result = generated.draft
+                    recordDiagnostic(.info, source: "WeeklyReview", message: "周期回顾处理统计", metadata: generated.metrics.diagnosticMetadata)
+                } else {
+                    snapshot = try await modelStore.prepareModelReview(period: period, sourceIDs: scopedIDs,
+                        responder: responder, expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
+                        onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) })
+                    state = snapshot
+                    result = try await ModelReviewEngine().generate(in: snapshot, period: period, template: template, sourceIDs: scopedIDs,
+                        beforeCall: { try await modelStore.validateModelReview(snapshot, period: period, sourceIDs: scopedIDs) },
+                        onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder)
+                }
                 try Task.checkCancellation()
                 guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
                 var report = result.weeklyReport(period: period, template: template, scope: scope, in: snapshot)
@@ -1337,6 +1355,27 @@ final class RecallAppModel: ObservableObject {
         pendingDailySummaries.removeAll { if case .manual = $0.reason { return false }; return true }
         dailyReviewTask?.cancel()
     }
+    /// Days whose saved daily review predates the structured format. Regenerating them is an explicit,
+    /// user-started action; each day is one model call over that day's text and replaces nothing until it succeeds.
+    var daysNeedingStructuredReview: [Date] {
+        let calendar = Calendar.current
+        return state.dailySummaries.filter { summary in
+            summary.generationKind == .cloud && !summary.items.contains { $0.knowledge != nil }
+        }.map { calendar.startOfDay(for: $0.day) }.sorted(by: >)
+    }
+    func upgradeDailyReviewsForMemory(limit: Int = 14) {
+        guard state.privacy.cloudUseEnabled else { noticeMessage = "请先允许发送脱敏文本，再用每日回顾整理记忆。"; return }
+        let days = Array(daysNeedingStructuredReview.prefix(limit)).sorted()
+        guard let first = days.first else { noticeMessage = "最近的每日回顾都已包含主题信息。"; return }
+        dailyReviewBackfillPausedUntil = nil
+        for day in days.dropFirst() where !pendingDailySummaries.contains(where: { Calendar.current.isDate($0.day, inSameDayAs: day) }) {
+            pendingDailySummaries.append((day, .manual))
+        }
+        pendingDailySummaries.sort { $0.day < $1.day }
+        noticeMessage = "将依次重新生成 \(days.count) 天的每日回顾，用于整理主题与长期记忆；旧版本会保留。"
+        generateDailySummary(for: first, reason: .manual)
+    }
+
     func generatePreviousDaySummaryNow() {
         let previousDay = Calendar.current.date(byAdding: .day, value: -1, to: .now) ?? .now
         generateDailySummary(for: previousDay, reason: .manual)

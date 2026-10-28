@@ -86,7 +86,10 @@ public enum ConversationOCRFormatter {
             if let best = matches.max(by: { $0.1 < $1.1 }), best.1 >= 0.55 {
                 groups[best.0, default: []].append(line)
             } else {
-                messages.append((line.boundingBox.maxY, line.boundingBox.minX, marker(.unknown) + text))
+                // The layout was found, so a longer line outside every bubble is page chrome, not a message.
+                // Short centered lines such as dates and times keep the plain unknown-speaker form.
+                let isChrome = text.count >= 12 && text.range(of: #"^\S*\d{1,2}[:：]\d{2}\S*$"#, options: .regularExpression) == nil
+                messages.append((line.boundingBox.maxY, line.boundingBox.minX, marker(.unknown) + (isChrome ? "[内容·片段] " : "") + text))
             }
         }
         for (index, values) in groups {

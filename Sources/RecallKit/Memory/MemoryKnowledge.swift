@@ -184,6 +184,8 @@ public struct MemoryKnowledge: Codable, Sendable {
     public var updatedAt: Date?
     /// Parser changes must also re-evaluate unchanged historical sources.
     public var organizationVersion: Int?
+    /// Digest of the structured daily reviews this ledger was derived from.
+    public var dailyFingerprint: String?
     public var pendingScreenshotDeletions: [String] = []
     public init() {}
 }
@@ -195,7 +197,9 @@ public struct MemoryKnowledgeSettings: Codable, Hashable, Sendable {
 }
 
 public struct MemoryKnowledgeEngine: Sendable {
-    public static let organizationVersion = 4
+    /// 5: topics, references and observed preferences are derived from the structured daily reviews;
+    /// the per-paragraph reference threads of earlier versions are rebuilt away.
+    public static let organizationVersion = 5
     static func withdrawnSourceIDs(from previous: MemoryKnowledge, to current: MemoryKnowledge) -> Set<UUID> {
         let states = Dictionary(uniqueKeysWithValues: current.claims.map { ($0.id, $0.state) })
         return Set(previous.claims.filter { $0.state == .active && states[$0.id] != .active }.flatMap(\.sourceIDs))
@@ -301,13 +305,16 @@ public struct MemoryKnowledgeEngine: Sendable {
     /// One source ledger for reviews, chat, and the topic browser. Explicit deletion is reconciled even while paused.
     public func reconcile(_ state: RecallState, force: Bool = false, now: Date = .now, allowNew: Bool = true) -> MemoryKnowledge {
         var result = state.memoryKnowledge
+        let daily = DailyKnowledgeEngine()
         var safe = state.correctedForAnalysis()
         safe.captures.removeAll { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }
         let sources = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id, $0) })
         let originals = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
         let versions = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id.uuidString, Self.version(of: $0, corrections: state.matterCorrections)) })
         let outdated = result.organizationVersion != Self.organizationVersion
-        let changed = outdated || versions != result.sourceVersions
+        // A new or regenerated structured daily review changes what the ledger derives without touching any screenshot.
+        let dailyFingerprint = daily.fingerprint(in: safe)
+        let changed = outdated || versions != result.sourceVersions || dailyFingerprint != result.dailyFingerprint
         result.claims = result.claims.compactMap { old in
             var claim = old
             claim.evidence.removeAll { evidence in
@@ -348,8 +355,9 @@ public struct MemoryKnowledgeEngine: Sendable {
         let understoodFacts = Dictionary(safe.captures.compactMap(\.understanding).flatMap(\.facts).map { ($0.eventID, $0) }, uniquingKeysWith: { first, next in
             var merged = first; merged.evidence = Array(Set(first.evidence + next.evidence)).sorted { $0.blockID == $1.blockID ? $0.quote < $1.quote : $0.blockID < $1.blockID }; return merged
         })
-        let files = MatterMemoryEngine().observedFiles(in: safe)
-        let references = MemoryReferenceEngine().files(in: safe, excluding: Set(files.flatMap(\.evidenceIDs)))
+        let structured = daily.hasStructuredReviews(in: safe)
+        let files = structured ? daily.matterFiles(in: safe) : MatterMemoryEngine().observedFiles(in: safe)
+        let references = structured ? daily.referenceFiles(in: safe) : MemoryReferenceEngine().files(in: safe, excluding: Set(files.flatMap(\.evidenceIDs)))
         let contextEntities = (files + references).map { file in
             MemoryEntity(id: file.id, name: file.title, aliases: result.entities.first { $0.id == file.id }?.aliases ?? [], kind: "topic", sourceIDs: file.evidenceIDs)
         } + result.entities.filter { $0.id.hasPrefix("context:") }
@@ -363,6 +371,9 @@ public struct MemoryKnowledgeEngine: Sendable {
             for event in file.events {
                 let evidence = event.evidenceIDs.compactMap { sourceID -> MemoryEvidence? in
                     guard let source = sources[sourceID] else { return nil }
+                    if structured {
+                        return proof(source, quote: event.detail, ordinal: event.sequence, speaker: "每日回顾（本人事项）", eventAt: event.eventAt)
+                    }
                     if let fact = understoodFacts[event.id],
                        let quoted = fact.evidence.first(where: { $0.blockID.hasPrefix(sourceID.uuidString) }) {
                         return proof(source, quote: quoted.quote, ordinal: event.sequence,
@@ -387,6 +398,7 @@ public struct MemoryKnowledgeEngine: Sendable {
             for event in file.events {
                 let evidence = event.evidenceIDs.compactMap { id -> MemoryEvidence? in
                     guard let source = sources[id] else { return nil }
+                    if structured { return proof(source, quote: event.detail, ordinal: event.sequence, speaker: "每日回顾（资料，非本人事项）", eventAt: nil) }
                     if let fact = understoodFacts[event.id],
                        let quoted = fact.evidence.first(where: { $0.blockID.hasPrefix(id.uuidString) }) {
                         return proof(source, quote: quoted.quote, ordinal: event.sequence,
@@ -421,7 +433,7 @@ public struct MemoryKnowledgeEngine: Sendable {
                 else if directive.kind == .person { candidates[candidates.count - 1].subjectID = "person-record:" + source.id.uuidString }
                 continue
             }
-            for segment in RecordedText.segments(in: source) where segment.speaker == .user {
+            for segment in RecordedText.segments(in: source) where segment.speaker == .user && !structured {
                 if let normalized = source.understanding,
                    !normalized.facts.contains(where: { $0.isPersonalEvent && $0.evidence.contains(where: { $0.quote.contains(segment.text) }) }) { continue }
                 let text = segment.text
@@ -441,6 +453,7 @@ public struct MemoryKnowledgeEngine: Sendable {
                 if let name = MemoryDirective.personName(in: text) { candidates[candidates.count - 1].subjectID = "person:" + MemoryDirective.normalized(name) }
             }
         }
+        if structured { candidates += daily.personalClaims(in: safe, now: now) }
         // Incoming requests are candidates for the user to arrange, never confirmed personal commitments.
         let actions = ReminderExtractor().candidates(from: safe.captures.filter { $0.memoryDirective == nil }, existing: [])
         for action in actions {
@@ -570,6 +583,7 @@ public struct MemoryKnowledgeEngine: Sendable {
                 aliases: oldEntities[key]?.aliases ?? [], kind: "person", sourceIDs: items.flatMap(\.sourceIDs).memoryUnique()))
         }
         result.sourceVersions = versions; result.updatedAt = now; result.organizationVersion = Self.organizationVersion
+        result.dailyFingerprint = dailyFingerprint
         result.dependencies = dependencies(in: state, claims: result.claims)
         return result
     }
@@ -591,6 +605,7 @@ public struct MemoryKnowledgeEngine: Sendable {
     public func files(in state: RecallState) -> [MatterFile]? {
         guard state.memoryKnowledge.updatedAt != nil,
               state.memoryKnowledge.organizationVersion == Self.organizationVersion,
+              state.memoryKnowledge.dailyFingerprint == DailyKnowledgeEngine().fingerprint(in: state.correctedForAnalysis()),
               state.memoryKnowledge.sourceVersions == Dictionary(uniqueKeysWithValues: state.correctedForAnalysis().captures.filter {
                   !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "")
               }.map {
