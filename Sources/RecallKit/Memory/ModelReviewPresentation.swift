@@ -11,7 +11,7 @@ public extension ModelReviewResult {
             if let kind = item.kind.flatMap(DailyItemKind.init(rawValue:)) {
                 let quotes = facts.filter { item.factIDs.contains($0.id) }.flatMap(\.quotes)
                 knowledge = DailyItemKnowledge(topic: item.topic, kind: kind, status: item.status ?? "unknown",
-                    ownedByUser: item.ownedByUser ?? false, quotes: Array(Set(quotes)).sorted())
+                    ownedByUser: item.ownedByUser ?? false, quotes: Array(Set(quotes)).sorted(), category: item.category)
             }
             return DailySummaryItem(section: section, title: item.title, detail: item.detail, evidenceIDs: sourceIDs(for: item),
                 actionCandidateID: section == .actions ? actionID(item) : nil, knowledge: knowledge)

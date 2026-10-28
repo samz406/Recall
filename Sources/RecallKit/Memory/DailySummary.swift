@@ -404,8 +404,10 @@ public struct DailyItemKnowledge: Codable, Hashable, Sendable {
     public var ownedByUser: Bool
     /// 逐字引用，用于回到截图与来源核对。
     public var quotes: [String]
-    public init(topic: String?, kind: DailyItemKind, status: String, ownedByUser: Bool, quotes: [String]) {
-        self.topic = topic; self.kind = kind; self.status = status; self.ownedByUser = ownedByUser; self.quotes = quotes
+    /// 模型依据当天原文判断的类别：work / personal / learning；拿不准为 nil。
+    public var category: String?
+    public init(topic: String?, kind: DailyItemKind, status: String, ownedByUser: Bool, quotes: [String], category: String? = nil) {
+        self.topic = topic; self.kind = kind; self.status = status; self.ownedByUser = ownedByUser; self.quotes = quotes; self.category = category
     }
 }
 

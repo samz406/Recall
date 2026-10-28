@@ -35,6 +35,7 @@ enum SummaryAccuracyVerification {
         try await legacyLedgerIsRebuilt()
         try await overclaimedOwnershipIsDemoted()
         try await unmarkedScreenWorkIsTheUsers()
+        try await templatesSeparateTopicsByCategory()
         print("PASS: summary accuracy covers near-duplicate captures, fast writes, chat markers, quote repair and repeated lines")
     }
 
@@ -295,5 +296,40 @@ extension SummaryAccuracyVerification {
         let output = try await store.generateDirectDailyReview(day: now, period: ReviewPeriod(start: now.addingTimeInterval(-60), end: now), responder: ScreenModel())
         let knowledge = output.summary.items.first?.knowledge
         try expect(knowledge?.ownedByUser == true && knowledge?.kind == .matter, "没有说话人标记的屏幕工作内容被降成资料，无法形成主题")
+    }
+}
+
+extension SummaryAccuracyVerification {
+    static func templatesSeparateTopicsByCategory() async throws {
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-template-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let store = try FileMemoryStore(storage: storage)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        let rows: [(String, String?)] = [("发布流程页面改版", "work"), ("成都马拉松半马记录", "personal"), ("英语口语练习", "learning"), ("未能判断的事情", nil)]
+        for (index, row) in rows.enumerated() {
+            let day = calendar.date(byAdding: .day, value: -(index + 1), to: today)!
+            let record = CaptureRecord(eventTemplate: .workCheckpoint, createdAt: day.addingTimeInterval(36_000), sourceAppName: "Orca",
+                sourceBundleIdentifier: "example.orca", contentHash: UUID().uuidString, ocrText: "\(row.0) 当天的内容记录与完整说明文字", textOrigin: .screenOCR)
+            try await store.addCapture(record)
+            let knowledge = DailyItemKnowledge(topic: row.0, kind: .matter, status: "completed", ownedByUser: true, quotes: [record.ocrText], category: row.1)
+            let item = DailySummaryItem(section: .progress, title: "\(row.0)已经完成", detail: "当天的结果已经记录并保存下来。", evidenceIDs: [record.id], knowledge: knowledge)
+            var summary = DailySummary(day: day, content: "x", sourceCaptureIDs: [record.id], todos: [], generationKind: .cloud, items: [item])
+            summary.items = [item]
+            try await store.commitDailySummary(summary, consolidation: PersonalIntelligenceEngine().consolidate(day: day, records: [record]))
+        }
+        try await store.updatePrivacy(PrivacySettings(cloudUseEnabled: true))
+        let state = await store.snapshot()
+        let period = ReviewPeriod(start: calendar.date(byAdding: .day, value: -6, to: today)!, end: today)
+        func topics(_ kind: ReviewTemplateKind) throws -> Set<String> {
+            let prepared = try PeriodReviewFromDaily().prepare(in: state, period: period, template: ReviewTemplate(kind: kind))
+            return Set(prepared.titles())
+        }
+        let work = try topics(.work), learning = try topics(.learning), personal = try topics(.personal)
+        try expect(work == ["发布流程页面改版"], "工作周报混入了生活、学习或未分类的主题：\(work)")
+        try expect(learning == ["英语口语练习"], "学习回顾混入了工作或生活的主题：\(learning)")
+        try expect(personal.count == 4, "我的一周没有覆盖全部主题：\(personal)")
+        let prepared = try PeriodReviewFromDaily().prepare(in: state, period: period, template: ReviewTemplate(kind: .personal))
+        try expect(prepared.categories().contains("work") && prepared.categories().contains("learning"), "类别没有进入传给模型的内容")
     }
 }

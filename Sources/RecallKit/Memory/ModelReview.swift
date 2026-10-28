@@ -53,6 +53,7 @@ public struct ModelReviewItem: Codable, Hashable, Sendable {
     public var kind: String? = nil
     public var status: String? = nil
     public var ownedByUser: Bool? = nil
+    public var category: String? = nil
 }
 public struct ModelReviewResult: Sendable {
     public var overview: String
