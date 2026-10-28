@@ -117,6 +117,10 @@ extension SummaryAccuracyVerification {
         let saved = await reopened.snapshot().dailySummaries.first?.items.first
         try expect(saved?.knowledge?.topic == "Atlas 分页" && saved?.knowledge?.quotes.isEmpty == false, "结构化理解没有随回顾保存并读回")
         try expect(DirectDailyReviewEngine.cleanTopic("工作") == nil && DirectDailyReviewEngine.cleanTopic("发布流程页面改版") == "发布流程页面改版", "泛称主题没有被拒绝")
+        let long = String(repeating: "这是一句很长的概述。", count: 30)
+        let fitted = DirectDailyReviewEngine.fittedOverview(long, final: true)
+        try expect(fitted.count <= 160 && fitted.hasSuffix("。"), "超长概览没有在句子边界截短")
+        try expect(DirectDailyReviewEngine.fittedOverview("中间组不应有概览。", final: false).isEmpty, "中间分组的概览没有被清空")
         try expect(DirectDailyReviewEngine.cleanKind("preference", owned: false) == "reference", "非本人内容被标成偏好")
     }
 }

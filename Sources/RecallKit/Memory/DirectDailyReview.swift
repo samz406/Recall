@@ -351,6 +351,16 @@ public struct DirectDailyReviewEngine: Sendable {
     /// failing the whole day, keep the evidence that locally resolves to real source text (each quote is
     /// re-cut to a verbatim line fragment) and make coverage exact. An item whose evidence resolves to
     /// nothing is left untouched so validation still rejects it.
+    /// An intermediate group has no overview, and a final one is at most 160 characters. A model that
+    /// overshoots is trimmed at a sentence boundary instead of failing the whole day.
+    public static func fittedOverview(_ text: String, final: Bool) -> String {
+        guard final else { return "" }
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.count > 160 else { return value }
+        let head = String(value.prefix(160))
+        if let cut = head.lastIndex(where: { "。！？；!?;".contains($0) }) { return String(head[...cut]) }
+        return String(value.prefix(159)) + "…"
+    }
     private func sanitized(_ draft: DailyReviewDraft, documents: [DailyReviewDocument], final: Bool) -> DailyReviewDraft {
         var result = draft
         let byID = Dictionary(documents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -378,6 +388,7 @@ public struct DirectDailyReviewEngine: Sendable {
             return item
         }
         if result.items.count > (final ? 7 : 16) { result.items = Array(result.items.prefix(final ? 7 : 16)) }
+        result.overview = Self.fittedOverview(result.overview, final: final)
         let used = Set(result.items.flatMap { $0.evidence.map(\.id) })
         var dispositions: [String: String] = [:]
         for entry in result.coverage where byID[entry.id] != nil && dispositions[entry.id] == nil {
