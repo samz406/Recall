@@ -35,7 +35,9 @@ public enum ReviewDigest {
                   item.excerpts.contains(where: { readable($0.text) }) else { continue }
             let days = Set(item.excerpts.map { period.calendar.startOfDay(for: $0.date) })
             let states = Set(item.excerpts.map { $0.status.rawValue }).count
-            var score = item.id.hasPrefix("reference:") ? 0 : 30
+            // A grouped item whose id carries the reference prefix may still contain the user's own matters.
+            let ownedMembers = item.excerpts.contains { !$0.text.hasPrefix("保存的内容（归属与实际状态未确认）") }
+            var score = item.id.hasPrefix("reference:") && !ownedMembers ? 0 : 30
             score += item.importance * 6 + min(days.count, 7) * 2 + min(states, 3) * 3
             if item.nextAction != nil { score += 4 }
             candidates.append(Candidate(item: item, days: days, score: score, key: duplicateKey(item)))
@@ -94,7 +96,9 @@ public enum ReviewDigest {
             let parts = item.excerpts.filter { required.contains($0.id) }.map { clean($0.text) }
             guard !parts.isEmpty, parts.allSatisfy({ readable($0) && !$0.contains("归属与实际状态未确认") }) else { return nil }
             var unique: [String] = []
-            for part in parts where !unique.contains(part) { unique.append(part) }
+            var keys = Set<String>()
+            // Same sentence modulo spacing/punctuation is one event, not two.
+            for part in parts where keys.insert(MatterEvidence.key(part)).inserted { unique.append(part) }
             let text = unique.joined(separator: "\n")
             guard (8...length.summaryLimit).contains(text.count) else { return nil }
             summary = text == title ? "" : text; extractive = true

@@ -181,7 +181,7 @@ public struct MemorySearchEngine: Sendable {
     private func isHanCharacter(_ character: Character) -> Bool {
         character.unicodeScalars.allSatisfy { scalar in
             switch scalar.value {
-            case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF:
+            case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF, 0x20000...0x2FA1F:
                 true
             default:
                 false

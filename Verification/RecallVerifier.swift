@@ -8,6 +8,7 @@ struct RecallVerifier {
         do {
             try await StartupLoadingVerification.run()
             try await DirectDailyReviewVerification.run()
+            try await SummaryAccuracyVerification.run()
             try await ReviewCapacityVerification.run()
             try await ReviewCancellationVerification.run()
             try await ReviewRecoveryVerification.run()
