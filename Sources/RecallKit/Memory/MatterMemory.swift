@@ -160,7 +160,14 @@ public struct MatterMemoryEngine: Sendable {
     public init() {}
 
     public func files(in state: RecallState, calendar: Calendar = .current) -> [MatterFile] {
-        MemoryTopicGroup.applying(state.topicGroups, to: MemoryKnowledgeEngine().files(in: state) ?? observedFiles(in: state, calendar: calendar))
+        // Topics come from what the model understood of each whole day. The pattern-based extractor
+        // can neither tell whose words OCR text is nor name a matter, so it only serves archives that
+        // have no structured daily review yet.
+        let daily = DailyKnowledgeEngine()
+        if daily.hasStructuredReviews(in: state) {
+            return MemoryTopicGroup.applying(state.topicGroups, to: daily.matterFiles(in: state))
+        }
+        return MemoryTopicGroup.applying(state.topicGroups, to: MemoryKnowledgeEngine().files(in: state) ?? observedFiles(in: state, calendar: calendar))
     }
 
     func observedFiles(in state: RecallState, calendar: Calendar = .current) -> [MatterFile] {

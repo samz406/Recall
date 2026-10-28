@@ -237,7 +237,7 @@ struct MatterWorkspaceView: View {
             Button { model.organizeExistingMatters() } label: {
                 Label(model.isBuildingMatters ? "正在更新…" : "更新记忆", systemImage: "arrow.clockwise")
             }.disabled(model.isBuildingMatters || model.isOrganizingMemory)
-                .help("从原始记录重建主题、进展与状态，并过滤旧的错误片段；不会改写原文")
+                .help("根据已保存的每日回顾重建主题、进展与长期记忆；不会改写原文，也不调用模型")
             Button { supplement() } label: {
                 Label("补充记录", systemImage: "plus")
             }.buttonStyle(.borderedProminent)
@@ -366,8 +366,15 @@ struct MatterWorkspaceView: View {
             } else if !search.isEmpty {
                 Button("清空搜索") { search = "" }
             } else {
+                if !model.daysNeedingStructuredReview.isEmpty {
+                    Text("主题来自每日回顾。\(model.daysNeedingStructuredReview.count) 天的回顾还是旧格式，重新生成后会按主题整理（每天一次模型调用，旧版本保留）。")
+                        .font(.callout).foregroundStyle(RecallPalette.secondary)
+                }
                 HStack {
-                    Button("补充记录") { supplement() }.buttonStyle(.borderedProminent)
+                    if !model.daysNeedingStructuredReview.isEmpty {
+                        Button("用每日回顾整理记忆") { model.upgradeDailyReviewsForMemory() }.buttonStyle(.borderedProminent)
+                    }
+                    Button("补充记录") { supplement() }
                     Button("更新记忆") { model.organizeExistingMatters() }
                     if !model.matterFiles.isEmpty && topicFilter != 2 {
                         Button("查看全部主题") { tab = .topics; topicFilter = 2 }

@@ -18,6 +18,9 @@ public struct CaptureRecognition: Codable, Hashable, Sendable {
 public struct CaptureUnderstandingSettings: Codable, Hashable, Sendable {
     public var enabled = false
     public var enabledSince: Date?
+    /// Process each new capture in the background. Off unless the user opts in: the daily review already
+    /// reads the whole day's original text, so per-record calls only add cost and failure points.
+    public var automatic: Bool? = nil
     public init() {}
 }
 

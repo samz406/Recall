@@ -8,7 +8,7 @@ struct CaptureUnderstandingSettingsView: View {
     private var failed: Int { model.state.understandingJobs.filter { $0.state == .failed }.count }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle("采集后自动理解新记录", isOn: Binding(get: { model.state.understandingSettings.enabled }, set: { value in model.setCaptureUnderstandingEnabled(value) }))
+            Toggle("采集后自动理解新记录（逐条调用模型，默认关闭）", isOn: Binding(get: { model.state.understandingSettings.enabled && model.state.understandingSettings.automatic == true }, set: { value in model.setCaptureUnderstandingEnabled(value) }))
             Text("先保存识别文字，再用模型核对事情、角色和状态。回顾会复用这些结果；未完成的历史记录会在生成回顾时补齐。仅发送脱敏文本，可暂停自动处理。")
                 .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
             if model.state.understandingSettings.enabled && (!model.state.privacy.cloudUseEnabled || model.state.llmConfiguration.apiKey.isEmpty) {

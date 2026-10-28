@@ -106,6 +106,17 @@ extension FileMemoryStore {
 }
 
 extension FileMemoryStore {
+    /// A review derived from daily reviews depends only on privacy, configuration and corrections;
+    /// its sources are checked again when the report is committed.
+    public func validateDailyDerivedReview(_ expected: RecallState) throws {
+        try Task.checkCancellation()
+        guard state.privacy.cloudUseEnabled, state.privacy == expected.privacy,
+              state.llmConfiguration == expected.llmConfiguration,
+              state.matterCorrections == expected.matterCorrections,
+              SummaryFeedbackLearning.revision(in: state) == SummaryFeedbackLearning.revision(in: expected),
+              DailyKnowledgeEngine().fingerprint(in: state.correctedForAnalysis()) == DailyKnowledgeEngine().fingerprint(in: expected.correctedForAnalysis())
+        else { throw ModelReviewError.changed }
+    }
     public func commitModelDailySummary(_ summary: DailySummary, expected: RecallState, period: ReviewPeriod) throws {
         try Task.checkCancellation()
         try validateModelReview(expected, period: period)

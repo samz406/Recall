@@ -7,7 +7,7 @@ extension RecallAppModel {
         if !enabled { captureUnderstandingTask?.cancel() }
         Task {
             do {
-                var settings = state.understandingSettings; settings.enabled = enabled
+                var settings = state.understandingSettings; settings.enabled = enabled; settings.automatic = enabled
                 try await store.updateCaptureUnderstandingSettings(settings)
                 await refresh()
             } catch { recordError(error, source: "Understanding", message: "保存记录整理设置失败") }
@@ -44,7 +44,10 @@ extension RecallAppModel {
                 Task { @MainActor [weak self] in self?.startCaptureUnderstandingWorker() }
             }
         }
-        guard captureUnderstandingTask == nil, !isGeneratingDailySummary, !isGeneratingWeeklyReview, topicReviewTask == nil, state.understandingSettings.enabled else { return }
+        // The daily review is the single understanding step. Per-record model calls run only when the
+        // user turned them on, and never as a prerequisite of a topic, period review or long-term memory.
+        guard captureUnderstandingTask == nil, !isGeneratingDailySummary, !isGeneratingWeeklyReview, topicReviewTask == nil,
+              state.understandingSettings.enabled, state.understandingSettings.automatic == true else { return }
         captureUnderstandingTask = Task { [weak self] in
             guard let self else { return }
             defer { self.captureUnderstandingTask = nil }
