@@ -51,6 +51,7 @@ extension FileMemoryStore {
             try validateDirectDailyReview(input, baseline: baseline)
             let checkpoints = state.dailyReviewCheckpoints.filter { checkpoint in
                 checkpoint.configurationVersion == input.configurationVersion && checkpoint.feedbackRevision == input.feedbackRevision
+                    && Date.now.timeIntervalSince(checkpoint.createdAt) <= 7 * 86_400
                     && checkpoint.sourceVersions.allSatisfy { input.sourceVersions[$0.key] == $0.value }
             }
             let result = try await DirectDailyReviewEngine(limits: limits).generate(input, checkpoints: checkpoints,

@@ -236,7 +236,8 @@ struct DirectDailyReviewEngine: Sendable {
         return try [Array(document.proofs[..<middle]), Array(document.proofs[middle...])].enumerated().flatMap { index, proofs in
             var part = document; part.id += "p\(index)"; part.proofs = proofs
             if document.basis == "raw" {
-                part.text = "分段原文；角色和日期沿用标记，未知不能猜测：\n" + proofs.map(\.text).joined(separator: "\n")
+                let origin = document.text.components(separatedBy: "\n").first ?? "原文"
+                part.text = origin + "\n" + proofs.map(\.text).joined(separator: "\n")
             }
             return try fitted(part, available: available)
         }

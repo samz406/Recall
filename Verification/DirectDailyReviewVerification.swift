@@ -181,6 +181,15 @@ enum DirectDailyReviewVerification {
         let output = try await generate(f, model: model, store: reopened, limits: DailyReviewLimits(inputBytes: 18_000))
         let calls = await model.log()
         try expect(output.metrics.cacheHits > 0 && calls.count == 1, "重启重试又重新请求已完成的分组")
+        // Simulate an idle app with expired checkpoints still on disk, before maintenance.
+        var archive = try JSONSerialization.jsonObject(with: JSONEncoder().encode(before)) as! [String: Any]
+        var checkpoints = archive["dailyReviewCheckpoints"] as! [[String: Any]]
+        for i in checkpoints.indices { checkpoints[i]["createdAt"] = Date.now.addingTimeInterval(-8 * 86_400).timeIntervalSinceReferenceDate }
+        archive["dailyReviewCheckpoints"] = checkpoints
+        try JSONSerialization.data(withJSONObject: archive).write(to: f.storage.stateURL)
+        let expired = try FileMemoryStore(storage: f.storage), fresh = Model()
+        let regenerated = try await generate(f, model: fresh, store: expired, limits: DailyReviewLimits(inputBytes: 18_000))
+        try expect(regenerated.metrics.cacheHits == 0 && regenerated.metrics.modelCalls > 1, "过期检查点仍被复用")
     }
     static func capacityFallback() async throws {
         let f = try await largeFixture()
