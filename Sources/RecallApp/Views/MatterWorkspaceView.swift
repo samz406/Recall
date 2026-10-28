@@ -282,6 +282,9 @@ struct MatterWorkspaceView: View {
             if let review = model.state.topicReviews.first(where: { $0.id == file.id }) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(review.overview).textSelection(.enabled)
+                    if let notice = review.coverage.notice {
+                        Label(notice, systemImage: "info.circle").font(.caption).foregroundStyle(RecallPalette.secondary)
+                    }
                     ForEach(Array(review.points.enumerated()), id: \.offset) { _, point in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(point.title).fontWeight(.semibold)

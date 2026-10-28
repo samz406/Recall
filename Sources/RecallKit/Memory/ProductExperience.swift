@@ -164,6 +164,7 @@ public struct RecallTaskStatus: Identifiable, Sendable {
     public var kind: String
     public var target: String
     public var phase: String
+    public var detail: String? = nil
     public var state: RecallTaskState = .running
     public var startedAt = Date.now
     public var destination: MemorySearchDestination?

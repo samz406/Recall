@@ -19,6 +19,7 @@ extension Notification.Name {
 final class RecallAppModel: ObservableObject {
     @Published var state = RecallState()
     @Published var tasks: [RecallTaskStatus] = []
+    var taskRetryActions: [UUID: () -> Void] = [:]
     @Published var navigationRevision = UUID()
     @Published var destination: MemorySearchDestination? { didSet { navigationRevision = UUID() } }
     @Published var sourceToOpen: CaptureRecord?
@@ -269,7 +270,9 @@ final class RecallAppModel: ObservableObject {
         }
         isGeneratingWeeklyReview = true
         weeklyReviewMessage = nil
-        let taskID = beginTask("周期回顾", target: period.label, phase: "读取适用记录")
+        let taskID = beginTask("周期回顾", target: period.label, phase: "准备记录", retry: { [weak self] in
+            self?.generateWeeklyReview(period: period, template: template, scope: scope, replacing: replacing)
+        })
         guard let responder = dailySummaryResponder() else {
             isGeneratingWeeklyReview = false
             weeklyReviewMessage = ModelReviewError.unavailable.localizedDescription
@@ -298,11 +301,11 @@ final class RecallAppModel: ObservableObject {
                 }.map(\.id))
                 let snapshot = try await modelStore.prepareModelReview(period: period, sourceIDs: scopedIDs,
                     responder: responder, expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
-                    onPhase: { phase in await self.updateTask(taskID, phase: phase) })
+                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) })
                 state = snapshot
                 let result = try await ModelReviewEngine().generate(in: snapshot, period: period, template: template, sourceIDs: scopedIDs,
                     beforeCall: { try await modelStore.validateModelReview(snapshot, period: period, sourceIDs: scopedIDs) },
-                    onPhase: { phase in await self.updateTask(taskID, phase: phase) }, responder: responder)
+                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder)
                 try Task.checkCancellation()
                 guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
                 var report = result.weeklyReport(period: period, template: template, scope: scope, in: snapshot)
@@ -311,29 +314,25 @@ final class RecallAppModel: ObservableObject {
                 guard current.privacy.cloudUseEnabled == snapshot.privacy.cloudUseEnabled,
                       current.privacy.excludedBundleIdentifiers == snapshot.privacy.excludedBundleIdentifiers,
                       SummaryFeedbackLearning.revision(in: current) == SummaryFeedbackLearning.revision(in: snapshot) else { throw WeeklyReviewError.changedSources }
-                updateTask(taskID, phase: "保存回顾")
+                updateReviewTask(taskID, progress: ReviewGenerationProgress(.saving, detail: "核对完成，正在保存回顾。"))
                 let saved = try await store.commitWeeklyReport(report, replacing: replacing, schedule: schedule, categories: snapshot.reviewCategories)
                 state = await store.snapshot()
                 if schedule == nil { weeklyReportToOpen = saved.id }
-                let hasDigest = !saved.digestRows.isEmpty
-                finishTask(taskID, state: saved.refinementPending || !hasDigest ? .partial : .succeeded,
-                    message: hasDigest ? "回顾已保存" : "材料已保留，暂无可靠小结", destination: .review(saved.id))
-                weeklyReviewMessage = !hasDigest
-                    ? "已保留本期材料，但暂未形成可靠小结。可查看整理依据，或稍后重新生成。"
-                    : (saved.refinementPending ? "已保存本期重点，其余材料可在整理依据中查看。部分内容尚未完成核对，可以稍后重新生成。" : "回顾已保存。你可以查看依据、调整内容或导出。")
-                if saved.refinementPending {
-                    recordDiagnostic(.warning, source: "WeeklyReview", message: "模型整理失败或不可用，已保存本地版本", metadata: ["scheduled": schedule == nil ? "false" : "true"])
-                }
+                let uncertain = result.coverage.uncertainBlockCount > 0
+                finishTask(taskID, state: uncertain ? .partial : .succeeded,
+                    message: uncertain ? "回顾已保存，部分原文暂无法确认" : "回顾已保存", destination: .review(saved.id))
+                weeklyReviewMessage = nil
                 if let schedule, schedule.notifyWhenReady, !saved.refinementPending, !saved.digestRows.isEmpty {
                     do { try await notificationScheduler.deliverWeeklyReview(saved) }
                     catch { recordError(error, source: "WeeklyReview", message: "一周回顾已保存，通知投递失败") }
                 }
             } catch is CancellationError {
                 finishTask(taskID, state: .cancelled, message: "已取消，已有回顾保持不变")
-                weeklyReviewMessage = "已取消生成，已有回顾保持不变。"
+                weeklyReviewMessage = nil
             } catch {
-                finishTask(taskID, state: .failed, message: error.localizedDescription)
-                weeklyReviewMessage = error.localizedDescription
+                finishTask(taskID, state: .failed, message: error.localizedDescription, detail: (error as? ReviewPreparationFailure)?.detail)
+                weeklyReviewMessage = nil
+                state = await store.snapshot()
                 recordError(error, source: "WeeklyReview", message: "一周回顾生成失败")
                 if let schedule {
                     let skip = (error as? WeeklyReviewError) == .noEvidence || (error as? WeeklyReviewError) == .noWorkScope || (error as? WeeklyReviewError) == .invalidPeriod
@@ -1342,7 +1341,9 @@ final class RecallAppModel: ObservableObject {
             guard !pendingDailySummaries.contains(where: { Calendar.current.isDate($0.day, inSameDayAs: day) }) else { return }
             pendingDailySummaries.append((day, reason)); pendingDailySummaries.sort { $0.day < $1.day }; return
         }
-        let taskID = beginTask("每日回顾", target: day.formatted(date: .abbreviated, time: .omitted), phase: "准备记录理解")
+        let taskID = beginTask("每日回顾", target: day.formatted(date: .abbreviated, time: .omitted), phase: "准备记录", retry: { [weak self] in
+            self?.generateDailySummary(for: day, reason: .manual)
+        })
         guard let responder = dailySummaryResponder() else {
             finishTask(taskID, state: .failed, message: ModelReviewError.unavailable.localizedDescription)
             return
@@ -1359,17 +1360,18 @@ final class RecallAppModel: ObservableObject {
             do {
                 let prepared = try await modelStore.prepareModelReview(period: period, responder: responder,
                     expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
-                    onPhase: { phase in await self.updateTask(taskID, phase: phase) })
+                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) })
                 state = prepared
                 let result = try await ModelReviewEngine().generate(in: prepared, period: period,
                     beforeCall: { try await modelStore.validateModelReview(prepared, period: period) },
-                    onPhase: { phase in await self.updateTask(taskID, phase: phase) }, responder: responder)
+                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder)
                 try Task.checkCancellation()
                 guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
                 let summary = result.dailySummary(day: day)
-                updateTask(taskID, phase: "保存回顾")
+                updateReviewTask(taskID, progress: ReviewGenerationProgress(.saving, detail: "核对完成，正在保存回顾。"))
                 try await modelStore.commitModelDailySummary(summary, expected: prepared, period: period)
-                finishTask(taskID, state: .succeeded, message: "回顾已保存", destination: .daily(summary.id))
+                finishTask(taskID, state: result.coverage.uncertainBlockCount > 0 ? .partial : .succeeded,
+                    message: result.coverage.uncertainBlockCount > 0 ? "回顾已保存，部分原文暂无法确认" : "回顾已保存", destination: .daily(summary.id))
                 if reason == .manual { dailyToOpen = summary.id }
                 await refresh()
                 if state.dailySummarySettings.notifyWhenReady == true {
@@ -1381,7 +1383,8 @@ final class RecallAppModel: ObservableObject {
                     "generation": "model-first", "sourceCount": "\(result.coverage.sourceCount)", "factCount": "\(result.coverage.factCount)"])
             } catch {
                 finishTask(taskID, state: error is CancellationError ? .cancelled : .failed,
-                    message: error is CancellationError ? "已取消，已有回顾保持不变" : error.localizedDescription)
+                    message: error is CancellationError ? "已取消，已有回顾保持不变" : error.localizedDescription,
+                    detail: (error as? ReviewPreparationFailure)?.detail)
                 recordError(error, source: "DailySummary", message: "回顾未完成，未用本地摘录替换")
                 state = await store.snapshot()
             }
