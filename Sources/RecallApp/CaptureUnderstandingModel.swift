@@ -21,7 +21,7 @@ extension RecallAppModel {
                     for job in state.understandingJobs where job.state == .failed {
                         count += try await store.retryCaptureUnderstanding(job.captureID)
                     }
-                } else if let captureID, state.understandingJobs.contains(where: { $0.captureID == captureID && [.failed, .retrying].contains($0.state) }) {
+                } else if let captureID, state.understandingJobs.contains(where: { $0.captureID == captureID && [.failed, .retrying, .paused].contains($0.state) }) {
                     count = try await store.retryCaptureUnderstanding(captureID)
                 } else {
                     let start = Calendar.current.date(byAdding: .day, value: -30, to: .now) ?? .now
@@ -78,15 +78,18 @@ extension RecallAppModel {
                         self.rebuildMatterFiles()
                         self.discoverReminders(force: false, announce: false)
                     } catch {
-                        let changed = error is CancellationError || (error as? CaptureUnderstandingError).map {
+                        let cancelled = ModelCallCancellation.isCancellation(error)
+                        let changed = (error as? CaptureUnderstandingError).map {
                             if case .changed = $0 { return true }; return false
                         } == true
-                        try await store.failCaptureUnderstanding(job, changed: changed, error: error)
+                        if cancelled { try await store.releaseCaptureUnderstanding(job) }
+                        else { try await store.failCaptureUnderstanding(job, changed: changed, error: error) }
                         // Provider errors may contain request/response text. Log a safe category only.
-                        recordError(error,
+                        if !cancelled { recordError(error,
                             source: "Understanding", message: changed ? "记录整理已暂停或输入已变化" : "记录整理未完成，原文保留；最多自动重试三次")
-                        finishTask(taskID, state: error is CancellationError ? .cancelled : .failed,
-                            message: changed ? "本次已停止，保留已完成的记录" : ReviewProcessingDiagnostics.reason(for: error) + "；将按重试策略继续")
+                        }
+                        finishTask(taskID, state: cancelled ? .cancelled : .failed,
+                            message: cancelled || changed ? "本次已停止，保留已完成的记录" : ReviewProcessingDiagnostics.reason(for: error) + "；将按重试策略继续")
                         self.state = await store.snapshot()
                         return
                     }

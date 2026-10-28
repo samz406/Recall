@@ -41,7 +41,9 @@ extension FileMemoryStore {
                 if !force { continue }
                 state.understandingJobs.remove(at: old)
             }
-            state.understandingJobs.append(CaptureUnderstandingJob(captureID: source.id, now: now)); count += 1
+            var job = CaptureUnderstandingJob(captureID: source.id, now: now)
+            job.isReviewPreparation = forReview ? true : nil
+            state.understandingJobs.append(job); count += 1
         }
         guard count > 0 else { return 0 }
         do { try persist() } catch { state = before; throw error }
@@ -62,7 +64,7 @@ extension FileMemoryStore {
     public func retryCaptureUnderstanding(_ captureID: UUID, forReview: Bool = false) throws -> Int {
         guard forReview || state.understandingSettings.enabled else { throw CaptureUnderstandingError.unavailable }
         guard let index = state.understandingJobs.firstIndex(where: { $0.captureID == captureID }),
-              [.failed, .retrying].contains(state.understandingJobs[index].state) else { return 0 }
+              [.failed, .retrying, .paused].contains(state.understandingJobs[index].state) else { return 0 }
         let before = state
         state.understandingJobs[index].state = .queued
         state.understandingJobs[index].attempts = 0
@@ -82,6 +84,7 @@ extension FileMemoryStore {
         // Older queued records first prevents starvation during an explicit backfill.
         guard let index = state.understandingJobs.indices.filter({
             [.queued, .retrying].contains(state.understandingJobs[$0].state)
+                && (forReview || state.understandingJobs[$0].isReviewPreparation != true)
                 && (captureID == nil || state.understandingJobs[$0].captureID == captureID)
                 && (state.understandingJobs[$0].retryAt ?? .distantPast) <= now
         }).min(by: { state.understandingJobs[$0].updatedAt < state.understandingJobs[$1].updatedAt }) else { return nil }
@@ -116,6 +119,7 @@ extension FileMemoryStore {
     }
 
     public func validateCaptureUnderstandingJob(_ job: CaptureUnderstandingJob, configuration: LLMConfiguration, privacy: PrivacySettings, forReview: Bool = false) throws {
+        try Task.checkCancellation()
         guard (forReview || state.understandingSettings.enabled), state.privacy.cloudUseEnabled, state.privacy == privacy,
               state.llmConfiguration == configuration,
               let current = state.understandingJobs.first(where: { $0.id == job.id }),
@@ -143,7 +147,8 @@ extension FileMemoryStore {
         }
         updated.coveredBlocks += result.covered; updated.uncertainBlocks += result.uncertain
         updated.nextPage += 1; updated.attempts = 0; updated.lease = nil; updated.retryAt = nil; updated.updatedAt = now
-        updated.lastFailureCode = nil; updated.lastFailureReason = nil; updated.isReviewPreparation = nil
+        updated.lastFailureCode = nil; updated.lastFailureReason = nil
+        updated.isReviewPreparation = forReview && updated.nextPage < updated.pageCount ? true : nil
         updated.state = updated.nextPage == updated.pageCount ? .completed : .queued
         if updated.state == .completed {
             state.captures[captureIndex].understanding = CaptureUnderstanding(processorVersion: CaptureUnderstandingEngine.version,
@@ -157,7 +162,19 @@ extension FileMemoryStore {
             state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state)
         }
         state.understandingJobs[index] = updated
-        do { try persist(preservingReviewsFrom: before) } catch { state = before; throw error }
+        do { try Task.checkCancellation(); try persist(preservingReviewsFrom: before) } catch { state = before; throw error }
+    }
+
+    /// Cancellation is not a failure or a retry attempt; keep all accepted page checkpoints.
+    public func releaseCaptureUnderstanding(_ job: CaptureUnderstandingJob, pause: Bool = false) throws {
+        guard let index = state.understandingJobs.firstIndex(where: { $0.id == job.id && $0.lease == job.lease }) else { return }
+        let before = state
+        state.understandingJobs[index].state = pause ? .paused : .queued
+        state.understandingJobs[index].lease = nil; state.understandingJobs[index].retryAt = nil
+        state.understandingJobs[index].attempts = max(0, job.attempts - 1)
+        state.understandingJobs[index].lastFailureCode = nil; state.understandingJobs[index].lastFailureReason = nil
+        state.understandingJobs[index].isReviewPreparation = nil
+        do { try persist() } catch { state = before; throw error }
     }
 
     public func failCaptureUnderstanding(_ job: CaptureUnderstandingJob, changed: Bool, error: Error? = nil, now: Date = .now) throws {

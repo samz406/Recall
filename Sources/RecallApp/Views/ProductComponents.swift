@@ -47,7 +47,9 @@ struct RecallTaskStatusView: View {
                 }
             }
             Spacer(minLength: 8)
-            if task.isRunning, let cancel { Button("取消", action: cancel) }
+            if task.isRunning, let cancel {
+                Button(task.isCancelling ? "取消中…" : "取消", action: cancel).disabled(task.isCancelling)
+            }
             if !task.isRunning, model.taskRetryActions[task.id] != nil {
                 Button("重试") { model.retryTask(task.id) }
                     .disabled(model.isGeneratingDailySummary || model.isGeneratingWeeklyReview || model.generatingTopicID != nil)
@@ -58,6 +60,7 @@ struct RecallTaskStatusView: View {
     private var symbol: String {
         switch task.state {
         case .running: "clock"
+        case .cancelling: "xmark.circle"
         case .succeeded: "checkmark.circle"
         case .partial: "info.circle"
         case .failed: "exclamationmark.circle"

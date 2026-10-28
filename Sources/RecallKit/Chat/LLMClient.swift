@@ -326,6 +326,7 @@ public struct CompatibleLLM: LLMResponding {
     }
 
     public func answer(to request: LLMRequest) async throws -> LLMAnswer {
+        try Task.checkCancellation()
         switch configuration.provider {
         case .openAICompatible:
             return try await openAIAnswer(to: request)
@@ -383,7 +384,16 @@ public struct CompatibleLLM: LLMResponding {
     }
 
     private func perform(_ request: URLRequest, outputLimit: Int) async throws -> Data {
-        let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+            try Task.checkCancellation()
+        } catch {
+            if ModelCallCancellation.isCancellation(error) { throw CancellationError() }
+            throw error
+        }
         guard let http = response as? HTTPURLResponse else {
             throw LLMResponseFailure(reason: .invalidFormat, provider: configuration.provider, outputLimit: outputLimit)
         }

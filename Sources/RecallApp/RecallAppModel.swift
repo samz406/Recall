@@ -29,6 +29,7 @@ final class RecallAppModel: ObservableObject {
     @Published var showsSummaryFeedbackHistory = false
     @Published var generatingTopicID: String?
     var topicReviewTask: Task<Void, Never>?
+    var topicReviewStatusID: UUID?
     var captureUnderstandingTask: Task<Void, Never>?
     var captureUnderstandingTimer: Timer?
     var summaryFeedbackTask: Task<Void, Never>?
@@ -45,6 +46,7 @@ final class RecallAppModel: ObservableObject {
     @Published var reviewTopicToOpen: String?
     @Published var weeklyReportToOpen: UUID?
     private var weeklyReviewTask: Task<Void, Never>?
+    private var weeklyReviewStatusID: UUID?
     private var weeklyScheduleTimer: Timer?
     private var weeklyWakeObserver: NSObjectProtocol?
     @Published private(set) var isBuildingMatters = false
@@ -81,6 +83,9 @@ final class RecallAppModel: ObservableObject {
     private var isPurgingRecentlyDeleted = false
     @Published private(set) var isGeneratingDailySummary = false
     private var dailyReviewTask: Task<Void, Never>?
+    private var dailyReviewStatusID: UUID?
+    private var dailyReviewBackfillPausedUntil: Date?
+    private var isDailyReviewBackfillPaused: Bool { dailyReviewBackfillPausedUntil.map { Date.now < $0 } ?? false }
     private var pendingDailySummaries: [(day: Date, reason: DailySummaryReason)] = []
     private let diagnosticLog: RecallDiagnosticLogStore
     private var reminderActionObserver: NSObjectProtocol?
@@ -285,8 +290,9 @@ final class RecallAppModel: ObservableObject {
         }
         let requestState = state
         let scheduledTrigger = schedule?.effectiveTrigger(at: .now)
+        weeklyReviewStatusID = taskID
         weeklyReviewTask = Task {
-            defer { isGeneratingWeeklyReview = false; weeklyReviewTask = nil; processNextDailySummary() }
+            defer { isGeneratingWeeklyReview = false; weeklyReviewTask = nil; weeklyReviewStatusID = nil; processNextDailySummary() }
             do {
                 let modelStore = store
                 let chosen = scope.useSelectedTopics ? Set(matterFiles.filter { scope.topicIDs.contains(WeeklyReviewEngine.topicID(for: $0)) }.flatMap(\.evidenceIDs)) : nil
@@ -322,13 +328,18 @@ final class RecallAppModel: ObservableObject {
                 finishTask(taskID, state: uncertain ? .partial : .succeeded,
                     message: uncertain ? "回顾已保存，部分原文暂无法确认" : "回顾已保存", destination: .review(saved.id))
                 weeklyReviewMessage = nil
-                if let schedule, schedule.notifyWhenReady, !saved.refinementPending, !saved.digestRows.isEmpty {
+                if !Task.isCancelled, let schedule, schedule.notifyWhenReady, !saved.refinementPending, !saved.digestRows.isEmpty {
                     do { try await notificationScheduler.deliverWeeklyReview(saved) }
                     catch { recordError(error, source: "WeeklyReview", message: "一周回顾已保存，通知投递失败") }
                 }
-            } catch is CancellationError {
+            } catch let error where ModelCallCancellation.isCancellation(error) {
                 finishTask(taskID, state: .cancelled, message: "已取消，已有回顾保持不变")
                 weeklyReviewMessage = nil
+                if let schedule {
+                    do { try await store.deferReviewSchedule(schedule, noEvidence: true) }
+                    catch { recordError(error, source: "WeeklyReview", message: "记录本期取消状态失败") }
+                }
+                state = await store.snapshot()
             } catch {
                 finishTask(taskID, state: .failed, message: error.localizedDescription, detail: (error as? ReviewPreparationFailure)?.detail)
                 weeklyReviewMessage = nil
@@ -352,7 +363,10 @@ final class RecallAppModel: ObservableObject {
 
     func logWeeklyExportFailure(_ error: Error) { recordError(error, source: "WeeklyReview", message: "导出一周回顾失败") }
 
-    func cancelWeeklyReview() { weeklyReviewTask?.cancel() }
+    func cancelWeeklyReview() {
+        guard let id = weeklyReviewStatusID, requestTaskCancellation(id) else { return }
+        weeklyReviewTask?.cancel()
+    }
 
     func saveReviewTemplate(_ template: ReviewTemplate) async -> Bool {
         do { try await store.saveReviewTemplate(template); state = await store.snapshot(); return true }
@@ -1253,6 +1267,7 @@ final class RecallAppModel: ObservableObject {
     }
 
     func updateDailySummarySettings(_ settings: DailySummarySettings) {
+        dailyReviewBackfillPausedUntil = nil
         state.dailySummarySettings = settings
         Task {
             do {
@@ -1286,7 +1301,14 @@ final class RecallAppModel: ObservableObject {
         guard day <= Date.now else { return }
         generateDailySummary(for: day, reason: .manual)
     }
-    func cancelDailyReview() { dailyReviewTask?.cancel() }
+    func cancelDailyReview() {
+        guard let id = dailyReviewStatusID, requestTaskCancellation(id) else { return }
+        let now = Date.now, calendar = Calendar.current
+        let trigger = state.dailySummarySettings.triggerDate(on: now)
+        dailyReviewBackfillPausedUntil = trigger > now ? trigger : state.dailySummarySettings.triggerDate(on: calendar.date(byAdding: .day, value: 1, to: now) ?? now.addingTimeInterval(86_400))
+        pendingDailySummaries.removeAll { if case .manual = $0.reason { return false }; return true }
+        dailyReviewTask?.cancel()
+    }
     func generatePreviousDaySummaryNow() {
         let previousDay = Calendar.current.date(byAdding: .day, value: -1, to: .now) ?? .now
         generateDailySummary(for: previousDay, reason: .manual)
@@ -1337,6 +1359,8 @@ final class RecallAppModel: ObservableObject {
     }
 
     private func generateDailySummary(for day: Date, reason: DailySummaryReason) {
+        if case .manual = reason { dailyReviewBackfillPausedUntil = nil }
+        else if isDailyReviewBackfillPaused { return }
         if isGeneratingDailySummary || isGeneratingWeeklyReview || generatingTopicID != nil {
             guard !pendingDailySummaries.contains(where: { Calendar.current.isDate($0.day, inSameDayAs: day) }) else { return }
             pendingDailySummaries.append((day, reason)); pendingDailySummaries.sort { $0.day < $1.day }; return
@@ -1355,8 +1379,9 @@ final class RecallAppModel: ObservableObject {
         let period = ReviewPeriod(start: start, end: end, timeZoneIdentifier: calendar.timeZone.identifier)
         let modelStore = store
         let requestState = state
+        dailyReviewStatusID = taskID
         dailyReviewTask = Task {
-            defer { isGeneratingDailySummary = false; dailyReviewTask = nil; processNextDailySummary() }
+            defer { isGeneratingDailySummary = false; dailyReviewTask = nil; dailyReviewStatusID = nil; processNextDailySummary() }
             do {
                 let prepared = try await modelStore.prepareModelReview(period: period, responder: responder,
                     expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
@@ -1374,18 +1399,19 @@ final class RecallAppModel: ObservableObject {
                     message: result.coverage.uncertainBlockCount > 0 ? "回顾已保存，部分原文暂无法确认" : "回顾已保存", destination: .daily(summary.id))
                 if reason == .manual { dailyToOpen = summary.id }
                 await refresh()
-                if state.dailySummarySettings.notifyWhenReady == true {
+                if !Task.isCancelled, state.dailySummarySettings.notifyWhenReady == true {
                     do { try await notificationScheduler.deliverDailyBriefing(summary) }
                     catch { recordError(error, source: "DailySummary", message: "回顾已保存，通知投递失败") }
                 }
-                discoverReminders(force: false, announce: false)
+                if !Task.isCancelled { discoverReminders(force: false, announce: false) }
                 recordDiagnostic(.info, source: "DailySummary", message: "模型回顾已生成", metadata: [
                     "generation": "model-first", "sourceCount": "\(result.coverage.sourceCount)", "factCount": "\(result.coverage.factCount)"])
             } catch {
-                finishTask(taskID, state: error is CancellationError ? .cancelled : .failed,
-                    message: error is CancellationError ? "已取消，已有回顾保持不变" : error.localizedDescription,
+                let cancelled = ModelCallCancellation.isCancellation(error)
+                finishTask(taskID, state: cancelled ? .cancelled : .failed,
+                    message: cancelled ? "已取消，已有回顾保持不变，可重试继续" : error.localizedDescription,
                     detail: (error as? ReviewPreparationFailure)?.detail)
-                recordError(error, source: "DailySummary", message: "回顾未完成，未用本地摘录替换")
+                if !cancelled { recordError(error, source: "DailySummary", message: "回顾未完成，未用本地摘录替换") }
                 state = await store.snapshot()
             }
         }
@@ -1473,7 +1499,7 @@ final class RecallAppModel: ObservableObject {
 
     private func generateMissedDailySummaryIfNeeded() {
         let settings = state.dailySummarySettings
-        guard settings.isEnabled, !isGeneratingDailySummary else { return }
+        guard settings.isEnabled, !isGeneratingDailySummary, !isDailyReviewBackfillPaused else { return }
         let now = Date.now
         guard now >= settings.triggerDate(on: now) else { return }
         let calendar = Calendar.current

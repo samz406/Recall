@@ -8,6 +8,7 @@ extension FileMemoryStore {
                                    expectedConfiguration: LLMConfiguration? = nil, expectedPrivacy: PrivacySettings? = nil,
                                    onPhase: (@Sendable (String) async -> Void)? = nil,
                                    onProgress: (@Sendable (ReviewGenerationProgress) async -> Void)? = nil) async throws -> RecallState {
+        try Task.checkCancellation()
         guard state.privacy.cloudUseEnabled, state.llmConfiguration.provider != .localOnly,
               !state.llmConfiguration.apiKey.isEmpty else { throw ModelReviewError.unavailable }
         guard expectedConfiguration == nil || state.llmConfiguration == expectedConfiguration,
@@ -32,7 +33,7 @@ extension FileMemoryStore {
             // Reuse completed pages after interruption. An explicitly retried failed job
             // resumes from its last saved page rather than restarting a long document.
             if let i = state.understandingJobs.firstIndex(where: { $0.captureID == record.id }),
-               [.failed, .retrying, .completed].contains(state.understandingJobs[i].state) {
+               [.failed, .retrying, .paused, .completed].contains(state.understandingJobs[i].state) {
                 let before = state
                 if state.understandingJobs[i].state == .completed { state.understandingJobs[i] = CaptureUnderstandingJob(captureID: record.id) }
                 else { state.understandingJobs[i].state = .queued; state.understandingJobs[i].attempts = 0; state.understandingJobs[i].retryAt = nil }
@@ -64,13 +65,9 @@ extension FileMemoryStore {
                 } catch {
                     // Preserve cursor and accepted pages on cancellation. Changed sources will
                     // be reset by the normal source-version reconciliation.
-                    if error is CancellationError {
-                        if let i = state.understandingJobs.firstIndex(where: { $0.id == job.id && $0.lease == job.lease }) {
-                            let before = state
-                            state.understandingJobs[i].lease = nil; state.understandingJobs[i].state = .queued
-                            do { try persist() } catch { state = before; throw error }
-                        }
-                        throw error
+                    if ModelCallCancellation.isCancellation(error) {
+                        try releaseCaptureUnderstanding(job, pause: true)
+                        throw CancellationError()
                     }
                     let changed = (error as? CaptureUnderstandingError).map { if case .changed = $0 { true } else { false } } ?? false
                     let reviewChanged = (error as? ModelReviewError).map { if case .changed = $0 { true } else { false } } ?? false
@@ -86,6 +83,7 @@ extension FileMemoryStore {
     }
 
     func validateReviewPreparation(_ versions: [UUID: String], baseline: RecallState) throws {
+        try Task.checkCancellation()
         guard state.privacy.cloudUseEnabled, state.privacy == baseline.privacy,
               state.llmConfiguration == baseline.llmConfiguration,
               state.matterCorrections == baseline.matterCorrections,
@@ -98,6 +96,7 @@ extension FileMemoryStore {
     }
 
     public func validateModelReview(_ expected: RecallState, period: ReviewPeriod, sourceIDs: Set<UUID>? = nil) throws {
+        try Task.checkCancellation()
         let oldRecords = ModelReviewEvidence.records(in: expected, period: period, sourceIDs: sourceIDs)
         let currentRecords = ModelReviewEvidence.records(in: state, period: period, sourceIDs: sourceIDs)
         guard Set(oldRecords.map(\.id)) == Set(currentRecords.map(\.id)) else { throw ModelReviewError.changed }
@@ -107,6 +106,7 @@ extension FileMemoryStore {
 
 extension FileMemoryStore {
     public func commitModelDailySummary(_ summary: DailySummary, expected: RecallState, period: ReviewPeriod) throws {
+        try Task.checkCancellation()
         try validateModelReview(expected, period: period)
         let consolidation = PersonalIntelligenceEngine().consolidate(day: summary.day, records: state.captures,
             existingEpisodes: state.episodes, previousProjects: state.projects, existingMemories: state.userMemories,
