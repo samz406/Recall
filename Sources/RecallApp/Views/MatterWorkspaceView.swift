@@ -335,7 +335,8 @@ struct MatterWorkspaceView: View {
                 }.disabled(model.generatingTopicID != nil)
                 if model.generatingTopicID == file.id {
                     ProgressView().controlSize(.small)
-                    Button("取消") { model.cancelTopicReview() }
+                    let cancelling = model.tasks.first(where: { $0.kind == "主题小结" && $0.target == file.title })?.isCancelling == true
+                    Button(cancelling ? "取消中…" : "取消") { model.cancelTopicReview() }.disabled(cancelling)
                 }
             }
             if let task = model.tasks.first(where: { $0.kind == "主题小结" && $0.target == file.title }) {

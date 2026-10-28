@@ -12,7 +12,7 @@ public extension LLMResponding {
     func answerCancellably(to request: LLMRequest) async throws -> LLMAnswer {
         try Task.checkCancellation()
         let pending = PendingModelAnswer()
-        return try await withTaskCancellationHandler(operation: {
+        let answer: LLMAnswer = try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
                 guard pending.install(continuation) else { return }
                 let worker = Task {
@@ -28,6 +28,8 @@ public extension LLMResponding {
                 pending.attach(worker)
             }
         }, onCancel: { pending.cancel() })
+        try Task.checkCancellation()
+        return answer
     }
 }
 
