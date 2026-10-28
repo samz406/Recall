@@ -186,6 +186,10 @@ extension SummaryAccuracyVerification {
         let period = ReviewPeriod(start: calendar.date(byAdding: .day, value: -3, to: today)!, end: today)
         let result = try await PeriodReviewFromDaily().generate(in: state, period: period, template: ReviewTemplate(kind: .personal), responder: model).draft
         let bodies = await model.log()
+        let prompt = PeriodReviewFromDaily().prompt(label: "x", template: { var t = ReviewTemplate(kind: .work); t.length = .brief; t.tone = .formal; return t }(),
+            topic: nil, feedback: "", itemLimit: 3, detailLimit: 120)
+        try expect(prompt.contains("不超过 120 字") && prompt.contains("最多 3 项") && prompt.contains("语言克制、正式") && prompt.contains("交给同事阅读"),
+            "篇幅、表达和模板类型没有进入周期回顾的提示词")
         try expect(bodies.count == 1 && result.items.count == 1 && !result.facts.isEmpty, "周期回顾没有只用一次调用完成，或没有保留来源")
         try expect(result.sourceVersions.keys.allSatisfy { id in records.contains { $0.id == id } }, "周期回顾的来源不是被引用的截图")
         // Deleting a screenshot removes the topic events that depended on it.
