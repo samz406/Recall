@@ -205,12 +205,10 @@ struct WeeklyReviewView: View {
         .contentShape(RoundedRectangle(cornerRadius: 10))
     }
     private var customStartControl: some View {
-        DatePicker("开始日期", selection: $customStart, in: ...Date.now, displayedComponents: .date)
-            .controlSize(.regular).fixedSize()
+        CalendarDateField(title: "开始日期", date: $customStart)
     }
     private var customEndControl: some View {
-        DatePicker("结束日期", selection: $customEnd, in: customStart...max(customStart, Date.now), displayedComponents: .date)
-            .controlSize(.regular).fixedSize()
+        CalendarDateField(title: "结束日期", date: $customEnd, earliest: customStart)
     }
     private func generateButton(range: ReviewPeriod, eligibleTopicCount: Int) -> some View {
         Button {
