@@ -34,6 +34,7 @@ enum SummaryAccuracyVerification {
         try await dailyReviewsDriveTheMemoryTabs()
         try await legacyLedgerIsRebuilt()
         try await overclaimedOwnershipIsDemoted()
+        try await unmarkedScreenWorkIsTheUsers()
         print("PASS: summary accuracy covers near-duplicate captures, fast writes, chat markers, quote repair and repeated lines")
     }
 
@@ -243,8 +244,8 @@ extension SummaryAccuracyVerification {
         }
     }
     static func overclaimedOwnershipIsDemoted() async throws {
-        // Screen text with no chat marker: nothing in it is attributable to the user.
-        let text = "一篇关于分页边界的文章说明了很多通用的做法和注意事项，这些内容并不是本人的表述。"
+        // Saved material and the other party's words are explicitly marked: the model cannot make them the user's.
+        let text = "[聊天·对方] 一篇关于分页边界的文章说明了很多通用的做法和注意事项，这些内容并不是本人的表述。\n[聊天·自己] [内容·资料] 分页边界的通用做法与注意事项整理，转发自他人。"
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-overclaim-" + UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
         let store = try FileMemoryStore(storage: storage)
@@ -259,5 +260,36 @@ extension SummaryAccuracyVerification {
         try expect(!items.isEmpty, "错误归属的条目让整天回顾失败而不是被降级")
         try expect(!items.contains { $0.section == .actions }, "无法证明是本人承诺的待办没有被丢弃")
         try expect(items.allSatisfy { $0.knowledge?.ownedByUser != true }, "引用资料的条目仍被保存为本人事项")
+    }
+}
+
+extension SummaryAccuracyVerification {
+    /// Unmarked screen text (no speaker) judged by the model to be the user's own work counts as theirs.
+    actor ScreenModel: LLMResponding {
+        func answer(to request: LLMRequest) async throws -> LLMAnswer {
+            let docs = try JSONSerialization.jsonObject(with: Data(request.context[0].ocrText.utf8)) as! [[String: Any]]
+            let id = docs[0]["id"] as! String
+            let line = (docs[0]["text"] as! String).components(separatedBy: "\n").last { $0.count > 12 } ?? ""
+            let item: [String: Any] = ["section": "progress", "title": "发布页改版已合并到主分支", "detail": "页面改版的代码已经合并，状态已更新。",
+                "topic": "发布流程页面改版", "kind": "matter", "owner": "user", "status": "completed", "explicitCommitment": false,
+                "condition": NSNull(), "evidence": [["id": id, "quote": String(line.prefix(30))]]]
+            let value: [String: Any] = ["overview": "改版合并。", "items": [item],
+                "coverage": docs.map { ["id": $0["id"]!, "disposition": "used"] as [String: Any] }]
+            return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self), citedCaptureIDs: [])
+        }
+    }
+    static func unmarkedScreenWorkIsTheUsers() async throws {
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-screen-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let store = try FileMemoryStore(storage: storage)
+        let now = Date.now
+        try await store.addCapture(CaptureRecord(eventTemplate: .workCheckpoint, createdAt: now.addingTimeInterval(-5), sourceAppName: "Orca",
+            sourceBundleIdentifier: "example.orca", contentHash: UUID().uuidString,
+            ocrText: "发布流程页面改版的代码已经合并到主分支，部署状态与验证结果已更新。", textOrigin: .screenOCR))
+        try await store.updatePrivacy(PrivacySettings(cloudUseEnabled: true))
+        try await store.updateLLMConfiguration(LLMConfiguration(provider: .openAICompatible, model: "synthetic", apiKey: "verification-placeholder"))
+        let output = try await store.generateDirectDailyReview(day: now, period: ReviewPeriod(start: now.addingTimeInterval(-60), end: now), responder: ScreenModel())
+        let knowledge = output.summary.items.first?.knowledge
+        try expect(knowledge?.ownedByUser == true && knowledge?.kind == .matter, "没有说话人标记的屏幕工作内容被降成资料，无法形成主题")
     }
 }

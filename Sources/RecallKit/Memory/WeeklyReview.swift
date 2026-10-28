@@ -391,7 +391,7 @@ public enum WeeklyReviewWork: Sendable {
 }
 
 public enum WeeklyReviewError: Error, LocalizedError, Equatable {
-    case noEvidence, invalidPeriod, invalidTemplate, changedSources, cancelled, noWorkScope
+    case noEvidence, invalidPeriod, invalidTemplate, changedSources, cancelled, noWorkScope, noDailyReviews
     public var errorDescription: String? {
         switch self {
         case .noEvidence: "这段时间没有符合范围的记录，可以换一个时间范围或补充记录。"
@@ -400,6 +400,7 @@ public enum WeeklyReviewError: Error, LocalizedError, Equatable {
         case .changedSources: "生成期间来源或设置发生了变化，请重新生成。"
         case .cancelled: "已取消本次生成。"
         case .noWorkScope: "所选日期内暂未识别出明确的工作内容，可以改用“我的一周”回顾全部内容。"
+        case .noDailyReviews: "这段时间还没有可用的每日回顾。周期回顾基于每日回顾生成，请先在“每日回顾”里生成或重新生成这些天，再回来。"
         }
     }
 }

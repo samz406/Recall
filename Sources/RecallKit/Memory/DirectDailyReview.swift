@@ -391,7 +391,11 @@ public struct DirectDailyReviewEngine: Sendable {
             // every quote is a reference, the other party or an unknown speaker is demoted to unknown; a
             // to-do that cannot be shown to be the user's commitment is dropped rather than failing the day.
             if demoteOwnership, item.owner == .user, !resolved.isEmpty {
-                let own = matched(item, documents: documents).contains { !$0.isReference && $0.speaker == .user && $0.actor != .other }
+                let proofs = matched(item, documents: documents)
+                // A to-do becomes a reminder, so it still needs the user's explicit words; other items accept unknown speakers.
+                let own = item.section == "actions"
+                    ? proofs.contains { !$0.isReference && $0.speaker == .user && $0.actor != .other }
+                    : Self.isOwnedByUser(.user, proofs: proofs)
                 if !own {
                     if item.section == "actions" { return nil }
                     item.owner = .unknown; item.explicitCommitment = false
@@ -434,7 +438,7 @@ public struct DirectDailyReviewEngine: Sendable {
             }) else { throw ModelReviewError.validation(.evidence) }
             let proof = matched(item, documents: documents)
             let own = proof.filter { !$0.isReference && $0.speaker == .user && $0.actor != .other }
-            if item.owner == .user && own.isEmpty { throw ModelReviewError.validation(.attribution) }
+            if item.owner == .user && !Self.isOwnedByUser(.user, proofs: proof) { throw ModelReviewError.validation(.attribution) }
             if item.section == "actions" {
                 guard item.owner == .user, item.status == .pending, item.explicitCommitment,
                       item.condition?.isEmpty ?? true,
@@ -487,7 +491,7 @@ public struct DirectDailyReviewEngine: Sendable {
                     deadline: nil, sourceIDs: p.sourceIDs, quotes: [p.text], isAction: item.section == "actions")
                 return id
             }
-            let own = proofs.contains { !$0.isReference && $0.speaker == .user && $0.actor != .other }
+            let own = Self.isOwnedByUser(item.owner, proofs: proofs)
             items.append(ModelReviewItem(section: item.section, title: item.title, detail: item.detail, factIDs: Array(Set(ids)).sorted(),
                 topic: Self.cleanTopic(item.topic), kind: Self.cleanKind(item.kind, owned: own),
                 status: item.status.rawValue, ownedByUser: own))
@@ -495,6 +499,13 @@ public struct DirectDailyReviewEngine: Sendable {
         return ModelReviewResult(overview: draft.overview, items: items, facts: facts.values.sorted { $0.id < $1.id },
             sourceVersions: input.sourceVersions, coverage: ModelReviewCoverage(sourceCount: input.recordIDs.count,
                 factCount: facts.count, uncertainBlockCount: uncertain + (draft.localUncertainCount ?? 0)))
+    }
+    /// Screen text rarely carries a speaker marker, so "unknown" speaker cannot disprove ownership. The model read the
+    /// whole day and judged the owner; only an explicit marker (the other party, saved material) overrides it.
+    static func isOwnedByUser(_ owner: UnderstandingSpeaker, proofs: [DailyReviewProof]) -> Bool {
+        guard owner == .user else { return false }
+        if proofs.contains(where: { !$0.isReference && $0.speaker == .user && $0.actor != .other }) { return true }
+        return !proofs.isEmpty && proofs.allSatisfy { $0.speaker == .unknown && !$0.isReference && $0.actor != .other }
     }
     /// A topic must be a short, specific name. Generic labels and sentence-length strings become nil.
     public static func cleanTopic(_ value: String?) -> String? {

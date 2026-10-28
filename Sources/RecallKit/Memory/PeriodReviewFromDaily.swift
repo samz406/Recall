@@ -53,7 +53,7 @@ public struct PeriodReviewFromDaily: Sendable {
                 return entry.knowledge.topic.map { topicKeys.contains(DailyKnowledgeEngine.topicKey($0)) } == true
             }
             .sorted { $0.summary.day == $1.summary.day ? $0.item.id.uuidString < $1.item.id.uuidString : $0.summary.day < $1.summary.day }
-        guard !entries.isEmpty else { throw WeeklyReviewError.noEvidence }
+        guard !entries.isEmpty else { throw topicKeys == nil ? WeeklyReviewError.noDailyReviews : WeeklyReviewError.noEvidence }
         var rows: [Row] = [], byID: [String: DailyKnowledgeEngine.Entry] = [:], versions: [UUID: String] = [:]
         for (index, entry) in entries.enumerated() {
             let id = "i\(index + 1)"

@@ -334,8 +334,10 @@ final class RecallAppModel: ObservableObject {
                 // Prefer the structured daily reviews: one call over already verified conclusions. Without
                 // them (older archives) keep the per-record path, which needs full understanding first.
                 let dailyState = await modelStore.snapshot()
+                // With structured daily reviews the period review is built only from them. Falling back to
+                // per-record understanding would show an unrelated failure and cost hundreds of model calls.
                 let fromDaily = period.isValid && DailyKnowledgeEngine().hasStructuredReviews(in: dailyState)
-                    && !scope.useSelectedTopics && (try? PeriodReviewFromDaily().prepare(in: dailyState, period: period, template: template, scope: scope)) != nil
+                    && !scope.useSelectedTopics
                 let snapshot: RecallState
                 let result: ModelReviewResult
                 if fromDaily {
