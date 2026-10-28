@@ -305,7 +305,9 @@ public struct DirectDailyReviewEngine: Sendable {
                 draft.overview = clean(draft.overview)
                 draft.localUncertainCount = draft.coverage.filter { $0.disposition == "uncertain" }.count
                 for i in draft.items.indices { draft.items[i].title = clean(draft.items[i].title); draft.items[i].detail = clean(draft.items[i].detail) }
-                draft = sanitized(draft, documents: documents, final: final)
+                // The first attempt keeps ownership strict so the model gets a targeted repair; the retry demotes
+                // what still cannot be attributed instead of failing the whole day.
+                draft = sanitized(draft, documents: documents, final: final, demoteOwnership: attempt > 0)
                 try validate(draft, documents: documents, final: final)
                 try Task.checkCancellation(); try await beforeCall()
                 if !final {
@@ -361,7 +363,7 @@ public struct DirectDailyReviewEngine: Sendable {
         if let cut = head.lastIndex(where: { "。！？；!?;".contains($0) }) { return String(head[...cut]) }
         return String(value.prefix(159)) + "…"
     }
-    private func sanitized(_ draft: DailyReviewDraft, documents: [DailyReviewDocument], final: Bool) -> DailyReviewDraft {
+    private func sanitized(_ draft: DailyReviewDraft, documents: [DailyReviewDocument], final: Bool, demoteOwnership: Bool) -> DailyReviewDraft {
         var result = draft
         let byID = Dictionary(documents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         func resolve(_ evidence: DailyReviewDraft.Evidence) -> DailyReviewDraft.Evidence? {
@@ -385,6 +387,17 @@ public struct DirectDailyReviewEngine: Sendable {
             let resolved = item.evidence.compactMap(resolve).filter { seen.insert($0.id + "\u{1}" + $0.quote).inserted }.prefix(8).map { $0 }
             // Fully unresolvable evidence is a fabrication signal: leave it for validation and its repair round.
             if !resolved.isEmpty { item.evidence = resolved }
+            // Ownership must rest on the user's own words. A model that labels an item as the user's while
+            // every quote is a reference, the other party or an unknown speaker is demoted to unknown; a
+            // to-do that cannot be shown to be the user's commitment is dropped rather than failing the day.
+            if demoteOwnership, item.owner == .user, !resolved.isEmpty {
+                let own = matched(item, documents: documents).contains { !$0.isReference && $0.speaker == .user && $0.actor != .other }
+                if !own {
+                    if item.section == "actions" { return nil }
+                    item.owner = .unknown; item.explicitCommitment = false
+                    if let kind = item.kind, ["matter", "preference", "agreement"].contains(kind) { item.kind = "reference" }
+                }
+            }
             return item
         }
         if result.items.count > (final ? 7 : 16) { result.items = Array(result.items.prefix(final ? 7 : 16)) }

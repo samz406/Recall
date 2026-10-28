@@ -33,6 +33,7 @@ enum SummaryAccuracyVerification {
         try await structuredDailyKnowledge()
         try await dailyReviewsDriveTheMemoryTabs()
         try await legacyLedgerIsRebuilt()
+        try await overclaimedOwnershipIsDemoted()
         print("PASS: summary accuracy covers near-duplicate captures, fast writes, chat markers, quote repair and repeated lines")
     }
 
@@ -221,5 +222,42 @@ extension SummaryAccuracyVerification {
         let rebuilt = await store.snapshot().memoryKnowledge
         try expect(rebuilt.organizationVersion == MemoryKnowledgeEngine.organizationVersion, "旧账本没有升级到新的整理版本")
         try expect(!rebuilt.claims.contains { $0.key == "reference:legacy" }, "旧版段落线索没有随升级清理")
+    }
+}
+
+extension SummaryAccuracyVerification {
+    /// Labels every item as the user's even though the only source is unattributed screen text.
+    actor OverclaimingModel: LLMResponding {
+        func answer(to request: LLMRequest) async throws -> LLMAnswer {
+            let docs = try JSONSerialization.jsonObject(with: Data(request.context[0].ocrText.utf8)) as! [[String: Any]]
+            let id = docs[0]["id"] as! String
+            let line = (docs[0]["text"] as! String).components(separatedBy: "\n").last { $0.count > 12 } ?? ""
+            func item(_ section: String, _ title: String, _ commitment: Bool) -> [String: Any] {
+                ["section": section, "title": title, "detail": "这条结论引用的是屏幕上的资料文字而不是本人表述。",
+                 "topic": "资料阅读", "kind": "matter", "owner": "user", "status": commitment ? "pending" : "completed",
+                 "explicitCommitment": commitment, "condition": NSNull(), "evidence": [["id": id, "quote": String(line.prefix(30))]]]
+            }
+            let value: [String: Any] = ["overview": "资料阅读。", "items": [item("progress", "阅读了一篇关于分页的资料", false), item("actions", "补齐分页边界验证", true)],
+                "coverage": docs.map { ["id": $0["id"]!, "disposition": "used"] as [String: Any] }]
+            return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self), citedCaptureIDs: [])
+        }
+    }
+    static func overclaimedOwnershipIsDemoted() async throws {
+        // Screen text with no chat marker: nothing in it is attributable to the user.
+        let text = "一篇关于分页边界的文章说明了很多通用的做法和注意事项，这些内容并不是本人的表述。"
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-overclaim-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let store = try FileMemoryStore(storage: storage)
+        let now = Date.now
+        try await store.addCapture(CaptureRecord(eventTemplate: .workCheckpoint, createdAt: now.addingTimeInterval(-5), sourceAppName: "Chrome",
+            sourceBundleIdentifier: "example.chrome", contentHash: UUID().uuidString, ocrText: text, textOrigin: .screenOCR))
+        try await store.updatePrivacy(PrivacySettings(cloudUseEnabled: true))
+        try await store.updateLLMConfiguration(LLMConfiguration(provider: .openAICompatible, model: "synthetic", apiKey: "verification-placeholder"))
+        let period = ReviewPeriod(start: now.addingTimeInterval(-60), end: now)
+        let output = try await store.generateDirectDailyReview(day: now, period: period, responder: OverclaimingModel())
+        let items = output.summary.items
+        try expect(!items.isEmpty, "错误归属的条目让整天回顾失败而不是被降级")
+        try expect(!items.contains { $0.section == .actions }, "无法证明是本人承诺的待办没有被丢弃")
+        try expect(items.allSatisfy { $0.knowledge?.ownedByUser != true }, "引用资料的条目仍被保存为本人事项")
     }
 }
