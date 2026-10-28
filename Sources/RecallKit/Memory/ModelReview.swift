@@ -252,8 +252,8 @@ public struct ModelReviewEngine: Sendable {
                             return receipt.disposition != "used" || !Set(node.factIDs).isDisjoint(with: used)
                         }) else { throw ModelReviewError.validation(.coverage) }
                         try await beforeCall()
-                        await onPhase?("检查并保存")
-                        await onProgress?(ReviewGenerationProgress(.checking, detail: final ? "正在核对回顾中的来源、人物归属和最终状态。" : "核对本组内容，确认重要变化未被遗漏后继续归并。"))
+                        await onPhase?(final ? "检查并保存" : "生成回顾")
+                        await onProgress?(ReviewGenerationProgress(final ? .checking : .generating, detail: final ? "正在核对回顾中的来源、人物归属和最终状态。" : "核对本组内容，确认重要变化未被遗漏后继续归并。"))
                         let check = try await responder.answer(to: LLMRequest(question: instructions + """
                         \n独立核验以下草稿及全部输入。supported：每项主张（含 overview）均有依据，无夸大；attribution：说话人和负责人准确；stateAndTime：最终状态、日期含义、条件正确；useful：内容具体、标题完整且正文不重复，不把工具/原文碎片/泛泛评价当总结；complete：没有遗漏本组应保留的重要成果、状态变化、限制或阻碍。
                         用户没有行动时 actions/plans 必须为空。不能因要完成任务而放宽核验；任何不确定设为 false。checkedNodeIDs 必须包含所有输入 node ID，每个一次。

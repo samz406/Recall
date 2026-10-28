@@ -56,6 +56,22 @@ extension FileMemoryStore {
         do { try persist() } catch { state = before; throw error }
     }
 
+    /// Retry the failed page without discarding previously accepted pages. Changed input
+    /// or configuration will still reset the checkpoint when a new lease is claimed.
+    @discardableResult
+    public func retryCaptureUnderstanding(_ captureID: UUID, forReview: Bool = false) throws -> Int {
+        guard forReview || state.understandingSettings.enabled else { throw CaptureUnderstandingError.unavailable }
+        guard let index = state.understandingJobs.firstIndex(where: { $0.captureID == captureID }),
+              [.failed, .retrying].contains(state.understandingJobs[index].state) else { return 0 }
+        let before = state
+        state.understandingJobs[index].state = .queued
+        state.understandingJobs[index].attempts = 0
+        state.understandingJobs[index].retryAt = nil
+        state.understandingJobs[index].lease = nil
+        do { try persist() } catch { state = before; throw error }
+        return 1
+    }
+
     public func claimCaptureUnderstanding(captureID: UUID? = nil, forReview: Bool = false, now: Date = .now) throws -> CaptureUnderstandingJob? {
         guard (forReview || state.understandingSettings.enabled), state.privacy.cloudUseEnabled,
               state.llmConfiguration.provider != .localOnly, !state.llmConfiguration.apiKey.isEmpty else { return nil }

@@ -31,7 +31,9 @@ enum ReviewRecoveryVerification {
                 drafts += 1
                 if mode == "service" { throw LLMResponseFailure(reason: .rateLimited) }
                 let primary = input.filter { $0["contextOnly"] as? Bool != true }
-                if (mode == "format" && drafts == 1) || (mode == "resume" && (primary.first?["id"] as? String)?.contains(":24:") == true) {
+                let firstPrimaryID = primary.first?["id"] as? String ?? ""
+                let isSecondPage = firstPrimaryID.contains(":24:")
+                if (mode == "format" && drafts == 1) || (mode == "resume" && isSecondPage) {
                     return LLMAnswer(content: "{incomplete", citedCaptureIDs: [])
                 }
                 let omit = mode == "missing-always" || (mode == "missing-once" && drafts == 1)
@@ -165,6 +167,10 @@ enum ReviewRecoveryVerification {
         catch let error as ReviewPreparationFailure { try expect(error.page == 2 && error.code == "understanding.format", "错误分页或错误分类不准确") }
         let paused = await f.store.snapshot()
         try expect(paused.understandingJobs[0].nextPage == 1 && paused.understandingJobs[0].state == .retrying, "失败丢失已完成分页")
+        let resumed = try await f.store.retryCaptureUnderstanding(f.records[0].id, forReview: true)
+        let queued = await f.store.snapshot()
+        try expect(resumed == 1 && queued.understandingJobs[0].nextPage == 1 && queued.understandingJobs[0].state == .queued,
+            "队列重试清空了已接受的分页")
         await model.reset("valid")
         let ready = try await f.store.prepareModelReview(period: f.period, responder: model)
         let log = await model.log().filter { $0.purpose == .captureUnderstanding }
