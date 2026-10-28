@@ -17,8 +17,8 @@ public struct DailyReviewLimits: Sendable {
     /// rejection splits the batch further. Never truncate a record to fit this budget.
     public var inputBytes: Int
     public var concurrency: Int
-    public init(inputBytes: Int = 96_000, concurrency: Int = 2) {
-        self.inputBytes = max(8_000, inputBytes); self.concurrency = min(2, max(1, concurrency))
+    public init(inputBytes: Int = 240_000, concurrency: Int = 3) {
+        self.inputBytes = max(8_000, inputBytes); self.concurrency = min(4, max(1, concurrency))
     }
 }
 
@@ -91,6 +91,9 @@ struct DailyReviewInput: Sendable {
         let originals = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
         var documents: [DailyReviewDocument] = [], versions: [UUID: String] = [:]
         var duplicates: [String: Int] = [:], reused = 0
+        // Consecutive screen captures repeat most of their OCR lines. A line already sent for the
+        // same app is skipped (its first occurrence keeps the source); user-entered text is never skipped.
+        var seenLines = Set<String>()
         func append(basis: String, text: String, date: Date, proofs: [DailyReviewProof], app: String) {
             let text = PrivacyEngine().redact(text)
             let proofs = proofs.map { value in var p = value; p.text = PrivacyEngine().redact(p.text); return p }
@@ -136,6 +139,8 @@ struct DailyReviewInput: Sendable {
                 lines = []; proofs = []; size = 0
             }
             for block in blocks {
+                if source.textOrigin != .userInput, block.text.count >= 12,
+                   !seenLines.insert((source.sourceAppName ?? "") + "\u{1}" + block.text).inserted { continue }
                 if size + block.text.utf8.count > 12_000 { flush() }
                 lines.append(block.text); size += block.text.utf8.count + 1
                 let note = source.manualMatter
@@ -272,12 +277,13 @@ struct DirectDailyReviewEngine: Sendable {
                 let question = instructions + (final ? "\n生成最终回顾，最多7项重点。" : "\n整理本组重要结果、限制和未完成承诺，最多16项，供后续综合；overview 为空。") + repair
                 let context = CaptureRecord(eventTemplate: .manualMoment, contentHash: "direct-daily", ocrText: body)
                 let answer = try await responder.answerCancellably(to: LLMRequest(question: question, context: [context],
-                    purpose: .reviewSynthesis, outputTokenLimit: attempt == 0 ? 6_000 : 8_000))
+                    purpose: .reviewSynthesis, outputTokenLimit: attempt == 0 ? 12_000 : 16_000))
                 guard let start = answer.content.firstIndex(of: "{"), let end = answer.content.lastIndex(of: "}"), start <= end,
                       var draft = try? JSONDecoder().decode(DailyReviewDraft.self, from: Data(answer.content[start...end].utf8)) else { throw ModelReviewError.validation(.format) }
                 draft.overview = clean(draft.overview)
                 draft.localUncertainCount = draft.coverage.filter { $0.disposition == "uncertain" }.count
                 for i in draft.items.indices { draft.items[i].title = clean(draft.items[i].title); draft.items[i].detail = clean(draft.items[i].detail) }
+                draft = sanitized(draft, documents: documents, final: final)
                 try validate(draft, documents: documents, final: final)
                 try Task.checkCancellation(); try await beforeCall()
                 if !final {
@@ -317,6 +323,45 @@ struct DirectDailyReviewEngine: Sendable {
             }
         }
         throw ModelReviewError.invalid
+    }
+    /// Models often quote across line breaks, add stray whitespace, or overrun the length limit. Instead of
+    /// failing the whole day, keep the evidence that locally resolves to real source text (each quote is
+    /// re-cut to a verbatim line fragment) and make coverage exact. An item whose evidence resolves to
+    /// nothing is left untouched so validation still rejects it.
+    private func sanitized(_ draft: DailyReviewDraft, documents: [DailyReviewDocument], final: Bool) -> DailyReviewDraft {
+        var result = draft
+        let byID = Dictionary(documents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        func resolve(_ evidence: DailyReviewDraft.Evidence) -> DailyReviewDraft.Evidence? {
+            guard let doc = byID[evidence.id] else { return nil }
+            let pieces = evidence.quote.components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            for piece in pieces.sorted(by: { $0.count > $1.count }) {
+                let quote = piece.count > 180 ? String(piece.prefix(180)) : piece
+                if quote.count >= 4, doc.proofs.contains(where: { $0.text.contains(quote) }) { return .init(id: evidence.id, quote: quote) }
+            }
+            return nil
+        }
+        result.items = result.items.compactMap { item in
+            var item = item
+            var seen = Set<String>()
+            let resolved = item.evidence.compactMap(resolve).filter { seen.insert($0.id + "\u{1}" + $0.quote).inserted }.prefix(8).map { $0 }
+            // Fully unresolvable evidence is a fabrication signal: leave it for validation and its repair round.
+            if !resolved.isEmpty { item.evidence = resolved }
+            return item
+        }
+        if result.items.count > (final ? 7 : 16) { result.items = Array(result.items.prefix(final ? 7 : 16)) }
+        let used = Set(result.items.flatMap { $0.evidence.map(\.id) })
+        var dispositions: [String: String] = [:]
+        for entry in result.coverage where byID[entry.id] != nil && dispositions[entry.id] == nil {
+            dispositions[entry.id] = ["used", "background", "uncertain"].contains(entry.disposition) ? entry.disposition : "background"
+        }
+        result.coverage = documents.map { doc in
+            var value = dispositions[doc.id] ?? "background"
+            if used.contains(doc.id) { value = "used" } else if value == "used" { value = "background" }
+            return .init(id: doc.id, disposition: value)
+        }
+        result.localUncertainCount = result.coverage.filter { $0.disposition == "uncertain" }.count
+        return result
     }
     private func matched(_ item: DailyReviewDraft.Item, documents: [DailyReviewDocument]) -> [DailyReviewProof] {
         item.evidence.flatMap { evidence -> [DailyReviewProof] in
