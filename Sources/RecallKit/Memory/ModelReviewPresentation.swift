@@ -81,6 +81,6 @@ extension FileMemoryStore {
         guard report.sourcesUnchanged(in: state) else { throw ModelReviewError.changed }
         let before = state
         state.topicReviews.removeAll { $0.id == report.id }; state.topicReviews.append(report)
-        do { try persist() } catch { state = before; throw error }
+        do { try Task.checkCancellation(); try persist() } catch { state = before; throw error }
     }
 }

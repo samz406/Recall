@@ -19,14 +19,16 @@ extension RecallAppModel {
         let modelStore = store
         let requestState = state
         generatingTopicID = file.id
+        topicReviewStatusID = taskID
         topicReviewTask = Task {
-            defer { generatingTopicID = nil; topicReviewTask = nil; processNextDailySummary() }
+            defer { generatingTopicID = nil; topicReviewTask = nil; topicReviewStatusID = nil; processNextDailySummary() }
             do {
                 let prepared = try await modelStore.prepareModelReview(period: period, sourceIDs: ids, responder: responder,
                     expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
                     onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) })
                 state = prepared
-                let refreshed = await Task.detached(priority: .utility) { MatterMemoryEngine().files(in: prepared) }.value
+                let work = Task.detached(priority: .utility) { MatterMemoryEngine().files(in: prepared) }
+                let refreshed = await withTaskCancellationHandler(operation: { await work.value }, onCancel: { work.cancel() })
                 try Task.checkCancellation()
                 guard let target = refreshed.first(where: { $0.id == file.id })
                     ?? refreshed.first(where: { Set($0.evidenceIDs) == ids }) else { throw ModelReviewError.changed }
@@ -42,14 +44,18 @@ extension RecallAppModel {
                 finishTask(taskID, state: result.coverage.uncertainBlockCount > 0 ? .partial : .succeeded,
                     message: result.coverage.uncertainBlockCount > 0 ? "小结已更新，部分原文暂无法确认" : "主题小结已更新", destination: .topic(target.id))
             } catch {
-                finishTask(taskID, state: error is CancellationError ? .cancelled : .failed,
-                    message: error is CancellationError ? "已取消，原小结保持不变" : error.localizedDescription,
+                let cancelled = ModelCallCancellation.isCancellation(error)
+                finishTask(taskID, state: cancelled ? .cancelled : .failed,
+                    message: cancelled ? "已取消，原小结保持不变" : error.localizedDescription,
                     detail: (error as? ReviewPreparationFailure)?.detail)
-                recordError(error, source: "TopicReview", message: "主题小结未完成，原内容保留")
+                if !cancelled { recordError(error, source: "TopicReview", message: "主题小结未完成，原内容保留") }
                 state = await modelStore.snapshot()
                 rebuildMatterFiles()
             }
         }
     }
-    func cancelTopicReview() { topicReviewTask?.cancel() }
+    func cancelTopicReview() {
+        guard let id = topicReviewStatusID, requestTaskCancellation(id) else { return }
+        topicReviewTask?.cancel()
+    }
 }

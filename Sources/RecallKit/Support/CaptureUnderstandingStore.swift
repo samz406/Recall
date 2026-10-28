@@ -116,6 +116,7 @@ extension FileMemoryStore {
     }
 
     public func validateCaptureUnderstandingJob(_ job: CaptureUnderstandingJob, configuration: LLMConfiguration, privacy: PrivacySettings, forReview: Bool = false) throws {
+        try Task.checkCancellation()
         guard (forReview || state.understandingSettings.enabled), state.privacy.cloudUseEnabled, state.privacy == privacy,
               state.llmConfiguration == configuration,
               let current = state.understandingJobs.first(where: { $0.id == job.id }),
@@ -157,7 +158,19 @@ extension FileMemoryStore {
             state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state)
         }
         state.understandingJobs[index] = updated
-        do { try persist(preservingReviewsFrom: before) } catch { state = before; throw error }
+        do { try Task.checkCancellation(); try persist(preservingReviewsFrom: before) } catch { state = before; throw error }
+    }
+
+    /// Cancellation is not a failure or a retry attempt; keep all accepted page checkpoints.
+    public func releaseCaptureUnderstanding(_ job: CaptureUnderstandingJob) throws {
+        guard let index = state.understandingJobs.firstIndex(where: { $0.id == job.id && $0.lease == job.lease }) else { return }
+        let before = state
+        state.understandingJobs[index].state = .queued
+        state.understandingJobs[index].lease = nil; state.understandingJobs[index].retryAt = nil
+        state.understandingJobs[index].attempts = max(0, job.attempts - 1)
+        state.understandingJobs[index].lastFailureCode = nil; state.understandingJobs[index].lastFailureReason = nil
+        state.understandingJobs[index].isReviewPreparation = nil
+        do { try persist() } catch { state = before; throw error }
     }
 
     public func failCaptureUnderstanding(_ job: CaptureUnderstandingJob, changed: Bool, error: Error? = nil, now: Date = .now) throws {

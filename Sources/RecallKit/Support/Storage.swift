@@ -530,7 +530,7 @@ public actor FileMemoryStore {
         }
 
         state.weeklyReports.removeAll { $0.id == report.id }; state.weeklyReports.insert(report, at: 0)
-        do { try persist() } catch { state = before; throw error }
+        do { try Task.checkCancellation(); try persist() } catch { state = before; throw error }
         return report
     }
 
@@ -633,7 +633,7 @@ public actor FileMemoryStore {
         state.dailySummaries.append(summary)
         state.dailySummaries.sort { $0.day > $1.day }
         applyIntelligenceState(consolidation, for: summary.day)
-        do { try persist() } catch { state = before; throw error }
+        do { try Task.checkCancellation(); try persist() } catch { state = before; throw error }
     }
 
     private func applyIntelligenceState(_ consolidation: IntelligenceConsolidation, for day: Date) {

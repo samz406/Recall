@@ -147,7 +147,7 @@ public struct GlobalMemorySearch: Sendable {
     }
 }
 
-public enum RecallTaskState: String, Sendable { case running, succeeded, partial, failed, cancelled }
+public enum RecallTaskState: String, Sendable { case running, cancelling, succeeded, partial, failed, cancelled }
 public struct DailyReviewVersion: Codable, Identifiable, Hashable, Sendable {
     public var id: UUID
     public var createdAt: Date
@@ -168,6 +168,18 @@ public struct RecallTaskStatus: Identifiable, Sendable {
     public var state: RecallTaskState = .running
     public var startedAt = Date.now
     public var destination: MemorySearchDestination?
-    public var isRunning: Bool { state == .running }
+    public var isRunning: Bool { state == .running || state == .cancelling }
+    public var isCancelling: Bool { state == .cancelling }
     public init(kind: String, target: String, phase: String) { self.kind = kind; self.target = target; self.phase = phase }
+    @discardableResult
+    public mutating func requestCancellation() -> Bool {
+        guard state == .running else { return false }
+        state = .cancelling; phase = "正在取消…"
+        detail = "正在停止本次请求；已完成的记录理解和原有回顾会保留。"
+        return true
+    }
+    public mutating func updateProgress(phase: String, detail: String? = nil) {
+        guard state == .running else { return }
+        self.phase = phase; self.detail = detail
+    }
 }

@@ -15,8 +15,11 @@ extension RecallAppModel {
     }
     func updateTask(_ id: UUID, phase: String, detail: String? = nil) {
         guard let i = tasks.firstIndex(where: { $0.id == id && $0.isRunning }) else { return }
-        tasks[i].phase = phase
-        tasks[i].detail = detail
+        tasks[i].updateProgress(phase: phase, detail: detail)
+    }
+    func requestTaskCancellation(_ id: UUID) -> Bool {
+        guard let index = tasks.firstIndex(where: { $0.id == id }) else { return false }
+        return tasks[index].requestCancellation()
     }
     func updateReviewTask(_ id: UUID, progress: ReviewGenerationProgress) {
         updateTask(id, phase: progress.title, detail: progress.detail)

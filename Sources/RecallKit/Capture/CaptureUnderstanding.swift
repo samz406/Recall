@@ -238,7 +238,7 @@ public enum CaptureUnderstandingEngine {
             try Task.checkCancellation(); try await beforeCall()
             var next = request
             if attempt == 1 { next.outputTokenLimit = 8_000 }
-            do { return try await responder.answer(to: next) }
+            do { return try await responder.answerCancellably(to: next) }
             catch let failure as LLMResponseFailure where attempt == 0 && [.truncated, .reasoningOnly].contains(failure.reason) { continue }
         }
         throw CaptureUnderstandingError.invalid

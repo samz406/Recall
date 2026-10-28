@@ -230,7 +230,7 @@ public struct ModelReviewEngine: Sendable {
                 for attempt in 0..<2 {
                     try Task.checkCancellation(); try await beforeCall()
                     do {
-                        let answer = try await responder.answer(to: LLMRequest(question: prompt + repair,
+                        let answer = try await responder.answerCancellably(to: LLMRequest(question: prompt + repair,
                             context: [input], purpose: .reviewSynthesis, outputTokenLimit: attempt == 0 ? 6_000 : 8_000))
                         var draft: Draft = try decode(answer.content)
                         draft.overview = clean(draft.overview)
@@ -254,7 +254,7 @@ public struct ModelReviewEngine: Sendable {
                         try await beforeCall()
                         await onPhase?(final ? "检查并保存" : "生成回顾")
                         await onProgress?(ReviewGenerationProgress(final ? .checking : .generating, detail: final ? "正在核对回顾中的来源、人物归属和最终状态。" : "核对本组内容，确认重要变化未被遗漏后继续归并。"))
-                        let check = try await responder.answer(to: LLMRequest(question: instructions + """
+                        let check = try await responder.answerCancellably(to: LLMRequest(question: instructions + """
                         \n独立核验以下草稿及全部输入。supported：每项主张（含 overview）均有依据，无夸大；attribution：说话人和负责人准确；stateAndTime：最终状态、日期含义、条件正确；useful：内容具体、标题完整且正文不重复，不把工具/原文碎片/泛泛评价当总结；complete：没有遗漏本组应保留的重要成果、状态变化、限制或阻碍。
                         用户没有行动时 actions/plans 必须为空。不能因要完成任务而放宽核验；任何不确定设为 false。checkedNodeIDs 必须包含所有输入 node ID，每个一次。
                         只输出 {"supported":true,"attribution":true,"stateAndTime":true,"useful":true,"complete":true,"checkedNodeIDs":["输入 ID"]}。
@@ -270,7 +270,7 @@ public struct ModelReviewEngine: Sendable {
                                 let proof = item.factIDs.compactMap { allFacts[$0] }
                                 let source = CaptureRecord(eventTemplate: .manualMoment, createdAt: period.end,
                                     sourceAppName: "原始结构化事实核对", contentHash: "proof", ocrText: PrivacyEngine().redact(try json(proof)))
-                                let checked = try await responder.answer(to: LLMRequest(question: instructions + """
+                                let checked = try await responder.answerCancellably(to: LLMRequest(question: instructions + """
                                 \n核对最终条目与原始结构化事实，不能仅凭上层摘要认可。正文和标题的全部具体主张、人物归属、状态、条件和日期必须被这些事实支持；无事实支持的能力、收益或稳定规律不成立。
                                 不做完整性推断。checkedNodeIDs 逐一返回提供的原始事实 id；supported/attribution/stateAndTime/useful/complete 均为 true 才接受，任何不确定为 false。
                                 只返回规定 Audit JSON（supported,attribution,stateAndTime,useful,complete,checkedNodeIDs）。待核验条目：\(try json(item))
