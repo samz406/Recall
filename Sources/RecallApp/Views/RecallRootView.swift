@@ -1530,7 +1530,13 @@ private struct DailySummariesView: View {
             ScrollViewReader { proxy in
             ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                if summaries.isEmpty && !model.isGeneratingDailySummary {
+                if model.isLoadingSavedState {
+                    HStack(spacing: 12) {
+                        ProgressView().controlSize(.small)
+                        Text("正在读取已保存的回顾…").foregroundStyle(RecallPalette.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 100, alignment: .leading)
+                } else if summaries.isEmpty && !model.isGeneratingDailySummary {
                     emptyState
                 } else {
                     history
@@ -1555,6 +1561,9 @@ private struct DailySummariesView: View {
             }
         }
         .onChange(of: model.dailyToOpen) { _, id in expandedSummaryID = id; visibleSummaryCount = max(12, (summaries.firstIndex { $0.id == id } ?? 0) + 1) }
+        .onChange(of: model.isLoadingSavedState) { _, loading in
+            if !loading && expandedSummaryID == nil { expandedSummaryID = summaries.first?.id }
+        }
         .onDisappear { model.dailyToOpen = expandedSummaryID }
         .onChange(of: model.navigationRevision) { _, _ in
             if case .daily(let id) = model.destination {
@@ -1631,7 +1640,7 @@ private struct DailySummariesView: View {
                         }
                     }
                     Button("生成回顾") { model.generateDailyReview(on: selectedDate) }
-                        .buttonStyle(.borderedProminent).disabled(model.isGeneratingDailySummary)
+                        .buttonStyle(.borderedProminent).disabled(model.isLoadingSavedState || model.isGeneratingDailySummary)
                 }
             }
             if let task = model.tasks.first(where: { $0.kind == "每日回顾" }) {
@@ -1647,7 +1656,7 @@ private struct DailySummariesView: View {
                 .foregroundStyle(RecallPalette.accent)
             Text("还没有每日回顾")
                 .font(.title2.weight(.semibold))
-            Text("先记录一些工作节点；你可以点击“立即总结昨天”，也可以在“设置”中设置每天自动执行的时间。")
+            Text("保存记录后，选择日期并点击“生成回顾”；也可以在“设置”中安排每天自动生成。")
                 .foregroundStyle(RecallPalette.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

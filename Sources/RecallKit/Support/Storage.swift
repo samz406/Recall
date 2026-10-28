@@ -243,12 +243,13 @@ public actor FileMemoryStore {
     private var conversationID = UUID()
     private let intelligenceIndex: SQLiteIntelligenceIndex?
     private var indexNeedsRebuild = false
+    private var startupMaintenancePending = false
 
     public init() throws {
         try self.init(storage: RecallStorage())
     }
 
-    public init(storage: RecallStorage) throws {
+    public init(storage: RecallStorage, deferMaintenance: Bool = false) throws {
         self.storage = storage
         intelligenceIndex = try? SQLiteIntelligenceIndex(databaseURL: storage.intelligenceDatabaseURL)
         encoder = JSONEncoder()
@@ -276,11 +277,28 @@ public actor FileMemoryStore {
                     return updated
                 }
             }
-            try Self.write(restoredState, encoder: encoder, to: storage.stateURL)
+            if !deferMaintenance { try Self.write(restoredState, encoder: encoder, to: storage.stateURL) }
             state = restoredState
         } else {
             state = RecallState()
             try Self.write(state, encoder: encoder, to: storage.stateURL)
+        }
+        if deferMaintenance {
+            // The saved state is authoritative. Only withdraw known missing/excluded
+            // sources before first display; synthesis, migrations and index rebuilding
+            // belong to the later maintenance cycle.
+            let loaded = state
+            let invalid = Set(loaded.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
+            let usable = Set(loaded.captures.filter {
+                !loaded.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") && !invalid.contains($0.id)
+            }.map(\.id))
+            let referenced = Set(loaded.dailySummaries.flatMap(\.sourceCaptureIDs))
+                .union(loaded.topicReviews.flatMap { $0.sourceVersions.keys })
+                .union(loaded.weeklyReports.flatMap { $0.sourceIDs })
+            state.invalidateMemoryOutputs(sourceIDs: referenced.subtracting(usable))
+            startupMaintenancePending = true
+            indexNeedsRebuild = true
+            return
         }
         var organizedState = state
         let knowledge = MemoryKnowledgeEngine().reconcile(organizedState)
@@ -379,6 +397,22 @@ public actor FileMemoryStore {
 
     public func isIntelligenceIndexAvailable() -> Bool { intelligenceIndex != nil }
     public func memoryIndexNeedsRebuild() -> Bool { indexNeedsRebuild || intelligenceIndex == nil }
+
+    func finishStartupMaintenanceIfNeeded() {
+        guard startupMaintenancePending else { return }
+        let snapshot = state
+        for i in snapshot.weeklyReports.indices where snapshot.weeklyReports[i].isReadable
+            && snapshot.weeklyReports[i].sourceVersions.values.contains(where: { !$0.hasPrefix("memory2:") }) {
+            let report = snapshot.weeklyReports[i]
+            if WeeklyReviewEngine.sourcesUnchanged(report, in: snapshot) {
+                state.weeklyReports[i].sourceVersions = Dictionary(uniqueKeysWithValues: report.sourceIDs.compactMap { id in
+                    WeeklyReviewEngine.sourceVersion(id: id, state: snapshot).map { (id, $0) }
+                })
+            }
+        }
+    }
+
+    func markStartupMaintenanceComplete() { startupMaintenancePending = false }
 
     public func indexedCaptureIDs(matching query: String, limit: Int = 12) -> [UUID] {
         guard !indexNeedsRebuild else { return [] }

@@ -4,9 +4,11 @@ extension FileMemoryStore {
     public func organizeMemory(force: Bool = false, now: Date = .now) throws {
         let previous = state
         do {
+            finishStartupMaintenanceIfNeeded()
             finishPendingDailyReviewMaintenance()
             applyKnowledge(MemoryKnowledgeEngine().reconcile(state, force: force, now: now))
             try persist()
+            markStartupMaintenanceComplete()
         } catch { state = previous; throw error }
     }
 

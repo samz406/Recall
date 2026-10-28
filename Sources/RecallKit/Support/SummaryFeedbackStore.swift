@@ -29,12 +29,13 @@ extension FileMemoryStore {
         return entry
     }
     public func recoverSummaryFeedbackJobs() throws {
+        guard state.summaryFeedback.contains(where: { $0.state == .processing }) else { return }
         let before = state
         for i in state.summaryFeedback.indices where state.summaryFeedback[i].state == .processing {
             state.summaryFeedback[i].state = .queued; state.summaryFeedback[i].lease = nil
             state.summaryFeedback[i].message = "正在恢复上次尚未完成的核对。"
         }
-        do { try persist() } catch { state = before; throw error }
+        do { try persistReviewState() } catch { state = before; throw error }
     }
     public func claimSummaryFeedback(now: Date = .now, modelAvailable: Bool) throws -> SummaryFeedback? {
         guard state.summaryFeedbackSettings.processingEnabled else { return nil }
