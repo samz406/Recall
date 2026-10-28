@@ -70,6 +70,7 @@ public enum ReviewProcessingDiagnostics {
     public static func code(for error: Error) -> String {
         if let failure = error as? ReviewPreparationFailure { return failure.code }
         if let error = error as? CaptureUnderstandingError, case .validation(let issue) = error { return "understanding." + issue.rawValue }
+        if let error = error as? CaptureUnderstandingError, case .outputCapacity = error { return "understanding.outputCapacity" }
         if let error = error as? ModelReviewError, case .validation(let issue) = error { return "review." + issue.rawValue }
         if let error = error as? LLMResponseFailure { return "model." + error.reason.rawValue }
         if error is URLError { return "model.connection" }
@@ -77,6 +78,7 @@ public enum ReviewProcessingDiagnostics {
     }
     public static func reason(for error: Error) -> String {
         if let error = error as? CaptureUnderstandingError, case .validation(let issue) = error { return issue.explanation + "，自动修正后仍未通过" }
+        if let error = error as? CaptureUnderstandingError, case .outputCapacity = error { return error.localizedDescription }
         if let error = error as? LLMResponseFailure { return error.localizedDescription }
         if error is URLError { return "连接模型失败，请检查网络后重试" }
         return "本次记录处理未能完成"

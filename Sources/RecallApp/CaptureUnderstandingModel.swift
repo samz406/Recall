@@ -65,14 +65,16 @@ extension RecallAppModel {
                     updateTask(taskID, phase: "正在整理新记录", detail: "第 \(job.nextPage + 1)/\(job.pageCount) 段")
                     let store = self.store
                     do {
-                        let page = try await store.captureUnderstandingPage(job)
-                        let result = try await CaptureUnderstandingEngine.understand(page,
-                            responder: CompatibleLLM(configuration: config, apiKey: config.apiKey), beforeCall: {
-                                try await store.validateCaptureUnderstandingJob(job, configuration: config, privacy: snapshot.privacy)
-                            }, onRepair: { issue in
+                        let outcome = try await store.processCaptureUnderstandingPage(job,
+                            responder: CompatibleLLM(configuration: config, apiKey: config.apiKey),
+                            configuration: config, privacy: snapshot.privacy, onRepair: { issue in
                                 await self.updateTask(taskID, phase: "正在修正记录理解", detail: issue.explanation + "；自动修正一次后重新核对。")
                             })
-                        try await store.finishCaptureUnderstandingPage(job, result: result, configuration: config, privacy: snapshot.privacy)
+                        if case .subdivided = outcome {
+                            finishTask(taskID, state: .succeeded, message: "已自动拆成更小段，将接续处理；原文和已完成进度保留")
+                            self.state = await store.snapshot()
+                            continue
+                        }
                         finishTask(taskID, state: .succeeded, message: job.nextPage + 1 == job.pageCount ? "已保存核对结果" : "本段已保存，稍后继续下一段")
                         self.state = await store.snapshot()
                         self.rebuildMatterFiles()

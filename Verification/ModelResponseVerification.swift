@@ -63,10 +63,11 @@ enum ModelResponseVerification {
         try await structuredRepairAndFallback()
         try await retryScopeGuards()
         try await chatBudgetUnchanged()
+        try await understandingExtendedAllowance()
         try await diagnosticPrivacy()
         try await invalidRegenerationPreservesReport()
         try await feedbackAuditCompletion()
-        print("PASS: 11 model-response scenarios (HTTP protocols, truncation, safe retries, privacy and existing reports)")
+        print("PASS: 12 model-response scenarios (HTTP protocols, truncation, safe retries, privacy and existing reports)")
     }
     private static func dailyProtocolAndBudget() async throws {
         for provider in [LLMProviderKind.openAICompatible, .anthropicCompatible] {
@@ -98,6 +99,17 @@ enum ModelResponseVerification {
             try expect(!retryBody.contains("private-thinking"), "把推理文本拼进了重试请求")
         }
     }
+    private static func understandingExtendedAllowance() async throws {
+        for provider in [LLMProviderKind.openAICompatible, .anthropicCompatible] {
+            let (responder, session) = try client(provider, replies: [reply(provider, text: "{\"facts\":[],\"coverage\":[]}")])
+            defer { session.invalidateAndCancel() }
+            _ = try await responder.answer(to: LLMRequest(question: "合成最小片段理解", context: [],
+                purpose: .captureUnderstanding, outputTokenLimit: 16_000))
+            let used = try budgets()
+            try expect(used == [16_000], "HTTP 适配器仍将明确的记录理解预算截为 8000")
+        }
+    }
+
     private static func truncatedTextNeverCommits() async throws {
         let record = source()
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
