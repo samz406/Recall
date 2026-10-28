@@ -51,11 +51,12 @@ extension FileMemoryStore {
     }
 
     public func recoverCaptureUnderstandingJobs() throws {
+        guard state.understandingJobs.contains(where: { $0.state == .processing }) else { return }
         let before = state
         for i in state.understandingJobs.indices where state.understandingJobs[i].state == .processing {
             state.understandingJobs[i].state = .queued; state.understandingJobs[i].lease = nil
         }
-        do { try persist() } catch { state = before; throw error }
+        do { try persistReviewState() } catch { state = before; throw error }
     }
 
     /// Retry the failed page without discarding previously accepted pages. Changed input

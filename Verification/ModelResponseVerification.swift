@@ -64,10 +64,11 @@ enum ModelResponseVerification {
         try await retryScopeGuards()
         try await chatBudgetUnchanged()
         try await understandingExtendedAllowance()
+        try await directDailyReviewUsesOneHTTPRequest()
         try await diagnosticPrivacy()
         try await invalidRegenerationPreservesReport()
         try await feedbackAuditCompletion()
-        print("PASS: 12 model-response scenarios (HTTP protocols, truncation, safe retries, privacy and existing reports)")
+        print("PASS: 13 model-response scenarios (HTTP protocols, truncation, safe retries, privacy and existing reports)")
     }
     private static func dailyProtocolAndBudget() async throws {
         for provider in [LLMProviderKind.openAICompatible, .anthropicCompatible] {
@@ -99,6 +100,25 @@ enum ModelResponseVerification {
             try expect(!retryBody.contains("private-thinking"), "把推理文本拼进了重试请求")
         }
     }
+    private static func directDailyReviewUsesOneHTTPRequest() async throws {
+        for provider in [LLMProviderKind.openAICompatible, .anthropicCompatible] {
+            let f = try await ModelReviewVerification.fixture(raw: true)
+            defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
+            try await f.store.updateLLMConfiguration(configuration(provider))
+            let item: [String: Any] = ["section": "progress", "title": "Atlas 分页边界已验证",
+                "detail": "边界和空值用例已经完成验证，原始结果保留。", "owner": "user", "status": "completed",
+                "explicitCommitment": false, "condition": NSNull(), "evidence": [["id": "d1", "quote": f.records[0].ocrText]]]
+            let draft = try ReviewRecoveryVerification.json(["overview": "本期完成分页边界验证。", "items": [item],
+                "coverage": [["id": "d1", "disposition": "used"]]])
+            let (responder, session) = try client(provider, replies: [reply(provider, text: draft)])
+            defer { session.invalidateAndCancel() }
+            let output = try await f.store.generateDirectDailyReview(day: f.records[0].createdAt, period: f.period, responder: responder)
+            let used = try budgets()
+            try expect(used == [6_000] && output.metrics.modelCalls == 1 && output.summary.generationKind == .cloud,
+                "直接生成在真实 HTTP 适配器中仍发出多次请求或未保存模型结果")
+        }
+    }
+
     private static func understandingExtendedAllowance() async throws {
         for provider in [LLMProviderKind.openAICompatible, .anthropicCompatible] {
             let (responder, session) = try client(provider, replies: [reply(provider, text: "{\"facts\":[],\"coverage\":[]}")])

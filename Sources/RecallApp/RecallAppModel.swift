@@ -18,6 +18,8 @@ extension Notification.Name {
 @MainActor
 final class RecallAppModel: ObservableObject {
     @Published var state = RecallState()
+    @Published private(set) var isLoadingSavedState = true
+    private var isFinishingStartup = true
     @Published var tasks: [RecallTaskStatus] = []
     var taskRetryActions: [UUID: () -> Void] = [:]
     @Published var navigationRevision = UUID()
@@ -53,6 +55,7 @@ final class RecallAppModel: ObservableObject {
     @Published private(set) var isOrganizingMemory = false
     @Published var memoryMaintenanceMessage: String?
     private var memoryMaintenanceTimer: Timer?
+    private var memoryMaintenanceTask: Task<Void, Never>?
     private var memoryMaintenanceAfter: Date = .distantPast
     @Published private(set) var matterBuildMessage: String?
     private var matterBuildTask: Task<Void, Never>?
@@ -97,7 +100,8 @@ final class RecallAppModel: ObservableObject {
             self.storage = storage
             self.diagnosticLog = RecallDiagnosticLogStore(storage: storage)
             self.diagnosticEntries = diagnosticLog.entries
-            self.store = try FileMemoryStore(storage: storage)
+            let startupRead = Date.now
+            self.store = try FileMemoryStore(storage: storage, deferMaintenance: true)
             self.pipeline = CapturePipeline(store: store, storage: storage)
             self.assistant = MemoryAssistant(store: store)
             recordDiagnostic(.info, source: "App", message: "应用已启动")
@@ -117,6 +121,7 @@ final class RecallAppModel: ObservableObject {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
+                    guard self?.isLoadingSavedState == false else { return }
                     await self?.cleanupExpiredRecentlyDeleted()
                     await self?.refresh()
                 }
@@ -125,9 +130,17 @@ final class RecallAppModel: ObservableObject {
                 Task { @MainActor [weak self] in await self?.refresh() }
             }
             Task {
+                state = await store.snapshot()
+                isLoadingSavedState = false
+                recordDiagnostic(.info, source: "Startup", message: "已载入保存的页面数据", metadata: [
+                    "readMilliseconds": "\(max(0, Int(Date.now.timeIntervalSince(startupRead) * 1000)))",
+                    "dailyReviewCount": "\(state.dailySummaries.count)", "captureCount": "\(state.captures.count)"])
+                // Publish saved reports before recovery, cleanup, projection or indexing.
+                await Task.yield()
                 do { try await store.recoverCaptureUnderstandingJobs(); try await store.recoverSummaryFeedbackJobs() }
                 catch { recordError(error, source: "Feedback", message: "恢复反馈任务失败，将稍后重试") }
                 await cleanupExpiredRecentlyDeleted()
+                isFinishingStartup = false
                 await refresh()
                 try? notificationScheduler.configureReminderActions()
                 discoverReminders(force: false, announce: false)
@@ -140,8 +153,9 @@ final class RecallAppModel: ObservableObject {
 
 
     func refresh() async {
-        await maintainMemory()
+        guard !isLoadingSavedState else { return }
         state = await store.snapshot()
+        guard !isFinishingStartup else { return }
         rebuildMatterFiles()
         updateEnterKeyRecorder()
         await refreshReminderDeliveryStates()
@@ -156,6 +170,18 @@ final class RecallAppModel: ObservableObject {
             memoryMaintenanceTimer = Timer.scheduledTimer(withTimeInterval: 5 * 60, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in await self?.refresh() }
             }
+        }
+        startMemoryMaintenance()
+    }
+
+    private func startMemoryMaintenance() {
+        guard memoryMaintenanceTask == nil, !isGeneratingDailySummary, !isGeneratingWeeklyReview,
+              topicReviewTask == nil, Date.now >= memoryMaintenanceAfter else { return }
+        memoryMaintenanceTask = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            defer { self.memoryMaintenanceTask = nil }
+            await self.maintainMemory()
+            self.rebuildMatterFiles()
         }
     }
 
@@ -1383,29 +1409,26 @@ final class RecallAppModel: ObservableObject {
         dailyReviewTask = Task {
             defer { isGeneratingDailySummary = false; dailyReviewTask = nil; dailyReviewStatusID = nil; processNextDailySummary() }
             do {
-                let prepared = try await modelStore.prepareModelReview(period: period, responder: responder,
+                let outcome = try await modelStore.generateDirectDailyReview(day: day, period: period, responder: responder,
                     expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
-                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) })
-                state = prepared
-                let result = try await ModelReviewEngine().generate(in: prepared, period: period,
-                    beforeCall: { try await modelStore.validateModelReview(prepared, period: period) },
-                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder)
+                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) },
+                    onMetrics: { metrics in
+                        await self.recordDiagnostic(.info, source: "DailySummary", message: "每日回顾处理统计", metadata: metrics.diagnosticMetadata)
+                    })
                 try Task.checkCancellation()
-                guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
-                let summary = result.dailySummary(day: day)
-                updateReviewTask(taskID, progress: ReviewGenerationProgress(.saving, detail: "核对完成，正在保存回顾。"))
-                try await modelStore.commitModelDailySummary(summary, expected: prepared, period: period)
-                finishTask(taskID, state: result.coverage.uncertainBlockCount > 0 ? .partial : .succeeded,
-                    message: result.coverage.uncertainBlockCount > 0 ? "回顾已保存，部分原文暂无法确认" : "回顾已保存", destination: .daily(summary.id))
+                let summary = outcome.summary
+                let partial = (summary.modelCoverage?.uncertainBlockCount ?? 0) > 0
+                state = await modelStore.snapshot()
+                finishTask(taskID, state: partial ? .partial : .succeeded,
+                    message: partial ? "回顾已保存，部分原文暂无法确认" : "回顾已保存", destination: .daily(summary.id), detail: outcome.metrics.detail)
                 if reason == .manual { dailyToOpen = summary.id }
-                await refresh()
+                // Do not run whole-archive maintenance in the user's completion path.
+                // Pending local derived work is drained on the existing maintenance cycle.
                 if !Task.isCancelled, state.dailySummarySettings.notifyWhenReady == true {
                     do { try await notificationScheduler.deliverDailyBriefing(summary) }
                     catch { recordError(error, source: "DailySummary", message: "回顾已保存，通知投递失败") }
                 }
                 if !Task.isCancelled { discoverReminders(force: false, announce: false) }
-                recordDiagnostic(.info, source: "DailySummary", message: "模型回顾已生成", metadata: [
-                    "generation": "model-first", "sourceCount": "\(result.coverage.sourceCount)", "factCount": "\(result.coverage.factCount)"])
             } catch {
                 let cancelled = ModelCallCancellation.isCancellation(error)
                 finishTask(taskID, state: cancelled ? .cancelled : .failed,
