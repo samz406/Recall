@@ -9,7 +9,7 @@ struct RecallApp: App {
     @StateObject private var model = RecallAppModel(previewState: CommandLine.arguments.contains("--layout-previews") ? RecallState() : nil)
 
     var body: some Scene {
-        Window("Recall · 个人记忆", id: "main") {
+        Window("Recall", id: "main") {
             RecallRootView()
                 .environmentObject(model)
                 .recallColors()

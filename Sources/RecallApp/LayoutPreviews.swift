@@ -10,7 +10,7 @@ enum RecallLayoutPreviews {
         let now = Date.now
         for index in 0..<12 {
             let title = ["Atlas 发布流程优化", "Nova 图表边界验证", "每周阅读与笔记"][index % 3]
-            let note = try ManualMatterNote(title: title, detail: "合成界面验收内容：完成了方案核对，仍需确认后续安排。", status: index % 4 == 0 ? .blocked : .progressed, eventAt: now.addingTimeInterval(-Double(index * 3600)), reviewCategory: index % 3 == 2 ? .learning : .work)
+            let note = ManualMatterNote(title: title, detail: "合成界面验收内容：完成了方案核对，仍需确认后续安排。", status: index % 4 == 0 ? .blocked : .progressed, eventAt: now.addingTimeInterval(-Double(index * 3600)), reviewCategory: index % 3 == 2 ? .learning : .work)
             var record = try note.capture(recordedAt: now.addingTimeInterval(-Double(index * 3600)))
             record.sourceAppName = index % 2 == 0 ? "合成聊天" : "合成浏览器"
             state.captures.append(record)

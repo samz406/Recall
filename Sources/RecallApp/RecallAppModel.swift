@@ -98,7 +98,9 @@ final class RecallAppModel: ObservableObject {
 
     init(previewState: RecallState? = nil) {
         do {
-            let storage = try previewState == nil ? RecallStorage() : RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-layout-" + UUID().uuidString))
+            let storage: RecallStorage
+            if previewState == nil { storage = try RecallStorage() }
+            else { storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-layout-" + UUID().uuidString)) }
             if let previewState {
                 let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
                 try encoder.encode(previewState).write(to: storage.stateURL)

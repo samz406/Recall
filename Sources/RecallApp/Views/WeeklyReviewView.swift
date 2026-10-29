@@ -269,10 +269,10 @@ struct WeeklyReviewView: View {
                     .foregroundStyle(RecallPalette.warning).background(RecallPalette.warning.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
             } else if let edited = report.editedMarkdown {
                 MarkdownDocumentView(markdown: edited).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                    .font(.system(size: 17)).lineSpacing(7)
+                    .font(.system(size: 15)).lineSpacing(7)
                 DisclosureGroup("查看自动整理的小结") { reportSections(report).padding(.top, 18) }
             } else {
-                Text(report.overview).font(.system(size: 18, weight: .medium)).lineSpacing(7)
+                Text(report.overview).font(.system(size: 16, weight: .medium)).lineSpacing(7)
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 reportSections(report)
             }
@@ -323,7 +323,7 @@ struct WeeklyReviewView: View {
     }
     private func reviewItem(_ row: ReviewDigestRow, report: WeeklyReport) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(row.title).font(.system(size: 18, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+            Text(row.title).font(.system(size: 16, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
             if !row.summary.isEmpty { Text(row.summary).fixedSize(horizontal: false, vertical: true) }
             if let action = row.action {
                 VStack(alignment: .leading, spacing: 6) {
@@ -333,7 +333,7 @@ struct WeeklyReviewView: View {
                 }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
                     .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 12))
             }
-        }.font(.system(size: 17)).lineSpacing(6).textSelection(.enabled).padding(.leading, 2)
+        }.font(.system(size: 15)).lineSpacing(6).textSelection(.enabled).padding(.leading, 2)
             .contextMenu {
                 Button("反馈这条内容") { model.summaryFeedbackTarget = .period(report, item: row.item) }
                 Button("查看这条内容的来源") { sourceItem = row.item }
@@ -450,7 +450,7 @@ private struct ReviewEditSheet: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("调整这份回顾").font(.title2.bold())
             Text("可以补充遗漏、调整措辞。修改会单独保存，原始依据仍然保留。") .foregroundStyle(RecallPalette.secondary)
-            TextEditor(text: $markdown).font(.system(size: 17)).scrollContentBackground(.hidden).padding(12)
+            TextEditor(text: $markdown).font(.system(size: 15)).scrollContentBackground(.hidden).padding(12)
                 .background(RecallPalette.surface)
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(RecallPalette.secondary.opacity(0.2)))
             if let error { Text(error).foregroundStyle(RecallPalette.danger).font(.callout) }

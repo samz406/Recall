@@ -194,8 +194,8 @@ struct MemoryKnowledgeView: View {
             }
             Spacer(minLength: 0)
             Button("编辑") { editing = claim }.buttonStyle(.plain)
+            Button("删除") { forgetting = claim }.buttonStyle(.plain)
             Menu {
-                Button("删除记忆及关联记录…", role: .destructive) { forgetting = claim }
                 Menu("查看来源") {
                     ForEach(claim.sourceIDs.compactMap { model.memoryWorkspace?.sources[$0] }) { record in
                         Button((record.sourceAppName ?? "原始记录") + " · " + record.createdAt.formatted()) { source = record }
@@ -204,7 +204,7 @@ struct MemoryKnowledgeView: View {
                 if let entity = model.state.memoryKnowledge.entities.first(where: { $0.id == claim.subjectID && $0.kind == "person" }) {
                     Button("管理人物别名") { aliases = entity }
                 }
-            } label: { Text("删除 / 更多") }.menuStyle(.borderlessButton).fixedSize()
+            } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("更多记忆操作")
             Toggle("参考这条记忆", isOn: Binding(get: { !(model.state.memoryKnowledgeSettings.disabledClaimKeys ?? []).contains(claim.key) }, set: { model.setMemoryReference(claim, enabled: $0) }))
                 .labelsHidden().toggleStyle(.switch).controlSize(.small).disabled(!claim.usable())
         }.font(.caption).recallSurface(padding: 18)

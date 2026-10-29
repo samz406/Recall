@@ -1467,6 +1467,7 @@ private struct ThinkingCard: View {
 }
 
 private struct ChatComposer: View {
+    @EnvironmentObject private var model: RecallAppModel
     @Binding var question: String
     let isSending: Bool
     let onSend: () -> Void
@@ -1680,7 +1681,11 @@ private struct DailySummariesView: View {
         selectedID = id; selectedDate = item.day; model.dailyToOpen = id
         visibleCount = max(visibleCount, (summaries.firstIndex { $0.id == id } ?? 0) + 1)
     }
-    private func openSelection() { if let id = model.dailyToOpen ?? summaries.first?.id { select(id) } }
+    private func openSelection() {
+        if let id = model.dailyToOpen, summaries.contains(where: { $0.id == id }) { select(id) }
+        else if let id = summaries.first?.id { select(id) }
+        else { selectedID = nil }
+    }
 }
 
 private struct DailySummaryCard: View {
