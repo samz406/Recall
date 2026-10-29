@@ -1148,7 +1148,7 @@ private struct ChatView: View {
                 Divider().opacity(0.55)
                 if !hasChatMessages && !model.isThinking {
                     ChatReadingColumn {
-                        ChatWelcomeView(onSelect: { question = $0 })
+                        ChatWelcomeView(receipt: model.state.messages.last.flatMap { $0.role == .system ? $0.content : nil })
                     }
                 } else {
                     messageTimeline
@@ -1324,56 +1324,17 @@ private struct ChatContentFrameKey: PreferenceKey {
 }
 
 private struct ChatWelcomeView: View {
-    let onSelect: (String) -> Void
-
-    private let suggestions = [
-        ("今天做了什么？", "clock.arrow.circlepath", "汇总今天记录到的工作节点"),
-        ("我答应谁做什么？", "checklist", "查找待办、承诺与截止事项"),
-        ("上周讨论过什么？", "person.2", "从会议、文档与网页记忆中检索"),
-        ("帮我整理研究线索", "wand.and.stars", "把已保存的材料组织成摘要")
-    ]
-
+    let receipt: String?
     var body: some View {
-        VStack(spacing: 26) {
-            Spacer()
-            Image(systemName: "brain.head.profile")
-                .font(.system(size: 36, weight: .light))
-                .foregroundStyle(RecallPalette.accent)
-                .frame(width: 76, height: 76)
-                .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 24))
-            VStack(spacing: 8) {
-                Text("今天想回忆什么？")
-                    .font(.system(size: 28, weight: .semibold))
-                Text("Recall 会先检索相关记忆，再给出带来源的回答。")
-                    .foregroundStyle(RecallPalette.secondary)
-            }
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                ForEach(suggestions, id: \.0) { suggestion in
-                    Button {
-                        onSelect(suggestion.0)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 9) {
-                            Image(systemName: suggestion.1)
-                                .foregroundStyle(RecallPalette.accent)
-                            Text(suggestion.0)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(RecallPalette.text)
-                            Text(suggestion.2)
-                                .font(.caption)
-                                .foregroundStyle(RecallPalette.secondary)
-                                .multilineTextAlignment(.leading)
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
-                        .padding(16)
-                        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
-                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(RecallPalette.border, lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .frame(maxWidth: 720)
-            Spacer()
-        }
+        VStack(spacing: 16) {
+            Spacer(minLength: 32)
+            Image(systemName: "brain.head.profile").font(.system(size: 36, weight: .light)).foregroundStyle(RecallPalette.accent)
+            Text("今天想回忆什么？").font(.system(size: 24, weight: .semibold))
+            Text("从过去的记录里，找回进展、约定和当时的结论。")
+                .font(.callout).foregroundStyle(RecallPalette.secondary).multilineTextAlignment(.center)
+            if let receipt { Text(receipt).font(.caption).foregroundStyle(RecallPalette.accent).multilineTextAlignment(.center) }
+            Spacer(minLength: 32)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

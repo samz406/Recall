@@ -172,6 +172,7 @@ struct MemoryKnowledgeView: View {
     private func saveDraft() {
         let content = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !savingDraft, !content.isEmpty, content.count <= 800 else { return }
+        guard !content.hasSuffix("："), !content.hasSuffix(":") else { draftError = "请补充具体要记住的内容，再保存。"; return }
         savingDraft = true; draftError = nil
         let directive = MemoryDirective.parse("记住：" + content)
         Task {
