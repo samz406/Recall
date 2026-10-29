@@ -39,6 +39,8 @@ enum SummaryAccuracyVerification {
         try timeRangesAreResolved()
         try await ledgerCurrencyCheckIsCheap()
         try await questionTermsAndTopicRetrieval()
+        try await cleaningKeepsContentAndIsReversible()
+        try await regeneratingEveryDayKeepsOldVersions()
         print("PASS: summary accuracy covers near-duplicate captures, fast writes, chat markers, quote repair and repeated lines")
     }
 
@@ -432,5 +434,81 @@ extension SummaryAccuracyVerification {
         try expect(titles.contains("第1天") && titles.contains("第3天"), "主题的最早与最新状态没有同时进入证据")
         try expect(!titles.contains("英语口语练习"), "无关主题混入了证据")
         print("PASS: question terms drop template words and a named topic returns its first, changed and latest states")
+    }
+}
+
+extension SummaryAccuracyVerification {
+    static func cleaningKeepsContentAndIsReversible() async throws {
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-clean-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let store = try FileMemoryStore(storage: storage)
+        let now = Date.now
+        let page = "Chrome\n文件\n编辑\n窗口\n帮助\nG\n发布流程页面改版的代码已经合并到主分支\n部署状态与验证结果已经更新完成"
+        var originals: [CaptureRecord] = []
+        for offset in 0..<3 {
+            let record = CaptureRecord(eventTemplate: .workCheckpoint, createdAt: now.addingTimeInterval(Double(-30 + offset * 10)), sourceAppName: "Chrome",
+                sourceBundleIdentifier: "example.chrome", contentHash: UUID().uuidString, ocrText: page + (offset == 2 ? "\n新增的一行真实内容说明文字" : ""), textOrigin: .screenOCR)
+            try await store.addCapture(record); originals.append(record)
+        }
+        let typed = CaptureRecord(eventTemplate: .manualMoment, createdAt: now, sourceAppName: "手动", sourceBundleIdentifier: "im.recall.app",
+            contentHash: UUID().uuidString, ocrText: "帮助\n窗\n我自己写的一行内容", textOrigin: .userInput)
+        try await store.addCapture(typed)
+        let preview = try await store.cleanCaptureText(dryRun: true)
+        let untouched = await store.snapshot().captures.allSatisfy { $0.correctedText == nil }
+        try expect(untouched, "预览模式修改了数据")
+        // Record 2 repeats record 1 entirely, so nothing is left of it and it stays as it was.
+        try expect(preview.changed == 2 && preview.skippedEmpty == 1 && preview.removedShort > 0 && preview.removedRepeated > 0,
+            "预览统计不对：改动 \(preview.changed)，会变空 \(preview.skippedEmpty)")
+        try await store.cleanCaptureText(dryRun: false)
+        let state = await store.snapshot()
+        let first = state.captures.first { $0.id == originals[0].id }!, last = state.captures.first { $0.id == originals[2].id }!
+        try expect(first.correctedText?.contains("发布流程页面改版") == true && first.correctedText?.contains("帮助") == false, "菜单词没有被清掉，或正文丢失")
+        try expect(first.ocrText == originals[0].ocrText, "清洗改动了原文")
+        let second = state.captures.first { $0.id == originals[1].id }!
+        try expect(second.correctedText == nil, "同一应用里重复的整屏内容没有被跳过（应保持原样或为空）")
+        try expect(last.correctedText?.contains("新增的一行真实内容说明文字") == true && last.correctedText?.contains("发布流程页面改版") == false, "新增内容丢失，或重复行没有去掉")
+        let user = state.captures.first { $0.id == typed.id }!
+        try expect(user.correctedText == nil && user.ocrText.contains("我自己写的一行内容"), "用户手写的记录被清洗了")
+        // Reverting is the app's existing "恢复原始文字".
+        try await store.correctCaptureText(originals[0].id, text: nil)
+        let reverted = await store.snapshot().captures.first { $0.id == originals[0].id }!
+        try expect(reverted.correctedText == nil && reverted.ocrText == originals[0].ocrText, "无法恢复原始文字")
+        print("PASS: cleaning drops menu words and repeated lines, keeps content and user text, and can be reverted")
+    }
+}
+
+extension SummaryAccuracyVerification {
+    /// Regenerating every day that has records, one call per day, keeping the previous version of each review.
+    static func regeneratingEveryDayKeepsOldVersions() async throws {
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-regen-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let store = try FileMemoryStore(storage: storage)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        var days: [Date] = []
+        for offset in [5, 3, 2] {
+            let day = calendar.date(byAdding: .day, value: -offset, to: today)!
+            days.append(day)
+            try await store.addCapture(CaptureRecord(eventTemplate: .workCheckpoint, createdAt: day.addingTimeInterval(36_000), sourceAppName: "Orca",
+                sourceBundleIdentifier: "example.orca", contentHash: UUID().uuidString,
+                ocrText: "发布流程页面改版的代码已经合并到主分支，部署状态与验证结果已更新。", textOrigin: .screenOCR))
+        }
+        try await store.updatePrivacy(PrivacySettings(cloudUseEnabled: true))
+        try await store.updateLLMConfiguration(LLMConfiguration(provider: .openAICompatible, model: "synthetic", apiKey: "verification-placeholder"))
+        let model = ScreenModel()
+        for day in days {
+            let period = ReviewPeriod(start: day, end: calendar.date(byAdding: .day, value: 1, to: day)!)
+            _ = try await store.generateDirectDailyReview(day: day, period: period, responder: model)
+        }
+        // Second pass over the same days replaces each review and keeps the first as a version.
+        for day in days {
+            let period = ReviewPeriod(start: day, end: calendar.date(byAdding: .day, value: 1, to: day)!)
+            _ = try await store.generateDirectDailyReview(day: day, period: period, responder: model)
+        }
+        let state = await store.snapshot()
+        try expect(state.dailySummaries.count == 3, "每天应只有一份当前回顾，实际 \(state.dailySummaries.count) 份")
+        try expect(state.dailySummaries.allSatisfy { ($0.versions ?? []).count == 1 }, "重新生成没有保留上一版")
+        try expect(state.dailySummaries.allSatisfy { $0.items.first?.knowledge?.topic == "发布流程页面改版" }, "重新生成的回顾不是结构化格式")
+        print("PASS: regenerating every day replaces each review, keeps the previous version and writes structured items")
     }
 }
