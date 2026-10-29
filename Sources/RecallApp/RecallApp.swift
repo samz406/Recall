@@ -6,10 +6,10 @@ import UserNotifications
 @main
 struct RecallApp: App {
     @NSApplicationDelegateAdaptor(RecallAppDelegate.self) private var appDelegate
-    @StateObject private var model = RecallAppModel()
+    @StateObject private var model = RecallAppModel(previewState: CommandLine.arguments.contains("--layout-previews") ? RecallState() : nil)
 
     var body: some Scene {
-        Window("Recall · 个人记忆", id: "main") {
+        Window("Recall", id: "main") {
             RecallRootView()
                 .environmentObject(model)
                 .recallColors()
@@ -35,6 +35,13 @@ struct RecallApp: App {
 @MainActor
 final class RecallAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--layout-previews") {
+            Task { @MainActor in
+                do { try await RecallLayoutPreviews.run(); exit(0) }
+                catch { print("FAIL: layout previews: \(error)"); exit(1) }
+            }
+            return
+        }
         NSApp.setActivationPolicy(.regular)
         UNUserNotificationCenter.current().delegate = self
         DispatchQueue.main.async { Self.activateMainWindow() }

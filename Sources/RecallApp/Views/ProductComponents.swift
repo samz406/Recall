@@ -4,8 +4,80 @@ import RecallKit
 enum RecallTypography {
     static let page = Font.system(size: 24, weight: .semibold)
     static let title = Font.system(size: 17, weight: .semibold)
-    static let body = Font.system(size: 17)
+    static let body = Font.system(size: 15)
     static let caption = Font.system(size: 13)
+}
+
+struct RecallFilterChip: View {
+    let title: String
+    let selected: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Text(title).font(.system(size: 13, weight: selected ? .semibold : .regular))
+                .padding(.horizontal, 11).padding(.vertical, 7)
+                .foregroundStyle(selected ? RecallPalette.accent : RecallPalette.secondary)
+                .background(selected ? RecallPalette.selected : RecallPalette.border.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+        }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+struct RecallStatusBadge: View {
+    let title: String
+    var warning = false
+    var body: some View {
+        Text(title).font(.system(size: 12, weight: .medium))
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .foregroundStyle(warning ? RecallPalette.warning : RecallPalette.accent)
+            .background((warning ? RecallPalette.warning : RecallPalette.accent).opacity(0.10), in: Capsule())
+    }
+}
+
+struct RecallListChoice: View {
+    let title: String
+    let detail: String
+    let selected: Bool
+    var warning: String? = nil
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 8) {
+                    Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(2)
+                    if let warning { RecallStatusBadge(title: warning, warning: true) }
+                }
+                Text(detail).font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(2)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(13)
+                .foregroundStyle(RecallPalette.text)
+                .background(selected ? RecallPalette.selected.opacity(0.7) : RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(selected ? RecallPalette.accent : RecallPalette.border, lineWidth: 1))
+                .contentShape(RoundedRectangle(cornerRadius: 12))
+        }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+struct RecallSwitchRow: View {
+    let title: String
+    var detail: String = ""
+    @Binding var isOn: Bool
+    var body: some View {
+        HStack(alignment: .center, spacing: 20) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title).font(.system(size: 14, weight: .medium))
+                if !detail.isEmpty { Text(detail).font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true) }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            Toggle(title, isOn: $isOn).labelsHidden().toggleStyle(.switch).controlSize(.small).fixedSize()
+        }.frame(maxWidth: .infinity)
+    }
+
+}
+
+extension View {
+    func recallSurface(padding: CGFloat = 20) -> some View {
+        self.padding(padding).frame(maxWidth: .infinity, alignment: .leading)
+            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(RecallPalette.border, lineWidth: 1))
+    }
 }
 
 struct RecallPageHeader<Actions: View>: View {

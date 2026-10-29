@@ -246,6 +246,7 @@ public struct ConversationMessage: Identifiable, Codable, Hashable, Sendable {
     public var content: String
     public var createdAt: Date
     public var citations: [UUID]
+    public var helpful: Bool? = nil
 
     public init(id: UUID = UUID(), role: ChatRole, content: String, createdAt: Date = .now, citations: [UUID] = []) {
         self.id = id

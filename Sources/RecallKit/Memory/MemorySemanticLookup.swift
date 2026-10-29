@@ -17,10 +17,12 @@ public struct MemorySemanticLookup: Sendable {
             allowed.contains(source.id) && source.understanding != nil && source.scopingUnderstanding(to: allowed).understanding == nil
         }.map(\.id))
         let ledger = MemoryKnowledgeEngine().reconcile(state)
+        let disabled = Set(ledger.claims.filter { MemoryLibraryCategory.all.includes($0.kind) && !state.memoryKnowledgeSettings.references($0) }.flatMap(\.sourceIDs))
         let intent = MemoryQuestionIntent(question: question)
         let dates = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id, $0.createdAt) })
         let candidates = ledger.entities.filter {
             !$0.sourceIDs.isEmpty && Set($0.sourceIDs).isSubset(of: allowed)
+                && Set($0.sourceIDs).isDisjoint(with: disabled)
                 && Set($0.sourceIDs).isDisjoint(with: restricted) && (intent == .recall || $0.kind == "topic")
         }.sorted { a, b in
             let x = a.sourceIDs.compactMap { dates[$0] }.max() ?? .distantPast
@@ -51,7 +53,7 @@ public struct MemorySemanticLookup: Sendable {
         只输出 {"topicIDs":["候选中的原 ID"]}。
         用户问题：\(privacy.redact(question))
         """
-        let answer = try await responder.answer(to: LLMRequest(question: prompt, context: [context], purpose: .memoryLookup, outputTokenLimit: 600))
+        let answer = try await responder.answerCancellably(to: LLMRequest(question: prompt, context: [context], purpose: .memoryLookup, outputTokenLimit: 600))
         try Task.checkCancellation()
         let selection = try JSONDecoder().decode(Selection.self, from: Data(answer.content.utf8))
         guard selection.topicIDs.count <= 3, Set(selection.topicIDs).count == selection.topicIDs.count,

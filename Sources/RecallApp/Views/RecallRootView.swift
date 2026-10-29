@@ -2,6 +2,7 @@ import RecallKit
 import Foundation
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct RecallRootView: View {
     @EnvironmentObject private var model: RecallAppModel
@@ -13,36 +14,9 @@ struct RecallRootView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $section) {
-                Section("记忆空间") {
-                    Label("记忆", systemImage: "square.stack.3d.up").tag(SidebarSection.matters)
-                        .recallSidebarRow(isSelected: section == .matters)
-                    Label("每日回顾", systemImage: "calendar.badge.clock")
-                        .tag(SidebarSection.dailySummaries)
-                        .recallSidebarRow(isSelected: section == .dailySummaries)
-                    Label("问一问", systemImage: "bubble.left.and.bubble.right")
-                        .tag(SidebarSection.chat)
-                        .recallSidebarRow(isSelected: section == .chat)
-                    Label("时间线", systemImage: "clock.arrow.circlepath")
-                        .tag(SidebarSection.timeline)
-                        .recallSidebarRow(isSelected: section == .timeline)
-                    Label("提醒", systemImage: "bell.badge")
-                        .badge(proposedReminderCount == 0 ? nil : Text("\(proposedReminderCount)"))
-                        .tag(SidebarSection.reminders)
-                        .recallSidebarRow(isSelected: section == .reminders)
-                }
-                Section("管理") {
-                    Label("记录管理", systemImage: "checklist")
-                        .tag(SidebarSection.rules)
-                        .recallSidebarRow(isSelected: section == .rules)
-                    Label("设置", systemImage: "lock.shield")
-                        .tag(SidebarSection.privacy)
-                        .recallSidebarRow(isSelected: section == .privacy)
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .background(RecallPalette.sidebar)
-            .navigationTitle("Recall")
+            RecallSidebarView(section: $section)
+                .navigationSplitViewColumnWidth(min: 180, ideal: 196, max: 220)
+                .navigationTitle("")
 
         } detail: {
             Group {
@@ -67,9 +41,9 @@ struct RecallRootView: View {
                         if let back = returnSection {
                             Button { section = back; returnSection = nil } label: { Label("返回", systemImage: "arrow.left") }
                         }
-                        Button { model.showsGlobalSearch = true } label: { Label("搜索记忆", systemImage: "magnifyingglass") }.keyboardShortcut("f", modifiers: [.command, .shift])
-                        Button { showingTasks.toggle() } label: { Image(systemName: model.tasks.contains(where: \.isRunning) ? "clock.badge" : "clock") }
-                            .help("查看处理进度和结果").popover(isPresented: $showingTasks) { RecallTaskHistory().environmentObject(model) }
+                        Button { model.showsGlobalSearch = true } label: { Label("搜索记忆", systemImage: "magnifyingglass") }.keyboardShortcut("f", modifiers: [.command, .shift]).labelStyle(.titleAndIcon)
+                        Button { showingTasks.toggle() } label: { Label("处理任务", systemImage: model.tasks.contains(where: \.isRunning) ? "clock.badge" : "clock") }
+                            .labelStyle(.titleAndIcon).help("查看处理进度和结果").popover(isPresented: $showingTasks) { RecallTaskHistory().environmentObject(model) }
                     }
                 }
             }
@@ -124,6 +98,12 @@ struct RecallRootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.22), value: model.noticeMessage)
+        .task(id: model.deletionUndoNotice?.id) {
+            guard let id = model.deletionUndoNotice?.id else { return }
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled, model.deletionUndoNotice?.id == id else { return }
+            model.dismissDeletionUndoNotice()
+        }
         .onChange(of: model.noticeMessage) { _, notice in
             noticeDismissal?.cancel()
             guard notice != nil else { return }
@@ -147,7 +127,7 @@ struct RecallRootView: View {
 
     @ToolbarContentBuilder
     private var activityToolbar: some ToolbarContent {
-        if model.isRecording || model.isThinking {
+        if model.isRecording {
             #if compiler(>=6.2)
             if #available(macOS 26.0, *) {
                 activityToolbarItem.sharedBackgroundVisibility(.hidden)
@@ -173,14 +153,56 @@ struct RecallRootView: View {
         }
     }
 
-    private var highPrioritySummaryTodoCount: Int {
-        model.state.dailySummaries.first?.todos.filter {
-            $0.priority == .high && ($0.status == .pending || $0.status == .inProgress)
-        }.count ?? 0
+
+}
+
+private struct RecallSidebarView: View {
+    @EnvironmentObject private var model: RecallAppModel
+    @Binding var section: SidebarSection?
+    private var proposedReminderCount: Int { model.state.reminders.filter { $0.status == .proposed }.count }
+    var body: some View {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 25) {
+                    Text("Recall").font(.system(size: 18, weight: .bold)).padding(.horizontal, 12).padding(.top, 14)
+                    sidebarGroup("回看", entries: [(.matters, "记忆", "square.stack.3d.up"), (.dailySummaries, "每日回顾", "calendar.badge.clock"), (.timeline, "时间线", "clock.arrow.circlepath")])
+                    sidebarGroup("行动", entries: [(.reminders, "提醒", "bell"), (.chat, "问一问", "bubble.left.and.bubble.right")])
+                    sidebarGroup("管理", entries: [(.rules, "记录管理", "checklist"), (.privacy, "设置", "gearshape")])
+                    Spacer(minLength: 24)
+                }.padding(12)
+            }.background(RecallPalette.sidebar)
+    }
+    private func sidebarGroup(_ title: String, entries: [(SidebarSection, String, String)]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption).foregroundStyle(RecallPalette.secondary).padding(.horizontal, 12).padding(.bottom, 5)
+            ForEach(entries, id: \.0) { item in
+                Button { section = item.0 } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: item.2).frame(width: 18)
+                        Text(item.1).fontWeight(section == item.0 ? .semibold : .regular)
+                        Spacer(minLength: 0)
+                        if item.0 == .reminders && proposedReminderCount > 0 {
+                            Text("\(proposedReminderCount)").font(.caption.weight(.medium)).padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(RecallPalette.surface, in: Capsule())
+                        }
+                    }.padding(.horizontal, 12).padding(.vertical, 10)
+                        .foregroundStyle(section == item.0 ? RecallPalette.accent : RecallPalette.text)
+                        .background(section == item.0 ? RecallPalette.selected : .clear, in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                }.buttonStyle(.plain).accessibilityAddTraits(section == item.0 ? .isSelected : [])
+            }
+        }
     }
 
-    private var proposedReminderCount: Int {
-        model.state.reminders.filter { $0.status == .proposed }.count
+}
+
+/// Renders the same sidebar and page without the OS compositor's split-view material layer.
+private struct RecallNavigationPreview: View {
+    @State private var section: SidebarSection? = .matters
+    var body: some View {
+        HStack(spacing: 0) {
+            RecallSidebarView(section: $section).frame(width: 196)
+            MatterWorkspaceView(continueChat: { _ in })
+        }
     }
 }
 
@@ -304,6 +326,9 @@ private struct TimelineDeletionRequest: Identifiable {
 private struct TimelineView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var searchText = ""
+    @State private var searchAllDates = false
+    @State private var visibleDayCount = 14
+    @AppStorage("recall.timeline.hideTitles") private var hideTitles = false
     @State private var expandedDayIDs: Set<Date> = []
     @State private var selectedDay = Calendar.current.startOfDay(for: .now)
     @AppStorage("recall.timeline.detailed") private var detailed = false
@@ -322,7 +347,6 @@ private struct TimelineView: View {
         }
         return counts.keys
             .sorted(by: >)
-            .prefix(14)
             .map { TimelineDayOption(day: $0, count: counts[$0] ?? 0) }
     }
 
@@ -331,8 +355,10 @@ private struct TimelineView: View {
     }
 
     private var captures: [CaptureRecord] {
-        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return selectedDayCaptures }
-        return MemorySearchEngine().search(MemorySearchQuery(text: searchText), in: selectedDayCaptures, limit: Int.max).map(\.capture)
+        let pool = (searchAllDates && isSearching ? model.state.captures : selectedDayCaptures)
+            .filter { sourceFilter.isEmpty || $0.sourceAppName == sourceFilter }
+        guard isSearching else { return pool }
+        return MemorySearchEngine().search(MemorySearchQuery(text: searchText), in: pool, limit: Int.max).map(\.capture)
     }
 
     private var dayGroups: [TimelineDayGroup] {
@@ -346,54 +372,35 @@ private struct TimelineView: View {
     var body: some View {
         VStack(spacing: 0) {
             timelineHeader
-            HStack(spacing: 16) {
-                Picker("显示", selection: $detailed) { Text("精简").tag(false); Text("详细").tag(true) }.pickerStyle(.segmented).frame(width: 150)
-                Picker("来源", selection: $sourceFilter) {
-                    Text("全部应用").tag("")
-                    ForEach(Array(Set(model.state.captures.compactMap(\.sourceAppName))).sorted(), id: \.self) { Text($0).tag($0) }
-                }.frame(maxWidth: 240)
-                Toggle("折叠重复记录", isOn: $collapseDuplicates)
-                Spacer()
-            }.padding(.horizontal, 24).padding(.bottom, 14)
-            if model.state.captures.isEmpty {
-                timelineEmptyState
-            } else {
-                TextField("搜索所选日期的本地记忆", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(.horizontal, 32)
-                    .padding(.bottom, 14)
-
-                dayNavigator
-                Divider()
-
-                if captures.isEmpty {
-                    selectedDayEmptyState
-                } else {
-                    ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                            ForEach(dayGroups) { group in
-                                TimelineDaySection(
-                                    group: group,
-                                    title: dayTitle(for: group.day),
-                                    isSearchResult: isSearching,
-                                    isExpanded: expandedDayIDs.contains(group.id),
-                                    onToggle: { toggle(group.id) },
-                                    isManaging: isManaging,
-                                    selectedCaptureIDs: selectedCaptureIDs,
-                                    onToggleSelection: toggleSelection,
-                                    onDelete: requestDeletion,
-                                    onOpen: { captureShowingDetail = $0 }, detailed: detailed, collapseDuplicates: collapseDuplicates
-                                )
-                                .id(group.id)
-                            }
+            toolbar.padding(.horizontal, 24).padding(.bottom, 16)
+            if model.state.captures.isEmpty { timelineEmptyState }
+            else {
+                HStack(alignment: .top, spacing: 18) {
+                    dateColumn.frame(width: 158)
+                    if captures.isEmpty { selectedDayEmptyState.frame(maxWidth: .infinity) }
+                    else {
+                        ScrollViewReader { proxy in
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: 20) {
+                                    resultsHeading
+                                    ForEach(hourGroups, id: \.date) { group in
+                                        VStack(alignment: .leading, spacing: 10) {
+                                            Text(group.date.formatted(.dateTime.hour().minute())).font(.caption.weight(.semibold)).foregroundStyle(RecallPalette.secondary)
+                                            VStack(spacing: 0) {
+                                                ForEach(group.clusters) { cluster in
+                                                    TimelineClusterRow(cluster: cluster, isManaging: isManaging, selectedIDs: selectedCaptureIDs,
+                                                        detailed: detailed, hideTitles: hideTitles, onSelect: toggleSelection, onDelete: requestDeletion, onOpen: { captureShowingDetail = $0 })
+                                                }
+                                            }.padding(.horizontal, 14).background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
+                                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(RecallPalette.border, lineWidth: 1))
+                                        }
+                                    }
+                                }.padding(.bottom, 24)
+                            }.clipped().onAppear { locateRequestedRecord(proxy: proxy) }
+                                .onChange(of: model.navigationRevision) { _, _ in locateRequestedRecord(proxy: proxy) }
                         }
-                        .padding(.horizontal, 32)
-                        .padding(.bottom, 24)
-                    }.onAppear { locateRequestedRecord(proxy: proxy) }
-                        .onChange(of: model.navigationRevision) { _, _ in locateRequestedRecord(proxy: proxy) }
                     }
-                }
+                }.padding(.horizontal, 24).padding(.bottom, 16)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -420,6 +427,7 @@ private struct TimelineView: View {
             }
         }
         .onChange(of: model.state.captures.map(\.id)) { _, ids in
+            selectedCaptureIDs.formIntersection(ids)
             if let capture = captureShowingDetail, !ids.contains(capture.id) {
                 captureShowingDetail = nil
             }
@@ -444,9 +452,71 @@ private struct TimelineView: View {
         DispatchQueue.main.async { proxy.scrollTo(id, anchor: .center) }
     }
     private var timelineHeader: some View {
-        RecallPageHeader(title: "时间线", subtitle: "按日期回看原始记录，随时追溯和管理") {
-            Button(isManaging ? "完成管理" : "管理记录") { isManaging.toggle(); if !isManaging { selectedCaptureIDs.removeAll() } }
+        RecallPageHeader(title: "时间线", subtitle: "按日期回看原始记录，随时追溯和管理") { EmptyView() }
+    }
+    private var toolbar: some View {
+        HStack(spacing: 10) {
+            TextField(searchAllDates ? "搜索全部日期的记录" : "搜索当天记录", text: $searchText).textFieldStyle(.roundedBorder).frame(minWidth: 150)
+            Menu {
+                Toggle("搜索全部日期", isOn: $searchAllDates)
+                Toggle("合并相同内容", isOn: $collapseDuplicates)
+                Toggle("隐藏记录标题", isOn: $hideTitles)
+            } label: { Image(systemName: "line.3.horizontal.decrease") }.fixedSize().help("搜索范围与显示选项")
+            Picker("来源", selection: $sourceFilter) {
+                Text("全部来源").tag("")
+                ForEach(Array(Set(model.state.captures.compactMap(\.sourceAppName))).sorted(), id: \.self) { Text($0).tag($0) }
+            }.labelsHidden().frame(width: 122)
+            Picker("显示", selection: $detailed) { Text("精简").tag(false); Text("详细").tag(true) }.labelsHidden().frame(width: 76).help("精简显示标题和应用；详细显示摘要和标签")
+            Button(isManaging ? "完成" : "选择") { isManaging.toggle(); if !isManaging { selectedCaptureIDs.removeAll() } }.help("多选并批量删除记录")
         }
+    }
+    private var dateColumn: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 7) {
+                Button { showsCalendar = true } label: { Label("选择日期", systemImage: "calendar") }.padding(.bottom, 8)
+                    .popover(isPresented: $showsCalendar) { TimelineCalendarPopover(selectedDay: selectedDay) { day in selectDay(day); searchAllDates = false; showsCalendar = false } }
+                ForEach(Array(availableDayOptions.prefix(visibleDayCount))) { option in
+                    let selected = Calendar.current.isDate(option.day, inSameDayAs: selectedDay)
+                    Button { selectDay(option.day); searchAllDates = false } label: {
+                        VStack(spacing: 7) {
+                            HStack {
+                                Text(option.day.formatted(.dateTime.month().day())).fontWeight(selected ? .semibold : .regular)
+                                Spacer(minLength: 4)
+                                Text("\(option.count)").font(.caption).foregroundStyle(RecallPalette.secondary)
+                            }
+                            GeometryReader { geometry in
+                                Capsule().fill(RecallPalette.border).frame(height: 3)
+                                Capsule().fill(selected ? RecallPalette.accent : RecallPalette.accent.opacity(0.35))
+                                    .frame(width: max(3, geometry.size.width * CGFloat(option.count) / CGFloat(availableDayOptions.map(\.count).max() ?? 1)), height: 3)
+                            }.frame(height: 3)
+                        }.padding(10).background(selected ? RecallPalette.selected : .clear, in: RoundedRectangle(cornerRadius: 8)).contentShape(Rectangle())
+                    }.buttonStyle(.plain).font(.system(size: 13)).foregroundStyle(selected ? RecallPalette.accent : RecallPalette.text)
+                }
+                if availableDayOptions.count > visibleDayCount { Button("更早") { visibleDayCount += 30 }.padding(10) }
+                Text("仅显示有记录的日期").font(.caption2).foregroundStyle(RecallPalette.secondary).padding(.top, 8)
+            }
+        }.clipped()
+    }
+    private var resultClusters: [TimelineRecordCluster] {
+        TimelineRecordCluster.make(captures.sorted { $0.createdAt > $1.createdAt }, enabled: collapseDuplicates && !isManaging)
+    }
+    private var hourGroups: [TimelineHourGroup] {
+        Dictionary(grouping: resultClusters) { Calendar.current.dateInterval(of: .hour, for: $0.records[0].createdAt)?.start ?? $0.records[0].createdAt }
+            .map { TimelineHourGroup(date: $0.key, clusters: $0.value) }.sorted { $0.date > $1.date }
+    }
+    private var resultsHeading: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text(searchAllDates && isSearching ? "全部日期" : selectedDay.formatted(.dateTime.month().day().weekday())).font(.system(size: 16, weight: .semibold))
+                Text("\(captures.count) 条记录" + (captures.count > resultClusters.count ? " · 已合并 \(captures.count - resultClusters.count) 条重复" : "")).font(.caption).foregroundStyle(RecallPalette.secondary)
+                Spacer()
+            }
+            Text(sourceSummary).font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(2)
+        }
+    }
+    private var sourceSummary: String {
+        Dictionary(grouping: captures, by: { $0.sourceAppName ?? "其他" }).map { ($0.key, $0.value.count) }
+            .sorted { $0.1 > $1.1 }.prefix(4).map { "\($0.0) \($0.1)" }.joined(separator: " · ")
     }
 
     private var timelineEmptyState: some View {
@@ -518,13 +588,14 @@ private struct TimelineView: View {
             Image(systemName: isSearching ? "magnifyingglass" : "calendar.badge.clock")
                 .font(.system(size: 28, weight: .medium))
                 .foregroundStyle(RecallPalette.accent)
-            Text(isSearching ? "当天没有匹配的记录" : "当天没有记录")
+            Text(isSearching || !sourceFilter.isEmpty ? "没有符合筛选条件的记录" : "当天没有记录")
                 .font(.headline)
             Text(isSearching
-                 ? "搜索只作用于当前选择的日期，可更换关键词或切换日期。"
-                 : "\(dayTitle(for: selectedDay)) 暂无本地记录，可通过上方日期栏查看其他日期。")
+                 ? (searchAllDates ? "已搜索全部日期，可以更换关键词或来源。" : "正在搜索所选日期，可更换关键词、日期，或切换为全部日期。")
+                 : "\(dayTitle(for: selectedDay)) 暂无匹配记录，可切换左侧日期或清除来源筛选。")
                 .font(.subheadline)
                 .foregroundStyle(RecallPalette.secondary)
+            if isSearching || !sourceFilter.isEmpty { Button("清除筛选") { searchText = ""; sourceFilter = "" } }
             if !Calendar.current.isDateInToday(selectedDay) {
                 Button("回到今天") { selectDay(.now) }
                     .buttonStyle(.bordered)
@@ -692,7 +763,7 @@ private struct TimelineView: View {
 
     private var selectionBar: some View {
         HStack(spacing: 14) {
-            Button(selectedCaptureIDs.count == captures.count ? "取消全选" : "全选当天") {
+            Button(selectedCaptureIDs.count == captures.count ? "取消全选" : "全选当前结果") {
                 let visibleIDs = Set(captures.map(\.id))
                 if visibleIDs.isSubset(of: selectedCaptureIDs) {
                     selectedCaptureIDs.subtract(visibleIDs)
@@ -714,6 +785,36 @@ private struct TimelineView: View {
         .padding(.vertical, 12)
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
+    }
+}
+
+private struct TimelineHourGroup {
+    let date: Date
+    let clusters: [TimelineRecordCluster]
+}
+private struct TimelineClusterRow: View {
+    let cluster: TimelineRecordCluster
+    let isManaging: Bool
+    let selectedIDs: Set<UUID>
+    let detailed: Bool
+    let hideTitles: Bool
+    let onSelect: (CaptureRecord) -> Void
+    let onDelete: (CaptureRecord) -> Void
+    let onOpen: (CaptureRecord) -> Void
+    @State private var expanded = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            CaptureRow(capture: cluster.records[0], isManaging: isManaging, isSelected: selectedIDs.contains(cluster.id), onToggleSelection: onSelect, onDelete: onDelete, onOpen: onOpen,
+                detailed: detailed, hideTitle: hideTitles, duplicateCount: cluster.records.count).id(cluster.id)
+            if cluster.records.count > 1 {
+                DisclosureGroup("查看 \(cluster.records.count) 条重复记录", isExpanded: $expanded) {
+                    ForEach(Array(cluster.records.dropFirst())) { record in
+                        CaptureRow(capture: record, isManaging: isManaging, isSelected: selectedIDs.contains(record.id), onToggleSelection: onSelect, onDelete: onDelete, onOpen: onOpen, detailed: detailed, hideTitle: hideTitles).id(record.id)
+                    }
+                }.font(.caption).foregroundStyle(RecallPalette.secondary).padding(.bottom, 10)
+            }
+            Divider()
+        }
     }
 }
 
@@ -819,10 +920,13 @@ private struct CaptureRow: View {
     let onOpen: (CaptureRecord) -> Void
     var detailed = true
     var collapseDuplicates = false
+    var hideTitle = false
+    var duplicateCount = 1
+    @State private var hovered = false
 
     var body: some View {
         let presentation = CapturePresentation(capture: capture)
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             if isManaging {
                 Button { onToggleSelection(capture) } label: {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
@@ -834,22 +938,21 @@ private struct CaptureRow: View {
             Button {
                 if isManaging { onToggleSelection(capture) } else { onOpen(capture) }
             } label: {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: capture.imageRelativePath == nil ? "doc.text" : "rectangle.on.rectangle")
-                        .frame(width: 34, height: 34)
-                        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 8))
+                HStack(alignment: .center, spacing: 12) {
+                    SourceApplicationIcon(capture: capture)
                     VStack(alignment: .leading, spacing: 5) {
                         HStack {
-                            Text(presentation.title)
+                            Text(hideTitle ? (capture.sourceAppName ?? "本地记录") : presentation.title)
                                 .font(.headline)
                                 .lineLimit(2)
-                            if capture.isRedacted {
+                            if duplicateCount > 1 { Text("×\(duplicateCount)").font(.caption).foregroundStyle(RecallPalette.secondary).padding(.horizontal, 6).padding(.vertical, 2).background(RecallPalette.sidebar, in: Capsule()) }
+                            if capture.isRedacted && detailed {
                                 Label("已脱敏", systemImage: "lock.fill")
                                     .font(.caption)
                                     .foregroundStyle(RecallPalette.secondary)
                             }
                         }
-                        if detailed && presentation.summary != presentation.title { Text(presentation.summary)
+                        if detailed && !hideTitle && presentation.summary != presentation.title { Text(presentation.summary)
                             .lineLimit(2)
                             .foregroundStyle(RecallPalette.secondary)
                         }
@@ -874,9 +977,7 @@ private struct CaptureRow: View {
                     }
                     Spacer(minLength: 8)
                     if !isManaging {
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundStyle(RecallPalette.secondary)
+                        Text("详情 ›").font(.caption).foregroundStyle(RecallPalette.secondary)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -889,10 +990,26 @@ private struct CaptureRow: View {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
+                .opacity(hovered ? 1 : 0).allowsHitTesting(hovered)
                 .accessibilityLabel("删除记录")
             }
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, 12).onHover { hovered = $0 }
+        .contextMenu { Button("查看详情") { onOpen(capture) }; Button("删除记录", role: .destructive) { onDelete(capture) } }
+    }
+}
+
+private struct SourceApplicationIcon: View {
+    let capture: CaptureRecord
+    var body: some View {
+        Group {
+            if let id = capture.sourceBundleIdentifier, let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable().scaledToFit()
+            } else {
+                Image(systemName: capture.textOrigin == .userInput ? "square.and.pencil" : "app.fill")
+                    .resizable().scaledToFit().foregroundStyle(RecallPalette.accent).padding(5)
+            }
+        }.frame(width: 30, height: 30).accessibilityLabel(capture.sourceAppName ?? "记录来源")
     }
 }
 
@@ -970,8 +1087,8 @@ private struct CaptureDeletionSheet: View {
 }
 
 private enum ChatLayout {
-    static let readingWidth: CGFloat = 860
-    static let edgeInset: CGFloat = 32
+    static let readingWidth: CGFloat = 760
+    static let edgeInset: CGFloat = 22
     static let avatarSize: CGFloat = 28
     static let avatarGutter: CGFloat = 40
     static let textInset: CGFloat = 20
@@ -998,6 +1115,11 @@ private struct ChatView: View {
     @State private var scrollRequest = 0
     @State private var messageContentFrame: CGRect = .zero
     @State private var messageViewportHeight: CGFloat = 0
+    private var scopeTitle: String {
+        if let days = model.chatScope.recentDays { return "最近\(days)天" }
+        if let id = model.chatScope.topicID { return model.matterFiles.first { $0.id == id }?.title ?? "所选主题" }
+        return "全部记忆"
+    }
 
     private var hasChatMessages: Bool {
         model.state.messages.contains { $0.role != .system }
@@ -1024,12 +1146,22 @@ private struct ChatView: View {
             VStack(spacing: 0) {
                 chatHeader
                 Divider().opacity(0.55)
-                if model.state.messages.isEmpty {
+                if !hasChatMessages && !model.isThinking {
                     ChatReadingColumn {
-                        ChatWelcomeView(onSelect: { question = $0 })
+                        ChatWelcomeView(receipt: model.state.messages.last.flatMap { $0.role == .system ? $0.content : nil })
                     }
                 } else {
                     messageTimeline
+                }
+                if !model.isThinking && model.typingMessageID == nil {
+                    ChatReadingColumn {
+                        HStack(spacing: 8) {
+                            ForEach(["总结本周进展", "我答应了谁什么事？", "上次讨论的结论是什么？"], id: \.self) { prompt in
+                                Button(prompt) { question = prompt }.buttonStyle(.plain).font(.caption).padding(.horizontal, 8).padding(.vertical, 5).background(RecallPalette.border.opacity(0.3), in: Capsule())
+                            }
+                            Spacer(minLength: 0)
+                        }
+                    }.padding(.top, 8)
                 }
                 ChatComposer(
                     question: $question,
@@ -1042,37 +1174,37 @@ private struct ChatView: View {
     }
 
     private var chatHeader: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "sparkle")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(RecallPalette.onAccent)
-                .frame(width: 30, height: 30)
-                .background(RecallPalette.accent, in: RoundedRectangle(cornerRadius: 9))
-            VStack(alignment: .leading, spacing: 2) {
-                Text("问一问")
-                    .font(.system(size: 16, weight: .semibold))
-                Text("基于你的本地记忆与可追溯来源")
-                    .font(.caption)
-                    .foregroundStyle(RecallPalette.secondary)
-            }
-            Spacer()
-            HStack(spacing: 6) {
-                Image(systemName: isCloudModel ? "cloud.fill" : "lock.fill")
-                Text(isCloudModel ? model.state.llmConfiguration.provider.title : "本地模式")
-            }
-            .font(.caption.weight(.medium))
-            .foregroundStyle(isCloudModel ? RecallPalette.accent : RecallPalette.secondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(RecallPalette.sidebar, in: Capsule())
-            if model.state.conversationSummary != nil {
-                Label("长对话已压缩", systemImage: "text.compress")
-                    .font(.caption)
-                    .foregroundStyle(RecallPalette.secondary)
+        RecallPageHeader(title: "问一问", subtitle: "基于你的本地记忆，回答带来源") {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) { scopeControl; modelStatus; newConversation }
+                VStack(alignment: .trailing, spacing: 8) { HStack { scopeControl; newConversation }; modelStatus }
             }
         }
-        .padding(.horizontal, 32)
-        .padding(.vertical, 18)
+    }
+    private var scopeControl: some View {
+        Menu {
+            Button("全部记忆") { model.chatScope = .all }
+            Button("最近七天") { setRange(days: 7) }
+            Button("最近三十天") { setRange(days: 30) }
+            if !model.matterFiles.isEmpty {
+                Menu("指定主题") {
+                    ForEach(model.matterFiles) { file in
+                        Button(file.title) { model.chatScope = MemoryQueryScope(topicID: file.id) }
+                    }
+                }
+            }
+        } label: { Label("范围：" + scopeTitle, systemImage: "line.3.horizontal.decrease") }
+            .disabled(model.isThinking || model.typingMessageID != nil).help("限制本次提问检索的记忆范围")
+    }
+    private func setRange(days: Int) {
+        model.chatScope = MemoryQueryScope(recentDays: days)
+    }
+    private var modelStatus: some View {
+        Label(isCloudModel ? model.state.llmConfiguration.model + " · 仅发脱敏文本" : "本地模式 · 数据不外发", systemImage: isCloudModel ? "cloud" : "lock")
+            .font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(1).help(isCloudModel ? model.state.llmConfiguration.provider.title : "未启用云端模型")
+    }
+    private var newConversation: some View {
+        Button { question = ""; model.ask("/clear") } label: { Label("新对话", systemImage: "plus") }
     }
 
     private var messageTimeline: some View {
@@ -1081,11 +1213,12 @@ private struct ChatView: View {
                 ScrollView {
                     ChatReadingColumn {
                         VStack(spacing: 16) {
-                            ForEach(model.state.messages) { message in
+                            ForEach(model.state.messages.filter { $0.role != .system || $0.id == model.state.messages.last?.id }) { message in
                                 RecallMessageCard(
                                     message: message,
                                     displayedContent: message.id == model.typingMessageID ? model.typingMessageContent : message.content,
-                                    isTyping: message.id == model.typingMessageID
+                                    isTyping: message.id == model.typingMessageID,
+                                    userMaxWidth: min(ChatLayout.readingWidth, max(100, viewport.size.width - 2 * (ChatLayout.edgeInset + ChatLayout.avatarGutter))) * 0.7
                                 )
                                 .id(message.id)
                             }
@@ -1191,125 +1324,78 @@ private struct ChatContentFrameKey: PreferenceKey {
 }
 
 private struct ChatWelcomeView: View {
-    let onSelect: (String) -> Void
-
-    private let suggestions = [
-        ("今天做了什么？", "clock.arrow.circlepath", "汇总今天记录到的工作节点"),
-        ("我答应谁做什么？", "checklist", "查找待办、承诺与截止事项"),
-        ("上周讨论过什么？", "person.2", "从会议、文档与网页记忆中检索"),
-        ("帮我整理研究线索", "wand.and.stars", "把已保存的材料组织成摘要")
-    ]
-
+    let receipt: String?
     var body: some View {
-        VStack(spacing: 26) {
-            Spacer()
-            Image(systemName: "brain.head.profile")
-                .font(.system(size: 36, weight: .light))
-                .foregroundStyle(RecallPalette.accent)
-                .frame(width: 76, height: 76)
-                .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 24))
-            VStack(spacing: 8) {
-                Text("今天想回忆什么？")
-                    .font(.system(size: 28, weight: .semibold))
-                Text("Recall 会先检索相关记忆，再给出带来源的回答。")
-                    .foregroundStyle(RecallPalette.secondary)
-            }
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                ForEach(suggestions, id: \.0) { suggestion in
-                    Button {
-                        onSelect(suggestion.0)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 9) {
-                            Image(systemName: suggestion.1)
-                                .foregroundStyle(RecallPalette.accent)
-                            Text(suggestion.0)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(RecallPalette.text)
-                            Text(suggestion.2)
-                                .font(.caption)
-                                .foregroundStyle(RecallPalette.secondary)
-                                .multilineTextAlignment(.leading)
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
-                        .padding(16)
-                        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
-                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(RecallPalette.border, lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .frame(maxWidth: 720)
-            Spacer()
-        }
+        VStack(spacing: 16) {
+            Spacer(minLength: 32)
+            Image(systemName: "brain.head.profile").font(.system(size: 36, weight: .light)).foregroundStyle(RecallPalette.accent)
+            Text("今天想回忆什么？").font(.system(size: 24, weight: .semibold))
+            Text("从过去的记录里，找回进展、约定和当时的结论。")
+                .font(.callout).foregroundStyle(RecallPalette.secondary).multilineTextAlignment(.center)
+            if let receipt { Text(receipt).font(.caption).foregroundStyle(RecallPalette.accent).multilineTextAlignment(.center) }
+            Spacer(minLength: 32)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
 private struct RecallMessageCard: View {
+    @EnvironmentObject private var model: RecallAppModel
     let message: ConversationMessage
     let displayedContent: String
     let isTyping: Bool
-
+    var userMaxWidth: CGFloat = ChatLayout.readingWidth * 0.7
+    private var sources: [CaptureRecord] { model.state.captures.filter { message.citations.contains($0.id) } }
     var body: some View {
         Group {
             if message.role == .system {
-                Label(displayedContent, systemImage: "terminal")
-                    .font(.system(size: 14))
-                    .foregroundStyle(RecallPalette.secondary)
-                    .textSelection(.enabled)
-                    .padding(.vertical, 12)
-                    .frame(maxWidth: .infinity)
-                    .accessibilityLabel("命令执行结果：" + displayedContent)
+                Text(displayedContent).font(.caption).foregroundStyle(RecallPalette.secondary).frame(maxWidth: .infinity).padding(.vertical, 8)
             } else if message.role == .user {
-                HStack(alignment: .top) {
-                    Spacer(minLength: 24)
-                    messageBody
-                }
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                HStack {
+                    Spacer(minLength: 30)
+                    Text(displayedContent).font(RecallTypography.body).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 14))
+                        .frame(maxWidth: userMaxWidth, alignment: .trailing)
+                }.frame(maxWidth: .infinity, alignment: .trailing)
             } else {
-                messageBody
+                VStack(alignment: .leading, spacing: 12) {
+                    MarkdownParagraphText(markdown: isTyping ? displayedContent : ChatResponseFormatter().format(displayedContent))
+                    if isTyping {
+                        RoundedRectangle(cornerRadius: 1).fill(RecallPalette.accent).frame(width: 2, height: 16)
+                        Button("停止") { model.stopChat() }.font(.caption)
+                    } else {
+                        if !sources.isEmpty {
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 8) { sourceLabels }
+                                VStack(alignment: .leading, spacing: 8) { sourceLabels }
+                            }
+                        }
+                        HStack(spacing: 14) {
+                            Button("复制") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.content, forType: .string) }
+                            Button("重新回答") { if let index = model.state.messages.firstIndex(where: { $0.id == message.id }), let question = model.state.messages[..<index].last(where: { $0.role == .user })?.content { model.ask(question) } }.disabled(model.isThinking || model.typingMessageID != nil)
+                            Button { model.rateChatMessage(message, helpful: true) } label: { Image(systemName: message.helpful == true ? "hand.thumbsup.fill" : "hand.thumbsup") }.help("回答有帮助")
+                            Button { model.rateChatMessage(message, helpful: false) } label: { Image(systemName: message.helpful == false ? "hand.thumbsdown.fill" : "hand.thumbsdown") }.help("回答不准确")
+                        }.buttonStyle(.plain).font(.caption).foregroundStyle(RecallPalette.secondary)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
                     .overlay(alignment: .topLeading) {
-                        Image(systemName: "sparkle")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(RecallPalette.onAccent)
+                        Image(systemName: "sparkle").font(.caption.weight(.semibold)).foregroundStyle(RecallPalette.onAccent)
                             .frame(width: ChatLayout.avatarSize, height: ChatLayout.avatarSize)
-                            .background(RecallPalette.accent, in: Circle())
-                            .offset(x: -ChatLayout.avatarGutter)
+                            .background(RecallPalette.accent, in: RoundedRectangle(cornerRadius: 8)).offset(x: -ChatLayout.avatarGutter)
                     }
             }
         }
     }
-
-    private var messageBody: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(message.role == .user ? "你" : "Recall")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(RecallPalette.secondary)
-                Spacer()
-                Text(message.createdAt.formatted(date: .omitted, time: .shortened))
-                    .font(.caption2)
-                    .foregroundStyle(RecallPalette.secondary)
-            }
-            if message.role == .assistant {
-                MarkdownParagraphText(markdown: isTyping ? displayedContent : ChatResponseFormatter().format(displayedContent))
-                if isTyping {
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(RecallPalette.accent)
-                        .frame(width: 2, height: 16)
-                        .opacity(displayedContent.isEmpty ? 0.65 : 1)
-                }
-            } else {
-                Text(displayedContent)
-                    .font(.system(size: 15))
-                    .textSelection(.enabled)
-                    .lineSpacing(5)
-            }
+    @ViewBuilder private var sourceLabels: some View {
+        ForEach(Array(sources.prefix(2))) { source in
+            Button { model.sourceToOpen = source } label: {
+                Label((source.sourceAppName ?? "时间线") + " · " + source.createdAt.formatted(.dateTime.month().day().hour().minute()), systemImage: "paperclip")
+                    .font(.caption).lineLimit(1).padding(.horizontal, 8).padding(.vertical, 4).background(RecallPalette.border.opacity(0.25), in: Capsule())
+            }.buttonStyle(.plain).foregroundStyle(RecallPalette.secondary)
         }
-        .padding(.horizontal, ChatLayout.textInset)
-        .padding(.vertical, 16)
-        .frame(maxWidth: message.role == .user ? 590 : .infinity, alignment: .leading)
-        .background(message.role == .user ? RecallPalette.selected : RecallPalette.surface, in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(message.role == .user ? Color.clear : RecallPalette.border.opacity(0.6), lineWidth: 1))
+        if sources.count > 2 {
+            Menu("另有 \(sources.count - 2) 条来源") { ForEach(Array(sources.dropFirst(2))) { source in Button(CapturePresentation(capture: source).title) { model.sourceToOpen = source } } }.font(.caption)
+        }
     }
 }
 
@@ -1346,24 +1432,24 @@ private struct MarkdownParagraphText: View {
 }
 
 private struct ThinkingCard: View {
+    @EnvironmentObject private var model: RecallAppModel
     var body: some View {
         HStack(spacing: 10) {
-            ProgressView().controlSize(.small)
-            Text("Recall 正在检索记忆并组织回答…")
-                .font(.subheadline)
-                .foregroundStyle(RecallPalette.secondary)
-            Spacer()
-        }
-        .padding(16)
-        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
+            Image(systemName: model.chatEvidenceCount == nil ? "magnifyingglass" : "checkmark.circle").foregroundStyle(RecallPalette.accent)
+            Text(model.chatEvidenceCount.map { "已检索记忆（\($0) 条） → 整理回答中…" } ?? "正在检索记忆…").font(.callout).foregroundStyle(RecallPalette.secondary)
+            Button("停止") { model.stopChat() }
+            Spacer(minLength: 0)
+        }.padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 private struct ChatComposer: View {
+    @EnvironmentObject private var model: RecallAppModel
     @Binding var question: String
     let isSending: Bool
     let onSend: () -> Void
-    @FocusState private var isFocused: Bool
+    @State private var isFocused = false
+    @State private var editorHeight: CGFloat = 44
     @State private var dismissedCommandQuery: String?
 
     private var commandSuggestions: [ChatCommand] {
@@ -1382,42 +1468,28 @@ private struct ChatComposer: View {
     private var editor: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topLeading) {
-                TextField("向 Recall 提问…", text: $question, axis: .vertical)
-                    .focused($isFocused)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...8)
-                    .font(.system(size: 16))
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .submitLabel(.send)
-                    .onKeyPress { keyPress in
-                        if !commandSuggestions.isEmpty {
-                            if keyPress.key == .escape {
-                                dismissedCommandQuery = question
-                                return .handled
-                            }
-                            if keyPress.key == .tab || (keyPress.key == .return && !keyPress.modifiers.contains(.shift)) {
-                                if let command = commandSuggestions.first { insertCommand(command) }
-                                return .handled
-                            }
-                            if keyPress.key == .upArrow || keyPress.key == .downArrow { return .handled }
-                        }
-                        guard keyPress.key == .return else { return .ignored }
-                        if keyPress.modifiers.contains(.shift) {
-                            return .ignored
-                        }
-                        submit()
-                        return .handled
-                    }
+                RecallChatInput(text: $question, height: $editorHeight, onFocus: { isFocused = $0 }, onSubmit: {
+                    if let command = commandSuggestions.first { insertCommand(command) } else { submit() }
+                }, onTab: {
+                    guard let command = commandSuggestions.first else { return false }
+                    insertCommand(command); return true
+                }, onEscape: { dismissedCommandQuery = question })
+                    .frame(height: editorHeight)
+                if question.isEmpty {
+                    Text("向 Recall 提问…").font(.system(size: 16)).foregroundStyle(RecallPalette.secondary).allowsHitTesting(false)
+                }
+
             }
-            .frame(minHeight: 62, alignment: .topLeading)
+            .frame(minHeight: 42, alignment: .topLeading)
             HStack {
+                Text("↵ 发送    ⇧↵ 换行").font(.caption).foregroundStyle(RecallPalette.secondary)
                 Spacer()
+                if isSending { Button("停止") { model.stopChat() }.font(.caption) }
                 Button(action: submit) {
-                    Image(systemName: isSending && ChatCommand.parse(question) != .clear ? "ellipsis" : "arrow.up")
+                    Image(systemName: "arrow.up")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(RecallPalette.onAccent)
-                        .frame(width: 44, height: 44)
+                        .frame(width: 32, height: 32)
                         .background(sendButtonColor, in: Circle())
                         .contentShape(Circle())
                 }
@@ -1425,14 +1497,14 @@ private struct ChatComposer: View {
                 .disabled(!canSend)
             }
         }
-        .padding(.top, 18)
+        .padding(.top, 12)
         .padding(.leading, ChatLayout.textInset)
         .padding(.trailing, 10)
         .padding(.bottom, 10)
-        .frame(minHeight: 132, alignment: .top)
-        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .frame(minHeight: 92, alignment: .top)
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(isFocused ? RecallPalette.accent.opacity(0.65) : RecallPalette.border.opacity(0.55), lineWidth: isFocused ? 1.5 : 1)
         }
         .shadow(color: RecallPalette.shadow.opacity(isFocused ? 0.09 : 0.055), radius: isFocused ? 20 : 14, y: 6)
@@ -1507,173 +1579,89 @@ private struct ChatComposer: View {
 
 private struct DailySummariesView: View {
     @EnvironmentObject private var model: RecallAppModel
-    @State private var expandedSummaryID: UUID?
-    @State private var visibleSummaryCount = 12
-    @State private var summaryBeingManaged: DailySummary?
-    @State private var selectedDate = Calendar.current.date(byAdding: .day, value: -1, to: Date.now) ?? .now
-    @State private var showsDateCalendar = false
-
-    private let pageSize = 12
-
-    private var summaries: [DailySummary] {
-        model.state.dailySummaries.sorted { $0.day > $1.day }
-    }
-
-    private var visibleSummaries: [DailySummary] {
-        Array(summaries.prefix(visibleSummaryCount))
-    }
+    @State private var selectedID: UUID?
+    @State private var selectedDate = Calendar.current.date(byAdding: .day, value: -1, to: .now) ?? .now
+    @State private var showsCalendar = false
+    @State private var managing: DailySummary?
+    @State private var visibleCount = 30
+    private var summaries: [DailySummary] { model.state.dailySummaries.sorted { $0.day > $1.day } }
+    private var selected: DailySummary? { summaries.first { $0.id == selectedID } }
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
-            ScrollViewReader { proxy in
-            ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                if model.isLoadingSavedState {
-                    HStack(spacing: 12) {
-                        ProgressView().controlSize(.small)
-                        Text("正在读取已保存的回顾…").foregroundStyle(RecallPalette.secondary)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 100, alignment: .leading)
-                } else if summaries.isEmpty && !model.isGeneratingDailySummary {
-                    emptyState
-                } else {
-                    history
-                }
-            }
-            .frame(maxWidth: 920, alignment: .leading)
-            .padding(.horizontal, 40)
-            .padding(.vertical, 34)
-            .frame(maxWidth: .infinity)
-        }.onAppear { if let id = model.dailyToOpen { DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) } } }
-            .onChange(of: model.dailyToOpen) { _, id in if let id { DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) } } }
-            .onChange(of: model.navigationRevision) { _, _ in
-                if case .daily(let id) = model.destination { DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) } }
-            }
-        }
-        }
-        .background(RecallPalette.background)
-        .onAppear {
-            if let id = model.dailyToOpen { expandedSummaryID = id; visibleSummaryCount = max(12, (summaries.firstIndex { $0.id == id } ?? 0) + 1) }
-            if expandedSummaryID == nil {
-                expandedSummaryID = summaries.first?.id
-            }
-        }
-        .onChange(of: model.dailyToOpen) { _, id in expandedSummaryID = id; visibleSummaryCount = max(12, (summaries.firstIndex { $0.id == id } ?? 0) + 1) }
-        .onChange(of: model.isLoadingSavedState) { _, loading in
-            if !loading && expandedSummaryID == nil { expandedSummaryID = summaries.first?.id }
-        }
-        .onDisappear { model.dailyToOpen = expandedSummaryID }
-        .onChange(of: model.navigationRevision) { _, _ in
-            if case .daily(let id) = model.destination {
-                expandedSummaryID = id; visibleSummaryCount = max(12, (summaries.firstIndex { $0.id == id } ?? 0) + 1)
-            }
-        }
-    }
-
-    private var history: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("每日回顾历史")
-                        .font(.title3.weight(.semibold))
-                    Text("默认展开最新一条；其余以紧凑预览显示，点击即可查看全文。")
-                        .font(.caption)
-                        .foregroundStyle(RecallPalette.secondary)
-                }
-                Spacer()
-                Text("共 \(summaries.count) 条")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(RecallPalette.secondary)
-            }
-            ForEach(visibleSummaries) { summary in
-                DailySummaryCard(
-                    summary: summary,
-                    isExpanded: expandedSummaryID == summary.id,
-                    onToggle: { toggle(summary) },
-                    onManage: { summaryBeingManaged = summary },
-                    onReviewInsight: { insight, rating in model.reviewInsight(insight, rating: rating) },
-                    onUpdateRoutine: { routine, status in model.updateLearnedRoutine(routine, status: status) }
-                ).id(summary.id)
-            }
-            if visibleSummaries.count < summaries.count {
-                Button {
-                    visibleSummaryCount += pageSize
-                } label: {
-                    Label("显示更多（还剩 \(summaries.count - visibleSummaries.count) 条）", systemImage: "arrow.down.circle")
-                }
-                .buttonStyle(.bordered)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 4)
-            }
-        }
-        .sheet(item: $summaryBeingManaged) { summary in
-            DailySummaryManagementSheet(summary: summary)
-                .environmentObject(model)
-        }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 0) {
             RecallPageHeader(title: "每日回顾", subtitle: "回看一天里值得记住的事") {
-                HStack(spacing: 12) {
-                    Button {
-                        showsDateCalendar.toggle()
-                    } label: {
-                        HStack(spacing: 8) {
-                            Text(selectedDate.formatted(.dateTime.year().month().day()))
-                                .fontWeight(.medium)
-                            Image(systemName: "chevron.down")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(RecallPalette.secondary)
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .help("选择回顾日期")
-                    .accessibilityLabel("选择回顾日期")
-                    .accessibilityValue(selectedDate.formatted(date: .complete, time: .omitted))
-                    .popover(isPresented: $showsDateCalendar, arrowEdge: .top) {
+                HStack(spacing: 10) {
+                    Button { showsCalendar = true } label: {
+                        Label(selectedDate.formatted(.dateTime.month().day()), systemImage: "calendar")
+                    }.popover(isPresented: $showsCalendar) {
                         TimelineCalendarPopover(selectedDay: selectedDate) { day in
-                            selectedDate = Calendar.current.startOfDay(for: day)
-                            showsDateCalendar = false
+                            selectedDate = day
+                            selectedID = summaries.first { Calendar.current.isDate($0.day, inSameDayAs: day) }?.id
+                            showsCalendar = false
                         }
                     }
                     Button("生成回顾") { model.generateDailyReview(on: selectedDate) }
                         .buttonStyle(.borderedProminent).disabled(model.isLoadingSavedState || model.isGeneratingDailySummary)
                 }
             }
-            if let task = model.tasks.first(where: { $0.kind == "每日回顾" }) {
-                RecallTaskStatusView(task: task, cancel: model.cancelDailyReview).padding(.horizontal, 24).padding(.bottom, 16)
+            if model.isLoadingSavedState {
+                ProgressView("正在读取已保存的回顾…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                HStack(alignment: .top, spacing: 18) {
+                    dateList.frame(width: 214)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            if let task = model.tasks.first(where: { $0.kind == "每日回顾" }), task.isRunning || task.state == .failed || task.state == .partial {
+                                RecallTaskStatusView(task: task, cancel: model.cancelDailyReview)
+                            }
+                            if let selected {
+                                DailySummaryCard(summary: selected, isExpanded: true, onToggle: {}, onManage: { managing = selected }, onReviewInsight: { model.reviewInsight($0, rating: $1) }, onUpdateRoutine: { model.updateLearnedRoutine($0, status: $1) })
+                            } else {
+                                VStack(spacing: 14) {
+                                    Image(systemName: "calendar").font(.system(size: 34, weight: .light)).foregroundStyle(RecallPalette.accent)
+                                    Text(summaries.isEmpty ? "还没有每日回顾" : "这一天还没有回顾").font(.headline)
+                                    Text("选择日期，生成这一天值得记住的事。").foregroundStyle(RecallPalette.secondary)
+                                    Button("生成回顾") { model.generateDailyReview(on: selectedDate) }.buttonStyle(.borderedProminent).disabled(model.isGeneratingDailySummary)
+                                }.frame(maxWidth: .infinity, minHeight: 360).recallSurface()
+                            }
+                        }.padding(.bottom, 24)
+                    }.clipped().id(selectedID)
+                }.padding(.horizontal, 24).padding(.bottom, 16)
             }
-        }
+        }.onAppear { openSelection() }
+            .onChange(of: model.dailyToOpen) { _, id in if let id { select(id) } }
+            .onChange(of: model.state.dailySummaries.map(\.id)) { _, ids in
+                if selectedID == nil || !ids.contains(selectedID!) { openSelection() }
+            }
+            .onChange(of: model.navigationRevision) { _, _ in if case .daily(let id) = model.destination { select(id) } }
+            .sheet(item: $managing) { DailySummaryManagementSheet(summary: $0).environmentObject(model) }
     }
-
-    private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Image(systemName: "text.badge.plus")
-                .font(.system(size: 28))
-                .foregroundStyle(RecallPalette.accent)
-            Text("还没有每日回顾")
-                .font(.title2.weight(.semibold))
-            Text("保存记录后，选择日期并点击“生成回顾”；也可以在“设置”中安排每天自动生成。")
-                .foregroundStyle(RecallPalette.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(28)
-        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 20))
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(RecallPalette.border, lineWidth: 1))
+    private var dateList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 8) {
+                Text("已保存 \(summaries.count) 天").font(.caption).foregroundStyle(RecallPalette.secondary).padding(.bottom, 4)
+                ForEach(Array(summaries.prefix(visibleCount))) { summary in
+                    RecallListChoice(title: summary.day.formatted(.dateTime.month().day().weekday()), detail: keywords(summary), selected: selectedID == summary.id) { select(summary.id) }
+                }
+                if summaries.count > visibleCount { Button("更早的回顾") { visibleCount += 30 }.padding(.vertical, 8) }
+            }
+        }.clipped()
     }
-
-    private var dailySummaryTimeText: String {
-        let settings = model.state.dailySummarySettings
-        return String(format: "%02d:%02d", settings.hour, settings.minute)
+    private func keywords(_ summary: DailySummary) -> String {
+        let topics = summary.items.filter { $0.section.canonical == .progress }.map { $0.knowledge?.topic ?? $0.title }
+        var seen = Set<String>()
+        let words = topics.filter { !$0.isEmpty && seen.insert($0).inserted }.prefix(2)
+        return words.isEmpty ? "查看当天回顾" : words.joined(separator: " · ")
     }
-
-    private func toggle(_ summary: DailySummary) {
-        withAnimation(.easeInOut(duration: 0.18)) {
-            expandedSummaryID = expandedSummaryID == summary.id ? nil : summary.id
-        }
+    private func select(_ id: UUID) {
+        guard let item = summaries.first(where: { $0.id == id }) else { return }
+        selectedID = id; selectedDate = item.day; model.dailyToOpen = id
+        visibleCount = max(visibleCount, (summaries.firstIndex { $0.id == id } ?? 0) + 1)
+    }
+    private func openSelection() {
+        if let id = model.dailyToOpen, summaries.contains(where: { $0.id == id }) { select(id) }
+        else if let id = summaries.first?.id { select(id) }
+        else { selectedID = nil }
     }
 }
 
@@ -1719,40 +1707,22 @@ private struct DailySummaryCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: isExpanded ? 15 : 9) {
             HStack(alignment: .top, spacing: 12) {
-                Button(action: onToggle) {
-                    HStack(alignment: .top, spacing: 11) {
-                        Image(systemName: isExpanded ? "chevron.down.circle.fill" : "chevron.right.circle")
-                            .foregroundStyle(RecallPalette.accent)
-                            .font(.title3)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(summary.day.formatted(.dateTime.year().month().day().weekday()))
-                                .font(.headline)
-                            HStack(spacing: 8) {
-                                Label("更新于 " + summary.createdAt.formatted(date: .omitted, time: .shortened), systemImage: "clock")
-                                if summary.generationKind == .localFallback { Text("历史记录摘录") }
-                                if activeActionCount > 0 {
-                                    Label("\(activeActionCount) 项待处理", systemImage: "checklist")
-                                }
-                            }
-                            .font(.caption)
-                            .foregroundStyle(RecallPalette.secondary)
-                        }
-                        Spacer(minLength: 8)
-                    }
-                    .contentShape(Rectangle())
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(summary.day.formatted(.dateTime.month().day().weekday())).font(.system(size: 20, weight: .semibold))
+                    Text("更新于 " + summary.createdAt.formatted(date: .omitted, time: .shortened) + " · 已保存")
+                        .font(.caption).foregroundStyle(RecallPalette.secondary)
                 }
-                .buttonStyle(.plain)
+                Spacer(minLength: 8)
                 Button("重新生成") { model.generateDailyReview(on: summary.day) }.disabled(model.isGeneratingDailySummary)
-                Button(action: onManage) {
-                    Label("管理", systemImage: "slider.horizontal.3")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                Menu {
+                    Button("管理这份回顾", action: onManage)
+                    Button("反馈整份回顾") { model.summaryFeedbackTarget = .daily(summary) }
+                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("更多回顾操作")
             }
             if isExpanded {
                 Divider()
                 if let overview = summary.modelOverview, !overview.isEmpty {
-                    Text(overview).font(.system(size: 15, weight: .medium)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    Text(DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: DailySummaryContentFormatter.removingCitationMarkers(from: overview))).font(.system(size: 15, weight: .medium)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled).padding(14).frame(maxWidth: .infinity, alignment: .leading).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 10))
                 }
                 if !summary.items.isEmpty {
                     DailyReviewContentView(summary: summary)
@@ -2381,23 +2351,33 @@ private struct RemindersView: View {
     var body: some View {
         VStack(spacing: 0) {
             reminderHeader
-            Picker("提醒列表", selection: $reminderTab) {
-                Text("待处理 \(scheduled.count == 0 ? "" : String(scheduled.count))").tag(0)
-                Text("待确认 \(proposed.count == 0 ? "" : String(proposed.count))").tag(1)
-                Text("历史").tag(2)
-            }.pickerStyle(.segmented).padding(.horizontal, 24).padding(.bottom, 18)
+            HStack(spacing: 24) {
+                reminderTabButton("待处理", count: scheduled.count, tab: 0)
+                reminderTabButton("待确认", count: proposed.count, tab: 1)
+                reminderTabButton("历史", count: model.state.reminders.filter { [.completed, .cancelled, .dismissed].contains($0.status) }.count, tab: 2)
+                Spacer()
+            }.padding(.horizontal, 24)
             Divider()
             ScrollView {
             VStack(spacing: 20) {
-                reminderDiscoveryFeedback
                 if reminderTab == 2 {
                     Picker("历史状态", selection: $historyFilter) { Text("全部").tag(0); Text("已完成").tag(1); Text("已取消与忽略").tag(2) }.pickerStyle(.segmented)
                 }
                 if (reminderTab == 0 && scheduled.isEmpty) || (reminderTab == 1 && proposed.isEmpty) || (reminderTab == 2 && completed.isEmpty) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(reminderTab == 0 ? "暂时没有待处理的提醒" : (reminderTab == 1 ? "没有需要确认的待办" : "还没有历史记录")).font(.title3.bold())
-                        Text("你可以新建提醒；从记录中发现的事项会先进入待确认，安排时间后才通知。").foregroundStyle(RecallPalette.secondary)
-                    }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(spacing: 16) {
+                        Image(systemName: "bell").font(.system(size: 38, weight: .light)).foregroundStyle(RecallPalette.accent)
+                        Text(reminderTab == 0 ? "暂时没有待处理的提醒" : (reminderTab == 1 ? "没有需要确认的待办" : "还没有历史记录")).font(.headline)
+                        Text("从记录中发现的事项会先进入‘待确认’，安排时间后才通知。")
+                            .font(.callout).foregroundStyle(RecallPalette.secondary).multilineTextAlignment(.center)
+                        HStack(spacing: 12) {
+                            Button("新建提醒") { isCreatingReminder = true }.buttonStyle(.borderedProminent)
+                            if reminderTab != 1 && !proposed.isEmpty {
+                                Button("去看待确认（\(proposed.count)）") { reminderTab = 1 }
+                            } else {
+                                Button("发现待办") { model.proposeReminders() }.disabled(isDiscovering)
+                            }
+                        }
+                    }.frame(maxWidth: .infinity, minHeight: 400)
                 } else { reminderLists }
 
             }
@@ -2406,6 +2386,7 @@ private struct RemindersView: View {
             .padding(.vertical, 30)
             .frame(maxWidth: .infinity)
         }
+            reminderDiscoveryFeedback.padding(.horizontal, 24).padding(.vertical, 12)
         }
         .background(RecallPalette.background)
         .onAppear { openRequestedReminder() }
@@ -2446,6 +2427,14 @@ private struct RemindersView: View {
         }
     }
 
+    private func reminderTabButton(_ title: String, count: Int, tab: Int) -> some View {
+        Button { reminderTab = tab } label: {
+            Text(title + " \(count)").font(.system(size: 14, weight: reminderTab == tab ? .semibold : .regular))
+                .foregroundStyle(reminderTab == tab ? RecallPalette.accent : RecallPalette.secondary)
+                .padding(.vertical, 12)
+                .overlay(alignment: .bottom) { if reminderTab == tab { Rectangle().fill(RecallPalette.accent).frame(height: 2) } }
+        }.buttonStyle(.plain)
+    }
     private func openRequestedReminder() {
         if case .reminder(let id) = model.destination, let row = model.state.reminders.first(where: { $0.id == id }) {
             reminderTab = row.status == .proposed ? 1 : ([.completed, .cancelled, .dismissed].contains(row.status) ? 2 : 0)
@@ -2480,21 +2469,15 @@ private struct RemindersView: View {
             .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 14))
         case let .completed(eligibleRecordCount, analyzedRecordCount, discoveredCount, completedAt):
             HStack(spacing: 10) {
-                Image(systemName: discoveredCount > 0 ? "checkmark.circle.fill" : "magnifyingglass")
-                    .foregroundStyle(discoveredCount > 0 ? RecallPalette.accent : RecallPalette.secondary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(discoveredCount > 0 ? "新增 \(discoveredCount) 项待确认" : "没有新的待办")
-                        .font(.subheadline.weight(.medium))
-                    Text("最近检查于 \(completedAt.formatted(date: .omitted, time: .shortened))")
-                    DisclosureGroup("查看检查详情") { Text("本次检查 \(analyzedRecordCount) 条新增或变化记录，共 \(eligibleRecordCount) 条记录可用于发现待办；没有新增记录不代表没有记忆。") }
-                        .font(.caption)
-                        .foregroundStyle(RecallPalette.secondary)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background((discoveredCount > 0 ? RecallPalette.accent : RecallPalette.secondary).opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+                Text(discoveredCount > 0 ? "新增 \(discoveredCount) 项待确认" : "已检查待办")
+                Text("· 最近 " + completedAt.formatted(date: .omitted, time: .shortened))
+                Menu("查看检查详情") {
+                    Text("本次检查 \(analyzedRecordCount) 条新增或变化记录")
+                    Text("共有 \(eligibleRecordCount) 条记录参与发现")
+                    if discoveredCount > 0 { Button("查看新增候选") { reminderTab = 1 } }
+                }.menuStyle(.borderlessButton).fixedSize()
+            }.font(.caption).foregroundStyle(RecallPalette.secondary).frame(maxWidth: .infinity)
+
         }
     }
 
@@ -3101,28 +3084,57 @@ private struct ReminderDeliveryBadge: View {
 
 private struct EventRulesView: View {
     @EnvironmentObject private var model: RecallAppModel
-
+    @State private var selectedID: UUID?
+    private var selected: EventRule? { model.state.rules.first { $0.id == selectedID } ?? model.state.rules.first }
     var body: some View {
-        List {
-            Section {
-                RecallPageHeader(title: "记录管理", subtitle: "选择何时记录、记录什么") {
-                    Button("查看已保存记录") {
-                        if let source = model.state.captures.first { model.destination = .record(source.id) }
-                    }.disabled(model.state.captures.isEmpty)
-                }
-                Text("勾选你希望 Recall 记录的事件。每一类都可以独立配置采集范围、保留周期和是否用于提醒。裸 Enter 监听不会被默认启用。")
-                    .foregroundStyle(RecallPalette.secondary)
+        VStack(alignment: .leading, spacing: 0) {
+            RecallPageHeader(title: "记录管理", subtitle: "选择何时记录、记录什么") {
+                Button("查看已保存记录") { if let source = model.state.captures.first { model.destination = .record(source.id) } }.disabled(model.state.captures.isEmpty)
             }
-            Section("事件模板") {
-                ForEach(model.state.rules) { rule in
-                    EventRuleRow(rule: rule)
-                        .listRowBackground(RecallPalette.surface)
-                }
-            }
+            HStack(spacing: 12) {
+                RecallStatusBadge(title: "原图保留 " + retention(images: true))
+                RecallStatusBadge(title: "文本保留 " + retention(images: false))
+                RecallStatusBadge(title: model.state.rules.contains { $0.template == .enterKeyTrigger && $0.isEnabled } ? "裸 Enter 监听已启用" : "裸 Enter 监听关闭", warning: model.state.rules.contains { $0.template == .enterKeyTrigger && $0.isEnabled })
+            }.padding(.horizontal, 24).padding(.bottom, 16)
+            HStack(alignment: .top, spacing: 18) {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(model.state.rules) { rule in
+                            HStack(spacing: 12) {
+                                Button { selectedID = rule.id } label: {
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(rule.template.title).font(.system(size: 14, weight: .semibold))
+                                        Text(rule.template.summary).font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(2)
+                                    }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                                }.buttonStyle(.plain)
+                                Toggle("启用" + rule.template.title, isOn: Binding(get: { model.state.rules.first { $0.id == rule.id }?.isEnabled ?? false }, set: { model.toggleRule(rule, isEnabled: $0) }))
+                                    .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                            }.padding(14).background(selected?.id == rule.id ? RecallPalette.selected : RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
+                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(selected?.id == rule.id ? RecallPalette.accent : RecallPalette.border, lineWidth: 1))
+                        }
+                    }
+                }.frame(width: 290).clipped()
+                ScrollView {
+                    if let selected {
+                        VStack(alignment: .leading, spacing: 20) {
+                            Text(selected.template.title).font(RecallTypography.title)
+                            Text(selected.template.summary).font(.callout).foregroundStyle(RecallPalette.secondary)
+                            if selected.template == .enterKeyTrigger {
+                                Label(model.enterKeyMonitorStatus.title, systemImage: model.enterKeyMonitorStatus.symbolName).font(.caption).foregroundStyle(RecallPalette.warning)
+                                Text("仅在 Recall 不在前台时触发；不会拦截按键。需要输入监控、辅助功能和屏幕录制权限。").font(.caption).foregroundStyle(RecallPalette.secondary)
+                                Button("检查跨应用权限") { model.checkEnterKeyMonitor() }
+                            }
+                            EventRuleEditor(rule: selected).id(selected.id)
+                        }.recallSurface().padding(.bottom, 24)
+                    }
+                }.clipped()
+            }.padding(.horizontal, 24).padding(.bottom, 16)
         }
-        .scrollContentBackground(.hidden)
-        .background(RecallPalette.background)
-        .navigationTitle("记录管理")
+    }
+    private func retention(images: Bool) -> String {
+        let values = model.state.rules.map { images ? $0.retainImageDays : $0.retainTextDays }
+        let low = values.min() ?? 0, high = values.max() ?? 0
+        return low == high ? "\(low) 天" : "\(low)–\(high) 天"
     }
 }
 
@@ -3201,21 +3213,22 @@ private struct EventRuleEditor: View {
             }
             GridRow {
                 Text("原图保留")
-                Stepper("\(retainImages) 天", value: $retainImages, in: 0...365)
+                Stepper("\(retainImages) 天", value: $retainImages, in: 0...365).fixedSize()
             }
             GridRow {
                 Text("文本保留")
-                Stepper("\(retainText) 天", value: $retainText, in: 1...3650)
+                Stepper("\(retainText) 天", value: $retainText, in: 1...3650).fixedSize()
             }
             GridRow {
                 Text("应用白名单")
                 TextField("Bundle ID，以逗号分隔", text: $allowList)
             }
         }
-        Toggle("允许会话检索此类记录", isOn: $includeChat)
-        Toggle("允许从此类记录提出提醒候选", isOn: $includeReminders)
+        Divider()
+        RecallSwitchRow(title: "问一问可检索这类记录", isOn: $includeChat)
+        RecallSwitchRow(title: "从这类记录中发现待办", isOn: $includeReminders)
         Button("保存规则") {
-            var updated = rule
+            var updated = model.state.rules.first { $0.id == rule.id } ?? rule
             updated.scope = scope
             updated.retainImageDays = retainImages
             updated.retainTextDays = retainText
@@ -3224,7 +3237,7 @@ private struct EventRuleEditor: View {
             updated.appAllowList = allowList.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             model.updateRule(updated)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.borderedProminent)
     }
 }
 
@@ -3335,143 +3348,71 @@ private struct PrivacyAndModelView: View {
     @State private var isConfirmingClearAll = false
     @State private var showsAllRecentlyDeleted = false
 
+    @State private var settingsCategory = "隐私与采集"
+    @State private var showsMemorySettings = false
+    @State private var showsDiagnosticSettings = false
+    @State private var showsGovernance = false
+    @State private var showsTime = false
+    private let categories = ["隐私与采集", "模型连接", "每日回顾", "记忆整理", "本地诊断"]
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                settingsHeader
-
-                LazyVGrid(
-                    columns: [GridItem(.flexible(minimum: 360), spacing: 18), GridItem(.flexible(minimum: 360), spacing: 18)],
-                    alignment: .leading,
-                    spacing: 18
-                ) {
-                    settingsCard(title: "屏幕与数据", icon: "lock.shield") {
-                        Toggle("暂停全部屏幕采集", isOn: privacyBinding(\.screenCapturePaused))
-                        Toggle("保留原始截图", isOn: privacyBinding(\.retainScreenshots))
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text("排除的应用")
-                                .font(.subheadline.weight(.medium))
-                            TextField("输入 Bundle ID，以逗号分隔", text: $excludedApps)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        HStack {
-                            Label(model.state.privacy.screenCapturePaused ? "采集已暂停" : "采集由你控制", systemImage: model.state.privacy.screenCapturePaused ? "pause.circle" : "hand.raised.fill")
-                                .font(.caption)
-                                .foregroundStyle(RecallPalette.secondary)
-                            Spacer()
-                            Button("检查屏幕权限") { model.requestScreenRecordingAccess() }
-                                .buttonStyle(.bordered)
-                        }
+        VStack(spacing: 0) {
+            RecallPageHeader(title: "设置", subtitle: "管理本地数据边界、模型使用和每日回顾") { EmptyView() }
+            HStack(alignment: .top, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(categories, id: \.self) { value in
+                        Button { settingsCategory = value } label: {
+                            Text(value).font(.system(size: 14, weight: settingsCategory == value ? .semibold : .regular))
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 11)
+                                .foregroundStyle(settingsCategory == value ? RecallPalette.accent : RecallPalette.text)
+                                .background(settingsCategory == value ? RecallPalette.selected : .clear, in: RoundedRectangle(cornerRadius: 8))
+                        }.buttonStyle(.plain)
                     }
-
-                    settingsCard(title: "模型连接", icon: "cpu") {
-                        HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: activeConfiguration.provider == .anthropicCompatible ? "a.circle.fill" : "o.circle.fill")
-                                .font(.system(size: 25))
-                                .foregroundStyle(RecallPalette.accent)
-                                .frame(width: 42, height: 42)
-                                .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 12))
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(activeConfiguration.provider.title)
-                                    .font(.headline)
-                                Text(activeConfiguration.model)
-                                    .font(.subheadline.weight(.medium))
-                                Text(activeConfiguration.baseURLString)
-                                    .font(.caption)
-                                    .foregroundStyle(RecallPalette.secondary)
-                                    .lineLimit(1)
-                                    .textSelection(.enabled)
-                            }
-                            Spacer()
-                            Image(systemName: savedKeyExists ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                                .foregroundStyle(savedKeyExists ? RecallPalette.accent : RecallPalette.warning)
-                        }
-                        Toggle("允许发送已检索的脱敏文本", isOn: privacyBinding(\.cloudUseEnabled))
-                        HStack {
-                            Text(savedKeyExists ? "连接凭据已保存在本机" : "配置 Key 后才会使用云端模型")
-                                .font(.caption)
-                                .foregroundStyle(RecallPalette.secondary)
-                            Spacer()
-                            Button("编辑连接") { isEditingModelConnection = true }
-                                .buttonStyle(.borderedProminent)
-                        }
-                    }
-
-                    settingsCard(title: "每日回顾", icon: "calendar.badge.clock", tint: RecallPalette.accent) {
-                        Toggle("每天自动汇总前一天", isOn: dailySummaryEnabledBinding)
-                        Toggle("总结完成后发送系统通知", isOn: dailySummaryNotificationBinding)
-                            .disabled(!model.state.dailySummarySettings.isEnabled)
-                        HStack {
-                            Label(model.state.dailySummarySettings.isEnabled ? "已启用" : "当前关闭", systemImage: model.state.dailySummarySettings.isEnabled ? "checkmark.circle.fill" : "pause.circle")
-                                .font(.caption)
-                                .foregroundStyle(model.state.dailySummarySettings.isEnabled ? RecallPalette.accent : RecallPalette.secondary)
-                            Spacer()
-                            DatePicker(
-                                "执行时间",
-                                selection: dailySummaryTimeBinding,
-                                displayedComponents: .hourAndMinute
-                            )
-                            .labelsHidden()
-                            .datePickerStyle(.field)
-                            .disabled(!model.state.dailySummarySettings.isEnabled)
-                        }
-                        Text("仅汇总前一天已保存的显式记录；通知默认关闭，只有你主动开启后才会请求系统权限。云端模型未启用时会保存本地智能简报。")
-                            .font(.caption)
-                            .foregroundStyle(RecallPalette.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    settingsCard(title: "记忆", icon: "brain.head.profile") {
-                        CaptureUnderstandingSettingsView().environmentObject(model)
-                        Divider().padding(.vertical, 8)
-                        MemoryOrganizationSettings().environmentObject(model)
-                    }
-
-                    settingsCard(title: "本地诊断", icon: "stethoscope", tint: RecallPalette.warning) {
-                        Text("仅保留权限状态、事件模板、操作结果和错误代码；不包含 API Key、聊天正文、OCR 或截图。")
-                            .font(.caption)
-                            .foregroundStyle(RecallPalette.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        HStack {
-                            Label("当前 \(model.diagnosticEntries.count) 条", systemImage: "list.bullet.rectangle")
-                                .font(.caption)
-                                .foregroundStyle(RecallPalette.secondary)
-                            Spacer()
-                            Button("查看日志") { isShowingDiagnostics = true }
-                                .buttonStyle(.bordered)
-                        }
+                }.frame(width: 126)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            privacyStatus
+                            privacyCard.id("隐私与采集")
+                            modelCard.id("模型连接")
+                            dailyCard.id("每日回顾")
+                            DisclosureGroup(isExpanded: $showsMemorySettings) {
+                                VStack(alignment: .leading, spacing: 18) {
+                                    CaptureUnderstandingSettingsView().environmentObject(model)
+                                    Divider()
+                                    MemoryOrganizationSettings().environmentObject(model)
+                                }.padding(.top, 16)
+                            } label: {
+                                HStack { Text("记忆整理").fontWeight(.semibold); Spacer(); Text(model.state.memoryKnowledgeSettings.automaticOrganization ? "后台整理已开启" : "后台整理已暂停").font(.caption).foregroundStyle(RecallPalette.secondary) }
+                            }.recallSurface().id("记忆整理")
+                            DisclosureGroup(isExpanded: $showsDiagnosticSettings) {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text("仅记录操作结果、权限状态和错误代码，不包含聊天正文、识别文字、截图或密钥。").font(.caption).foregroundStyle(RecallPalette.secondary)
+                                    Button("查看日志") { isShowingDiagnostics = true }
+                                }.padding(.top, 12)
+                            } label: {
+                                HStack { Text("本地诊断").fontWeight(.semibold); Spacer(); Text("当前 \(model.diagnosticEntries.count) 条").font(.caption).foregroundStyle(RecallPalette.secondary) }
+                            }.recallSurface().id("本地诊断")
+                            DisclosureGroup("最近删除与忽略规则", isExpanded: $showsGovernance) { memoryGovernanceSection.padding(.top, 14) }.recallSurface()
+                            HStack {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("清空本地记忆").font(.subheadline.weight(.medium))
+                                    Text("清空全部内容后无法恢复。").font(.caption).foregroundStyle(RecallPalette.secondary)
+                                }
+                                Spacer()
+                                Button("删除全部本地记忆", role: .destructive) { isConfirmingClearAll = true }
+                            }.padding(16)
+                        }.padding(.bottom, 24)
+                    }.clipped().onChange(of: settingsCategory) { _, category in
+                        if category == "记忆整理" { showsMemorySettings = true }
+                        if category == "本地诊断" { showsDiagnosticSettings = true }
+                        withAnimation { proxy.scrollTo(category, anchor: .top) }
                     }
                 }
-
-                memoryGovernanceSection
-
-                HStack(alignment: .center, spacing: 14) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(RecallPalette.danger)
-                        .frame(width: 34, height: 34)
-                        .background(RecallPalette.danger.opacity(0.11), in: RoundedRectangle(cornerRadius: 10))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("危险操作")
-                            .font(.subheadline.weight(.semibold))
-                        Text("清空全部数据不会进入最近删除；仅在确定不再需要任何本地记忆时使用。")
-                            .font(.caption)
-                            .foregroundStyle(RecallPalette.secondary)
-                    }
-                    Spacer()
-                    Button("删除全部本地记忆", role: .destructive) { isConfirmingClearAll = true }
-                        .buttonStyle(.bordered)
-                }
-                .padding(16)
-                .background(RecallPalette.danger.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(RecallPalette.danger.opacity(0.2), lineWidth: 1))
-            }
-            .frame(maxWidth: 1_100, alignment: .leading)
-            .padding(.horizontal, 40)
-            .padding(.vertical, 30)
-            .frame(maxWidth: .infinity, alignment: .center)
+            }.padding(.horizontal, 24).padding(.bottom, 16)
         }
+        .toggleStyle(.switch).controlSize(.small)
         .background(RecallPalette.background)
-        .navigationTitle("设置")
         .onAppear(perform: load)
         .sheet(isPresented: $isShowingDiagnostics) {
             RecallDiagnosticsLogSheet()
@@ -3482,7 +3423,7 @@ private struct PrivacyAndModelView: View {
                 configuration: activeConfiguration,
                 savedKeyExists: savedKeyExists
             ) { configuration, key in
-                let excluded = Set(excludedApps.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+                let excluded = model.state.privacy.excludedBundleIdentifiers
                 activeConfiguration = configuration
                 model.saveModelConnection(configuration: configuration, apiKey: key, excludedBundleIdentifiers: excluded)
                 if !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -3506,6 +3447,92 @@ private struct PrivacyAndModelView: View {
         } message: {
             Text("时间线、问一问、总结、提醒、长期记忆、截图、最近删除和忽略规则都会清除，且无法撤销。设置会保留。")
         }
+    }
+
+    private var privacyStatus: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 16) { privacyStatusText; Spacer(minLength: 8); pauseButton }
+            VStack(alignment: .leading, spacing: 12) { privacyStatusText; pauseButton }
+        }.padding(16).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 12))
+    }
+    private var privacyStatusText: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label(model.state.privacy.screenCapturePaused ? "采集已暂停" : "采集由你控制 · 记录保存在本机", systemImage: model.state.privacy.screenCapturePaused ? "pause.circle" : "lock.shield")
+                .font(.subheadline.weight(.medium))
+            Text(model.state.privacy.cloudUseEnabled ? "已允许向连接的模型发送脱敏文本" : "云端模型已关闭，文本不外发")
+                .font(.caption).foregroundStyle(RecallPalette.secondary)
+        }
+    }
+    private var pauseButton: some View {
+        Button(model.state.privacy.screenCapturePaused ? "恢复采集" : "暂停全部采集") {
+            var privacy = model.state.privacy; privacy.screenCapturePaused.toggle(); model.updatePrivacy(privacy)
+        }.fixedSize()
+    }
+    private var privacyCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("屏幕与数据").font(.headline).foregroundStyle(RecallPalette.accent)
+            RecallSwitchRow(title: "保留原始截图", detail: "按记录管理中设置的周期清理。关闭后仅保留识别文字。", isOn: privacyBinding(\.retainScreenshots))
+            Text("排除的应用（不会被采集）").font(.caption).foregroundStyle(RecallPalette.secondary)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 116), spacing: 8)], alignment: .leading, spacing: 8) {
+                ForEach(model.state.privacy.excludedBundleIdentifiers.sorted(), id: \.self) { id in
+                    HStack(spacing: 6) {
+                        Text(applicationName(id)).font(.caption).lineLimit(1)
+                        Button { var privacy = model.state.privacy; privacy.excludedBundleIdentifiers.remove(id); model.updatePrivacy(privacy) } label: { Image(systemName: "xmark").font(.system(size: 9)) }.buttonStyle(.plain).accessibilityLabel("不再排除" + applicationName(id))
+                    }.padding(.horizontal, 9).padding(.vertical, 7).background(RecallPalette.selected, in: Capsule()).help(id)
+                }
+                Button("＋ 添加") { addExcludedApplication() }.buttonStyle(.borderless)
+            }
+            Button("检查屏幕权限") { model.requestScreenRecordingAccess() }.buttonStyle(.plain).font(.caption).foregroundStyle(RecallPalette.accent)
+        }.recallSurface()
+    }
+    private var modelCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("模型连接").font(.headline).foregroundStyle(RecallPalette.accent)
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "cpu").foregroundStyle(RecallPalette.accent).frame(width: 36, height: 36).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(model.state.llmConfiguration.provider.title).font(.subheadline.weight(.medium))
+                    Text(model.state.llmConfiguration.model).font(.caption)
+                    Text(model.state.llmConfiguration.baseURLString).font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(1).textSelection(.enabled)
+                    Text(model.state.llmConfiguration.apiKey.isEmpty ? "尚未配置凭据" : "连接已配置 · 凭据仅保存在本机").font(.caption).foregroundStyle(RecallPalette.secondary)
+                }
+                Spacer(minLength: 0)
+                Button("编辑") { activeConfiguration = model.state.llmConfiguration; savedKeyExists = !activeConfiguration.apiKey.isEmpty; isEditingModelConnection = true }
+            }
+            RecallSwitchRow(title: "允许发送脱敏文本", detail: "关闭后，问一问使用本地摘录；模型回顾和自动理解会暂停。", isOn: privacyBinding(\.cloudUseEnabled))
+        }.recallSurface()
+    }
+    private var dailyCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("每日回顾").font(.headline).foregroundStyle(RecallPalette.accent)
+            RecallSwitchRow(title: "每天自动汇总前一天", detail: "只回顾已保存的记录，需连接模型并允许发送脱敏文本。", isOn: dailySummaryEnabledBinding)
+            HStack {
+                Text("生成时间").font(.subheadline)
+                Spacer()
+                Button(String(format: "每天 %02d:%02d ▾", model.state.dailySummarySettings.hour, model.state.dailySummarySettings.minute)) { showsTime = true }
+                    .popover(isPresented: $showsTime) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            DatePicker("每天生成时间", selection: dailySummaryTimeBinding, displayedComponents: .hourAndMinute).datePickerStyle(.field)
+                            Button("完成") { showsTime = false }
+                        }.padding(20)
+                    }.disabled(!model.state.dailySummarySettings.isEnabled)
+            }
+            RecallSwitchRow(title: "完成后发送系统通知", detail: "主动开启后才请求通知权限。", isOn: dailySummaryNotificationBinding).disabled(!model.state.dailySummarySettings.isEnabled)
+        }.recallSurface()
+    }
+    private func applicationName(_ id: String) -> String {
+        let known = ["com.apple.MobileSMS": "信息", "com.apple.Passwords": "密码", "com.apple.keychainaccess": "钥匙串访问"]
+        if let name = known[id] { return name }
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) { return url.deletingPathExtension().lastPathComponent }
+        return id.split(separator: ".").last.map(String.init) ?? id
+    }
+    private func addExcludedApplication() {
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.applicationBundle]; panel.directoryURL = URL(fileURLWithPath: "/Applications"); panel.allowsMultipleSelection = true
+        panel.prompt = "排除这些应用"
+        guard panel.runModal() == .OK else { return }
+        var privacy = model.state.privacy
+        for url in panel.urls { if let id = Bundle(url: url)?.bundleIdentifier { privacy.excludedBundleIdentifiers.insert(id) } }
+        model.updatePrivacy(privacy)
     }
 
     private var memoryGovernanceSection: some View {
@@ -4022,5 +4049,20 @@ private struct ModelConnectionEditorSheet: View {
         let configuration = makeConfiguration()
         onSave(configuration, normalizedAPIKey)
         dismiss()
+    }
+}
+
+extension RecallRootView {
+    @MainActor static func previewPage(_ name: String) -> AnyView {
+        switch name {
+        case "navigation": AnyView(RecallNavigationPreview())
+        case "daily": AnyView(DailySummariesView())
+        case "topics", "period", "period-stale", "knowledge", "knowledge-empty": AnyView(MatterWorkspaceView(continueChat: { _ in }))
+        case "rules": AnyView(EventRulesView())
+        case "reminders": AnyView(RemindersView())
+        case "timeline": AnyView(TimelineView())
+        case "settings": AnyView(PrivacyAndModelView())
+        default: AnyView(ChatView())
+        }
     }
 }
