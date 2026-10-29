@@ -11,15 +11,17 @@ struct RecallChatInput: NSViewRepresentable {
     let onEscape: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
-    func makeNSView(context: Context) -> NSScrollView {
+    func makeNSView(context: Context) -> NSScrollView { makeScroll(coordinator: context.coordinator) }
+    private func makeScroll(coordinator: Coordinator) -> NSScrollView {
         let scroll = NSScrollView()
         scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
         let editor = RecallInputTextView()
-        editor.delegate = context.coordinator; editor.isRichText = false; editor.drawsBackground = false
+        editor.delegate = coordinator; editor.isRichText = false; editor.drawsBackground = false
         editor.font = .systemFont(ofSize: 16); editor.textColor = .labelColor; editor.insertionPointColor = NSColor(RecallPalette.accent)
         editor.textContainerInset = .zero; editor.textContainer?.lineFragmentPadding = 0
         editor.isHorizontallyResizable = false; editor.isVerticallyResizable = true
         editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true
+        editor.textContainer?.containerSize = NSSize(width: 400, height: CGFloat.greatestFiniteMagnitude)
         editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticDashSubstitutionEnabled = false
         editor.setAccessibilityLabel("向 Recall 提问，回车发送，Shift 加回车换行")
         scroll.documentView = editor
@@ -57,7 +59,10 @@ struct RecallChatInput: NSViewRepresentable {
                 if ((textView as? RecallInputTextView)?.lastModifiers ?? NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.shift) { return false }
                 parent.onSubmit(); return true
             }
-            if commandSelector == #selector(NSResponder.insertTab(_:)) { return parent.onTab() }
+            if commandSelector == #selector(NSResponder.insertTab(_:)) {
+                if !parent.onTab() { textView.window?.selectNextKeyView(nil) }
+                return true
+            }
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) { parent.onEscape(); return true }
             return false
         }
@@ -79,9 +84,12 @@ extension RecallChatInput {
         let probe = Probe()
         let input = RecallChatInput(text: Binding(get: { probe.text }, set: { probe.text = $0 }), height: Binding(get: { probe.height }, set: { probe.height = $0 }), onFocus: { _ in }, onSubmit: { probe.sends += 1 }, onTab: { false }, onEscape: {})
         let coordinator = input.makeCoordinator()
-        let editor = RecallInputTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 44))
+        let scroll = input.makeScroll(coordinator: coordinator)
+        let editor = scroll.documentView as! RecallInputTextView
+        scroll.frame = NSRect(x: 0, y: 0, width: 400, height: 120)
+        editor.setFrameSize(NSSize(width: 400, height: 44))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 120), styleMask: [.borderless], backing: .buffered, defer: false)
-        window.contentView = editor; window.makeKeyAndOrderFront(nil); window.makeFirstResponder(editor)
+        window.contentView = scroll; window.makeKeyAndOrderFront(nil); window.makeFirstResponder(editor)
         defer { window.orderOut(nil) }
         editor.isRichText = false; editor.string = probe.text; editor.delegate = coordinator
         editor.setSelectedRange(NSRange(location: (probe.text as NSString).length, length: 0))
@@ -97,8 +105,6 @@ extension RecallChatInput {
         guard !coordinator.textView(editor, doCommandBy: #selector(NSResponder.insertNewline(_:))), probe.sends == 1 else { throw KeyboardFailure.contract }
         editor.unmarkText()
         editor.string = String(repeating: "这是一段用于验证自动增高的合成文字。", count: 20)
-        editor.isVerticallyResizable = true
-        editor.textContainer?.containerSize = NSSize(width: 400, height: CGFloat.greatestFiniteMagnitude)
         coordinator.measure(editor)
         try await Task.sleep(for: .milliseconds(20))
         guard probe.height > 44 && probe.height <= 180 else { throw KeyboardFailure.contract }

@@ -8,8 +8,8 @@ struct CaptureUnderstandingSettingsView: View {
     private var failed: Int { model.state.understandingJobs.filter { $0.state == .failed }.count }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle("采集后自动理解新记录（逐条调用模型，默认关闭）", isOn: Binding(get: { model.state.understandingSettings.enabled && model.state.understandingSettings.automatic == true }, set: { value in model.setCaptureUnderstandingEnabled(value) }))
-            Text("先保存识别文字，再用模型核对事情、角色和状态。回顾会复用这些结果；未完成的历史记录会在生成回顾时补齐。仅发送脱敏文本，可暂停自动处理。")
+            RecallSwitchRow(title: "采集后自动理解新记录", detail: "逐条调用模型，默认关闭。", isOn: Binding(get: { model.state.understandingSettings.enabled && model.state.understandingSettings.automatic == true }, set: { value in model.setCaptureUnderstandingEnabled(value) }))
+            Text("先保存识别文字，再用模型核对事情、角色和状态。回顾可以直接使用已保存的文本，不必等待逐条理解。仅发送脱敏文本，可随时暂停。")
                 .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
             if model.state.understandingSettings.enabled && (!model.state.privacy.cloudUseEnabled || model.state.llmConfiguration.apiKey.isEmpty) {
                 Label("连接模型并允许使用脱敏文本后开始整理", systemImage: "pause.circle")
@@ -20,7 +20,7 @@ struct CaptureUnderstandingSettingsView: View {
                     .disabled(!model.state.understandingSettings.enabled)
                 Button("查看进度") { showQueue = true }
                 Spacer()
-                Text(waiting > 0 ? "\(waiting) 条待整理" : "暂无等待中的记录")
+                Text(!model.state.understandingSettings.enabled ? "启用后可整理历史记录" : (waiting > 0 ? "\(waiting) 条待整理" : "暂无等待中的记录"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
             if failed > 0 {

@@ -78,7 +78,11 @@ public final class MemoryAssistant {
             copy.ocrText = correctionNote + "记录时间：\(originalDate.formatted())；\(dateNote)\n" + copy.ocrText
             return copy
         }
-        let retrievalText = retrievalText(for: question, history: state.messages)
+        let resolvedQuestion = retrievalText(for: question, history: state.messages)
+        let retrievalText: String
+        if let days = scope.recentDays, timeRangeResolver.resolve(resolvedQuestion) == nil {
+            retrievalText = "最近\(max(1, days))天，" + resolvedQuestion
+        } else { retrievalText = resolvedQuestion }
         let timeRange = timeRangeResolver.resolve(retrievalText)
         let allowedIDs = Set(recordsAllowedInChat.map(\.id))
         let summaryEvidence = state.dailySummaries.filter {

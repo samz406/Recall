@@ -51,12 +51,14 @@ enum RecallLayoutPreviews {
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(10)) }
         let defaults = UserDefaults(suiteName: "im.recall.synthetic-layout")!
         defer { defaults.removePersistentDomain(forName: "im.recall.synthetic-layout") }
-        let names = ["daily", "topics", "period", "knowledge", "knowledge-empty", "rules", "reminders", "timeline", "settings", "chat", "navigation"]
+        let names = ["daily", "topics", "period", "period-stale", "knowledge", "knowledge-empty", "rules", "reminders", "timeline", "settings", "chat", "navigation"]
         for mode in ["wide", "narrow", "dark"] {
             let width: CGFloat = mode == "narrow" ? 780 : 1050
             for name in names {
-                defaults.set(name == "period" ? "周期回顾" : (name.hasPrefix("knowledge") ? "长期记忆" : "记忆主题"), forKey: "recall.memory.tab")
+                defaults.set(name.hasPrefix("period") ? "周期回顾" : (name.hasPrefix("knowledge") ? "长期记忆" : "记忆主题"), forKey: "recall.memory.tab")
                 let saved = model.state
+                let savedReportSelection = model.weeklyReportToOpen
+                if name == "period-stale" { model.weeklyReportToOpen = model.state.weeklyReports.last?.id }
                 if name == "knowledge-empty" { model.state.memoryKnowledge.claims = [] }
                 let page = RecallRootView.previewPage(name)
                     .environmentObject(model).defaultAppStorage(defaults).recallColors()
@@ -74,9 +76,10 @@ enum RecallLayoutPreviews {
                 try data.write(to: directory.appendingPathComponent(mode + "-" + name + ".png"))
                 window.orderOut(nil)
                 model.state = saved
+                model.weeklyReportToOpen = savedReportSelection
             }
         }
-        print("PASS: rendered 33 native SwiftUI page previews (wide, minimum detail width and dark appearance)")
+        print("PASS: rendered 36 native SwiftUI page previews (wide, minimum detail width and dark appearance)")
     }
     private enum PreviewFailure: Error { case noImage }
 }

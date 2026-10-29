@@ -14,15 +14,7 @@ struct RecallRootView: View {
 
     var body: some View {
         NavigationSplitView {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 25) {
-                    Text("Recall").font(.system(size: 18, weight: .bold)).padding(.horizontal, 12).padding(.top, 14)
-                    sidebarGroup("回看", entries: [(.matters, "记忆", "square.stack.3d.up"), (.dailySummaries, "每日回顾", "calendar.badge.clock"), (.timeline, "时间线", "clock.arrow.circlepath")])
-                    sidebarGroup("行动", entries: [(.reminders, "提醒", "bell"), (.chat, "问一问", "bubble.left.and.bubble.right")])
-                    sidebarGroup("管理", entries: [(.rules, "记录管理", "checklist"), (.privacy, "设置", "gearshape")])
-                    Spacer(minLength: 24)
-                }.padding(12)
-            }.background(RecallPalette.sidebar)
+            RecallSidebarView(section: $section)
                 .navigationSplitViewColumnWidth(min: 180, ideal: 196, max: 220)
                 .navigationTitle("")
 
@@ -133,28 +125,6 @@ struct RecallRootView: View {
         }
     }
 
-    private func sidebarGroup(_ title: String, entries: [(SidebarSection, String, String)]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundStyle(RecallPalette.secondary).padding(.horizontal, 12).padding(.bottom, 5)
-            ForEach(entries, id: \.0) { item in
-                Button { section = item.0 } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: item.2).frame(width: 18)
-                        Text(item.1).fontWeight(section == item.0 ? .semibold : .regular)
-                        Spacer(minLength: 0)
-                        if item.0 == .reminders && proposedReminderCount > 0 {
-                            Text("\(proposedReminderCount)").font(.caption.weight(.medium)).padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(RecallPalette.surface, in: Capsule())
-                        }
-                    }.padding(.horizontal, 12).padding(.vertical, 10)
-                        .foregroundStyle(section == item.0 ? RecallPalette.accent : RecallPalette.text)
-                        .background(section == item.0 ? RecallPalette.selected : .clear, in: RoundedRectangle(cornerRadius: 8))
-                        .contentShape(RoundedRectangle(cornerRadius: 8))
-                }.buttonStyle(.plain).accessibilityAddTraits(section == item.0 ? .isSelected : [])
-            }
-        }
-    }
-
     @ToolbarContentBuilder
     private var activityToolbar: some ToolbarContent {
         if model.isRecording {
@@ -183,14 +153,56 @@ struct RecallRootView: View {
         }
     }
 
-    private var highPrioritySummaryTodoCount: Int {
-        model.state.dailySummaries.first?.todos.filter {
-            $0.priority == .high && ($0.status == .pending || $0.status == .inProgress)
-        }.count ?? 0
+
+}
+
+private struct RecallSidebarView: View {
+    @EnvironmentObject private var model: RecallAppModel
+    @Binding var section: SidebarSection?
+    private var proposedReminderCount: Int { model.state.reminders.filter { $0.status == .proposed }.count }
+    var body: some View {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 25) {
+                    Text("Recall").font(.system(size: 18, weight: .bold)).padding(.horizontal, 12).padding(.top, 14)
+                    sidebarGroup("回看", entries: [(.matters, "记忆", "square.stack.3d.up"), (.dailySummaries, "每日回顾", "calendar.badge.clock"), (.timeline, "时间线", "clock.arrow.circlepath")])
+                    sidebarGroup("行动", entries: [(.reminders, "提醒", "bell"), (.chat, "问一问", "bubble.left.and.bubble.right")])
+                    sidebarGroup("管理", entries: [(.rules, "记录管理", "checklist"), (.privacy, "设置", "gearshape")])
+                    Spacer(minLength: 24)
+                }.padding(12)
+            }.background(RecallPalette.sidebar)
+    }
+    private func sidebarGroup(_ title: String, entries: [(SidebarSection, String, String)]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption).foregroundStyle(RecallPalette.secondary).padding(.horizontal, 12).padding(.bottom, 5)
+            ForEach(entries, id: \.0) { item in
+                Button { section = item.0 } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: item.2).frame(width: 18)
+                        Text(item.1).fontWeight(section == item.0 ? .semibold : .regular)
+                        Spacer(minLength: 0)
+                        if item.0 == .reminders && proposedReminderCount > 0 {
+                            Text("\(proposedReminderCount)").font(.caption.weight(.medium)).padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(RecallPalette.surface, in: Capsule())
+                        }
+                    }.padding(.horizontal, 12).padding(.vertical, 10)
+                        .foregroundStyle(section == item.0 ? RecallPalette.accent : RecallPalette.text)
+                        .background(section == item.0 ? RecallPalette.selected : .clear, in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                }.buttonStyle(.plain).accessibilityAddTraits(section == item.0 ? .isSelected : [])
+            }
+        }
     }
 
-    private var proposedReminderCount: Int {
-        model.state.reminders.filter { $0.status == .proposed }.count
+}
+
+/// Renders the same sidebar and page without the OS compositor's split-view material layer.
+private struct RecallNavigationPreview: View {
+    @State private var section: SidebarSection? = .matters
+    var body: some View {
+        HStack(spacing: 0) {
+            RecallSidebarView(section: $section).frame(width: 196)
+            MatterWorkspaceView(continueChat: { _ in })
+        }
     }
 }
 
@@ -576,13 +588,14 @@ private struct TimelineView: View {
             Image(systemName: isSearching ? "magnifyingglass" : "calendar.badge.clock")
                 .font(.system(size: 28, weight: .medium))
                 .foregroundStyle(RecallPalette.accent)
-            Text(isSearching ? "当天没有匹配的记录" : "当天没有记录")
+            Text(isSearching || !sourceFilter.isEmpty ? "没有符合筛选条件的记录" : "当天没有记录")
                 .font(.headline)
             Text(isSearching
-                 ? "搜索只作用于当前选择的日期，可更换关键词或切换日期。"
-                 : "\(dayTitle(for: selectedDay)) 暂无本地记录，可通过上方日期栏查看其他日期。")
+                 ? (searchAllDates ? "已搜索全部日期，可以更换关键词或来源。" : "正在搜索所选日期，可更换关键词、日期，或切换为全部日期。")
+                 : "\(dayTitle(for: selectedDay)) 暂无匹配记录，可切换左侧日期或清除来源筛选。")
                 .font(.subheadline)
                 .foregroundStyle(RecallPalette.secondary)
+            if isSearching || !sourceFilter.isEmpty { Button("清除筛选") { searchText = ""; sourceFilter = "" } }
             if !Calendar.current.isDateInToday(selectedDay) {
                 Button("回到今天") { selectDay(.now) }
                     .buttonStyle(.bordered)
@@ -1748,7 +1761,7 @@ private struct DailySummaryCard: View {
             if isExpanded {
                 Divider()
                 if let overview = summary.modelOverview, !overview.isEmpty {
-                    Text(DailySummaryContentFormatter.removingCitationMarkers(from: overview)).font(.system(size: 15, weight: .medium)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled).padding(14).frame(maxWidth: .infinity, alignment: .leading).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 10))
+                    Text(DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: DailySummaryContentFormatter.removingCitationMarkers(from: overview))).font(.system(size: 15, weight: .medium)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled).padding(14).frame(maxWidth: .infinity, alignment: .leading).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 10))
                 }
                 if !summary.items.isEmpty {
                     DailyReviewContentView(summary: summary)
@@ -4081,9 +4094,9 @@ private struct ModelConnectionEditorSheet: View {
 extension RecallRootView {
     @MainActor static func previewPage(_ name: String) -> AnyView {
         switch name {
-        case "navigation": AnyView(RecallRootView())
+        case "navigation": AnyView(RecallNavigationPreview())
         case "daily": AnyView(DailySummariesView())
-        case "topics", "period", "knowledge", "knowledge-empty": AnyView(MatterWorkspaceView(continueChat: { _ in }))
+        case "topics", "period", "period-stale", "knowledge", "knowledge-empty": AnyView(MatterWorkspaceView(continueChat: { _ in }))
         case "rules": AnyView(EventRulesView())
         case "reminders": AnyView(RemindersView())
         case "timeline": AnyView(TimelineView())

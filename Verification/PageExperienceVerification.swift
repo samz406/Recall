@@ -13,9 +13,10 @@ enum PageExperienceVerification {
         try rangeRestrictions()
         try topicRestrictions()
         try await scopedConversation()
+        try await recentRangeCoversDays()
         try await feedbackAndClear()
         try await deletionUndo()
-        print("PASS: 7 page-experience scenarios (legacy settings, reference switches, date/topic isolation, scoped chat, feedback/clear and deletion undo)")
+        print("PASS: 8 page-experience scenarios (legacy settings, reference switches, date/topic isolation, scoped chat, seven-day coverage, feedback/clear and deletion undo)")
     }
     private struct NoCloudResponder: LLMResponding {
         func answer(to request: LLMRequest) async throws -> LLMAnswer { throw LLMError.serviceError("禁用的记忆不得发出模型请求") }
@@ -106,6 +107,21 @@ enum PageExperienceVerification {
         _ = try await reopened.clearConversation()
         let cleared = await reopened.snapshot()
         try expect(cleared.messages.count == 1 && cleared.messages[0].role == .system && cleared.conversationSummary == nil, "新对话必须清除当前会话及压缩上下文")
+    }
+    private static func recentRangeCoversDays() async throws {
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-page-week-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let now = Date.now
+        let records = try (0..<7).map { day in
+            let date = day == 0 ? now : Calendar.current.date(byAdding: .day, value: -day, to: Calendar.current.startOfDay(for: now))!.addingTimeInterval(43_200)
+            return try ManualMatterNote(title: "Atlas 第\(day)项分页验证", detail: "合成记录：第\(day)项分页方案已核对，等待下一阶段验收。", status: .progressed, eventAt: date).capture(recordedAt: date)
+        }
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(RecallState(captures: records)).write(to: storage.stateURL)
+        let store = try FileMemoryStore(storage: storage), assistant = MemoryAssistant(store: store)
+        let answer = try await assistant.ask("我做了哪些事情", scope: MemoryQueryScope(recentDays: 7))
+        let days = Set(records.filter { answer.citations.contains($0.id) }.map { Calendar.current.startOfDay(for: $0.createdAt) })
+        try expect(days.count == 7, "从范围选择最近七天时，即使问题未复述日期也应覆盖各天，不能只回答今天")
     }
     private static func deletionUndo() async throws {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-page-undo-" + UUID().uuidString))

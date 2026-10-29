@@ -61,13 +61,15 @@ struct RecallSwitchRow: View {
     var detail: String = ""
     @Binding var isOn: Bool
     var body: some View {
-        Toggle(isOn: $isOn) {
+        HStack(alignment: .center, spacing: 20) {
             VStack(alignment: .leading, spacing: 5) {
                 Text(title).font(.system(size: 14, weight: .medium))
                 if !detail.isEmpty { Text(detail).font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true) }
-            }
-        }.toggleStyle(.switch).controlSize(.small)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            Toggle(title, isOn: $isOn).labelsHidden().toggleStyle(.switch).controlSize(.small).fixedSize()
+        }.frame(maxWidth: .infinity)
     }
+
 }
 
 extension View {
