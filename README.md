@@ -134,24 +134,22 @@ swift build --jobs 1
 
 > 在本仓库当前开发环境中，完整 Xcode 尚未安装，因此使用 `swift build` 和 `swift run RecallVerifier` 验证核心逻辑。`scripts/run-app.sh` 会把当前构建包装成开发用 `Recall.app` 并启动它。安装完整 Xcode 后，可直接打开 `Package.swift` 进行界面调试、签名与发布。
 
-## 命令行：批量清洗与重新总结
+## 命令行：批量重新总结
 
-`recall-cli` 对一个已有的数据目录做批量维护，适合在另一台电脑上、或应用外一次性处理历史记录。
+`recall-cli summarize` 对一个已有的数据目录，把每一天有记录的日期重新生成一遍结构化的每日回顾，适合在应用外一次性处理历史记录，或处理另一台电脑上的数据。
 
 ```bash
 swift build -c release
-.build/release/recall-cli all                      # 先预览：只统计，不改数据、不调用模型
-.build/release/recall-cli all --apply              # 清洗截图文字，再重新生成每个有记录日期的每日回顾
+.build/release/recall-cli summarize                         # 先预览：只统计，不改数据、不调用模型
+.build/release/recall-cli summarize --apply --limit 3       # 先试最近 3 天
 .build/release/recall-cli summarize --apply --only-missing --from 2026-10-01
-.build/release/recall-cli clean --apply --data-dir "/path/to/Recall"
+.build/release/recall-cli summarize --apply --data-dir "/path/to/Recall"
 ```
 
-- `clean`：去掉菜单栏词（文件、编辑、窗口、帮助…）、一两个字的碎片，以及同一应用里已经记录过的重复行。结果保存为“更正文字”，原文不动，可在记录详情里“恢复原始文字”；用户手写的记录和手动更正过的记录不会被改。
-- `summarize`：对每一天有记录的日期各调用一次模型，重新生成结构化的每日回顾（主题、类型、归属、类别），旧版本保留；结束后重建主题与长期记忆。未结束的当天也会生成，可再运行覆盖。
-- `all`：先 `clean` 再 `summarize`。
-- 不带 `--apply` 只预览；带 `--apply` 时先在数据目录里做一份带时间戳的 `recall-state.backup-*.json`，并在发送文本或改动前要求确认（`--yes` 跳过）。
+- 每天调用一次模型，旧版本保留；结束后重建主题与长期记忆。未结束的当天也会生成，可再运行覆盖。
+- 不带 `--apply` 只预览；带 `--apply` 时先在数据目录里做一份带时间戳的 `recall-state.backup-*.json`，并在发送文本前要求确认（`--yes` 跳过）。
 - 模型和密钥读取该数据目录自己的设置（密钥不会打印）；目录里没有可用配置，或没有允许发送脱敏文本时，命令拒绝执行。
-- 另一台电脑：把对方的 `Recall` 数据目录拷过来，用 `--data-dir` 指向它；处理完把 `recall-state.json` 拷回。不要同时在应用运行时处理同一目录。
+- 另一台电脑：把对方的 `Recall` 数据目录拷过来，用 `--data-dir` 指向它；处理完把 `recall-state.json` 拷回。不要在应用运行时处理同一目录。
 
 ## 验证
 
