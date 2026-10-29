@@ -80,6 +80,9 @@ extension RecallChatInput {
         let input = RecallChatInput(text: Binding(get: { probe.text }, set: { probe.text = $0 }), height: Binding(get: { probe.height }, set: { probe.height = $0 }), onFocus: { _ in }, onSubmit: { probe.sends += 1 }, onTab: { false }, onEscape: {})
         let coordinator = input.makeCoordinator()
         let editor = RecallInputTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 44))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 120), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = editor; window.makeKeyAndOrderFront(nil); window.makeFirstResponder(editor)
+        defer { window.orderOut(nil) }
         editor.isRichText = false; editor.string = probe.text; editor.delegate = coordinator
         editor.setSelectedRange(NSRange(location: (probe.text as NSString).length, length: 0))
         func enter(shift: Bool) {
@@ -95,7 +98,7 @@ extension RecallChatInput {
         editor.unmarkText()
         editor.string = String(repeating: "这是一段用于验证自动增高的合成文字。", count: 20)
         editor.isVerticallyResizable = true
-        editor.textContainer?.containerSize = NSSize(width: 400, height: .greatestFiniteMagnitude)
+        editor.textContainer?.containerSize = NSSize(width: 400, height: CGFloat.greatestFiniteMagnitude)
         coordinator.measure(editor)
         try await Task.sleep(for: .milliseconds(20))
         guard probe.height > 44 && probe.height <= 180 else { throw KeyboardFailure.contract }
