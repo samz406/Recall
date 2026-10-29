@@ -156,7 +156,7 @@ public final class MemoryAssistant {
         )
         let response: LLMAnswer
 
-        switch state.llmConfiguration.provider {
+        switch state.privacy.cloudUseEnabled ? state.llmConfiguration.provider : .localOnly {
         case .localOnly:
             response = try await ExtractiveMemoryResponder().answer(to: request)
         case .openAICompatible, .anthropicCompatible:
@@ -165,6 +165,7 @@ public final class MemoryAssistant {
                 throw LLMError.serviceError("请先在隐私设置中明确开启云端模型使用。")
             }
             guard beforeCloud.privacy.excludedBundleIdentifiers == state.privacy.excludedBundleIdentifiers,
+                  beforeCloud.memoryKnowledgeSettings == state.memoryKnowledgeSettings,
                   Set(state.captures.map(\.id)).isSubset(of: Set(beforeCloud.captures.map(\.id))),
                   beforeCloud.matterCorrections.map(\.id) == state.matterCorrections.map(\.id),
                   SummaryFeedbackLearning.revision(in: beforeCloud) == SummaryFeedbackLearning.revision(in: state),

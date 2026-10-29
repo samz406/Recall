@@ -14,7 +14,7 @@ struct RecallChatInput: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
         scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
-        let editor = NSTextView()
+        let editor = RecallInputTextView()
         editor.delegate = context.coordinator; editor.isRichText = false; editor.drawsBackground = false
         editor.font = .systemFont(ofSize: 16); editor.textColor = .labelColor; editor.insertionPointColor = NSColor(RecallPalette.accent)
         editor.textContainerInset = .zero; editor.textContainer?.lineFragmentPadding = 0
@@ -54,7 +54,7 @@ struct RecallChatInput: NSViewRepresentable {
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if textView.hasMarkedText() { return false }
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-                if NSEvent.modifierFlags.contains(.shift) { return false }
+                if ((textView as? RecallInputTextView)?.lastModifiers ?? NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.shift) { return false }
                 parent.onSubmit(); return true
             }
             if commandSelector == #selector(NSResponder.insertTab(_:)) { return parent.onTab() }
@@ -62,4 +62,44 @@ struct RecallChatInput: NSViewRepresentable {
             return false
         }
     }
+}
+
+@MainActor
+private final class RecallInputTextView: NSTextView {
+    var lastModifiers: NSEvent.ModifierFlags = []
+    override func keyDown(with event: NSEvent) {
+        lastModifiers = event.modifierFlags
+        super.keyDown(with: event)
+    }
+}
+
+extension RecallChatInput {
+    @MainActor static func verifyKeyboardBehavior() async throws {
+        final class Probe { var text = "首行"; var height: CGFloat = 44; var sends = 0 }
+        let probe = Probe()
+        let input = RecallChatInput(text: Binding(get: { probe.text }, set: { probe.text = $0 }), height: Binding(get: { probe.height }, set: { probe.height = $0 }), onFocus: { _ in }, onSubmit: { probe.sends += 1 }, onTab: { false }, onEscape: {})
+        let coordinator = input.makeCoordinator()
+        let editor = RecallInputTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 44))
+        editor.isRichText = false; editor.string = probe.text; editor.delegate = coordinator
+        editor.setSelectedRange(NSRange(location: (probe.text as NSString).length, length: 0))
+        func enter(shift: Bool) {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: shift ? [.shift] : [], timestamp: 0, windowNumber: 0, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
+            editor.keyDown(with: event)
+        }
+        enter(shift: true)
+        guard probe.text.contains("\n"), probe.sends == 0 else { throw KeyboardFailure.contract }
+        enter(shift: false)
+        guard probe.sends == 1 else { throw KeyboardFailure.contract }
+        editor.setMarkedText("中文组词", selectedRange: NSRange(location: 0, length: 2), replacementRange: NSRange(location: NSNotFound, length: 0))
+        guard !coordinator.textView(editor, doCommandBy: #selector(NSResponder.insertNewline(_:))), probe.sends == 1 else { throw KeyboardFailure.contract }
+        editor.unmarkText()
+        editor.string = String(repeating: "这是一段用于验证自动增高的合成文字。", count: 20)
+        editor.isVerticallyResizable = true
+        editor.textContainer?.containerSize = NSSize(width: 400, height: .greatestFiniteMagnitude)
+        coordinator.measure(editor)
+        try await Task.sleep(for: .milliseconds(20))
+        guard probe.height > 44 && probe.height <= 180 else { throw KeyboardFailure.contract }
+        print("PASS: native chat input Shift-Return inserts newline, Return sends, IME composition does not send, multiline content grows within its limit")
+    }
+    private enum KeyboardFailure: Error { case contract }
 }

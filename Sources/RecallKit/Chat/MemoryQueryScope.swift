@@ -5,12 +5,18 @@ public struct MemoryQueryScope: Hashable, Sendable {
     public var start: Date?
     public var end: Date?
     public var topicID: String?
+    public var recentDays: Int?
     public static let all = MemoryQueryScope()
-    public init(start: Date? = nil, end: Date? = nil, topicID: String? = nil) {
-        self.start = start; self.end = end; self.topicID = topicID
+    public init(start: Date? = nil, end: Date? = nil, topicID: String? = nil, recentDays: Int? = nil) {
+        self.start = start; self.end = end; self.topicID = topicID; self.recentDays = recentDays
     }
-    public var isRestricted: Bool { start != nil || end != nil || topicID != nil }
+    public var isRestricted: Bool { start != nil || end != nil || topicID != nil || recentDays != nil }
     public func applying(to original: RecallState) -> RecallState {
+        if let days = recentDays {
+            let now = Date.now
+            let first = Calendar.current.date(byAdding: .day, value: -(max(1, days) - 1), to: Calendar.current.startOfDay(for: now)) ?? now
+            return Self(start: first, end: now, topicID: topicID).applying(to: original)
+        }
         guard isRestricted else { return original }
         var state = original
         let topicSources: Set<UUID>? = topicID.map { id in
@@ -28,6 +34,10 @@ public struct MemoryQueryScope: Hashable, Sendable {
         state.episodes.removeAll { !Set($0.evidenceIDs).isSubset(of: ids) }
         state.userMemories.removeAll { !Set($0.evidenceIDs).isSubset(of: ids) }
         state.memoryKnowledge.claims.removeAll { $0.sourceIDs.isEmpty || !Set($0.sourceIDs).isSubset(of: ids) }
+        state.memoryKnowledge.entities = state.memoryKnowledge.entities.compactMap { entity in
+            var copy = entity; copy.sourceIDs = copy.sourceIDs.filter(ids.contains)
+            return copy.sourceIDs.isEmpty ? nil : copy
+        }
         state.conversationSummary = nil
         state.messages = []
         return state

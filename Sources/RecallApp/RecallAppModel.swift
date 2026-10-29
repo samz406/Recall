@@ -990,6 +990,7 @@ final class RecallAppModel: ObservableObject {
                 isThinking = false
                 chatTask = nil
                 recordDiagnostic(.error, source: "Chat", message: "问一问请求失败", metadata: ["error": recallSafeErrorCode(error)])
+                noticeMessage = "未能完成回答，请检查模型连接或重试。"
                 if isCommand {
                     state.messages.append(ConversationMessage(role: .system, content: "命令执行失败，请重试。"))
                 }

@@ -17,6 +17,9 @@ enum PageExperienceVerification {
         try await deletionUndo()
         print("PASS: 7 page-experience scenarios (legacy settings, reference switches, date/topic isolation, scoped chat, feedback/clear and deletion undo)")
     }
+    private struct NoCloudResponder: LLMResponding {
+        func answer(to request: LLMRequest) async throws -> LLMAnswer { throw LLMError.serviceError("禁用的记忆不得发出模型请求") }
+    }
     private static func source(_ text: String, date: Date = .now) -> CaptureRecord {
         CaptureRecord(eventTemplate: .manualMoment, createdAt: date, sourceAppName: "合成验证", sourceBundleIdentifier: "example.page-verification",
             contentHash: UUID().uuidString, ocrText: text, textOrigin: .userInput)
@@ -40,6 +43,9 @@ enum PageExperienceVerification {
         var settings = state.memoryKnowledgeSettings; settings.referenceInChat = false
         try await store.updateMemoryKnowledgeSettings(settings); state = await store.snapshot()
         try expect(plan(state).preferences == nil && plan(state).evidence.isEmpty && state.captures.count == 1, "关闭总开关应停止引用，保留原记录")
+        var semanticState = state; semanticState.privacy.cloudUseEnabled = true
+        let selected = try await MemorySemanticLookup().topics(for: "我之前的回答偏好是什么", in: semanticState, responder: NoCloudResponder())
+        try expect(selected.isEmpty, "停用的长期记忆也不能作为语义查找的名称发给模型")
         settings.referenceInChat = true; settings.disabledClaimKeys = [claim.key]
         try await store.updateMemoryKnowledgeSettings(settings)
         let reopened = try FileMemoryStore(storage: storage); state = await reopened.snapshot()
@@ -76,7 +82,8 @@ enum PageExperienceVerification {
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
         let now = Date.now
         var state = RecallState(captures: [source("[聊天·自己] Atlas 范围内分页验证已完成。", date: now.addingTimeInterval(-60)), source("[聊天·自己] Nova 范围外发布已完成。", date: now.addingTimeInterval(-900_000))])
-        state.llmConfiguration.provider = .localOnly
+        state.llmConfiguration.provider = .openAICompatible
+        state.privacy.cloudUseEnabled = false
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(state).write(to: storage.stateURL)
         let store = try FileMemoryStore(storage: storage), assistant = MemoryAssistant(store: store)

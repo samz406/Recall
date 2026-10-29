@@ -1102,7 +1102,11 @@ private struct ChatView: View {
     @State private var scrollRequest = 0
     @State private var messageContentFrame: CGRect = .zero
     @State private var messageViewportHeight: CGFloat = 0
-    @State private var scopeTitle = "全部记忆"
+    private var scopeTitle: String {
+        if let days = model.chatScope.recentDays { return "最近\(days)天" }
+        if let id = model.chatScope.topicID { return model.matterFiles.first { $0.id == id }?.title ?? "所选主题" }
+        return "全部记忆"
+    }
 
     private var hasChatMessages: Bool {
         model.state.messages.contains { $0.role != .system }
@@ -1166,13 +1170,13 @@ private struct ChatView: View {
     }
     private var scopeControl: some View {
         Menu {
-            Button("全部记忆") { model.chatScope = .all; scopeTitle = "全部记忆" }
+            Button("全部记忆") { model.chatScope = .all }
             Button("最近七天") { setRange(days: 7) }
             Button("最近三十天") { setRange(days: 30) }
             if !model.matterFiles.isEmpty {
                 Menu("指定主题") {
                     ForEach(model.matterFiles) { file in
-                        Button(file.title) { model.chatScope = MemoryQueryScope(topicID: file.id); scopeTitle = file.title }
+                        Button(file.title) { model.chatScope = MemoryQueryScope(topicID: file.id) }
                     }
                 }
             }
@@ -1180,8 +1184,7 @@ private struct ChatView: View {
             .disabled(model.isThinking || model.typingMessageID != nil).help("限制本次提问检索的记忆范围")
     }
     private func setRange(days: Int) {
-        let start = Calendar.current.date(byAdding: .day, value: -(days - 1), to: Calendar.current.startOfDay(for: .now)) ?? .now
-        model.chatScope = MemoryQueryScope(start: start, end: .now); scopeTitle = "最近\(days)天"
+        model.chatScope = MemoryQueryScope(recentDays: days)
     }
     private var modelStatus: some View {
         Label(isCloudModel ? model.state.llmConfiguration.model + " · 仅发脱敏文本" : "本地模式 · 数据不外发", systemImage: isCloudModel ? "cloud" : "lock")
