@@ -1,0 +1,78 @@
+import AppKit
+import SwiftUI
+import RecallKit
+
+/// Opt-in CI-only rendering: temporary synthetic archive, no capture, notifications or model requests.
+@MainActor
+enum RecallLayoutPreviews {
+    static func fixture() async throws -> RecallState {
+        var state = RecallState()
+        let now = Date.now
+        for index in 0..<12 {
+            let title = ["Atlas 发布流程优化", "Nova 图表边界验证", "每周阅读与笔记"][index % 3]
+            let note = try ManualMatterNote(title: title, detail: "合成界面验收内容：完成了方案核对，仍需确认后续安排。", status: index % 4 == 0 ? .blocked : .progressed, eventAt: now.addingTimeInterval(-Double(index * 3600)), reviewCategory: index % 3 == 2 ? .learning : .work)
+            var record = try note.capture(recordedAt: now.addingTimeInterval(-Double(index * 3600)))
+            record.sourceAppName = index % 2 == 0 ? "合成聊天" : "合成浏览器"
+            state.captures.append(record)
+        }
+        for index in 0..<6 {
+            let proof = state.captures[index]
+            var daily = DailySummary(day: now.addingTimeInterval(-Double(index * 86_400)), content: "合成回顾正文", sourceCaptureIDs: [proof.id], todos: [], generationKind: .cloud)
+            daily.modelOverview = "完成页面方案核对，保留了进展、阻塞和明确的后续安排。"
+            daily.items = [DailySummaryItem(section: .progress, title: "Atlas 发布流程页面完成核对", detail: "界面间距与操作入口已经核对；生产发布尚未进行。", evidenceIDs: [proof.id], knowledge: DailyItemKnowledge(topic: "Atlas 发布流程", kind: .matter, status: "completed", ownedByUser: true, quotes: [proof.ocrText], category: "work")),
+                           DailySummaryItem(section: .insights, title: "发布状态需分别验证", detail: "方案核对完成与生产发布是不同环节，应保留各自的状态。", evidenceIDs: [proof.id])]
+            state.dailySummaries.append(daily)
+        }
+        for text in ["记住：以后回答简洁一点，先结论后细节", "记住：以后工作周报只写工作内容"] {
+            let directive = MemoryDirective.parse(text)!
+            state.captures.append(CaptureRecord(eventTemplate: .manualMoment, sourceAppName: "明确约定", contentHash: UUID().uuidString, ocrText: directive.content, textOrigin: .userInput, memoryDirective: directive))
+        }
+        state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state, force: true)
+        let period = ReviewPeriod.make(.recentSeven, at: now)
+        let report = try await WeeklyReviewEngine().generate(in: state, period: period, template: ReviewTemplate(kind: .personal))
+        state.weeklyReports = [report]
+        var stale = report; stale.id = UUID(); stale.invalidate(); state.weeklyReports.append(stale)
+        state.messages = [ConversationMessage(role: .user, content: "我这周在 Atlas 上有什么进展？"),
+                          ConversationMessage(role: .assistant, content: "Atlas 的页面方案已完成核对，生产发布仍待确认。\n\n可以先查看发布状态，再继续安排验收。", citations: [state.captures[0].id, state.captures[1].id]),
+                          ConversationMessage(role: .user, content: "明白了")]
+        state.reminders = [ReminderCandidate(title: "核对 Atlas 发布状态", detail: "合成验收候选，不安排实际通知。", sourceCaptureIDs: [state.captures[0].id], confidence: 0.9)]
+        return state
+    }
+    static func run() async throws {
+        let args = CommandLine.arguments
+        let index = args.firstIndex(of: "--layout-previews")!
+        let directory = URL(fileURLWithPath: args.count > index + 1 ? args[index + 1] : "/tmp/recall-layout-previews")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let model = RecallAppModel(previewState: try await fixture())
+        defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
+        while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(10)) }
+        let defaults = UserDefaults(suiteName: "im.recall.synthetic-layout")!
+        defer { defaults.removePersistentDomain(forName: "im.recall.synthetic-layout") }
+        let names = ["daily", "topics", "period", "knowledge", "knowledge-empty", "rules", "reminders", "timeline", "settings", "chat", "navigation"]
+        for mode in ["wide", "narrow", "dark"] {
+            let width: CGFloat = mode == "narrow" ? 780 : 1050
+            for name in names {
+                defaults.set(name == "period" ? "周期回顾" : (name.hasPrefix("knowledge") ? "长期记忆" : "记忆主题"), forKey: "recall.memory.tab")
+                let saved = model.state
+                if name == "knowledge-empty" { model.state.memoryKnowledge.claims = [] }
+                let page = RecallRootView.previewPage(name)
+                    .environmentObject(model).defaultAppStorage(defaults).recallColors()
+                    .frame(width: name == "navigation" ? width + 196 : width, height: 740)
+                let host = NSHostingView(rootView: page)
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: name == "navigation" ? width + 196 : width, height: 740), styleMask: [.borderless], backing: .buffered, defer: false)
+                window.appearance = NSAppearance(named: mode == "dark" ? .darkAqua : .aqua)
+                window.contentView = host; window.orderFront(nil)
+                try await Task.sleep(for: .milliseconds(120))
+                host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+                guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw PreviewFailure.noImage }
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                guard let data = bitmap.representation(using: .png, properties: [:]), data.count > 1000 else { throw PreviewFailure.noImage }
+                try data.write(to: directory.appendingPathComponent(mode + "-" + name + ".png"))
+                window.orderOut(nil)
+                model.state = saved
+            }
+        }
+        print("PASS: rendered 33 native SwiftUI page previews (wide, minimum detail width and dark appearance)")
+    }
+    private enum PreviewFailure: Error { case noImage }
+}

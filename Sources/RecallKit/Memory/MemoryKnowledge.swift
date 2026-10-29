@@ -193,6 +193,12 @@ public struct MemoryKnowledge: Codable, Sendable {
 public struct MemoryKnowledgeSettings: Codable, Hashable, Sendable {
     public var automaticOrganization = true
     public var retainExplicitMemories = true
+    public var referenceInChat: Bool? = nil
+    public var disabledClaimKeys: [String]? = nil
+    public var referencesEnabled: Bool { referenceInChat ?? true }
+    public func references(_ claim: MemoryClaim) -> Bool {
+        referencesEnabled && !(disabledClaimKeys ?? []).contains(claim.key)
+    }
     public init() {}
 }
 

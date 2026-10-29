@@ -26,8 +26,10 @@ public final class MemoryAssistant {
     public func ask(
         _ question: String,
         userMessage: ConversationMessage? = nil,
+        scope: MemoryQueryScope = .all,
         onUserMessageSaved: (@MainActor @Sendable () async -> Void)? = nil,
-        onRetrievalWarning: (@MainActor @Sendable () -> Void)? = nil
+        onRetrievalWarning: (@MainActor @Sendable () -> Void)? = nil,
+        onEvidenceReady: (@MainActor @Sendable (Int) -> Void)? = nil
     ) async throws -> ConversationMessage {
         try Task.checkCancellation()
         if ChatCommand.parse(question) == .clear {
@@ -53,14 +55,15 @@ public final class MemoryAssistant {
             let includesTask = ["解释", "分析", "总结", "写一", "帮我", "告诉", "查一下", "看看", "怎么", "什么", "聊聊"].contains(where: question.contains)
             if directive.scope != .conversation || !includesTask {
             let answer = ConversationMessage(role: .assistant,
-                content: "已记住：" + directive.content + "\n适用范围：" + directive.scope.title + "。你可以在‘记忆脉络 → 记忆与约定’中修改或忘记。",
+                content: "已记住：" + directive.content + "\n适用范围：" + directive.scope.title + "。你可以在‘记忆 → 长期记忆’中修改或停用。",
                 citations: [record.id])
             try await store.addMessage(answer, inConversation: conversation.id)
             return answer
             }
         }
         try await store.organizeMemoryIfNeeded()
-        var state = (await store.snapshot()).correctedForAnalysis()
+        let fullState = (await store.snapshot()).correctedForAnalysis()
+        var state = scope.applying(to: fullState)
         state.messages.removeAll { $0.id == userMessage.id }
 
         let recordsAllowedInChat = state.captures.filter { capture in
@@ -84,7 +87,7 @@ public final class MemoryAssistant {
         let episodeEvidence = state.episodes.filter { !$0.evidenceIDs.isEmpty && Set($0.evidenceIDs).isSubset(of: allowedIDs) }.map(makeSearchableEvidence)
         let durableMemoryEvidence = state.userMemories
             .filter { memory in
-                !memory.evidenceIDs.isEmpty && Set(memory.evidenceIDs).isSubset(of: allowedIDs) && (memory.status == .confirmed || (memory.status == .proposed && memory.confidence >= 0.75))
+                state.memoryKnowledgeSettings.referencesEnabled && !memory.evidenceIDs.isEmpty && Set(memory.evidenceIDs).isSubset(of: allowedIDs) && (memory.status == .confirmed || (memory.status == .proposed && memory.confidence >= 0.75))
             }
             .map(makeSearchableEvidence)
         let searchableEvidence = recordsAllowedInChat + summaryEvidence + episodeEvidence + (timeRange == nil ? durableMemoryEvidence : [])
@@ -128,6 +131,7 @@ public final class MemoryAssistant {
             catch { onRetrievalWarning?() }
         }
         let selectedEvidence = retrieval.evidence
+        onEvidenceReady?(selectedEvidence.count)
         let plan = contextManager.plan(
             history: state.messages,
             existingSummary: state.conversationSummary,
@@ -183,7 +187,7 @@ public final class MemoryAssistant {
                 supplementaryContext: request.supplementaryContext.map(privacyEngine.redact),
                 recentMessages: safeRecentMessages
             )
-            let cloudAnswer = try await CompatibleLLM(configuration: state.llmConfiguration, apiKey: key).answer(to: cloudRequest)
+            let cloudAnswer = try await CompatibleLLM(configuration: state.llmConfiguration, apiKey: key).answerCancellably(to: cloudRequest)
             // 已传入证据时，不能接受模型仍声称“记忆为空”的幻觉式回答。
             // 此时保留本地可追溯摘要，确保用户至少得到真实的时间线内容。
             response = !safeContext.isEmpty && claimsEvidenceIsEmpty(cloudAnswer.content)
@@ -207,9 +211,10 @@ public final class MemoryAssistant {
             return MemoryKnowledgeEngine.version(of: source, corrections: state.matterCorrections)
                 != MemoryKnowledgeEngine.version(of: current, corrections: latestState.matterCorrections)
         }
-        let personalBefore = state.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }
+        let personalBefore = fullState.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }
         let personalAfter = latestState.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }
-        guard !changedSource, Set(personalBefore.map(\.id)) == Set(personalAfter.map(\.id)),
+        guard !changedSource, state.memoryKnowledgeSettings == latestState.memoryKnowledgeSettings,
+              Set(personalBefore.map(\.id)) == Set(personalAfter.map(\.id)),
               state.memoryKnowledge.suppressedKeys == latestState.memoryKnowledge.suppressedKeys,
               MemoryKnowledgeEngine().sourcesUsable(Set(retrieval.preferenceSourceIDs), in: latestState) else {
             throw LLMError.serviceError("记忆或约定已更新，请重新提问以使用最新内容。")

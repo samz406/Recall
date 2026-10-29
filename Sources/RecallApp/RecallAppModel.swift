@@ -61,6 +61,8 @@ final class RecallAppModel: ObservableObject {
     private var matterBuildTask: Task<Void, Never>?
     @Published var isRecording = false
     @Published var isThinking = false
+    @Published var chatScope = MemoryQueryScope.all
+    @Published private(set) var chatEvidenceCount: Int?
     @Published private(set) var typingMessageID: UUID?
     @Published private(set) var typingMessageContent = ""
     private var chatTask: Task<Void, Never>?
@@ -94,9 +96,13 @@ final class RecallAppModel: ObservableObject {
     private var reminderActionObserver: NSObjectProtocol?
     private var appActiveObserver: NSObjectProtocol?
 
-    init() {
+    init(previewState: RecallState? = nil) {
         do {
-            let storage = try RecallStorage()
+            let storage = try previewState == nil ? RecallStorage() : RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-layout-" + UUID().uuidString))
+            if let previewState {
+                let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+                try encoder.encode(previewState).write(to: storage.stateURL)
+            }
             self.storage = storage
             self.diagnosticLog = RecallDiagnosticLogStore(storage: storage)
             self.diagnosticEntries = diagnosticLog.entries
@@ -104,6 +110,11 @@ final class RecallAppModel: ObservableObject {
             self.store = try FileMemoryStore(storage: storage, deferMaintenance: true)
             self.pipeline = CapturePipeline(store: store, storage: storage)
             self.assistant = MemoryAssistant(store: store)
+            if let previewState {
+                state = previewState; isLoadingSavedState = false; isFinishingStartup = false
+                rebuildMatterFiles()
+                return
+            }
             recordDiagnostic(.info, source: "App", message: "应用已启动")
             reminderActionObserver = NotificationCenter.default.addObserver(
                 forName: .recallReminderAction,
@@ -941,19 +952,25 @@ final class RecallAppModel: ObservableObject {
         chatRequestID = requestID
         typingMessageID = nil
         typingMessageContent = ""
+        chatEvidenceCount = nil
         let userMessage = ConversationMessage(role: .user, content: question)
         let isCommand = ChatCommand.isCommandInput(question)
+        if isClear { state.messages = [] }
         if !isCommand { state.messages.append(userMessage) }
+        let requestScope = chatScope
         isThinking = true
         chatTask = Task {
             do {
-                let answer = try await assistant.ask(question, userMessage: userMessage) { [weak self] in
+                let answer = try await assistant.ask(question, userMessage: userMessage, scope: requestScope) { [weak self] in
                     guard let self else { return }
                     let snapshot = await self.store.snapshot()
                     guard !Task.isCancelled, self.chatRequestID == requestID else { return }
                     self.state = snapshot
                 } onRetrievalWarning: { [weak self] in
                     self?.recordDiagnostic(.warning, source: "Memory", message: "语义补查未完成，已使用本地检索结果")
+                } onEvidenceReady: { [weak self] count in
+                    guard let self, self.chatRequestID == requestID else { return }
+                    self.chatEvidenceCount = count
                 }
                 let snapshot = await store.snapshot()
                 guard !Task.isCancelled, chatRequestID == requestID else { return }
@@ -976,6 +993,28 @@ final class RecallAppModel: ObservableObject {
                 }
             }
         }
+    }
+
+    func stopChat() {
+        chatRequestID = UUID()
+        chatTask?.cancel(); chatTask = nil
+        isThinking = false; typingMessageID = nil; typingMessageContent = ""
+        noticeMessage = "已停止回答"
+    }
+
+    func rateChatMessage(_ message: ConversationMessage, helpful: Bool) {
+        Task {
+            do { try await store.rateMessage(id: message.id, helpful: message.helpful == helpful ? nil : helpful); state = await store.snapshot() }
+            catch { recordError(error, source: "Chat", message: "保存回答反馈失败") }
+        }
+    }
+
+    func setMemoryReference(_ claim: MemoryClaim, enabled: Bool) {
+        var settings = state.memoryKnowledgeSettings
+        var keys = Set(settings.disabledClaimKeys ?? [])
+        if enabled { keys.remove(claim.key) } else { keys.insert(claim.key) }
+        settings.disabledClaimKeys = keys.sorted()
+        updateMemorySettings(settings)
     }
 
     private func revealAssistantMessage(_ message: ConversationMessage) async {

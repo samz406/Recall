@@ -28,3 +28,13 @@ jobs:
         run: swift build --jobs 1
       - name: Run integration verifier
         run: swift run RecallVerifier
+      - name: Render native page layouts
+        run: swift run RecallApp --layout-previews /tmp/recall-layout-previews
+        timeout-minutes: 3
+      - name: Upload page layout previews
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-page-layouts
+          path: /tmp/recall-layout-previews/*.png
+          if-no-files-found: warn

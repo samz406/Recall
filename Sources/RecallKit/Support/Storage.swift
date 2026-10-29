@@ -1107,6 +1107,13 @@ public actor FileMemoryStore {
         try persist()
     }
 
+    public func rateMessage(id: UUID, helpful: Bool?) throws {
+        guard let index = state.messages.firstIndex(where: { $0.id == id && $0.role == .assistant }) else { return }
+        let previous = state
+        do { state.messages[index].helpful = helpful; try persistReviewState() }
+        catch { state = previous; throw error }
+    }
+
     public func replaceReminders(_ reminders: [ReminderCandidate]) throws {
         state.reminders = reminders
         try persist()

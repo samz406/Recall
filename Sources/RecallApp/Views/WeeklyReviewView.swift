@@ -14,7 +14,7 @@ struct WeeklyReviewView: View {
     @State private var scope = ReviewScope()
     @State private var selectedID: UUID?
     @State private var historyCount = 8
-    @State private var showsComposer = true
+    @Binding var showsComposer: Bool
     @State private var showsTemplates = false
     @State private var showsSchedules = false
     @State private var editing: WeeklyReport?
@@ -37,25 +37,43 @@ struct WeeklyReviewView: View {
     var body: some View {
         let range = period
         let preview = model.reviewIndex.preview(in: range, kind: template.kind, scope: scope)
-        VStack(alignment: .leading, spacing: 24) {
-            introduction
-            if model.state.weeklyReports.isEmpty { composer(range: range, preview: preview) }
-            else { DisclosureGroup("生成另一份回顾", isExpanded: $showsComposer) { composer(range: range, preview: preview).padding(.top, 16) } }
-            if let message = model.weeklyReviewMessage {
-                Label(message, systemImage: "info.circle")
-                    .font(.callout).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            if let task = model.tasks.first(where: { $0.kind == "周期回顾" }) {
-                RecallTaskStatusView(task: task, cancel: model.cancelWeeklyReview)
-            }
-            if let report { reportBody(report).id("weekly-report") }
-            else if !model.isGeneratingWeeklyReview { emptyState }
-            history
+        HStack(alignment: .top, spacing: 18) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    Text("已保存 \(model.state.weeklyReports.count) 份").font(.caption).foregroundStyle(RecallPalette.secondary).padding(.bottom, 4)
+                    ForEach(Array(model.state.weeklyReports.prefix(historyCount))) { item in
+                        RecallListChoice(title: item.displayName, detail: item.period.label, selected: item.id == report?.id,
+                            warning: item.isReadable ? nil : "待更新") { selectedID = item.id }
+                    }
+                    if model.state.weeklyReports.count > historyCount { Button("更早的回顾") { historyCount += 20 } }
+                    Button { showsComposer = true } label: {
+                        Label("模板与时间范围", systemImage: "slider.horizontal.3").font(.caption).frame(maxWidth: .infinity).padding(.vertical, 10)
+                    }.buttonStyle(.bordered).padding(.top, 4)
+                    utilityActions.padding(.top, 4)
+                }
+            }.frame(width: 218).clipped()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let task = model.tasks.first(where: { $0.kind == "周期回顾" }), task.isRunning || task.state == .failed || task.state == .partial {
+                        RecallTaskStatusView(task: task, cancel: model.cancelWeeklyReview)
+                    }
+                    if let message = model.weeklyReviewMessage, !message.isEmpty { Text(message).font(.caption).foregroundStyle(RecallPalette.secondary) }
+                    if let report { reportBody(report) }
+                    else if !model.isGeneratingWeeklyReview { emptyState }
+                }.padding(.bottom, 24)
+            }.clipped().id(report?.id)
+        }
+        .sheet(isPresented: $showsComposer) {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack { Text("新建周期回顾").font(.title2.weight(.semibold)); Spacer(); Button("取消") { showsComposer = false } }
+                Text("选择用途和日期，回顾这一段时间的记录。").foregroundStyle(RecallPalette.secondary)
+                composer(range: range, preview: preview)
+            }.padding(24).frame(width: 660)
         }
         .onAppear {
             rangeNow = .now
             scope = ReviewScope()
-            showsComposer = model.state.weeklyReports.isEmpty
+            showsComposer = false
             if let id = model.reviewTopicToOpen { openTopicReview(id) }
             if let id = model.weeklyReportToOpen { selectedID = id }
         }
@@ -106,7 +124,7 @@ struct WeeklyReviewView: View {
         }
     }
     private var utilityActions: some View {
-        HStack(spacing: 14) {
+        VStack(alignment: .leading, spacing: 10) {
             Button { showsTemplates = true } label: { Label("调整输出格式", systemImage: "slider.horizontal.3") }
             Button { showsSchedules = true } label: {
                 Label(model.state.reviewSchedules.contains(where: \.isEnabled) ? "定时已开启" : "定时生成", systemImage: "clock")
@@ -213,6 +231,7 @@ struct WeeklyReviewView: View {
     private func generateButton(range: ReviewPeriod, eligibleTopicCount: Int) -> some View {
         Button {
             model.generateWeeklyReview(period: range, template: template, scope: scope)
+            showsComposer = false
         } label: {
             Label("生成回顾", systemImage: "sparkles")
                 .font(.system(size: 15, weight: .semibold))
@@ -241,8 +260,13 @@ struct WeeklyReviewView: View {
                 Label(notice, systemImage: "info.circle").font(.callout).foregroundStyle(RecallPalette.secondary)
             }
             if !report.isReadable {
-                Label("来源已删除、更正或重新分类，旧内容已移除。更新后可重新阅读。", systemImage: "arrow.triangle.2.circlepath")
-                    .foregroundStyle(RecallPalette.secondary)
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("部分来源已删除或更正，这份回顾需要更新。", systemImage: "exclamationmark.circle")
+                    Text("失效内容已隐藏，避免重新显示你删除或更正的信息。").font(.caption)
+                    Button("更新回顾") { model.generateWeeklyReview(period: report.period, template: report.template, scope: report.scope, replacing: nil) }
+                        .buttonStyle(.borderedProminent).disabled(model.isGeneratingWeeklyReview)
+                }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                    .foregroundStyle(RecallPalette.warning).background(RecallPalette.warning.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
             } else if let edited = report.editedMarkdown {
                 MarkdownDocumentView(markdown: edited).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     .font(.system(size: 17)).lineSpacing(7)
@@ -353,8 +377,8 @@ struct WeeklyReviewView: View {
 
 private extension View {
     func reviewSurface() -> some View {
-        background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 20))
-            .overlay(RoundedRectangle(cornerRadius: 20).stroke(RecallPalette.text.opacity(0.075), lineWidth: 1))
+        background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(RecallPalette.text.opacity(0.075), lineWidth: 1))
     }
 }
 

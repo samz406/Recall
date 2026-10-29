@@ -13,6 +13,8 @@ struct MatterWorkspaceView: View {
     @AppStorage("recall.memory.tab") private var tab: MatterWorkspaceTab = .topics
     @State private var topicFilter = 0
     @State private var showsMerge = false
+    @State private var showsNewReview = false
+    @State private var showsNewMemory = false
     @State private var search = ""
     @State private var visibleCount = 20
     @State private var olderVisibleCount = 20
@@ -40,20 +42,15 @@ struct MatterWorkspaceView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             RecallPageHeader(title: "记忆", subtitle: "把零散的记录，串成可以接续的经历") { pageActions }
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 24) {
-                    browsingTabs
-                    if tab == .topics { topicFilters }
-                    Spacer(minLength: 16)
-                    if tab != .weeklyReview { topicSearch }
-                }
-                VStack(alignment: .leading, spacing: 14) {
-                    browsingTabs
-                    if tab == .topics { topicFilters }
-                    if tab != .weeklyReview { topicSearch }
-                }
-            }.padding(.horizontal, 24).padding(.bottom, 18)
+            browsingTabs.padding(.horizontal, 24).padding(.bottom, 14)
             Divider()
+            if tab == .weeklyReview {
+                WeeklyReviewView(showsComposer: $showsNewReview).environmentObject(model).padding(.horizontal, 24).padding(.top, 16)
+            } else {
+            if tab == .topics {
+                HStack(spacing: 8) { topicFilters; Spacer(minLength: 12); topicSearch }
+                    .padding(.horizontal, 24).padding(.top, 16)
+            }
             ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
@@ -111,12 +108,11 @@ struct MatterWorkspaceView: View {
                         ForEach(Array(files.prefix(visibleCount))) { file in fileCard(file, resume: false) }
                         more(total: files.count)
                     } else if tab == .knowledge {
-                        MemoryKnowledgeView(search: search).environmentObject(model)
-                    } else if tab == .weeklyReview {
-                        WeeklyReviewView(scrollToReport: { withAnimation { proxy.scrollTo("weekly-report", anchor: .top) } }).environmentObject(model)
+                        MemoryKnowledgeView(search: "", adding: $showsNewMemory).environmentObject(model)
                     }
                 }.padding(24).frame(maxWidth: 1100).frame(maxWidth: .infinity)
             }.clipped()
+            }
             }
         }
         .onAppear { openRequestedContent() }
@@ -155,6 +151,13 @@ struct MatterWorkspaceView: View {
                 Divider()
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
+                        if let review = model.state.topicReviews.first(where: { $0.id == file.id }) {
+                            Text(review.overview).font(.headline)
+                            ForEach(Array(review.points.enumerated()), id: \.offset) { _, point in
+                                VStack(alignment: .leading, spacing: 6) { Text(point.title).fontWeight(.semibold); Text(point.detail).foregroundStyle(RecallPalette.secondary) }
+                            }
+                            Divider()
+                        }
                         ForEach(file.events.reversed()) { event in
                             VStack(alignment: .leading, spacing: 10) {
                                 Text((event.eventAt == nil ? "记录于 " : "发生于 ") + event.date.formatted())
@@ -226,13 +229,19 @@ struct MatterWorkspaceView: View {
     }
 
     private var topicFilters: some View {
-        Picker("主题状态", selection: $topicFilter) {
-            Text("进行中").tag(0); Text("已完成").tag(1); Text("全部").tag(2)
-        }.pickerStyle(.segmented).frame(maxWidth: 230)
+        HStack(spacing: 7) {
+            RecallFilterChip(title: "进行中 \(model.matterFiles.filter { $0.latest.status.isOpenMatter }.count)", selected: topicFilter == 0) { topicFilter = 0 }
+            RecallFilterChip(title: "已完成", selected: topicFilter == 1) { topicFilter = 1 }
+            RecallFilterChip(title: "全部", selected: topicFilter == 2) { topicFilter = 2 }
+        }
     }
     private var pageActions: some View {
         HStack(spacing: 12) {
-            if tab == .topics {
+            if tab == .weeklyReview {
+                Button { showsNewReview = true } label: { Label("新建回顾", systemImage: "plus") }.buttonStyle(.borderedProminent)
+            } else if tab == .knowledge {
+                Button { showsNewMemory = true } label: { Label("记住一件事", systemImage: "plus") }.buttonStyle(.borderedProminent)
+            } else if tab == .topics {
             if model.isBuildingMatters { ProgressView().controlSize(.small).help("正在整理记录") }
             Button { model.organizeExistingMatters() } label: {
                 Label(model.isBuildingMatters ? "正在更新…" : "更新记忆", systemImage: "arrow.clockwise")
@@ -258,11 +267,17 @@ struct MatterWorkspaceView: View {
     }
 
     private var browsingTabs: some View {
-        Picker("浏览记忆", selection: $tab) {
-            ForEach(MatterWorkspaceTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-        }.pickerStyle(.segmented).labelsHidden()
-            .frame(minWidth: 440, maxWidth: 580)
-            .accessibilityLabel("浏览记忆")
+        HStack(spacing: 26) {
+            ForEach(MatterWorkspaceTab.allCases, id: \.self) { value in
+                Button { tab = value } label: {
+                    Text(value == .topics ? "主题" : value.rawValue).font(.system(size: 14, weight: tab == value ? .semibold : .regular))
+                        .foregroundStyle(tab == value ? RecallPalette.accent : RecallPalette.secondary)
+                        .padding(.vertical, 9)
+                        .overlay(alignment: .bottom) { if tab == value { Rectangle().fill(RecallPalette.accent).frame(height: 2) } }
+                }.buttonStyle(.plain).accessibilityAddTraits(tab == value ? .isSelected : [])
+            }
+            Spacer()
+        }
     }
 
     private var topicSearch: some View {
@@ -273,88 +288,32 @@ struct MatterWorkspaceView: View {
 
     private func fileCard(_ file: MatterFile, resume: Bool) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top) {
-                Text(file.title).font(.title3.bold()).fixedSize(horizontal: false, vertical: true)
-                Spacer()
-                Text(file.needsStatusUpdate() ? "状态待更新" : file.latest.status.matterLabel)
-                    .font(.caption).foregroundStyle(RecallPalette.secondary)
+            HStack(alignment: .top, spacing: 16) {
+                Text(file.title).font(.system(size: 16, weight: .semibold)).lineLimit(2)
+                Spacer(minLength: 8)
+                RecallStatusBadge(title: file.needsStatusUpdate() ? "待更新" : file.latest.status.matterLabel,
+                    warning: file.latest.status == .blocked || file.needsStatusUpdate())
             }
-            if let review = model.state.topicReviews.first(where: { $0.id == file.id }) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(review.overview).textSelection(.enabled)
-                    if let notice = review.coverage.notice {
-                        Label(notice, systemImage: "info.circle").font(.caption).foregroundStyle(RecallPalette.secondary)
-                    }
-                    ForEach(Array(review.points.enumerated()), id: \.offset) { _, point in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(point.title).fontWeight(.semibold)
-                            Text(point.detail).foregroundStyle(RecallPalette.secondary)
-                        }.textSelection(.enabled)
-                    }
-                    Text("更新于 " + review.createdAt.formatted(date: .abbreviated, time: .shortened))
-                        .font(.caption).foregroundStyle(RecallPalette.secondary)
-                    if !Set(file.evidenceIDs).isSubset(of: Set(review.sourceVersions.keys)) {
-                        Text("有新的记录，可以重新生成小结。 ").font(.caption).foregroundStyle(RecallPalette.secondary)
-                    }
-                }
-            } else if resume {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text((file.resumeProgress.status == .pending && file.resumeNextAction == nil ? "待处理事项" : "上次进展")
-                        + " · " + file.resumeProgress.date.formatted(date: .abbreviated, time: .omitted))
-                        .font(.caption).foregroundStyle(RecallPalette.secondary)
-                    Text(file.resumeText).textSelection(.enabled)
-                }
-                if let action = file.resumeNextAction {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("记录中的后续行动").font(.caption).foregroundStyle(RecallPalette.secondary)
-                        Text(action).textSelection(.enabled)
-                    }
-                }
-            } else {
-                Text(file.latest.detail).textSelection(.enabled)
-                if let action = file.latest.nextAction {
-                    Text(action).textSelection(.enabled)
-                }
-            }
-            if model.state.experienceHintsEnabled,
-               let previous = file.events.dropLast().last,
-               previous.status != file.latest.status,
-               !model.state.dismissedExperienceIDs.contains("change:" + file.latest.id.uuidString) {
-                Text("状态有了变化：" + previous.status.matterLabel + " → " + file.latest.status.matterLabel)
-                    .font(.callout).foregroundStyle(RecallPalette.accent)
-                Button("对照前后记录") { selected = file }
-                Button("不再提示这条变化") { model.dismissExperience("change:" + file.latest.id.uuidString) }
-            }
-            if file.needsStatusUpdate() {
-                Text("此后暂无新的进展记录，当前状态仍待确认。")
-                    .font(.callout).foregroundStyle(RecallPalette.secondary)
-            }
-            HStack {
-                Button(model.state.topicReviews.contains(where: { $0.id == file.id }) ? "重新生成小结" : "生成主题小结") {
-                    model.generateTopicReview(file)
-                }.disabled(model.generatingTopicID != nil)
-                if model.generatingTopicID == file.id {
-                    ProgressView().controlSize(.small)
-                    let cancelling = model.tasks.first(where: { $0.kind == "主题小结" && $0.target == file.title })?.isCancelling == true
-                    Button(cancelling ? "取消中…" : "取消") { model.cancelTopicReview() }.disabled(cancelling)
-                }
-            }
-            if let task = model.tasks.first(where: { $0.kind == "主题小结" && $0.target == file.title }) {
+            Text(model.state.topicReviews.first { $0.id == file.id }?.overview ?? (resume ? file.resumeText : file.latest.detail))
+                .font(RecallTypography.body).lineLimit(2).foregroundStyle(RecallPalette.secondary)
+            if let task = model.tasks.first(where: { $0.kind == "主题小结" && $0.target == file.title }), task.isRunning || task.state == .failed {
                 RecallTaskStatusView(task: task, cancel: model.cancelTopicReview)
             }
-            Text("最近记录于 \(file.latest.date.formatted(date: .abbreviated, time: .omitted)) · \(file.evidenceIDs.count) 条来源")
-                .font(.caption).foregroundStyle(RecallPalette.secondary)
-            HStack {
-                Button("查看记忆脉络") { selected = file }
-                if model.state.topicGroups.contains(where: { $0.id == file.id }) { Button("撤销合并") { model.undoTopicMerge(file.id) } }
-                if resume {
-                    Button("补充进展") { supplement(title: file.title) }
-                    Button("接着问") { continueChat("关于\(file.title)，请找回上次的进展、已确认的结论和仍缺少的信息。") }
-                        .buttonStyle(.borderedProminent)
-                }
-            }
-        }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
-            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 18))
+            HStack(spacing: 14) {
+                Text("最近记录 " + file.latest.date.formatted(date: .abbreviated, time: .omitted) + " · \(file.evidenceIDs.count) 条来源")
+                    .font(.caption).foregroundStyle(RecallPalette.secondary)
+                Spacer(minLength: 6)
+                Button("脉络") { selected = file }.buttonStyle(.plain)
+                Button("补充") { supplement(title: file.title) }.buttonStyle(.plain)
+                Button("接着问") { continueChat("关于\(file.title)，请找回上次的进展、已确认的结论和仍缺少的信息。") }.buttonStyle(.borderedProminent)
+                Menu {
+                    Button("查看完整主题") { selected = file }
+                    Button(model.state.topicReviews.contains { $0.id == file.id } ? "重新生成小结" : "生成主题小结") { model.generateTopicReview(file) }.disabled(model.generatingTopicID != nil)
+                    if model.state.topicGroups.contains(where: { $0.id == file.id }) { Button("撤销合并") { model.undoTopicMerge(file.id) } }
+                    if model.generatingTopicID == file.id { Button("停止生成") { model.cancelTopicReview() } }
+                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("更多主题操作")
+            }.font(.system(size: 13))
+        }.recallSurface()
     }
     private func empty(_ title: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: 12) {

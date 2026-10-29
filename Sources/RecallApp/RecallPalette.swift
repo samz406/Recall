@@ -44,8 +44,8 @@ extension View {
     }
 
     func recallSidebarRow(isSelected: Bool) -> some View {
-        foregroundStyle(isSelected ? RecallPalette.onAccent : RecallPalette.text)
-            .listRowBackground(isSelected ? RecallPalette.accent : RecallPalette.sidebar)
+        foregroundStyle(isSelected ? RecallPalette.accent : RecallPalette.text)
+            .listRowBackground(isSelected ? RecallPalette.selected : RecallPalette.sidebar)
     }
 }
 

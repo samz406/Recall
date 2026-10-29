@@ -32,7 +32,7 @@ struct DailyReviewContentView: View {
                 let sectionRows = rows.filter { $0.section == section }
                 if !sectionRows.isEmpty {
                     VStack(alignment: .leading, spacing: 16) {
-                        Label(section.title, systemImage: section.systemImage)
+                        Label(section == .progress ? "主线进展" : (section == .insights ? "其他值得留意的事" : "接下来要处理"), systemImage: section.systemImage)
                             .font(RecallTypography.title).foregroundStyle(section == .actions ? RecallPalette.warning : RecallPalette.accent)
                         let limit = section == .insights ? 2 : 5
                         ForEach(Array((expandedSections.contains(section) ? sectionRows : Array(sectionRows.prefix(limit))))) { item in
@@ -58,11 +58,19 @@ struct DailyReviewContentView: View {
             }
         }.sheet(item: $source) { item in RecallSourcesView(title: item.title, ids: item.evidenceIDs).environmentObject(model) }
     }
+    private func statusLabel(_ status: String) -> String? {
+        switch status { case "completed": "已完成"; case "inProgress": "进行中"; case "blocked": "受阻"; case "pending": "待处理"; default: nil }
+    }
     private func itemRow(_ item: DailySummaryItem) -> some View {
         let text = ReviewContentQuality.presentation(item)
         let action = summary.todos.first { $0.id == item.actionCandidateID || $0.title == item.title }
         return VStack(alignment: .leading, spacing: 9) {
-            Text(text.title).font(RecallTypography.title).fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(text.title).font(.system(size: 15, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                if let status = item.knowledge?.status, let label = statusLabel(status) {
+                    RecallStatusBadge(title: label, warning: status == "blocked")
+                }
+            }
             if !text.detail.isEmpty {
                 Text(text.detail)
                     .font(RecallTypography.body)
