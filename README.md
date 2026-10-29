@@ -134,6 +134,23 @@ swift build --jobs 1
 
 > 在本仓库当前开发环境中，完整 Xcode 尚未安装，因此使用 `swift build` 和 `swift run RecallVerifier` 验证核心逻辑。`scripts/run-app.sh` 会把当前构建包装成开发用 `Recall.app` 并启动它。安装完整 Xcode 后，可直接打开 `Package.swift` 进行界面调试、签名与发布。
 
+## 命令行：批量重新总结
+
+`recall-cli summarize` 对一个已有的数据目录，把每一天有记录的日期重新生成一遍结构化的每日回顾，适合在应用外一次性处理历史记录，或处理另一台电脑上的数据。
+
+```bash
+swift build -c release
+.build/release/recall-cli summarize                         # 先预览：只统计，不改数据、不调用模型
+.build/release/recall-cli summarize --apply --limit 3       # 先试最近 3 天
+.build/release/recall-cli summarize --apply --only-missing --from 2026-10-01
+.build/release/recall-cli summarize --apply --data-dir "/path/to/Recall"
+```
+
+- 每天调用一次模型，旧版本保留；结束后重建主题与长期记忆。未结束的当天也会生成，可再运行覆盖。
+- 不带 `--apply` 只预览；带 `--apply` 时先在数据目录里做一份带时间戳的 `recall-state.backup-*.json`，并在发送文本前要求确认（`--yes` 跳过）。
+- 模型和密钥读取该数据目录自己的设置（密钥不会打印）；目录里没有可用配置，或没有允许发送脱敏文本时，命令拒绝执行。
+- 另一台电脑：把对方的 `Recall` 数据目录拷过来，用 `--data-dir` 指向它；处理完把 `recall-state.json` 拷回。不要在应用运行时处理同一目录。
+
 ## 验证
 
 项目提供无网络、无真实截图、无真实云端密钥的集成验证器。它覆盖事件规则、隐私脱敏、应用排除、模拟截图到 OCR 的记录管线、重复记录拦截、检索排序、提醒精度与去重、相对/中文时间、重复周期、完成与忽略生命周期、本地反馈学习、来源删除联动、扫描检查点、通知宿主保护、本地持久化、自定义模型连接配置、长对话压缩、可追溯回答、Episode 聚合、重要记录选择、洞察反馈、习惯学习、SQLite FTS5 与旧状态迁移。另提供可选的真实 Anthropic 兼容服务探测。

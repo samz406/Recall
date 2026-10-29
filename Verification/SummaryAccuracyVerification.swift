@@ -39,6 +39,7 @@ enum SummaryAccuracyVerification {
         try timeRangesAreResolved()
         try await ledgerCurrencyCheckIsCheap()
         try await questionTermsAndTopicRetrieval()
+        try await regeneratingEveryDayKeepsOldVersions()
         print("PASS: summary accuracy covers near-duplicate captures, fast writes, chat markers, quote repair and repeated lines")
     }
 
@@ -432,5 +433,41 @@ extension SummaryAccuracyVerification {
         try expect(titles.contains("第1天") && titles.contains("第3天"), "主题的最早与最新状态没有同时进入证据")
         try expect(!titles.contains("英语口语练习"), "无关主题混入了证据")
         print("PASS: question terms drop template words and a named topic returns its first, changed and latest states")
+    }
+}
+
+extension SummaryAccuracyVerification {
+    /// Regenerating every day that has records, one call per day, keeping the previous version of each review.
+    static func regeneratingEveryDayKeepsOldVersions() async throws {
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-regen-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let store = try FileMemoryStore(storage: storage)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        var days: [Date] = []
+        for offset in [5, 3, 2] {
+            let day = calendar.date(byAdding: .day, value: -offset, to: today)!
+            days.append(day)
+            try await store.addCapture(CaptureRecord(eventTemplate: .workCheckpoint, createdAt: day.addingTimeInterval(36_000), sourceAppName: "Orca",
+                sourceBundleIdentifier: "example.orca", contentHash: UUID().uuidString,
+                ocrText: "发布流程页面改版的代码已经合并到主分支，部署状态与验证结果已更新。", textOrigin: .screenOCR))
+        }
+        try await store.updatePrivacy(PrivacySettings(cloudUseEnabled: true))
+        try await store.updateLLMConfiguration(LLMConfiguration(provider: .openAICompatible, model: "synthetic", apiKey: "verification-placeholder"))
+        let model = ScreenModel()
+        for day in days {
+            let period = ReviewPeriod(start: day, end: calendar.date(byAdding: .day, value: 1, to: day)!)
+            _ = try await store.generateDirectDailyReview(day: day, period: period, responder: model)
+        }
+        // Second pass over the same days replaces each review and keeps the first as a version.
+        for day in days {
+            let period = ReviewPeriod(start: day, end: calendar.date(byAdding: .day, value: 1, to: day)!)
+            _ = try await store.generateDirectDailyReview(day: day, period: period, responder: model)
+        }
+        let state = await store.snapshot()
+        try expect(state.dailySummaries.count == 3, "每天应只有一份当前回顾，实际 \(state.dailySummaries.count) 份")
+        try expect(state.dailySummaries.allSatisfy { ($0.versions ?? []).count == 1 }, "重新生成没有保留上一版")
+        try expect(state.dailySummaries.allSatisfy { $0.items.first?.knowledge?.topic == "发布流程页面改版" }, "重新生成的回顾不是结构化格式")
+        print("PASS: regenerating every day replaces each review, keeps the previous version and writes structured items")
     }
 }

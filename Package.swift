@@ -9,7 +9,8 @@ let package = Package(
     ],
     products: [
         .library(name: "RecallKit", targets: ["RecallKit"]),
-        .executable(name: "RecallApp", targets: ["RecallApp"])
+        .executable(name: "RecallApp", targets: ["RecallApp"]),
+        .executable(name: "recall-cli", targets: ["RecallCLI"])
     ],
     targets: [
         .systemLibrary(
@@ -30,6 +31,11 @@ let package = Package(
             name: "RecallApp",
             dependencies: ["RecallKit"],
             path: "Sources/RecallApp"
+        ),
+        .executableTarget(
+            name: "RecallCLI",
+            dependencies: ["RecallKit"],
+            path: "Sources/RecallCLI"
         ),
         .executableTarget(
             name: "RecallVerifier",
