@@ -17,7 +17,7 @@ public struct MemorySemanticLookup: Sendable {
             allowed.contains(source.id) && source.understanding != nil && source.scopingUnderstanding(to: allowed).understanding == nil
         }.map(\.id))
         let ledger = MemoryKnowledgeEngine().reconcile(state)
-        let disabled = Set(ledger.claims.filter { $0.kind.isPersonal && !state.memoryKnowledgeSettings.references($0) }.flatMap(\.sourceIDs))
+        let disabled = Set(ledger.claims.filter { MemoryLibraryCategory.all.includes($0.kind) && !state.memoryKnowledgeSettings.references($0) }.flatMap(\.sourceIDs))
         let intent = MemoryQuestionIntent(question: question)
         let dates = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id, $0.createdAt) })
         let candidates = ledger.entities.filter {

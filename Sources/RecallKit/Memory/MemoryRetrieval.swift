@@ -26,13 +26,13 @@ public struct MemoryRetrievalEngine: Sendable {
         let ledger = MemoryKnowledgeEngine().reconcile(state)
         let active = ledger.claims.filter { claim in
             ledger.organizationVersion == MemoryKnowledgeEngine.organizationVersion
-                && (!claim.kind.isPersonal || state.memoryKnowledgeSettings.references(claim))
+                && (!MemoryLibraryCategory.all.includes(claim.kind) || state.memoryKnowledgeSettings.references(claim))
                 && claim.usable(at: now) && !claim.sourceIDs.isEmpty && Set(claim.sourceIDs).isSubset(of: allowedIDs)
                 && Set(claim.sourceIDs).isDisjoint(with: restrictedUnderstandingIDs)
         }
         let retiredSources = Set(ledger.claims.filter {
             ([.retracted, .superseded, .conflicted, .expired].contains($0.state) && ($0.kind.isPersonal || $0.kind == .reference))
-                || ($0.kind.isPersonal && !state.memoryKnowledgeSettings.references($0))
+                || (MemoryLibraryCategory.all.includes($0.kind) && !state.memoryKnowledgeSettings.references($0))
         }.flatMap(\.sourceIDs))
         let time = MemoryTimeRangeResolver().resolve(question, now: now)
         let intent = MemoryQuestionIntent(question: question)

@@ -54,6 +54,14 @@ enum PageExperienceVerification {
         settings.disabledClaimKeys = []
         try await reopened.updateMemoryKnowledgeSettings(settings); state = await reopened.snapshot()
         try expect(plan(state).preferences?.contains("简洁") == true, "重新启用后原记忆应恢复，无需创建重复记录")
+        var experience = claim; experience.id = UUID(); experience.key += ":experience"; experience.kind = .experience
+        experience.title = "Atlas 解决分页边界的方法"; experience.content = "Atlas 先复现分页边界，再验证空结果与最后一页。"
+        state.memoryKnowledge.claims.append(experience)
+        let reader = MemoryRetrievalEngine()
+        let enabled = reader.plan(question: "Atlas 上次怎么解决分页问题", state: state, fallback: state.captures)
+        state.memoryKnowledgeSettings.disabledClaimKeys = [experience.key]
+        let disabled = reader.plan(question: "Atlas 上次怎么解决分页问题", state: state, fallback: state.captures)
+        try expect(enabled.evidence.contains { $0.id == experience.id } && !disabled.evidence.contains { $0.id == experience.id }, "历史经验的单条开关也必须实际停止引用")
     }
     private static func rangeRestrictions() throws {
         let now = Date.now, start = now.addingTimeInterval(-604_800)
