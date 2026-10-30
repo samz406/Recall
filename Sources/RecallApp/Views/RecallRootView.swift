@@ -2443,38 +2443,18 @@ private struct RemindersView: View {
         RecallPageHeader(title: "提醒", subtitle: "把需要跟进的事，放到合适的时间") {
             HStack(spacing: 12) {
                 Button(isDiscovering ? "正在发现…" : "发现待办") { model.proposeReminders() }.disabled(isDiscovering)
+                Menu {
+                    Toggle("后台发现待办", isOn: Binding(get: { model.state.reminderLearningProfile.automaticDiscovery == true }, set: { value in model.setAutomaticReminderDiscovery(value) }))
+                    Text("开启后定时用模型分析已保存的脱敏文本；不会自动安排通知。")
+                } label: { Image(systemName: "slider.horizontal.3").accessibilityLabel("待办发现设置") }
+                .menuStyle(.borderlessButton).fixedSize()
                 Button { isCreatingReminder = true } label: { Label("新建提醒", systemImage: "plus") }.buttonStyle(.borderedProminent)
             }
         }
     }
 
-    @ViewBuilder
     private var reminderDiscoveryFeedback: some View {
-        switch model.reminderDiscoveryStatus {
-        case .idle:
-            EmptyView()
-        case let .searching(eligibleRecordCount, analyzingRecordCount):
-            HStack(spacing: 10) {
-                ProgressView().controlSize(.small)
-                Text("正在分析 \(analyzingRecordCount) 条新增记录，共有 \(eligibleRecordCount) 条记忆参与提醒…")
-                    .font(.subheadline)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 14))
-        case let .completed(eligibleRecordCount, analyzedRecordCount, discoveredCount, completedAt):
-            HStack(spacing: 10) {
-                Text(discoveredCount > 0 ? "新增 \(discoveredCount) 项待确认" : "已检查待办")
-                Text("· 最近 " + completedAt.formatted(date: .omitted, time: .shortened))
-                Menu("查看检查详情") {
-                    Text("本次检查 \(analyzedRecordCount) 条新增或变化记录")
-                    Text("共有 \(eligibleRecordCount) 条记录参与发现")
-                    if discoveredCount > 0 { Button("查看新增候选") { reminderTab = 1 } }
-                }.menuStyle(.borderlessButton).fixedSize()
-            }.font(.caption).foregroundStyle(RecallPalette.secondary).frame(maxWidth: .infinity)
-
-        }
+        ReminderDiscoveryStatusView(openPending: { reminderTab = 1 })
     }
 
     @ViewBuilder
@@ -2865,6 +2845,11 @@ private struct ReminderSourceSheet: View {
                     .buttonStyle(.bordered)
             }
 
+            if let analysis = reminder.analysis {
+                Label(analysis.basis, systemImage: "text.bubble")
+                    .font(.caption).foregroundStyle(RecallPalette.secondary)
+            }
+
             if captures.isEmpty {
                 ContentUnavailableView(
                     reminder.origin == .manual ? "这是手动创建的提醒" : "来源记录已不存在",
@@ -2967,7 +2952,7 @@ private struct ReminderCandidateCard: View {
                         Label("创建前选择时间", systemImage: "calendar.badge.clock")
                     }
                     if reminder.status == .proposed {
-                        Text(reminder.confidence >= 0.8 ? "线索明确" : "请核对")
+                        Text(reminder.analysis?.basis ?? "请核对行动与时间")
                     }
                     if reminder.recurrence != .none {
                         Label(reminder.recurrence.title, systemImage: "repeat")
@@ -2979,7 +2964,7 @@ private struct ReminderCandidateCard: View {
                 if isActive, deliveryState == .notFound, !isOverdue {
                     ReminderDeliveryBadge(state: deliveryState)
                 } else if reminder.status == .completed {
-                    Label("已由你标记完成", systemImage: "checkmark.circle")
+                    Label(reminder.origin == .discovered ? "已完成" : "已由你标记完成", systemImage: "checkmark.circle")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(RecallPalette.secondary)
                 }

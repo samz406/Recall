@@ -75,6 +75,7 @@ enum RecallLayoutPreviews {
         try await RecallChatInput.verifyKeyboardBehavior()
         try await verifyAppearanceAndConnection()
         try await verifyReminderHistoryActions()
+        try await verifyReminderDiscoveryActions()
         let model = RecallAppModel(previewState: try await fixture())
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(10)) }

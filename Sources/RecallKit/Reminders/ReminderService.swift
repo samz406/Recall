@@ -106,7 +106,7 @@ public struct ReminderExtractor: Sendable {
             return discovered.contains { sameOccurrence(reminder, $0) }
         }
         for candidate in discovered {
-            guard let index = merged.firstIndex(where: { sameOccurrence($0, candidate) }) else {
+            guard let index = merged.firstIndex(where: { $0.id == candidate.id || sameOccurrence($0, candidate) }) else {
                 merged.append(candidate)
                 continue
             }
@@ -120,6 +120,11 @@ public struct ReminderExtractor: Sendable {
                 continue
             }
             var seenSourceIDs: Set<UUID> = []
+            if candidate.analysis != nil {
+                current.title = candidate.title; current.detail = candidate.detail
+                current.analysis = candidate.analysis; current.recurrence = candidate.recurrence
+                current.dueAt = candidate.dueAt
+            }
             current.sourceCaptureIDs = (current.sourceCaptureIDs.filter { !revalidatedCaptureIDs.contains($0) } + candidate.sourceCaptureIDs)
                 .filter { seenSourceIDs.insert($0).inserted }
             current.confidence = max(current.confidence, candidate.confidence)
@@ -383,7 +388,15 @@ public struct ReminderExtractor: Sendable {
     }
 
     private func sameOccurrence(_ lhs: ReminderCandidate, _ rhs: ReminderCandidate) -> Bool {
-        guard isSemanticallyEquivalent(lhs.title, rhs.title) else { return false }
+        if lhs.analysis != nil || rhs.analysis != nil {
+            if lhs.id == rhs.id { return true }
+            // Model decisions supply identity. Fuzzy character overlap must not merge different
+            // clients/projects or unrelated conversations after the semantic audit accepted both.
+            guard fingerprint(lhs.title) == fingerprint(rhs.title),
+                  !Set(lhs.sourceCaptureIDs).isDisjoint(with: rhs.sourceCaptureIDs) else { return false }
+        } else {
+            guard isSemanticallyEquivalent(lhs.title, rhs.title) else { return false }
+        }
         switch (lhs.dueAt, rhs.dueAt) {
         case let (left?, right?):
             return Calendar.current.isDate(left, inSameDayAs: right)
@@ -395,7 +408,11 @@ public struct ReminderExtractor: Sendable {
     }
 
     func blocks(candidate: ReminderCandidate, existing: ReminderCandidate, now: Date) -> Bool {
-        guard isSemanticallyEquivalent(existing.title, candidate.title) else { return false }
+        if candidate.analysis != nil {
+            guard existing.id == candidate.id || fingerprint(existing.title) == fingerprint(candidate.title) else { return false }
+        } else {
+            guard isSemanticallyEquivalent(existing.title, candidate.title) else { return false }
+        }
         switch existing.status {
         case .proposed, .scheduled, .snoozed:
             return sameOccurrence(existing, candidate)

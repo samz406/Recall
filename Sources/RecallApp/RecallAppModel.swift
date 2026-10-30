@@ -7,6 +7,7 @@ enum ReminderDiscoveryStatus: Equatable {
     case idle
     case searching(eligibleRecordCount: Int, analyzingRecordCount: Int)
     case completed(eligibleRecordCount: Int, analyzedRecordCount: Int, discoveredCount: Int, completedAt: Date)
+    case unavailable(String), failed(String), cancelled(String)
 }
 
 extension Notification.Name {
@@ -79,7 +80,12 @@ final class RecallAppModel: ObservableObject {
     let store: FileMemoryStore
     private let pipeline: CapturePipeline
     private let assistant: MemoryAssistant
-    private let reminderExtractor = ReminderExtractor()
+    private var reminderDiscoveryTask: Task<Void, Never>?
+    private var reminderDiscoveryRunID = UUID()
+    private var reminderDiscoveryTaskID: UUID?
+    private var reminderDiscoveryAutomatic = false
+    private var reminderDiscoveryPaused = false
+    @Published private(set) var reminderDiscoveryProgress = ReminderDiscoveryProgress(completedRecords: 0, totalRecords: 0, phase: "准备记录")
     private let notificationScheduler = LocalNotificationScheduler()
     private let enterKeyRecorder = GlobalEnterKeyRecorder()
     private var dailySummaryTimer: Timer?
@@ -1033,91 +1039,106 @@ final class RecallAppModel: ObservableObject {
     }
 
     func proposeReminders() {
+        reminderDiscoveryPaused = false
         discoverReminders(force: true, announce: true)
     }
 
-    /// 后台仅分析已经持久化且用户允许参与提醒的文本，不截图、不读取其他应用，也不调用云端模型。
-    func discoverReminders(force: Bool, announce: Bool = true) {
-        if case .searching = reminderDiscoveryStatus { return }
-        let discoveryStartedAt = Date.now
-        let discoveryProfile = state.reminderLearningProfile
-        let taskID = announce ? beginTask("发现待办", target: "已保存记录", phase: "核对新增记录") : nil
-        let participatingTemplates = Set(
-            state.rules
-                .filter(\.participatesInReminders)
-                .map(\.template)
-        )
-        let oldestRelevantDate = Calendar.current.date(byAdding: .day, value: -90, to: .now) ?? .distantPast
-        let eligibleCaptures = state.correctedForAnalysis().captures.filter {
-            participatingTemplates.contains($0.eventTemplate) && $0.createdAt >= oldestRelevantDate && discoveryProfile.permitsReminderDiscovery(from: $0)
-        }
-        let checkpoint = state.reminderDiscoveryCheckpoint
-        let rescanAll = force || checkpoint.extractorVersion != ReminderExtractor.version
-        let changed = rescanAll ? eligibleCaptures : eligibleCaptures.filter {
-            checkpoint.processedCaptureHashes[$0.id.uuidString] != MemoryKnowledgeEngine.version(of: $0)
-        }
-        // 新证据可能完成/取消旧候选；把未确认候选的来源一并复核，已安排提醒不参与自动改写。
-        let pendingSourceIDs = Set(state.reminders.filter { $0.status == .proposed && $0.origin == .discovered }.flatMap(\.sourceCaptureIDs))
-        let changedIDs = Set(changed.map(\.id))
-        let captures = rescanAll || !changed.isEmpty
-            ? eligibleCaptures.filter { rescanAll || changedIDs.contains($0.id) || pendingSourceIDs.contains($0.id) }
-            : []
-        let revalidatedIDs = rescanAll ? pendingSourceIDs.union(captures.map(\.id)) : Set(captures.map(\.id))
-        reminderDiscoveryStatus = .searching(
-            eligibleRecordCount: eligibleCaptures.count,
-            analyzingRecordCount: captures.count
-        )
+    func retryReminderDiscovery() {
+        reminderDiscoveryPaused = false
+        discoverReminders(force: false, announce: true)
+    }
 
+    func setAutomaticReminderDiscovery(_ enabled: Bool) {
+        if enabled && (!state.privacy.cloudUseEnabled || state.llmConfiguration.provider == .localOnly || state.llmConfiguration.apiKey.isEmpty) {
+            noticeMessage = ReminderDiscoveryError.unavailable.localizedDescription
+            return
+        }
+        if !enabled && reminderDiscoveryAutomatic { cancelReminderDiscovery() }
         Task {
-            await Task.yield()
-            let extractor = reminderExtractor
-            let blockingHistory = state.reminders.filter { $0.status != .proposed }
-            let extractedCandidates = await Task.detached(priority: .userInitiated) {
-                extractor.candidates(from: captures, existing: blockingHistory, resolutionCaptures: eligibleCaptures, learningProfile: discoveryProfile)
-            }.value
-            let completedAt = Date.now
             do {
-                let learningProfile = state.reminderLearningProfile
-                let availableIDs = Set(state.captures.map(\.id))
-                let newCandidates = extractedCandidates.compactMap { candidate -> ReminderCandidate? in
-                    guard candidate.sourceCaptureIDs.allSatisfy(availableIDs.contains),
-                          !SummaryFeedbackLearning.rejectsAction(title: candidate.title, sourceIDs: candidate.sourceCaptureIDs, in: state) else { return nil }
-                    var adjusted = candidate
-                    adjusted.confidence = min(
-                        max(candidate.confidence + learningProfile.confidenceAdjustment(for: reminderSemanticKey(candidate)), 0),
-                        0.99
-                    )
-                    let isExplicit = candidate.detail.hasPrefix("明确提醒") || candidate.detail.hasPrefix("明确待办")
-                    return adjusted.confidence >= 0.62 || isExplicit ? adjusted : nil
-                }
-                var nextCheckpoint = checkpoint
-                nextCheckpoint.processedCaptureHashes = Dictionary(uniqueKeysWithValues: eligibleCaptures.map { ($0.id.uuidString, MemoryKnowledgeEngine.version(of: $0)) })
-                nextCheckpoint.lastRunAt = completedAt
-                nextCheckpoint.eligibleRecordCount = eligibleCaptures.count
-                nextCheckpoint.analyzedRecordCount = captures.count
-                nextCheckpoint.discoveredCount = newCandidates.count
-                nextCheckpoint.extractorVersion = ReminderExtractor.version
-                let addedCount = try await store.applyReminderDiscovery(candidates: newCandidates, checkpoint: nextCheckpoint,
-                    revalidatedSourceIDs: revalidatedIDs, startedAt: discoveryStartedAt, now: completedAt)
+                try await store.setAutomaticReminderDiscovery(enabled)
                 await refresh()
-                reminderDiscoveryStatus = .completed(
-                    eligibleRecordCount: state.reminderDiscoveryCheckpoint.eligibleRecordCount,
-                    analyzedRecordCount: captures.count,
-                    discoveredCount: addedCount,
-                    completedAt: completedAt
-                )
-                if let taskID { finishTask(taskID, state: .succeeded, message: addedCount == 0 ? "没有新的待办" : "新增 \(addedCount) 项待确认") }
-                if announce {
-                    noticeMessage = addedCount == 0
-                        ? "已分析 \(captures.count) 条新增记录，暂未发现新的提醒候选。"
-                        : "已分析 \(captures.count) 条记录，发现 \(addedCount) 项待确认提醒。"
-                }
+                reminderDiscoveryPaused = false
+                noticeMessage = enabled ? "已开启后台发现；只分析已保存、允许参与的脱敏文本，候选仍需确认时间。" : "已关闭后台发现，可随时手动发现待办。"
+                if enabled { discoverReminders(force: false, announce: false) }
             } catch {
-                reminderDiscoveryStatus = .idle
-                if let taskID { finishTask(taskID, state: .failed, message: "发现未完成，可重试") }
-                recordError(error, source: "Reminders", message: "提醒发现失败")
+                noticeMessage = "设置未保存，请重试。"
+                recordError(error, source: "Reminders", message: "保存后台发现设置失败")
             }
         }
+    }
+
+    func cancelReminderDiscovery() {
+        guard reminderDiscoveryTask != nil else { return }
+        if let id = reminderDiscoveryTaskID { _ = requestTaskCancellation(id) }
+        reminderDiscoveryPaused = true
+        reminderDiscoveryProgress.phase = "正在停止，保留已完成的分析…"
+        reminderDiscoveryTask?.cancel()
+    }
+
+    /// A foreground click is explicit authorization for this pass. Background model use has its
+    /// own default-off switch; it never depends on enabling per-capture understanding.
+    func discoverReminders(force: Bool, announce: Bool = true, responder: (any LLMResponding)? = nil) {
+        guard reminderDiscoveryTask == nil else { return }
+        let automatic = !announce
+        guard !automatic || (state.reminderLearningProfile.automaticDiscovery == true && !reminderDiscoveryPaused) else { return }
+        if automatic && (isGeneratingDailySummary || isGeneratingWeeklyReview || topicReviewTask != nil || isThinking) { return }
+        let config = state.llmConfiguration
+        guard state.privacy.cloudUseEnabled, config.provider != .localOnly, !config.apiKey.isEmpty else {
+            if announce {
+                let message = ReminderDiscoveryError.unavailable.localizedDescription
+                reminderDiscoveryStatus = .unavailable(message); noticeMessage = message
+            }
+            return
+        }
+        let runID = UUID(); reminderDiscoveryRunID = runID; reminderDiscoveryAutomatic = automatic
+        let taskID = beginTask("发现待办", target: "已保存记录", phase: "准备脱敏文本", retry: { [weak self] in self?.retryReminderDiscovery() })
+        reminderDiscoveryTaskID = taskID
+        reminderDiscoveryProgress = ReminderDiscoveryProgress(completedRecords: 0, totalRecords: 0, phase: "准备脱敏文本")
+        reminderDiscoveryStatus = .searching(eligibleRecordCount: 0, analyzingRecordCount: 0)
+        let store = self.store
+        reminderDiscoveryTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.reminderDiscoveryRunID == runID {
+                    self.reminderDiscoveryTask = nil; self.reminderDiscoveryTaskID = nil
+                }
+            }
+            do {
+                let result = try await store.discoverRemindersUsingModel(force: force, automatic: automatic,
+                    responder: responder ?? CompatibleLLM(configuration: config, apiKey: config.apiKey), progress: { [weak self] value in
+                        await self?.updateReminderDiscovery(value, runID: runID, taskID: taskID)
+                    })
+                try Task.checkCancellation()
+                guard reminderDiscoveryRunID == runID else { return }
+                await refresh()
+                reminderDiscoveryStatus = .completed(eligibleRecordCount: result.eligibleRecords, analyzedRecordCount: result.analyzedRecords,
+                    discoveredCount: result.added, completedAt: .now)
+                let message: String
+                if result.eligibleRecords == 0 { message = "当前没有允许参与分析的记录，可检查记录规则与来源设置。" }
+                else if result.analyzedRecords == 0 { message = "没有新增或变化的记录，已保留上次分析结果。" }
+                else { message = result.added > 0 ? "新增 \(result.added) 项待确认" : "模型已核对本次记录，没有新的待办。" }
+                finishTask(taskID, state: .succeeded, message: message)
+                if announce { noticeMessage = message }
+            } catch {
+                guard reminderDiscoveryRunID == runID else { return }
+                let cancelled = ModelCallCancellation.isCancellation(error)
+                let message = cancelled ? "本次已停止，已完成的分析已保存；可以继续发现。"
+                    : ((error as? ReminderDiscoveryError)?.errorDescription ?? "本次模型分析未完成，已有提醒和已完成进度已保留。请重试或检查模型连接。")
+                state = await store.snapshot()
+                reminderDiscoveryStatus = cancelled ? .cancelled(message) : .failed(message)
+                finishTask(taskID, state: cancelled ? .cancelled : .failed, message: message)
+                if announce { noticeMessage = message }
+                if !cancelled { recordError(error, source: "Reminders", message: "模型待办分析未完成，已有提醒保留") }
+            }
+        }
+    }
+
+    private func updateReminderDiscovery(_ progress: ReminderDiscoveryProgress, runID: UUID, taskID: UUID) {
+        guard reminderDiscoveryRunID == runID, reminderDiscoveryTask?.isCancelled != true else { return }
+        reminderDiscoveryProgress = progress
+        reminderDiscoveryStatus = .searching(eligibleRecordCount: progress.totalRecords, analyzingRecordCount: progress.totalRecords)
+        updateTask(taskID, phase: progress.phase, detail: "已保存 \(progress.completedRecords)/\(progress.totalRecords) 条记录的分析结果")
     }
 
     func approveReminder(_ reminder: ReminderCandidate, dueAt: Date, recurrence: ReminderRecurrence = .none) {
