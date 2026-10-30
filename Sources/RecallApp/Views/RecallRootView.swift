@@ -2444,7 +2444,7 @@ private struct RemindersView: View {
             HStack(spacing: 12) {
                 Button(isDiscovering ? "正在发现…" : "发现待办") { model.proposeReminders() }.disabled(isDiscovering)
                 Menu {
-                    Toggle("后台发现待办", isOn: Binding(get: { model.state.reminderLearningProfile.automaticDiscovery == true }, set: model.setAutomaticReminderDiscovery))
+                    Toggle("后台发现待办", isOn: Binding(get: { model.state.reminderLearningProfile.automaticDiscovery == true }, set: { value in model.setAutomaticReminderDiscovery(value) }))
                     Text("开启后定时用模型分析已保存的脱敏文本；不会自动安排通知。")
                 } label: { Image(systemName: "slider.horizontal.3").accessibilityLabel("待办发现设置") }
                 .menuStyle(.borderlessButton).fixedSize()

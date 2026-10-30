@@ -10,7 +10,8 @@ enum ModelReminderDiscoveryVerification {
     actor Model: LLMResponding {
         var mode: String
         var requests: [LLMRequest] = []
-        init(_ mode: String = "valid") { self.mode = mode }
+        let onAudit: (@Sendable () async throws -> Void)?
+        init(_ mode: String = "valid", onAudit: (@Sendable () async throws -> Void)? = nil) { self.mode = mode; self.onAudit = onAudit }
         func log() -> [LLMRequest] { requests }
         func answer(to request: LLMRequest) async throws -> LLMAnswer {
             requests.append(request)
@@ -57,6 +58,7 @@ enum ModelReminderDiscoveryVerification {
                 }
                 object = ["actions": mode == "uncertain" ? []:actions,"resolutions":resolutions,"coverage":mode == "coverage" ? []:coverage]
             }
+            if request.purpose == .reminderDiscoveryAudit { try await onAudit?() }
             return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self), citedCaptureIDs: [])
         }
     }
@@ -128,6 +130,7 @@ enum ModelReminderDiscoveryVerification {
         try check(chinese.map { Calendar.current.component(.hour, from:$0) == 15 && Calendar.current.component(.minute, from:$0) == 30 } == true, "中文绝对时间未解析")
         try check(ReminderDeadlineResolver.resolve("明天下午3点", source:ocr) == nil, "历史聊天相对时间使用了采集日期")
         try check(ReminderDeadlineResolver.resolve("明天下午3点", source:source) != nil, "实际输入的明确相对时间未解析")
+        try check(ReminderDeadlineResolver.resolve("3小时后", source:source).map { abs($0.timeIntervalSince(source.createdAt) - 10_800) < 1 } == true, "实际输入的相对小时未解析")
     }
     static func stateReconciliation() async throws {
         let before = record("[聊天·自己] 我会整理验收清单"), after = record("[聊天·自己] 验收清单已提交", offset:20)
@@ -186,15 +189,42 @@ enum ModelReminderDiscoveryVerification {
         try check(saved.reminderLearningProfile.automaticDiscovery == true && saved.reminders.first?.analysis != nil, "设置或模型依据未持久化")
     }
     static func changedSources() async throws {
-        let source = record("[聊天·自己] 我会整理验收清单")
-        var value = state([source]); value.reminderLearningProfile.automaticDiscovery = true
-        let (memory, storage) = try store(value); defer { try? FileManager.default.removeItem(at:storage.rootURL) }
-        let model = Model("slow"), task = Task { try await memory.discoverRemindersUsingModel(automatic:true, responder:model) }
-        for _ in 0..<100 { if !(await model.log()).isEmpty { break }; try await Task.sleep(for:.milliseconds(5)) }
-        var privacy = (await memory.snapshot()).privacy; privacy.cloudUseEnabled = false
-        try await memory.updatePrivacy(privacy); task.cancel()
-        do { _ = try await task.value; throw Failure(errorDescription:"撤回权限后未停止") } catch is CancellationError {}
-        let saved = await memory.snapshot(); try check(saved.reminders.isEmpty, "撤回权限后的结果仍写入")
+        for mode in ["privacy","configuration","rule","application","source","automatic","dismiss"] {
+            let source = record("[聊天·自己] 我会整理验收清单")
+            var value = state([source]); value.reminderLearningProfile.automaticDiscovery = true
+            let old = ReminderCandidate(title:"整理合成项目验收清单", detail:"用户状态优先", sourceCaptureIDs:[source.id], confidence:0.8, createdAt:source.createdAt)
+            if mode == "dismiss" { value.reminders = [old] }
+            let (memory, storage) = try store(value)
+            defer { try? FileManager.default.removeItem(at:storage.rootURL) }
+            let model = Model(onAudit: {
+                switch mode {
+                case "privacy":
+                    var privacy = (await memory.snapshot()).privacy; privacy.cloudUseEnabled = false
+                    try await memory.updatePrivacy(privacy)
+                case "configuration":
+                    var config = (await memory.snapshot()).llmConfiguration; config.model = "changed"
+                    try await memory.updateLLMConfiguration(config)
+                case "rule":
+                    var rules = (await memory.snapshot()).rules
+                    for i in rules.indices { rules[i].participatesInReminders = false }
+                    try await memory.updateRules(rules)
+                case "application":
+                    if let choice = ReminderSourceChoice(capture:source) { try await memory.setReminderApplication(choice,disabled:true) }
+                case "source": _ = try await memory.deleteCapture(id:source.id)
+                case "automatic": try await memory.setAutomaticReminderDiscovery(false)
+                default:
+                    var dismissed = old; dismissed.status = .dismissed; dismissed.updatedAt = .now
+                    dismissed.dismissedUntil = Date.now.addingTimeInterval(30 * 86_400)
+                    try await memory.updateReminder(dismissed)
+                }
+            })
+            do {
+                _ = try await memory.discoverRemindersUsingModel(automatic:mode == "automatic",responder:model)
+                if mode != "dismiss" { throw Failure(errorDescription:"输入变化未中止："+mode) }
+            } catch ReminderDiscoveryError.changed {}
+            let saved = await memory.snapshot()
+            try check(!saved.reminders.contains { $0.status == .proposed }, "旧请求绕过了最新设置或处理结果："+mode)
+        }
     }
     static func privacy() async throws {
         var source = record("[聊天·自己] 我会整理验收清单，联系 fake@example.invalid")
