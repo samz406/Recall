@@ -1077,6 +1077,7 @@ final class RecallAppModel: ObservableObject {
         guard reminderDiscoveryTask == nil else { return }
         let automatic = !announce
         guard !automatic || (state.reminderLearningProfile.automaticDiscovery == true && !reminderDiscoveryPaused) else { return }
+        if automatic && (isGeneratingDailySummary || isGeneratingWeeklyReview || topicReviewTask != nil || isThinking) { return }
         let config = state.llmConfiguration
         guard state.privacy.cloudUseEnabled, config.provider != .localOnly, !config.apiKey.isEmpty else {
             if announce {

@@ -150,9 +150,9 @@ public struct ModelReminderDiscovery: Sendable {
         }
         for (index, primary) in pages.enumerated() {
             try Task.checkCancellation()
-            let overlap = index > 0 ? pages[index - 1].suffix(4).map { block in var copy = block; copy.contextOnly = true; return copy } : []
-            let adjacent = neighbours.flatMap { CaptureUnderstandingEngine.blocks(for: $0, contextOnly: true) }.prefix(4)
-            let blocks = Array(adjacent) + overlap + primary
+            let overlap: [UnderstandingBlock] = index > 0 ? pages[index - 1].suffix(4).map { block in var copy = block; copy.contextOnly = true; return copy } : []
+            let adjacent: [UnderstandingBlock] = Array(neighbours.flatMap { CaptureUnderstandingEngine.blocks(for: $0, contextOnly: true) }.prefix(4))
+            let blocks: [UnderstandingBlock] = adjacent + overlap + primary
             let sourceIDs = Set(blocks.compactMap { UUID(uuidString: String($0.id.prefix(36))) })
             var factBudget = 3_000
             let sources = allSources.filter { sourceIDs.contains($0.id) }.map { capture -> Source in
@@ -192,7 +192,7 @@ public struct ModelReminderDiscovery: Sendable {
             let bySource = Dictionary(uniqueKeysWithValues: allSources.map { ($0.id, $0) })
             for action in draft.actions {
                 guard action.owner == .user, action.status == .pending,
-                      [.commitment, .request].contains(action.kind), (action.condition?.isEmpty ?? true) else { continue }
+                      [UnderstandingKind.commitment, .request].contains(action.kind), (action.condition?.isEmpty ?? true) else { continue }
                 let proofs = action.evidence.compactMap { byID[$0.blockID] }
                 let speaker: UnderstandingSpeaker = action.kind == .commitment ? .user : .other
                 guard proofs.contains(where: { $0.speaker == speaker && !$0.isReference && ($0.confidence ?? 1) >= 0.5 }) else { continue }
