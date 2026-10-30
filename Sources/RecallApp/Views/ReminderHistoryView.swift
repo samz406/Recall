@@ -179,7 +179,7 @@ struct ReminderHistoryView: View {
             let checkpoint = model.state.reminderDiscoveryCheckpoint
             HStack(spacing: 8) {
                 Text(checkpoint.lastRunAt == nil ? "尚未检查待办" : "已检查待办")
-                if let date = checkpoint.lastRunAt { Text("· 最近 " + date.formatted(date: .omitted, time: .shortened)) }
+                if let date = checkpoint.lastRunAt { Text("· 最近 " + reminderHistoryTime(date)) }
                 Menu("查看检查详情") {
                     Text("本次检查 \(checkpoint.analyzedRecordCount) 条新增或变化记录")
                     Text("共有 \(checkpoint.eligibleRecordCount) 条记录参与发现")
@@ -234,47 +234,18 @@ private struct ReminderHistoryEntry: View {
     }
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: icon).font(.system(size: 13, weight: .medium)).foregroundStyle(color)
-                .frame(width: 30, height: 30).background(color.opacity(0.10), in: Circle())
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 8) {
-                    Text(row.title).font(.system(size: 15)).lineLimit(1).truncationMode(.tail)
-                        .foregroundStyle(row.latest.status == .dismissed ? RecallPalette.secondary : RecallPalette.text)
-                    if row.reminders.count > 1 {
-                        Text("×\(row.reminders.count)").font(.system(size: 11)).foregroundStyle(RecallPalette.secondary)
-                            .padding(.horizontal, 7).padding(.vertical, 2).background(RecallPalette.border.opacity(0.35), in: Capsule())
-                            .fixedSize().help("同一天、同来源和同状态的 \(row.reminders.count) 条记录；恢复或删除会处理这整组")
-                    }
-                }
-                Text("来自 " + row.sourceDescription + " · " + row.date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))
-                    .font(.system(size: 13)).foregroundStyle(RecallPalette.secondary).lineLimit(1)
-            }.frame(maxWidth: .infinity, alignment: .leading).help(row.title)
-            if showsActions {
-                if compact {
-                    Button("查看来源", action: source).buttonStyle(.plain).focused($focus, equals: .source)
-                    Menu { actions } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("历史记录操作").focused($focus, equals: .more)
-                } else {
-                    HStack(spacing: 12) {
-                        Button("查看来源", action: source).focused($focus, equals: .source)
-                        Button("恢复为待确认", action: restore).focused($focus, equals: .restore)
-                        if let application = row.sources.first, row.sources.count == 1 && application.isApplication {
-                            Button("不再从此应用识别") { block(application) }.focused($focus, equals: .block)
-                        } else if row.sources.contains(where: \.isApplication) {
-                            Menu("停止识别来源") { applicationActions }
-                        }
-                        Button(action: delete) { Image(systemName: "trash") }.accessibilityLabel("删除历史记录").focused($focus, equals: .delete)
-                    }.buttonStyle(.plain)
-                }
-            } else {
-                Text(label).font(.system(size: 12)).foregroundStyle(color).padding(.horizontal, 9).padding(.vertical, 3)
-                    .background(color.opacity(0.10), in: Capsule()).fixedSize()
-            }
+            stateIcon
+            entryTitle
+            trailingControls
         }.font(.system(size: 12)).foregroundStyle(RecallPalette.accent)
             .padding(.horizontal, 16).padding(.vertical, 8).frame(minHeight: 54)
             .background(showsActions ? RecallPalette.selected : RecallPalette.surface)
             .contentShape(Rectangle()).onHover { hovered = $0 }
             .focusable().focused($focus, equals: .row)
-            .onKeyPress(.return) { source(); return .handled }
+            .onKeyPress(.return) {
+                guard focus == .row else { return .ignored }
+                source(); return .handled
+            }
             .contextMenu { actions }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(row.title + "，" + label + "，" + row.sourceDescription)
@@ -282,6 +253,54 @@ private struct ReminderHistoryEntry: View {
             .accessibilityAction(named: Text("恢复为待确认"), restore)
             .accessibilityAction(named: Text("删除历史记录"), delete)
             .disabled(busy)
+    }
+    private var stateIcon: some View {
+        Image(systemName: icon).font(.system(size: 13, weight: .medium)).foregroundStyle(color)
+            .frame(width: 30, height: 30).background(color.opacity(0.10), in: Circle())
+    }
+    private var entryTitle: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                Text(row.title).font(.system(size: 15)).lineLimit(1).truncationMode(.tail)
+                    .foregroundStyle(row.latest.status == .dismissed ? RecallPalette.secondary : RecallPalette.text)
+                if row.reminders.count > 1 { duplicateBadge }
+            }
+            Text("来自 " + row.sourceDescription + " · " + reminderHistoryTime(row.date))
+                .font(.system(size: 13)).foregroundStyle(RecallPalette.secondary).lineLimit(1)
+        }.frame(maxWidth: .infinity, alignment: .leading).help(row.title)
+    }
+    private var duplicateBadge: some View {
+        Text("×\(row.reminders.count)").font(.system(size: 11)).foregroundStyle(RecallPalette.secondary)
+            .padding(.horizontal, 7).padding(.vertical, 2).background(RecallPalette.border.opacity(0.35), in: Capsule())
+            .fixedSize().help("同一天、同来源和同状态的 \(row.reminders.count) 条记录；恢复或删除会处理这整组")
+    }
+    @ViewBuilder private var trailingControls: some View {
+        if showsActions {
+            if compact { compactActions } else { wideActions }
+        } else {
+            Text(label).font(.system(size: 12)).foregroundStyle(color).padding(.horizontal, 9).padding(.vertical, 3)
+                .background(color.opacity(0.10), in: Capsule()).fixedSize()
+        }
+    }
+    private var compactActions: some View {
+        HStack(spacing: 12) {
+            Button("查看来源", action: source).buttonStyle(.plain).focused($focus, equals: .source)
+            Menu { actions } label: { Image(systemName: "ellipsis") }
+                .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("历史记录操作").focused($focus, equals: .more)
+        }
+    }
+    private var wideActions: some View {
+        HStack(spacing: 12) {
+            Button("查看来源", action: source).focused($focus, equals: .source)
+            Button("恢复为待确认", action: restore).focused($focus, equals: .restore)
+            if let application = row.sources.first, row.sources.count == 1 && application.isApplication {
+                Button("不再从此应用识别") { block(application) }.focused($focus, equals: .block)
+            } else if row.sources.contains(where: \.isApplication) {
+                Menu("停止识别来源") { applicationActions }
+            }
+            Button(action: delete) { Image(systemName: "trash") }
+                .accessibilityLabel("删除历史记录").focused($focus, equals: .delete)
+        }.buttonStyle(.plain)
     }
     @ViewBuilder private var actions: some View {
         Button("查看来源", action: source)
@@ -295,4 +314,9 @@ private struct ReminderHistoryEntry: View {
             Button("不再从“\(application.title)”识别") { block(application) }
         }
     }
+}
+
+private func reminderHistoryTime(_ date: Date) -> String {
+    let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+    return String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
 }
