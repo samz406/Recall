@@ -66,14 +66,21 @@ enum ReminderHistoryVerification {
     }
     private static func filtersAndPagination() throws {
         let a = capture(), b = capture("Synthetic Browser", bundle: "example.browser")
-        let items = (0..<203).map { index in item("核对 Atlas 边界 \(index)", status: index % 5 == 0 ? .completed : .dismissed, source: index % 2 == 0 ? a : b, at: now.addingTimeInterval(-Double(index * 60))) }
+        var items: [ReminderCandidate] = []
+        for number in 0..<203 {
+            let status: ReminderStatus = number % 5 == 0 ? .completed : .dismissed
+            let source = number % 2 == 0 ? a : b
+            let timestamp = now.addingTimeInterval(-Double(number * 60))
+            items.append(item("核对 Atlas 边界 \(number)", status: status, source: source, at: timestamp))
+        }
         let index = ReminderHistoryIndex(reminders: items, captures: [a, b])
         try expect(index.matching().count == 203 && index.rows().count == 203, "历史记录被旧页面条数限制截断")
         let selected = index.rows(search: "Atlas 202", sourceID: ReminderSourceChoice(capture: a)!.id)
         try expect(selected.count == 1 && selected[0].title.hasSuffix("202"), "筛选只搜索了当前页")
         try expect(index.rows(filter: .completed).count == 41 && index.rows(filter: .dismissedAndCancelled).count == 162, "状态数字和数据范围不一致")
-        let page = Array(index.rows().dropFirst(200).prefix(20))
-        try expect(page.count == 3 && Set(page.flatMap(\.reminderIDs)).count == 3, "最后一页不可达或遗漏记录")
+        let page: [ReminderHistoryRow] = Array(index.rows().dropFirst(200).prefix(20))
+        let pageIDs = Set(page.flatMap { $0.reminderIDs })
+        try expect(page.count == 3 && pageIDs.count == 3, "最后一页不可达或遗漏记录")
         try expect(index.rows(search: "不存在的内容").isEmpty, "搜索没有正确返回空状态")
     }
     private static func restoration() async throws {
