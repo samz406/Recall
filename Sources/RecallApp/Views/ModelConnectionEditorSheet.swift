@@ -99,6 +99,8 @@ struct ModelConnectionEditorSheet: View {
     @FocusState private var focusedField: Field?
     let onSave: (LLMConfiguration, String) -> Void
     private enum Field: Hashable { case baseURL, model, apiKey }
+    private var editorHeight: CGFloat { min(744, (NSScreen.main?.visibleFrame.height ?? 900) - 48) }
+    private var compact: Bool { editorHeight < 700 }
 
     init(configuration: LLMConfiguration, savedKeyExists: Bool, onSave: @escaping (LLMConfiguration, String) -> Void) {
         _draft = StateObject(wrappedValue: ModelConnectionDraft(configuration: configuration, savedKeyExists: savedKeyExists))
@@ -114,7 +116,7 @@ struct ModelConnectionEditorSheet: View {
             header
             Divider().overlay(RecallPalette.border)
             ScrollView {
-                VStack(alignment: .leading, spacing: 21) {
+                VStack(alignment: .leading, spacing: compact ? 16 : 21) {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("接口协议").font(.system(size: 14, weight: .semibold))
                         protocolControl
@@ -146,23 +148,23 @@ struct ModelConnectionEditorSheet: View {
                             }
                         }
                         Label("Key 只保存在本机，重新打开时不会显示", systemImage: "lock")
-                            .font(.caption).foregroundStyle(RecallPalette.secondary)
+                            .font(.system(size: 13)).foregroundStyle(RecallPalette.secondary)
                     }
-                    testStrip
-                }.padding(26)
+                }.padding(.horizontal, 26).padding(.vertical, compact ? 16 : 26)
             }.clipped()
+            testStrip.padding(.horizontal, 26).padding(.bottom, compact ? 16 : 24)
             Divider().overlay(RecallPalette.border)
             HStack(spacing: 18) {
                 Label("保存后，下一次提问立即使用新连接", systemImage: "info.circle")
-                    .font(.caption).foregroundStyle(RecallPalette.secondary)
+                    .font(.system(size: 13)).foregroundStyle(RecallPalette.secondary)
                 Spacer(minLength: 8)
                 Button("取消", action: close).buttonStyle(.plain).keyboardShortcut(.cancelAction)
                 Button("保存") {
                     guard draft.canSave else { return }
                     onSave(draft.configuration, draft.normalizedAPIKey); close()
                 }.buttonStyle(EditorButtonStyle(prominent: true)).disabled(!draft.canSave).keyboardShortcut(.defaultAction)
-            }.padding(.horizontal, 26).padding(.vertical, 18)
-        }.frame(width: 700, height: min(744, (NSScreen.main?.visibleFrame.height ?? 900) - 100))
+            }.padding(.horizontal, 26).padding(.vertical, compact ? 14 : 18)
+        }.frame(width: 700, height: editorHeight)
             .background(RecallPalette.surface)
             .recallColors()
             .onDisappear { draft.invalidateTest() }
@@ -185,7 +187,7 @@ struct ModelConnectionEditorSheet: View {
             }
             Button(action: close) { Image(systemName: "xmark").font(.system(size: 16)).foregroundStyle(RecallPalette.secondary).frame(width: 26, height: 30) }
                 .buttonStyle(.plain).accessibilityLabel("关闭模型连接")
-        }.padding(26)
+        }.padding(.horizontal, 26).padding(.vertical, compact ? 20 : 26)
     }
     private var protocolControl: some View {
         HStack(spacing: 4) {
@@ -193,7 +195,7 @@ struct ModelConnectionEditorSheet: View {
                 Button { draft.provider = provider } label: {
                     Text(provider.title).font(.system(size: 14, weight: draft.provider == provider ? .semibold : .regular))
                         .foregroundStyle(draft.provider == provider ? RecallPalette.accent : RecallPalette.secondary)
-                        .frame(maxWidth: .infinity).frame(height: 40)
+                        .frame(maxWidth: .infinity).frame(height: compact ? 36 : 40)
                         .background(draft.provider == provider ? RecallPalette.surface : .clear, in: RoundedRectangle(cornerRadius: 10))
                         .shadow(color: draft.provider == provider ? .black.opacity(0.06) : .clear, radius: 2, y: 1)
                         .contentShape(RoundedRectangle(cornerRadius: 10))
@@ -202,10 +204,10 @@ struct ModelConnectionEditorSheet: View {
         }.padding(4).background(RecallPalette.background, in: RoundedRectangle(cornerRadius: 12))
     }
     private func connectionField<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: compact ? 7 : 9) {
             Text(title).font(.system(size: 14, weight: .semibold))
             content().textFieldStyle(.plain).font(.system(size: 15))
-                .padding(.horizontal, 16).frame(height: 48).frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16).frame(height: compact ? 40 : 48).frame(maxWidth: .infinity, alignment: .leading)
                 .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(RecallPalette.border, lineWidth: 1))
         }
@@ -216,7 +218,7 @@ struct ModelConnectionEditorSheet: View {
             else { Circle().fill(statusColor).frame(width: 8, height: 8) }
             VStack(alignment: .leading, spacing: 5) {
                 Text(statusTitle).font(.system(size: 14, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-                Text("测试不会发送本地记忆").font(.caption).foregroundStyle(RecallPalette.secondary)
+                Text("测试不会发送本地记忆").font(.system(size: 13)).foregroundStyle(RecallPalette.secondary)
             }.accessibilityElement(children: .combine)
             Spacer(minLength: 6)
             if draft.isTesting {
@@ -225,7 +227,7 @@ struct ModelConnectionEditorSheet: View {
                 Button { draft.test() } label: { Label("测试连接", systemImage: "waveform.path.ecg") }
                     .buttonStyle(EditorButtonStyle()).disabled(!draft.canTest)
             }
-        }.padding(18).background(RecallPalette.background, in: RoundedRectangle(cornerRadius: 12))
+        }.padding(compact ? 14 : 18).background(RecallPalette.background, in: RoundedRectangle(cornerRadius: 12))
     }
     private var statusTitle: String {
         switch draft.testState {

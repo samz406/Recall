@@ -64,7 +64,7 @@ enum RecallLayoutPreviews {
                 if name == "knowledge-empty" { model.state.memoryKnowledge.claims = [] }
                 if name == "chat-empty" { model.state.messages = [ConversationMessage(role: .system, content: "已清空当前会话，可以开始新的对话。")] }
                 let pageWidth: CGFloat = name == "navigation" ? width + 196 : (name == "appearance-compact" ? 620 : (name.hasPrefix("model-editor") ? 700 : width))
-                let pageHeight: CGFloat = name.hasPrefix("model-editor") ? min(744, (NSScreen.main?.visibleFrame.height ?? 900) - 100) : 740
+                let pageHeight: CGFloat = name.hasPrefix("model-editor") ? min(744, (NSScreen.main?.visibleFrame.height ?? 900) - 48) : (name == "appearance-compact" ? 560 : 740)
                 let page = RecallRootView.previewPage(name)
                     .environmentObject(model).recallColors().defaultAppStorage(defaults)
                     .environment(\.controlActiveState, .key)

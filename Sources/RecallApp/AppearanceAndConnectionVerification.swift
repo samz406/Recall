@@ -19,20 +19,29 @@ extension RecallLayoutPreviews {
         try require(RecallAppearance.load(from: UserDefaults(suiteName: suite)!) == .dark, "appearance must survive reloading defaults")
 
         var observedScheme: ColorScheme?
+        var secondaryScheme: ColorScheme?
         let probe = SettingsAppearanceProbe { observedScheme = $0 }
             .frame(width: 100, height: 100).recallColors().defaultAppStorage(defaults)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = NSHostingView(rootView: probe)
         window.orderFront(nil)
         defer { window.orderOut(nil) }
+        let secondary = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        secondary.contentView = NSHostingView(rootView: SettingsAppearanceProbe { secondaryScheme = $0 }
+            .frame(width: 100, height: 100).recallColors().defaultAppStorage(defaults))
+        secondary.orderFront(nil)
+        defer { secondary.orderOut(nil) }
         try await Task.sleep(for: .milliseconds(100))
         try require(observedScheme == .dark && NSApp.appearance?.name == .darkAqua && window.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua, "dark selection must reach SwiftUI and AppKit")
+        try require(secondaryScheme == .dark, "theme must apply to independent settings windows")
         defaults.set(RecallAppearance.light.rawValue, forKey: RecallAppearance.storageKey)
         try await Task.sleep(for: .milliseconds(100))
         try require(observedScheme == .light && NSApp.appearance?.name == .aqua && window.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua, "theme selection must update the open window immediately")
+        try require(secondaryScheme == .light, "all open windows must update together")
         defaults.set(RecallAppearance.system.rawValue, forKey: RecallAppearance.storageKey)
         try await Task.sleep(for: .milliseconds(100))
         try require(NSApp.appearance == nil && window.appearance == nil, "system selection must release native overrides")
+        try require(secondary.appearance == nil, "system selection must release independent window overrides")
 
         let configuration = LLMConfiguration(baseURLString: "https://model.example.invalid/v1", model: "synthetic-model", apiKey: "synthetic-verification-only", anthropicVersion: "2023-06-01", maxOutputTokens: 2048)
         let draft = ModelConnectionDraft(configuration: configuration, savedKeyExists: true)
