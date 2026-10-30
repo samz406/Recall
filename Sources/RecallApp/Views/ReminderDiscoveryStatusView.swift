@@ -25,7 +25,7 @@ struct ReminderDiscoveryStatusView: View {
                     Image(systemName: "info.circle")
                     Text(message).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
-                    Button("重新发现") { model.proposeReminders() }
+                    Button("继续发现") { model.retryReminderDiscovery() }
                 }
             default: savedStatus
             }

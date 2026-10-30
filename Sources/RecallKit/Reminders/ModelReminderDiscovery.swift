@@ -61,7 +61,7 @@ public struct ModelReminderDiscovery: Sendable {
         let changed = Set(allowed.filter {
             checkpoint.extractorVersion != Self.version || checkpoint.processedCaptureHashes[$0.id.uuidString] != versions[$0.id.uuidString]
         }.map(\.id))
-        let selected = allowed.filter { changed.contains($0.id) || ((!changed.isEmpty || force) && pending.contains($0.id)) }
+        let selected = allowed.filter { changed.contains($0.id) || (force && pending.contains($0.id)) }
         var groups: [[CaptureRecord]] = [], group: [CaptureRecord] = [], length = 0
         for capture in selected {
             if !group.isEmpty && length + capture.ocrText.count > 12_000 {

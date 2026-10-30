@@ -31,8 +31,10 @@ public extension FileMemoryStore {
                 try Task.checkCancellation()
                 let ids = Set(group.map(\.id))
                 let context = engine.contextSources(for: group, in: state)
-                let contextVersions = Dictionary(uniqueKeysWithValues: context.map { ($0.id.uuidString, MemoryKnowledgeEngine.version(of: $0)) })
-                let inputIDs = ids.union(context.map(\.id))
+                let pendingIDs = Set(state.reminders.filter { $0.status == .proposed && $0.origin == .discovered }.flatMap(\.sourceCaptureIDs))
+                let pendingSources = state.correctedForAnalysis().captures.filter { pendingIDs.contains($0.id) && ModelReminderDiscovery.eligible($0, in: state) }
+                let contextVersions = Dictionary((context + pendingSources).map { ($0.id.uuidString, MemoryKnowledgeEngine.version(of: $0)) }, uniquingKeysWith: { first, _ in first })
+                let inputIDs = ids.union(context.map(\.id)).union(pendingSources.map(\.id))
                 let versions = plan.versions.merging(contextVersions) { _, current in current }
                 try validateReminderModelInput(inputIDs, versions: versions, configuration: config, privacy: privacy, automatic: automatic)
                 let snapshot = state.correctedForAnalysis(), done = completed

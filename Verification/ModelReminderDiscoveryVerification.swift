@@ -188,7 +188,8 @@ enum ModelReminderDiscoveryVerification {
         do { _ = try await memory.discoverRemindersUsingModel(responder:Model("second-group")); throw Failure(errorDescription:"预期第二批失败") } catch is URLError {}
         let saved = await memory.snapshot()
         try check(saved.reminderDiscoveryCheckpoint.processedCaptureHashes.count == 1 && !saved.reminders.isEmpty, "成功批次未保留")
-        _ = try await memory.discoverRemindersUsingModel(responder:Model())
+        let retry = try await memory.discoverRemindersUsingModel(responder:Model())
+        try check(retry.analyzedRecords == 2, "重试重复分析已完成批次")
         let final = await memory.snapshot(); try check(final.reminderDiscoveryCheckpoint.processedCaptureHashes.count == 3, "重试未完成余下记录")
     }
     static func optIn() async throws {

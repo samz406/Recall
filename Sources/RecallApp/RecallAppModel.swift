@@ -1043,6 +1043,11 @@ final class RecallAppModel: ObservableObject {
         discoverReminders(force: true, announce: true)
     }
 
+    func retryReminderDiscovery() {
+        reminderDiscoveryPaused = false
+        discoverReminders(force: false, announce: true)
+    }
+
     func setAutomaticReminderDiscovery(_ enabled: Bool) {
         if enabled && (!state.privacy.cloudUseEnabled || state.llmConfiguration.provider == .localOnly || state.llmConfiguration.apiKey.isEmpty) {
             noticeMessage = ReminderDiscoveryError.unavailable.localizedDescription
@@ -1087,7 +1092,7 @@ final class RecallAppModel: ObservableObject {
             return
         }
         let runID = UUID(); reminderDiscoveryRunID = runID; reminderDiscoveryAutomatic = automatic
-        let taskID = beginTask("发现待办", target: "已保存记录", phase: "准备脱敏文本", retry: { [weak self] in self?.proposeReminders() })
+        let taskID = beginTask("发现待办", target: "已保存记录", phase: "准备脱敏文本", retry: { [weak self] in self?.retryReminderDiscovery() })
         reminderDiscoveryTaskID = taskID
         reminderDiscoveryProgress = ReminderDiscoveryProgress(completedRecords: 0, totalRecords: 0, phase: "准备脱敏文本")
         reminderDiscoveryStatus = .searching(eligibleRecordCount: 0, analyzingRecordCount: 0)
