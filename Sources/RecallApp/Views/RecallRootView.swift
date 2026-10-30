@@ -3353,7 +3353,9 @@ private struct PrivacyAndModelView: View {
     @State private var showsDiagnosticSettings = false
     @State private var showsGovernance = false
     @State private var showsTime = false
-    private let categories = ["隐私与采集", "模型连接", "每日回顾", "记忆整理", "本地诊断"]
+    private let categories = ["隐私与采集", "模型连接", "每日回顾", "记忆整理", "外观", "本地诊断"]
+
+    init(initialCategory: String = "隐私与采集") { _settingsCategory = State(initialValue: initialCategory) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -3362,7 +3364,14 @@ private struct PrivacyAndModelView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(categories, id: \.self) { value in
                         Button { settingsCategory = value } label: {
-                            Text(value).font(.system(size: 14, weight: settingsCategory == value ? .semibold : .regular))
+                            HStack(spacing: 8) {
+                                Text(value).font(.system(size: 14, weight: settingsCategory == value ? .semibold : .regular))
+                                if value == "外观" {
+                                    Text("新").font(.system(size: 9, weight: .semibold))
+                                        .foregroundStyle(RecallPalette.onAccent).padding(.horizontal, 5).padding(.vertical, 2)
+                                        .background(RecallPalette.accent, in: Capsule())
+                                }
+                            }
                                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 11)
                                 .foregroundStyle(settingsCategory == value ? RecallPalette.accent : RecallPalette.text)
                                 .background(settingsCategory == value ? RecallPalette.selected : .clear, in: RoundedRectangle(cornerRadius: 8))
@@ -3371,6 +3380,9 @@ private struct PrivacyAndModelView: View {
                 }.frame(width: 126)
                 ScrollViewReader { proxy in
                     ScrollView {
+                        if settingsCategory == "外观" {
+                            AppearanceSettingsView().padding(.bottom, 24)
+                        } else {
                         VStack(alignment: .leading, spacing: 14) {
                             privacyStatus
                             privacyCard.id("隐私与采集")
@@ -3403,10 +3415,11 @@ private struct PrivacyAndModelView: View {
                                 Button("删除全部本地记忆", role: .destructive) { isConfirmingClearAll = true }
                             }.padding(16)
                         }.padding(.bottom, 24)
+                        }
                     }.clipped().onChange(of: settingsCategory) { _, category in
                         if category == "记忆整理" { showsMemorySettings = true }
                         if category == "本地诊断" { showsDiagnosticSettings = true }
-                        withAnimation { proxy.scrollTo(category, anchor: .top) }
+                        if category != "外观" { withAnimation { proxy.scrollTo(category, anchor: .top) } }
                     }
                 }
             }.padding(.horizontal, 24).padding(.bottom, 16)
@@ -3731,327 +3744,6 @@ private struct PrivacyAndModelView: View {
 }
 
 
-private struct ModelConnectionEditorSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    let initialConfiguration: LLMConfiguration
-    let savedKeyExists: Bool
-    let onSave: (LLMConfiguration, String) -> Void
-
-    @State private var provider: LLMProviderKind
-    @State private var baseURL: String
-    @State private var modelName: String
-    @State private var apiKey = ""
-    @State private var revealsAPIKey = false
-    @State private var isTestingConnection = false
-    @State private var connectionStatus: ConnectionStatus?
-    @FocusState private var focusedField: Field?
-
-    private enum ConnectionStatus {
-        case success(String)
-        case failure(String)
-    }
-
-    private enum Field: Hashable {
-        case baseURL, model, apiKey
-    }
-
-    init(configuration: LLMConfiguration, savedKeyExists: Bool, onSave: @escaping (LLMConfiguration, String) -> Void) {
-        initialConfiguration = configuration
-        self.savedKeyExists = savedKeyExists
-        self.onSave = onSave
-        _provider = State(initialValue: configuration.provider == .anthropicCompatible ? .anthropicCompatible : .openAICompatible)
-        _baseURL = State(initialValue: configuration.baseURLString)
-        _modelName = State(initialValue: configuration.model)
-        // 已保存的 Key 不回填到可见输入框，避免录屏或截图暴露完整凭据。
-        _apiKey = State(initialValue: "")
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 14) {
-                Image(systemName: "cpu.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(RecallPalette.onAccent)
-                    .frame(width: 44, height: 44)
-                    .background(RecallPalette.accent, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("编辑模型连接").font(.title2.weight(.semibold))
-                    Text("配置与 OpenAI 或 Anthropic 协议兼容的模型服务")
-                        .font(.subheadline)
-                        .foregroundStyle(RecallPalette.secondary)
-                }
-                Spacer()
-                Label(savedKeyExists ? "凭据已配置" : "等待配置", systemImage: savedKeyExists ? "checkmark.shield.fill" : "key.horizontal")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(savedKeyExists ? RecallPalette.accent : RecallPalette.warning)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background((savedKeyExists ? RecallPalette.accent : RecallPalette.warning).opacity(0.10), in: Capsule())
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 18)
-
-            Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        sectionTitle("接口协议", detail: "选择服务端兼容的请求格式")
-                        Picker("模型类型", selection: $provider) {
-                            Text("兼容 OpenAI API").tag(LLMProviderKind.openAICompatible)
-                            Text("兼容 Anthropic API").tag(LLMProviderKind.anthropicCompatible)
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                    }
-                    .padding(16)
-                    .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-
-                    VStack(alignment: .leading, spacing: 15) {
-                        sectionTitle("连接信息", detail: "Key 只保存在本机，不会在重新打开时显示")
-
-                        connectionField(title: "API 地址", icon: "link") {
-                            TextField(provider.defaultBaseURL, text: $baseURL)
-                                .textFieldStyle(.plain)
-                                .focused($focusedField, equals: .baseURL)
-                        }
-
-                        connectionField(title: "模型名称", icon: "cube") {
-                            TextField(provider.defaultModel, text: $modelName)
-                                .textFieldStyle(.plain)
-                                .focused($focusedField, equals: .model)
-                        }
-
-                        connectionField(title: "API Key", icon: "key.horizontal") {
-                            HStack(spacing: 8) {
-                                Group {
-                                    if revealsAPIKey {
-                                        TextField(savedKeyExists ? "留空则继续使用已保存的 Key" : "输入 API Key", text: $apiKey)
-                                    } else {
-                                        SecureField(savedKeyExists ? "留空则继续使用已保存的 Key" : "输入 API Key", text: $apiKey)
-                                    }
-                                }
-                                .textFieldStyle(.plain)
-                                .focused($focusedField, equals: .apiKey)
-                                Button {
-                                    revealsAPIKey.toggle()
-                                } label: {
-                                    Image(systemName: revealsAPIKey ? "eye.slash" : "eye")
-                                        .foregroundStyle(RecallPalette.secondary)
-                                }
-                                .buttonStyle(.plain)
-                                .help(revealsAPIKey ? "隐藏 API Key" : "显示 API Key")
-                            }
-                        }
-                    }
-                    .padding(16)
-                    .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(RecallPalette.border, lineWidth: 1))
-
-                    HStack(alignment: .center, spacing: 14) {
-                        Image(systemName: connectionStatusSymbol)
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(connectionStatusColor)
-                            .frame(width: 38, height: 38)
-                            .background(connectionStatusColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(connectionStatusTitle)
-                                .font(.subheadline.weight(.semibold))
-                            Text(connectionStatusDetail)
-                                .font(.caption)
-                                .foregroundStyle(RecallPalette.secondary)
-                                .lineLimit(2)
-                        }
-                        Spacer(minLength: 16)
-                        Button(action: testConnection) {
-                            if isTestingConnection {
-                                HStack(spacing: 7) {
-                                    ProgressView().controlSize(.small)
-                                    Text("正在测试")
-                                }
-                            } else {
-                                Label("测试连接", systemImage: "bolt.horizontal.circle")
-                            }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(isTestingConnection || effectiveAPIKey.isEmpty || !hasValidEndpoint)
-                    }
-                    .padding(16)
-                    .background(connectionStatusColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(connectionStatusColor.opacity(0.18), lineWidth: 1))
-                }
-                .padding(24)
-            }
-
-            Divider()
-            HStack {
-                Label("保存后，下一次提问立即使用新连接", systemImage: "info.circle")
-                    .font(.caption)
-                    .foregroundStyle(RecallPalette.secondary)
-                Spacer()
-                Button("取消") { dismiss() }
-                Button("保存", action: save)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!hasValidEndpoint || !maySaveConnection)
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 16)
-        }
-        .frame(width: 700, height: 600)
-        .onAppear {
-            DispatchQueue.main.async { focusedField = .baseURL }
-        }
-        .onChange(of: provider) { _, nextProvider in
-            baseURL = nextProvider.defaultBaseURL
-            modelName = nextProvider.defaultModel
-            connectionStatus = nil
-        }
-        .onChange(of: apiKey) { _, _ in
-            connectionStatus = nil
-        }
-        .onChange(of: baseURL) { _, _ in
-            connectionStatus = nil
-        }
-        .onChange(of: modelName) { _, _ in
-            connectionStatus = nil
-        }
-    }
-
-    private func sectionTitle(_ title: String, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.headline)
-            Text(detail).font(.caption).foregroundStyle(RecallPalette.secondary)
-        }
-    }
-
-    private func connectionField<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Label(title, systemImage: icon)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(RecallPalette.secondary)
-            content()
-                .padding(.horizontal, 12)
-                .frame(height: 40)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(RecallPalette.border.opacity(0.55), lineWidth: 1))
-        }
-    }
-
-    private var normalizedAPIKey: String {
-        apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var effectiveAPIKey: String {
-        normalizedAPIKey.isEmpty
-            ? initialConfiguration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            : normalizedAPIKey
-    }
-
-    private var hasValidEndpoint: Bool {
-        guard !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let url = URL(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            return false
-        }
-        return url.scheme == "https" || url.scheme == "http"
-    }
-
-    private var connectionChanged: Bool {
-        provider != initialConfiguration.provider
-            || baseURL.trimmingCharacters(in: .whitespacesAndNewlines) != initialConfiguration.baseURLString
-            || modelName.trimmingCharacters(in: .whitespacesAndNewlines) != initialConfiguration.model
-            || !normalizedAPIKey.isEmpty
-    }
-
-    private var maySaveConnection: Bool {
-        guard !effectiveAPIKey.isEmpty else { return false }
-        if !connectionChanged { return savedKeyExists }
-        if case .success = connectionStatus { return true }
-        return false
-    }
-
-    private var connectionStatusTitle: String {
-        if isTestingConnection { return "正在验证连接" }
-        switch connectionStatus {
-        case .success: return "连接可用"
-        case .failure: return "连接验证失败"
-        case .none: return connectionChanged ? "需要验证连接" : "当前连接已保存"
-        }
-    }
-
-    private var connectionStatusDetail: String {
-        if isTestingConnection { return "正在向模型服务发送最小测试请求…" }
-        switch connectionStatus {
-        case .success(let message): return message
-        case .failure(let message): return message
-        case .none:
-            return connectionChanged
-                ? "修改协议、地址、模型或 Key 后，请先测试再保存。"
-                : "未修改连接信息；测试不会发送本地记忆。"
-        }
-    }
-
-    private var connectionStatusSymbol: String {
-        if isTestingConnection { return "arrow.triangle.2.circlepath" }
-        switch connectionStatus {
-        case .success: return "checkmark.circle.fill"
-        case .failure: return "xmark.octagon.fill"
-        case .none: return connectionChanged ? "bolt.horizontal.circle" : "checkmark.shield.fill"
-        }
-    }
-
-    private var connectionStatusColor: Color {
-        if isTestingConnection { return .accentColor }
-        switch connectionStatus {
-        case .success: return RecallPalette.accent
-        case .failure: return RecallPalette.danger
-        case .none: return connectionChanged ? RecallPalette.warning : RecallPalette.accent
-        }
-    }
-
-    private func makeConfiguration() -> LLMConfiguration {
-        LLMConfiguration(
-            provider: provider,
-            baseURLString: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
-            model: modelName.trimmingCharacters(in: .whitespacesAndNewlines),
-            apiKey: effectiveAPIKey,
-            anthropicVersion: initialConfiguration.anthropicVersion,
-            maxOutputTokens: initialConfiguration.maxOutputTokens
-        )
-    }
-
-    private func testConnection() {
-        guard !effectiveAPIKey.isEmpty, hasValidEndpoint else { return }
-        isTestingConnection = true
-        connectionStatus = nil
-        let configuration = makeConfiguration()
-        let key = effectiveAPIKey
-        Task {
-            do {
-                let answer = try await CompatibleLLM(configuration: configuration, apiKey: key).answer(
-                    to: LLMRequest(question: "仅回复连接成功", context: [])
-                )
-                await MainActor.run {
-                    isTestingConnection = false
-                    connectionStatus = .success("连接成功：\(answer.content.prefix(80))")
-                }
-            } catch {
-                await MainActor.run {
-                    isTestingConnection = false
-                    connectionStatus = .failure("认证或连接失败：\(error.localizedDescription)")
-                }
-            }
-        }
-    }
-
-    private func save() {
-        let configuration = makeConfiguration()
-        onSave(configuration, normalizedAPIKey)
-        dismiss()
-    }
-}
-
 extension RecallRootView {
     @MainActor static func previewPage(_ name: String) -> AnyView {
         switch name {
@@ -4062,7 +3754,27 @@ extension RecallRootView {
         case "reminders": AnyView(RemindersView())
         case "timeline": AnyView(TimelineView())
         case "settings": AnyView(PrivacyAndModelView())
+        case "appearance": AnyView(PrivacyAndModelView(initialCategory: "外观"))
+        case "appearance-compact": AnyView(RecallSettingsPreview())
+        case "model-editor": AnyView(ModelConnectionEditorSheet(configuration: LLMConfiguration(provider: .anthropicCompatible, baseURLString: "https://model.example.invalid/anthropic", model: "Example-Flash", apiKey: "synthetic-layout-credential"), savedKeyExists: true, onSave: { _, _ in }))
+        case "model-editor-new": AnyView(ModelConnectionEditorSheet(configuration: LLMConfiguration(), savedKeyExists: false, onSave: { _, _ in }))
+        case "model-editor-success", "model-editor-failure": AnyView(ModelConnectionStatusPreview(fails: name.hasSuffix("failure")))
         default: AnyView(ChatView())
+        }
+    }
+}
+
+private struct RecallSettingsPreview: View {
+    var body: some View { PrivacyAndModelView(initialCategory: "外观").padding() }
+}
+
+private struct ModelConnectionStatusPreview: View {
+    let fails: Bool
+    @StateObject private var draft = ModelConnectionDraft(configuration: LLMConfiguration(baseURLString: "https://model.example.invalid/v1", model: "Example-Flash", apiKey: "synthetic-layout-credential"), savedKeyExists: true)
+    var body: some View {
+        ModelConnectionEditorSheet(draft: draft).task {
+            let fails = fails
+            draft.test { _ in if fails { throw URLError(.cannotConnectToHost) } }
         }
     }
 }
