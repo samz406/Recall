@@ -72,6 +72,7 @@ final class RecallAppModel: ObservableObject {
     @Published private(set) var enterKeyMonitorStatus: GlobalEnterKeyRecorderStatus = .disabled
     @Published private(set) var diagnosticEntries: [RecallDiagnosticEntry]
     @Published private(set) var reminderDeliveryStates: [UUID: ReminderDeliveryState] = [:]
+    @Published private(set) var isUpdatingReminderHistory = false
     @Published private(set) var reminderDiscoveryStatus: ReminderDiscoveryStatus = .idle
 
     let storage: RecallStorage
@@ -1038,6 +1039,8 @@ final class RecallAppModel: ObservableObject {
     /// 后台仅分析已经持久化且用户允许参与提醒的文本，不截图、不读取其他应用，也不调用云端模型。
     func discoverReminders(force: Bool, announce: Bool = true) {
         if case .searching = reminderDiscoveryStatus { return }
+        let discoveryStartedAt = Date.now
+        let discoveryProfile = state.reminderLearningProfile
         let taskID = announce ? beginTask("发现待办", target: "已保存记录", phase: "核对新增记录") : nil
         let participatingTemplates = Set(
             state.rules
@@ -1046,7 +1049,7 @@ final class RecallAppModel: ObservableObject {
         )
         let oldestRelevantDate = Calendar.current.date(byAdding: .day, value: -90, to: .now) ?? .distantPast
         let eligibleCaptures = state.correctedForAnalysis().captures.filter {
-            participatingTemplates.contains($0.eventTemplate) && $0.createdAt >= oldestRelevantDate
+            participatingTemplates.contains($0.eventTemplate) && $0.createdAt >= oldestRelevantDate && discoveryProfile.permitsReminderDiscovery(from: $0)
         }
         let checkpoint = state.reminderDiscoveryCheckpoint
         let rescanAll = force || checkpoint.extractorVersion != ReminderExtractor.version
@@ -1070,7 +1073,7 @@ final class RecallAppModel: ObservableObject {
             let extractor = reminderExtractor
             let blockingHistory = state.reminders.filter { $0.status != .proposed }
             let extractedCandidates = await Task.detached(priority: .userInitiated) {
-                extractor.candidates(from: captures, existing: blockingHistory, resolutionCaptures: eligibleCaptures)
+                extractor.candidates(from: captures, existing: blockingHistory, resolutionCaptures: eligibleCaptures, learningProfile: discoveryProfile)
             }.value
             let completedAt = Date.now
             do {
@@ -1087,19 +1090,6 @@ final class RecallAppModel: ObservableObject {
                     let isExplicit = candidate.detail.hasPrefix("明确提醒") || candidate.detail.hasPrefix("明确待办")
                     return adjusted.confidence >= 0.62 || isExplicit ? adjusted : nil
                 }
-                let knownIDs = Set(state.reminders.map(\.id))
-                let merged = extractor.merging(newCandidates, into: state.reminders, now: completedAt, revalidatedCaptureIDs: revalidatedIDs)
-                let addedCount = merged.filter { !knownIDs.contains($0.id) && $0.status == .proposed }.count
-                let retained = merged.filter { reminder in
-                    switch reminder.status {
-                    case .dismissed:
-                        return completedAt.timeIntervalSince(reminder.dismissedUntil ?? reminder.updatedAt) < 90 * 86_400
-                    case .completed, .cancelled:
-                        return completedAt.timeIntervalSince(reminder.completedAt ?? reminder.updatedAt) < 180 * 86_400
-                    default:
-                        return true
-                    }
-                }.prefix(1_000).map { $0 }
                 var nextCheckpoint = checkpoint
                 nextCheckpoint.processedCaptureHashes = Dictionary(uniqueKeysWithValues: eligibleCaptures.map { ($0.id.uuidString, MemoryKnowledgeEngine.version(of: $0)) })
                 nextCheckpoint.lastRunAt = completedAt
@@ -1107,10 +1097,11 @@ final class RecallAppModel: ObservableObject {
                 nextCheckpoint.analyzedRecordCount = captures.count
                 nextCheckpoint.discoveredCount = newCandidates.count
                 nextCheckpoint.extractorVersion = ReminderExtractor.version
-                try await store.commitReminderDiscovery(reminders: retained, checkpoint: nextCheckpoint)
+                let addedCount = try await store.applyReminderDiscovery(candidates: newCandidates, checkpoint: nextCheckpoint,
+                    revalidatedSourceIDs: revalidatedIDs, startedAt: discoveryStartedAt, now: completedAt)
                 await refresh()
                 reminderDiscoveryStatus = .completed(
-                    eligibleRecordCount: eligibleCaptures.count,
+                    eligibleRecordCount: state.reminderDiscoveryCheckpoint.eligibleRecordCount,
                     analyzedRecordCount: captures.count,
                     discoveredCount: addedCount,
                     completedAt: completedAt
@@ -1119,7 +1110,7 @@ final class RecallAppModel: ObservableObject {
                 if announce {
                     noticeMessage = addedCount == 0
                         ? "已分析 \(captures.count) 条新增记录，暂未发现新的提醒候选。"
-                        : "已分析 \(captures.count) 条记录，发现 \(newCandidates.count) 项待确认提醒。"
+                        : "已分析 \(captures.count) 条记录，发现 \(addedCount) 项待确认提醒。"
                 }
             } catch {
                 reminderDiscoveryStatus = .idle
@@ -1205,6 +1196,7 @@ final class RecallAppModel: ObservableObject {
                     updated.status = .cancelled
                 }
                 updated.updatedAt = .now
+                updated.closedAt = updated.updatedAt
                 var learningProfile = state.reminderLearningProfile
                 if reminder.status == .proposed {
                     learningProfile.record(.dismissed, semanticKey: reminderSemanticKey(updated))
@@ -1242,7 +1234,8 @@ final class RecallAppModel: ObservableObject {
                     noticeMessage = "本次已完成，下次将在 \(nextDueAt.formatted(date: .abbreviated, time: .shortened)) 提醒。"
                 } else {
                     updated.status = .completed
-                    updated.completedAt = .now
+                    updated.closedAt = .now
+                    updated.completedAt = updated.closedAt
                     updated.updatedAt = .now
                     try await store.updateReminder(updated, learningProfile: learningProfile)
                     notificationScheduler.cancel(updated)
@@ -1293,6 +1286,55 @@ final class RecallAppModel: ObservableObject {
                 await refresh()
             } catch {
                 recordError(error, source: "Reminders", message: "移除提醒失败")
+            }
+        }
+    }
+
+    func restoreReminderHistory(_ ids: Set<UUID>) {
+        guard !isUpdatingReminderHistory else { return }
+        isUpdatingReminderHistory = true
+        Task {
+            defer { isUpdatingReminderHistory = false }
+            do {
+                let count = try await store.restoreReminderHistory(ids: ids)
+                await refresh()
+                noticeMessage = count > 0 ? "已恢复 \(count) 条到待确认；选择时间后才会通知。" : "记录状态已变化，请刷新后查看。"
+            } catch {
+                noticeMessage = (error as? ReminderHistoryError)?.errorDescription ?? "恢复未完成，请重试。"
+                recordError(error, source: "Reminders", message: "恢复历史提醒失败")
+            }
+        }
+    }
+
+    func deleteReminderHistory(_ ids: Set<UUID>, onlyDismissed: Bool) {
+        guard !isUpdatingReminderHistory else { return }
+        isUpdatingReminderHistory = true
+        Task {
+            defer { isUpdatingReminderHistory = false }
+            do {
+                let count = try await store.removeReminderHistory(ids: ids, onlyDismissed: onlyDismissed)
+                await refresh()
+                noticeMessage = "已清理 \(count) 条历史记录，原始记忆已保留。"
+            } catch {
+                noticeMessage = "清理历史记录未完成，请重试。原始记忆已保留。"
+                recordError(error, source: "Reminders", message: "清理历史提醒失败")
+            }
+        }
+    }
+
+    func setReminderApplication(_ source: ReminderSourceChoice, disabled: Bool) {
+        guard !isUpdatingReminderHistory else { return }
+        isUpdatingReminderHistory = true
+        Task {
+            defer { isUpdatingReminderHistory = false }
+            do {
+                try await store.setReminderApplication(source, disabled: disabled)
+                await refresh()
+                noticeMessage = disabled ? "不再从“\(source.title)”识别待办，已有提醒和原始记录保留。" : "已恢复从“\(source.title)”识别待办。"
+                if !disabled { discoverReminders(force: false, announce: false) }
+            } catch {
+                noticeMessage = "来源设置未保存，请重试。"
+                recordError(error, source: "Reminders", message: "保存提醒来源设置失败")
             }
         }
     }

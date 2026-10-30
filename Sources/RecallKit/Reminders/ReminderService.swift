@@ -9,7 +9,8 @@ public struct ReminderExtractor: Sendable {
         from captures: [CaptureRecord],
         existing: [ReminderCandidate],
         now: Date = .now,
-        resolutionCaptures: [CaptureRecord] = []
+        resolutionCaptures: [CaptureRecord] = [],
+        learningProfile: ReminderLearningProfile = ReminderLearningProfile()
     ) -> [ReminderCandidate] {
         guard !captures.isEmpty else { return [] }
         let allowed = Set((captures + resolutionCaptures).map(\.id))
@@ -23,7 +24,7 @@ public struct ReminderExtractor: Sendable {
             }
         }
 
-        for capture in captures.sorted(by: { $0.createdAt > $1.createdAt }) where !capture.ocrText.isEmpty && capture.memoryDirective == nil {
+        for capture in captures.sorted(by: { $0.createdAt > $1.createdAt }) where !capture.ocrText.isEmpty && capture.memoryDirective == nil && learningProfile.permitsReminderDiscovery(from: capture) {
             if let understood = capture.understanding {
                 for fact in understood.facts where fact.isUserAction {
                     let closed = (captures + resolutionCaptures).contains { later in
@@ -36,7 +37,7 @@ public struct ReminderExtractor: Sendable {
                     let draft = ReminderCandidate(title: fact.subject, detail: fact.readableDetail,
                         dueAt: fact.explicitDeadline, sourceCaptureIDs: fact.sourceIDs, confidence: 0.8,
                         createdAt: capture.createdAt, origin: .discovered, semanticKey: fingerprint(fact.subject))
-                    guard !existing.contains(where: { blocks(candidate: draft, existing: $0, now: now) }) else { continue }
+                    guard !learningProfile.suppressesHistory(draft, now: now), !existing.contains(where: { blocks(candidate: draft, existing: $0, now: now) }) else { continue }
                     if let i = result.firstIndex(where: { sameOccurrence($0, draft) }) {
                         result[i].sourceCaptureIDs = Array(Set(result[i].sourceCaptureIDs + draft.sourceCaptureIDs))
                     } else { result.append(draft) }
@@ -65,7 +66,7 @@ public struct ReminderExtractor: Sendable {
                     recurrence: recurrence,
                     semanticKey: semanticKey
                 )
-                guard !existing.contains(where: { blocks(candidate: draft, existing: $0, now: now) }) else { continue }
+                guard !learningProfile.suppressesHistory(draft, now: now), !existing.contains(where: { blocks(candidate: draft, existing: $0, now: now) }) else { continue }
 
                 if let index = result.firstIndex(where: { sameOccurrence($0, draft) }) {
                     if !result[index].sourceCaptureIDs.contains(capture.id) {
@@ -110,6 +111,14 @@ public struct ReminderExtractor: Sendable {
                 continue
             }
             var current = merged[index]
+            if current.status.isHistory {
+                if blocks(candidate: candidate, existing: current, now: now) { continue }
+                var next = candidate
+                next.id = UUID(); next.status = .proposed; next.closedAt = nil
+                next.completedAt = nil; next.dismissedUntil = nil; next.scheduledAt = nil
+                merged.append(next)
+                continue
+            }
             var seenSourceIDs: Set<UUID> = []
             current.sourceCaptureIDs = (current.sourceCaptureIDs.filter { !revalidatedCaptureIDs.contains($0) } + candidate.sourceCaptureIDs)
                 .filter { seenSourceIDs.insert($0).inserted }
@@ -385,7 +394,7 @@ public struct ReminderExtractor: Sendable {
         }
     }
 
-    private func blocks(candidate: ReminderCandidate, existing: ReminderCandidate, now: Date) -> Bool {
+    func blocks(candidate: ReminderCandidate, existing: ReminderCandidate, now: Date) -> Bool {
         guard isSemanticallyEquivalent(existing.title, candidate.title) else { return false }
         switch existing.status {
         case .proposed, .scheduled, .snoozed:

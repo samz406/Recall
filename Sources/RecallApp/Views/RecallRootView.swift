@@ -2298,10 +2298,8 @@ private struct RemindersView: View {
     @State private var isCreatingReminder = false
     @State private var isConfirmingDismissAll = false
     @State private var reminderTab = 0
-    @State private var historyFilter = 0
     @State private var proposedPage = 1
     @State private var scheduledPage = 1
-    @State private var completedPage = 1
     private let pageSize = 6
 
     private var proposed: [ReminderCandidate] {
@@ -2337,10 +2335,9 @@ private struct RemindersView: View {
         }
     }
 
-    private var completed: [ReminderCandidate] {
-        model.state.reminders
-            .filter { (historyFilter == 0 && [.completed, .cancelled, .dismissed].contains($0.status)) || (historyFilter == 1 && $0.status == .completed) || (historyFilter == 2 && ($0.status == .cancelled || $0.status == .dismissed)) }
-            .sorted { $0.updatedAt > $1.updatedAt }
+    let previewHistoryHover: Bool
+    init(initialTab: Int = 0, previewHistoryHover: Bool = false) {
+        _reminderTab = State(initialValue: initialTab); self.previewHistoryHover = previewHistoryHover
     }
 
     private var isDiscovering: Bool {
@@ -2358,12 +2355,12 @@ private struct RemindersView: View {
                 Spacer()
             }.padding(.horizontal, 24)
             Divider()
+            if reminderTab == 2 {
+                ReminderHistoryView(previewHover: previewHistoryHover) { reminderShowingSources = $0 }
+            } else {
             ScrollView {
             VStack(spacing: 20) {
-                if reminderTab == 2 {
-                    Picker("历史状态", selection: $historyFilter) { Text("全部").tag(0); Text("已完成").tag(1); Text("已取消与忽略").tag(2) }.pickerStyle(.segmented)
-                }
-                if (reminderTab == 0 && scheduled.isEmpty) || (reminderTab == 1 && proposed.isEmpty) || (reminderTab == 2 && completed.isEmpty) {
+                if (reminderTab == 0 && scheduled.isEmpty) || (reminderTab == 1 && proposed.isEmpty) {
                     VStack(spacing: 16) {
                         Image(systemName: "bell").font(.system(size: 38, weight: .light)).foregroundStyle(RecallPalette.accent)
                         Text(reminderTab == 0 ? "暂时没有待处理的提醒" : (reminderTab == 1 ? "没有需要确认的待办" : "还没有历史记录")).font(.headline)
@@ -2387,6 +2384,7 @@ private struct RemindersView: View {
             .frame(maxWidth: .infinity)
         }
             reminderDiscoveryFeedback.padding(.horizontal, 24).padding(.vertical, 12)
+            }
         }
         .background(RecallPalette.background)
         .onAppear { openRequestedReminder() }
@@ -2412,7 +2410,6 @@ private struct RemindersView: View {
         }
         .onChange(of: proposed.count) { _, count in proposedPage = clampedPage(proposedPage, itemCount: count) }
         .onChange(of: scheduled.count) { _, count in scheduledPage = clampedPage(scheduledPage, itemCount: count) }
-        .onChange(of: completed.count) { _, count in completedPage = clampedPage(completedPage, itemCount: count) }
         .confirmationDialog(
             "忽略全部待确认提醒？",
             isPresented: $isConfirmingDismissAll,
@@ -2440,14 +2437,13 @@ private struct RemindersView: View {
             reminderTab = row.status == .proposed ? 1 : ([.completed, .cancelled, .dismissed].contains(row.status) ? 2 : 0)
             proposedPage = max(1, ((proposed.firstIndex { $0.id == id } ?? 0) / pageSize) + 1)
             scheduledPage = max(1, ((scheduled.firstIndex { $0.id == id } ?? 0) / pageSize) + 1)
-            completedPage = max(1, ((completed.firstIndex { $0.id == id } ?? 0) / pageSize) + 1)
         }
     }
     private var reminderHeader: some View {
         RecallPageHeader(title: "提醒", subtitle: "把需要跟进的事，放到合适的时间") {
             HStack(spacing: 12) {
                 Button(isDiscovering ? "正在发现…" : "发现待办") { model.proposeReminders() }.disabled(isDiscovering)
-                Button("新建提醒") { isCreatingReminder = true }.buttonStyle(.borderedProminent)
+                Button { isCreatingReminder = true } label: { Label("新建提醒", systemImage: "plus") }.buttonStyle(.borderedProminent)
             }
         }
     }
@@ -2535,25 +2531,7 @@ private struct RemindersView: View {
                     ReminderPagination(page: $proposedPage, itemCount: proposed.count, pageSize: pageSize)
                 }
             }
-            if reminderTab == 2 {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("历史记录")
-                            .font(.title3.weight(.semibold))
-                        Text("\(completed.count)")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(RecallPalette.secondary)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(RecallPalette.sidebar, in: Capsule())
-                        Spacer()
-                    }
-                    ForEach(paged(completed, page: completedPage)) { reminder in
-                        reminderCard(reminder, deliveryState: nil)
-                    }
-                    ReminderPagination(page: $completedPage, itemCount: completed.count, pageSize: pageSize)
-                }
-            }
+
         }
     }
 
@@ -2889,9 +2867,9 @@ private struct ReminderSourceSheet: View {
 
             if captures.isEmpty {
                 ContentUnavailableView(
-                    "来源记录已不存在",
+                    reminder.origin == .manual ? "这是手动创建的提醒" : "来源记录已不存在",
                     systemImage: "doc.questionmark",
-                    description: Text("对应记录可能已被删除或超过了保留期限。")
+                    description: Text(reminder.origin == .manual ? (reminder.detail.isEmpty ? "没有关联采集记录。" : reminder.detail) : "对应记录可能已被删除或超过了保留期限。")
                 )
             } else {
                 List(captures.sorted(by: { $0.createdAt > $1.createdAt })) { capture in
@@ -2904,10 +2882,9 @@ private struct ReminderSourceSheet: View {
                                 .font(.caption)
                                 .foregroundStyle(RecallPalette.secondary)
                         }
-                        Text(capture.summary ?? capture.ocrText)
+                        Text(capture.ocrText.isEmpty ? (capture.summary ?? "未保留原始文字") : capture.ocrText)
                             .font(.subheadline)
                             .textSelection(.enabled)
-                            .lineLimit(8)
                     }
                     .padding(.vertical, 6)
                 }
@@ -3752,6 +3729,8 @@ extension RecallRootView {
         case "topics", "period", "period-stale", "knowledge", "knowledge-empty": AnyView(MatterWorkspaceView(continueChat: { _ in }))
         case "rules": AnyView(EventRulesView())
         case "reminders": AnyView(RemindersView())
+        case "reminder-history", "reminder-history-empty": AnyView(RemindersView(initialTab: 2))
+        case "reminder-history-hover": AnyView(RemindersView(initialTab: 2, previewHistoryHover: true))
         case "timeline": AnyView(TimelineView())
         case "settings": AnyView(PrivacyAndModelView())
         case "appearance": AnyView(PrivacyAndModelView(initialCategory: "外观"))
