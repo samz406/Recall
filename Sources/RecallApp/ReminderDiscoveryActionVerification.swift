@@ -15,9 +15,9 @@ extension RecallLayoutPreviews {
     }
     private enum DiscoveryActionFailure: Error { case failed(String) }
     @MainActor static func verifyReminderDiscoveryActions() async throws {
-        let source = CaptureRecord(eventTemplate: .manualMoment, sourceAppName: "合成聊天",
+        let source = CaptureRecord(eventTemplate: .manualMoment, createdAt: Date(timeIntervalSince1970: floor(Date.now.timeIntervalSince1970)), sourceAppName: "合成聊天",
             contentHash: "synthetic-action", ocrText: "[聊天·自己] 我会整理合成验收清单。")
-        let prior = ReminderCandidate(title: "保留合成候选", detail: "未经确认，不安排通知。", sourceCaptureIDs: [source.id], confidence: 0.7)
+        let prior = ReminderCandidate(title: "保留合成候选", detail: "未经确认，不安排通知。", sourceCaptureIDs: [source.id], confidence: 0.7, createdAt: source.createdAt)
         let state = RecallState(captures: [source], reminders: [prior], privacy: PrivacySettings(cloudUseEnabled: true),
             llmConfiguration: LLMConfiguration(provider: .openAICompatible, baseURLString: "https://model.invalid/v1", model: "synthetic", apiKey: "synthetic-not-a-key"))
         let model = RecallAppModel(previewState: state)

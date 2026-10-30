@@ -61,6 +61,13 @@ public extension FileMemoryStore {
                             safe.captures.first(where: { $0.id == sourceID }).map { ModelReminderDiscovery.eligible($0, in: state) } == true
                         }) else { continue }
                         state.reminders[i].status = status; state.reminders[i].closedAt = .now; state.reminders[i].updatedAt = .now
+                        let proofs = result.resolutionEvidence[id] ?? []
+                        let sourceIDs = proofs.compactMap { UUID(uuidString: String($0.blockID.prefix(36))) }
+                        state.reminders[i].sourceCaptureIDs = Array(Set(state.reminders[i].sourceCaptureIDs + sourceIDs))
+                        state.reminders[i].analysis = ReminderAnalysis(version: ModelReminderDiscovery.version,
+                            basis: status == .completed ? "后续记录显示已完成" : (status == .cancelled ? "后续记录显示已取消" : "核对后不属于用户待办"),
+                            deadlineText: state.reminders[i].analysis?.deadlineText, evidence: proofs)
+
                         if status == .completed { state.reminders[i].completedAt = .now }
                         if status == .dismissed { state.reminders[i].dismissedUntil = Date.now.addingTimeInterval(30 * 86_400) }
                     }

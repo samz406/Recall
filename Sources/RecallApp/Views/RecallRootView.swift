@@ -2947,7 +2947,7 @@ private struct ReminderCandidateCard: View {
                         Label("创建前选择时间", systemImage: "calendar.badge.clock")
                     }
                     if reminder.status == .proposed {
-                        Text(reminder.analysis?.basis ?? "旧版候选，可重新发现核对")
+                        Text(reminder.analysis?.basis ?? "请核对行动与时间")
                     }
                     if reminder.recurrence != .none {
                         Label(reminder.recurrence.title, systemImage: "repeat")

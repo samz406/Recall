@@ -63,7 +63,7 @@ enum ModelReminderDiscoveryVerification {
         }
     }
     static func record(_ text: String, offset: Double = 0, origin: CaptureTextOrigin? = nil) -> CaptureRecord {
-        CaptureRecord(eventTemplate: .manualMoment, createdAt: Date.now.addingTimeInterval(-60 + offset),
+        CaptureRecord(eventTemplate: .manualMoment, createdAt: Date(timeIntervalSince1970: floor(Date.now.timeIntervalSince1970) - 60 + offset),
             sourceAppName: "合成聊天", sourceBundleIdentifier: "test.chat", windowTitle: "合成会话",
             contentHash: UUID().uuidString, ocrText: text, textOrigin: origin)
     }
@@ -90,6 +90,15 @@ enum ModelReminderDiscoveryVerification {
         let calls = await model.log()
         try check(calls.map(\.purpose) == [.reminderDiscovery,.reminderDiscoveryAudit], "候选未经模型提取和独立核对")
         try check(result.candidates[0].dueAt == nil && result.candidates[0].status == .proposed, "无时间事项被补时间或自动安排")
+        let anchor = "[聊天·自己] 我会整理验收清单，并核对所有输入输出的边界条件。"
+        let current = record(anchor), adjacent = record(anchor + "\n[聊天·对方] 这份合成清单需要保留输入校验依据。", offset:-20)
+        let unrelated = record("[聊天·自己] 另一个会话正在讨论完全无关的内容。", offset:-10)
+        let contextState = state([current,adjacent,unrelated]), contextModel = Model()
+        let neighbours = ModelReminderDiscovery().contextSources(for:[current],in:contextState)
+        try check(neighbours.map(\.id) == [adjacent.id], "仅凭相同应用或窗口拼接了无关会话")
+        _ = try await ModelReminderDiscovery().analyze([current],in:contextState,responder:contextModel)
+        let contextCalls = await contextModel.log()
+        try check(contextCalls[0].context[0].ocrText.contains("输入校验依据") && !contextCalls[0].context[0].ocrText.contains("完全无关"), "模型未获得限定的聊天上下文")
     }
     static func ownership() async throws {
         let request = record("[聊天·对方] 请你周五前整理验收清单吧"), unknown = record("[聊天·角色未知] 我会整理验收清单")
@@ -135,11 +144,12 @@ enum ModelReminderDiscoveryVerification {
     static func stateReconciliation() async throws {
         let before = record("[聊天·自己] 我会整理验收清单"), after = record("[聊天·自己] 验收清单已提交", offset:20)
         let old = ReminderCandidate(title:"整理合成项目验收清单", detail:"原有候选", sourceCaptureIDs:[before.id], confidence:0.7, createdAt:before.createdAt)
-        let manual = ReminderCandidate(title:"手动安排的合成事情", detail:"保留", confidence:1, status:.scheduled, origin:.manual)
+        let manual = ReminderCandidate(title:"手动安排的合成事情", detail:"保留", confidence:1, status:.scheduled, createdAt:before.createdAt, origin:.manual)
         let (memory, storage) = try store(state([before,after], reminders:[old,manual])); defer { try? FileManager.default.removeItem(at:storage.rootURL) }
         _ = try await memory.discoverRemindersUsingModel(responder:Model())
         let saved = await memory.snapshot()
         try check(saved.reminders.first { $0.id == old.id }?.status == .completed, "后续证据未关闭旧候选")
+        try check(saved.reminders.first { $0.id == old.id }?.sourceCaptureIDs.contains(after.id) == true, "关闭状态没有关联后续证据")
         try check(saved.reminders.first { $0.id == manual.id } == manual, "自动分析改动已安排或手动提醒")
         let source = record("[聊天·自己] 我会整理验收清单 2026年11月2日")
         let result = try await ModelReminderDiscovery().analyze([source], in:state([source]), responder:Model("date"))
@@ -147,7 +157,7 @@ enum ModelReminderDiscoveryVerification {
     }
     static func failureAndCancellation() async throws {
         let source = record("[聊天·自己] 我会整理验收清单")
-        let old = ReminderCandidate(title:"原有合成提醒", detail:"保留", sourceCaptureIDs:[source.id], confidence:0.6)
+        let old = ReminderCandidate(title:"原有合成提醒", detail:"保留", sourceCaptureIDs:[source.id], confidence:0.6, createdAt:source.createdAt)
         let (memory, storage) = try store(state([source], reminders:[old])); defer { try? FileManager.default.removeItem(at:storage.rootURL) }
         do { _ = try await memory.discoverRemindersUsingModel(responder:Model("network")); throw Failure(errorDescription:"网络错误未抛出") } catch is URLError {}
         let failed = await memory.snapshot()
@@ -167,6 +177,10 @@ enum ModelReminderDiscoveryVerification {
         try check(calls[0].context[0].ocrText.components(separatedBy:"我会整理验收清单").count == 2, "重复发送相同截图")
         let again = Model(), next = try await memory.discoverRemindersUsingModel(responder:again)
         let nextCalls = await again.log(); try check(next.analyzedRecords == 0 && nextCalls.isEmpty, "未变化记录重复调用模型")
+        let priorIDs = Set((await memory.snapshot()).reminders.map(\.id))
+        _ = try await memory.discoverRemindersUsingModel(force:true,responder:Model("uncertain"))
+        let uncertain = await memory.snapshot()
+        try check(Set(uncertain.reminders.map(\.id)) == priorIDs, "不确定的分析直接删除了已有候选")
     }
     static func partialResume() async throws {
         let records = (0..<3).map { record("[聊天·自己] 我会整理验收清单\n" + String(repeating:"合成背景资料。",count:1_500), offset:Double($0)) }
