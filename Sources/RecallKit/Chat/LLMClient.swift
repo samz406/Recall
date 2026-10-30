@@ -78,7 +78,7 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
 }
 
 public enum LLMRequestPurpose: Equatable, Sendable {
-    case chat, dailySummary, reviewSynthesis, reviewAudit, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup, summaryFeedback, summaryFeedbackAudit, captureUnderstanding, captureUnderstandingAudit
+    case chat, dailySummary, reviewSynthesis, reviewAudit, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup, summaryFeedback, summaryFeedbackAudit, captureUnderstanding, captureUnderstandingAudit, reminderDiscovery, reminderDiscoveryAudit
 }
 
 public struct LLMRequest: Sendable {
@@ -466,6 +466,8 @@ public struct CompatibleLLM: LLMResponding {
             case .weeklyAudit: role = "逐项核验周回顾草稿"
             case .captureUnderstanding: role = "从 OCR 整理有原文依据的结构化记忆"
             case .captureUnderstandingAudit: role = "独立核对 OCR 结构化记忆的事实、角色和条件"
+            case .reminderDiscovery: role = "识别有原文依据、归属于用户且尚待处理的具体行动"
+            case .reminderDiscoveryAudit: role = "独立核对提醒的角色、对象、状态、条件和真实期限"
             case .summaryFeedback: role = "按用户反馈提出有限的回顾修订"
             case .summaryFeedbackAudit: role = "独立核验回顾反馈修订"
             default: role = "根据模板整理周回顾正文"

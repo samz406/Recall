@@ -314,6 +314,10 @@ public struct ReminderDiscoveryCheckpoint: Codable, Hashable, Sendable {
     public var analyzedRecordCount: Int
     public var discoveredCount: Int
     public var extractorVersion: Int?
+    public var excludedRecordCount: Int? = nil
+    public var unchangedRecordCount: Int? = nil
+    public var lastAttemptAt: Date? = nil
+    public var failureReason: String? = nil
 
     public init(
         processedCaptureHashes: [String: String] = [:],
@@ -360,6 +364,8 @@ public struct ReminderLearningProfile: Codable, Hashable, Sendable {
     public var preferredHourHistogram: [String: Int]
     public var excludedApplications: [String: String]?
     public var clearedHistory: [ReminderHistorySuppression]?
+    /// Explicit opt-in. Connecting a model does not enable background model requests.
+    public var automaticDiscovery: Bool? = nil
 
     public init(
         semanticFeedback: [String: ReminderFeedbackStats] = [:],
@@ -427,6 +433,7 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
     public var snoozeCount: Int
     /// Stable terminal timestamp; rescans and metadata updates must not move history to today.
     public var closedAt: Date?
+    public var analysis: ReminderAnalysis? = nil
 
     public init(
         id: UUID = UUID(),
@@ -468,7 +475,7 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, detail, dueAt, sourceCaptureIDs, confidence, status, createdAt
-        case updatedAt, origin, recurrence, semanticKey, scheduledAt, completedAt, dismissedUntil, snoozeCount, closedAt
+        case updatedAt, origin, recurrence, semanticKey, scheduledAt, completedAt, dismissedUntil, snoozeCount, closedAt, analysis
     }
 
     public init(from decoder: Decoder) throws {
@@ -490,6 +497,7 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
         dismissedUntil = try container.decodeIfPresent(Date.self, forKey: .dismissedUntil)
         snoozeCount = try container.decodeIfPresent(Int.self, forKey: .snoozeCount) ?? 0
         closedAt = try container.decodeIfPresent(Date.self, forKey: .closedAt) ?? (status.isHistory ? ((status == .completed ? completedAt : nil) ?? updatedAt) : nil)
+        analysis = try container.decodeIfPresent(ReminderAnalysis.self, forKey: .analysis)
     }
 }
 

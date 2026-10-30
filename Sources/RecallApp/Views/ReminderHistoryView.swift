@@ -172,24 +172,8 @@ struct ReminderHistoryView: View {
             }.frame(maxWidth: .infinity).padding(.horizontal, 24).padding(.vertical, 12)
         }
     }
-    @ViewBuilder private var discoveryStatus: some View {
-        if case .searching = model.reminderDiscoveryStatus {
-            HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在检查待办…") }.font(.system(size: 12)).foregroundStyle(RecallPalette.secondary)
-        } else {
-            let checkpoint = model.state.reminderDiscoveryCheckpoint
-            HStack(spacing: 8) {
-                Text(checkpoint.lastRunAt == nil ? "尚未检查待办" : "已检查待办")
-                if let date = checkpoint.lastRunAt { Text("· 最近 " + reminderHistoryTime(date)) }
-                Menu("查看检查详情") {
-                    Text("本次检查 \(checkpoint.analyzedRecordCount) 条新增或变化记录")
-                    Text("共有 \(checkpoint.eligibleRecordCount) 条记录参与发现")
-                    Text("新增 \(checkpoint.discoveredCount) 项待确认")
-                    if !model.state.reminderLearningProfile.disabledReminderApplications.isEmpty {
-                        Text("部分应用已停止识别，可在来源菜单中恢复")
-                    }
-                }.menuStyle(.borderlessButton).fixedSize().foregroundStyle(RecallPalette.accent)
-            }.font(.system(size: 12)).foregroundStyle(RecallPalette.secondary).fixedSize()
-        }
+    private var discoveryStatus: some View {
+        ReminderDiscoveryStatusView()
     }
     @ViewBuilder private var cleanupButton: some View {
         if !ignoredIDs.isEmpty {

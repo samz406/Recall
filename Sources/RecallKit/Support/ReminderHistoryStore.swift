@@ -79,7 +79,9 @@ public extension FileMemoryStore {
     /// Merge inside the actor, so a scan cannot undo history actions taken while it was running.
     @discardableResult
     func applyReminderDiscovery(candidates: [ReminderCandidate], checkpoint: ReminderDiscoveryCheckpoint,
-                                revalidatedSourceIDs: Set<UUID>, startedAt: Date, now: Date = .now) throws -> Int {
+                                revalidatedSourceIDs: Set<UUID>, startedAt: Date, now: Date = .now,
+                                runKnownIDs: Set<UUID>? = nil, eligibleCount: Int? = nil,
+                                additionalSourceVersions: [String: String] = [:]) throws -> Int {
         let previous = state
         do {
             let sourceMap = Dictionary(state.correctedForAnalysis().captures.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -95,7 +97,7 @@ public extension FileMemoryStore {
                 return candidate.sourceCaptureIDs.allSatisfy { id in
                     guard let capture = sourceMap[id], profile.permitsReminderDiscovery(from: capture),
                           !state.privacy.excludedBundleIdentifiers.contains(capture.sourceBundleIdentifier ?? "") else { return false }
-                    return checkpoint.processedCaptureHashes[id.uuidString] == MemoryKnowledgeEngine.version(of: capture)
+                    return (checkpoint.processedCaptureHashes[id.uuidString] ?? additionalSourceVersions[id.uuidString]) == MemoryKnowledgeEngine.version(of: capture)
                 }
             }
             let known = Set(state.reminders.map(\.id))
@@ -125,8 +127,8 @@ public extension FileMemoryStore {
             }
             state.reminderDiscoveryCheckpoint = next
             let addedCount = retained.filter { !known.contains($0.id) && $0.status == .proposed }.count
-            state.reminderDiscoveryCheckpoint.discoveredCount = addedCount
-            state.reminderDiscoveryCheckpoint.eligibleRecordCount = next.processedCaptureHashes.count
+            state.reminderDiscoveryCheckpoint.discoveredCount = runKnownIDs.map { known in retained.filter { !known.contains($0.id) && $0.status == .proposed }.count } ?? addedCount
+            state.reminderDiscoveryCheckpoint.eligibleRecordCount = eligibleCount ?? next.processedCaptureHashes.count
             state.reminderLearningProfile.clearedHistory?.removeAll { $0.expiresAt <= now }
             try persist()
             return addedCount

@@ -106,7 +106,7 @@ public struct ReminderExtractor: Sendable {
             return discovered.contains { sameOccurrence(reminder, $0) }
         }
         for candidate in discovered {
-            guard let index = merged.firstIndex(where: { sameOccurrence($0, candidate) }) else {
+            guard let index = merged.firstIndex(where: { $0.id == candidate.id || sameOccurrence($0, candidate) }) else {
                 merged.append(candidate)
                 continue
             }
@@ -120,6 +120,11 @@ public struct ReminderExtractor: Sendable {
                 continue
             }
             var seenSourceIDs: Set<UUID> = []
+            if candidate.analysis != nil {
+                current.title = candidate.title; current.detail = candidate.detail
+                current.analysis = candidate.analysis; current.recurrence = candidate.recurrence
+                current.dueAt = candidate.dueAt
+            }
             current.sourceCaptureIDs = (current.sourceCaptureIDs.filter { !revalidatedCaptureIDs.contains($0) } + candidate.sourceCaptureIDs)
                 .filter { seenSourceIDs.insert($0).inserted }
             current.confidence = max(current.confidence, candidate.confidence)
