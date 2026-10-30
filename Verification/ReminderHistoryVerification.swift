@@ -149,6 +149,19 @@ enum ReminderHistoryVerification {
         _ = try await store.applyReminderDiscovery(candidates: [stale], checkpoint: checkpoint, revalidatedSourceIDs: [source.id], startedAt: now, now: now.addingTimeInterval(10))
         state = await store.snapshot()
         try expect(state.reminders.isEmpty, "迟到的扫描绕过了来源停用")
+        try await store.setReminderApplication(ReminderSourceChoice(capture: source)!, disabled: false)
+        let freshCount = try await store.applyReminderDiscovery(candidates: [stale], checkpoint: checkpoint, revalidatedSourceIDs: [source.id], startedAt: now, now: now.addingTimeInterval(20))
+        try expect(freshCount == 1, "有效的新候选未进入待确认")
+        try await store.saveMatterCorrection(MatterCorrection(evidenceIDs: [source.id], kind: .separate, text: "合成更正后的主题"))
+        state = await store.snapshot()
+        let corrected = state.correctedForAnalysis().captures.first!
+        let correctedCheckpoint = ReminderDiscoveryCheckpoint(processedCaptureHashes: [source.id.uuidString: MemoryKnowledgeEngine.version(of: corrected)])
+        stale.id = UUID(); stale.title = "确认 Nova 登录流程"
+        let correctedCount = try await store.applyReminderDiscovery(candidates: [stale], checkpoint: correctedCheckpoint, revalidatedSourceIDs: [], startedAt: now, now: now.addingTimeInterval(30))
+        try expect(correctedCount == 1, "来源版本校验错误拒绝了已更正的记录")
+        stale.id = UUID(); stale.title = "整理本周阅读清单"
+        let outdatedCount = try await store.applyReminderDiscovery(candidates: [stale], checkpoint: checkpoint, revalidatedSourceIDs: [], startedAt: now, now: now.addingTimeInterval(40))
+        try expect(outdatedCount == 0, "来源更正后仍接收旧扫描结果")
     }
     private static func closedOccurrenceStability() throws {
         let old = item(source: capture(), at: now.addingTimeInterval(-31 * 86_400))

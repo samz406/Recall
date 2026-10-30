@@ -2443,7 +2443,7 @@ private struct RemindersView: View {
         RecallPageHeader(title: "提醒", subtitle: "把需要跟进的事，放到合适的时间") {
             HStack(spacing: 12) {
                 Button(isDiscovering ? "正在发现…" : "发现待办") { model.proposeReminders() }.disabled(isDiscovering)
-                Button("新建提醒") { isCreatingReminder = true }.buttonStyle(.borderedProminent)
+                Button { isCreatingReminder = true } label: { Label("新建提醒", systemImage: "plus") }.buttonStyle(.borderedProminent)
             }
         }
     }

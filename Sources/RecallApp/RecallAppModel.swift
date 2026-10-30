@@ -1299,7 +1299,10 @@ final class RecallAppModel: ObservableObject {
                 let count = try await store.restoreReminderHistory(ids: ids)
                 await refresh()
                 noticeMessage = count > 0 ? "已恢复 \(count) 条到待确认；选择时间后才会通知。" : "记录状态已变化，请刷新后查看。"
-            } catch { recordError(error, source: "Reminders", message: "恢复历史提醒失败") }
+            } catch {
+                noticeMessage = (error as? ReminderHistoryError)?.errorDescription ?? "恢复未完成，请重试。"
+                recordError(error, source: "Reminders", message: "恢复历史提醒失败")
+            }
         }
     }
 
@@ -1312,7 +1315,10 @@ final class RecallAppModel: ObservableObject {
                 let count = try await store.removeReminderHistory(ids: ids, onlyDismissed: onlyDismissed)
                 await refresh()
                 noticeMessage = "已清理 \(count) 条历史记录，原始记忆已保留。"
-            } catch { recordError(error, source: "Reminders", message: "清理历史提醒失败") }
+            } catch {
+                noticeMessage = "清理历史记录未完成，请重试。原始记忆已保留。"
+                recordError(error, source: "Reminders", message: "清理历史提醒失败")
+            }
         }
     }
 
@@ -1326,7 +1332,10 @@ final class RecallAppModel: ObservableObject {
                 await refresh()
                 noticeMessage = disabled ? "不再从“\(source.title)”识别待办，已有提醒和原始记录保留。" : "已恢复从“\(source.title)”识别待办。"
                 if !disabled { discoverReminders(force: false, announce: false) }
-            } catch { recordError(error, source: "Reminders", message: "保存提醒来源设置失败") }
+            } catch {
+                noticeMessage = "来源设置未保存，请重试。"
+                recordError(error, source: "Reminders", message: "保存提醒来源设置失败")
+            }
         }
     }
 

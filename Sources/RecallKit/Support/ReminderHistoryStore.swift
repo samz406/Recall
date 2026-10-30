@@ -82,7 +82,7 @@ public extension FileMemoryStore {
                                 revalidatedSourceIDs: Set<UUID>, startedAt: Date, now: Date = .now) throws -> Int {
         let previous = state
         do {
-            let sourceMap = Dictionary(state.captures.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            let sourceMap = Dictionary(state.correctedForAnalysis().captures.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let profile = state.reminderLearningProfile
             let extractor = ReminderExtractor()
             let protected = state.reminders.filter { $0.updatedAt > startedAt }
