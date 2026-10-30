@@ -42,6 +42,7 @@ final class RecallAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
             }
             return
         }
+        RecallAppearance.load().applyToApplication()
         NSApp.setActivationPolicy(.regular)
         UNUserNotificationCenter.current().delegate = self
         DispatchQueue.main.async { Self.activateMainWindow() }

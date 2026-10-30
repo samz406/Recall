@@ -46,14 +46,16 @@ enum RecallLayoutPreviews {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         try await RecallChatInput.verifyKeyboardBehavior()
+        try await verifyAppearanceAndConnection()
         let model = RecallAppModel(previewState: try await fixture())
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(10)) }
         let defaults = UserDefaults(suiteName: "im.recall.synthetic-layout")!
         defer { defaults.removePersistentDomain(forName: "im.recall.synthetic-layout") }
-        let names = ["daily", "topics", "period", "period-stale", "knowledge", "knowledge-empty", "rules", "reminders", "timeline", "settings", "chat", "chat-empty", "navigation"]
+        let names = ["daily", "topics", "period", "period-stale", "knowledge", "knowledge-empty", "rules", "reminders", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "navigation"]
         for mode in ["wide", "narrow", "dark"] {
             let width: CGFloat = mode == "narrow" ? 780 : 1050
+            defaults.set(mode == "dark" ? "dark" : "system", forKey: RecallAppearance.storageKey)
             for name in names {
                 defaults.set(name.hasPrefix("period") ? "周期回顾" : (name.hasPrefix("knowledge") ? "长期记忆" : "记忆主题"), forKey: "recall.memory.tab")
                 let saved = model.state
@@ -61,12 +63,14 @@ enum RecallLayoutPreviews {
                 if name == "period-stale" { model.weeklyReportToOpen = model.state.weeklyReports.last?.id }
                 if name == "knowledge-empty" { model.state.memoryKnowledge.claims = [] }
                 if name == "chat-empty" { model.state.messages = [ConversationMessage(role: .system, content: "已清空当前会话，可以开始新的对话。")] }
+                let pageWidth: CGFloat = name == "navigation" ? width + 196 : (name == "appearance-compact" ? 620 : (name.hasPrefix("model-editor") ? 700 : width))
+                let pageHeight: CGFloat = name.hasPrefix("model-editor") ? min(744, (NSScreen.main?.visibleFrame.height ?? 900) - 48) : (name == "appearance-compact" ? 560 : 740)
                 let page = RecallRootView.previewPage(name)
-                    .environmentObject(model).defaultAppStorage(defaults).recallColors()
+                    .environmentObject(model).recallColors().defaultAppStorage(defaults)
                     .environment(\.controlActiveState, .key)
-                    .frame(width: name == "navigation" ? width + 196 : width, height: 740)
+                    .frame(width: pageWidth, height: pageHeight)
                 let host = NSHostingView(rootView: page)
-                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: name == "navigation" ? width + 196 : width, height: 740), styleMask: [.borderless], backing: .buffered, defer: false)
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: pageWidth, height: pageHeight), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.appearance = NSAppearance(named: mode == "dark" ? .darkAqua : .aqua)
                 window.contentView = host; window.makeKeyAndOrderFront(nil)
                 try await Task.sleep(for: .milliseconds(name == "navigation" ? 600 : 150))
@@ -80,7 +84,7 @@ enum RecallLayoutPreviews {
                 model.weeklyReportToOpen = savedReportSelection
             }
         }
-        print("PASS: rendered 39 native SwiftUI page previews (wide, minimum detail width and dark appearance)")
+        print("PASS: rendered \(names.count * 3) native SwiftUI page previews (wide, minimum detail width, compact settings and dark appearance)")
     }
     private enum PreviewFailure: Error { case noImage }
 }
