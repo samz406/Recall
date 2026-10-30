@@ -6,6 +6,7 @@ import RecallKit
 struct RecallVerifier {
     static func main() async {
         do {
+            try await ModelReminderDiscoveryVerification.run()
             try await PageExperienceVerification.run()
             try await StartupLoadingVerification.run()
             try await DirectDailyReviewVerification.run()
@@ -48,7 +49,6 @@ struct RecallVerifier {
             try verifyTimelineDayGrouping()
             try verifyTimelineDayFiltering()
             try await ReminderHistoryVerification.run()
-            try await ModelReminderDiscoveryVerification.run()
             try verifyReminders()
             try verifyReminderPrecision()
             try verifyReminderTimeAndRecurrence()

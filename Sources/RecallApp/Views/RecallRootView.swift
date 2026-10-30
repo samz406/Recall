@@ -2845,6 +2845,11 @@ private struct ReminderSourceSheet: View {
                     .buttonStyle(.bordered)
             }
 
+            if let analysis = reminder.analysis {
+                Label(analysis.basis, systemImage: "text.bubble")
+                    .font(.caption).foregroundStyle(RecallPalette.secondary)
+            }
+
             if captures.isEmpty {
                 ContentUnavailableView(
                     reminder.origin == .manual ? "这是手动创建的提醒" : "来源记录已不存在",

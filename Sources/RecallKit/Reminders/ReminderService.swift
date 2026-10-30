@@ -388,7 +388,15 @@ public struct ReminderExtractor: Sendable {
     }
 
     private func sameOccurrence(_ lhs: ReminderCandidate, _ rhs: ReminderCandidate) -> Bool {
-        guard isSemanticallyEquivalent(lhs.title, rhs.title) else { return false }
+        if lhs.analysis != nil || rhs.analysis != nil {
+            if lhs.id == rhs.id { return true }
+            // Model decisions supply identity. Fuzzy character overlap must not merge different
+            // clients/projects or unrelated conversations after the semantic audit accepted both.
+            guard fingerprint(lhs.title) == fingerprint(rhs.title),
+                  !Set(lhs.sourceCaptureIDs).isDisjoint(with: rhs.sourceCaptureIDs) else { return false }
+        } else {
+            guard isSemanticallyEquivalent(lhs.title, rhs.title) else { return false }
+        }
         switch (lhs.dueAt, rhs.dueAt) {
         case let (left?, right?):
             return Calendar.current.isDate(left, inSameDayAs: right)
@@ -400,7 +408,11 @@ public struct ReminderExtractor: Sendable {
     }
 
     func blocks(candidate: ReminderCandidate, existing: ReminderCandidate, now: Date) -> Bool {
-        guard isSemanticallyEquivalent(existing.title, candidate.title) else { return false }
+        if candidate.analysis != nil {
+            guard existing.id == candidate.id || fingerprint(existing.title) == fingerprint(candidate.title) else { return false }
+        } else {
+            guard isSemanticallyEquivalent(existing.title, candidate.title) else { return false }
+        }
         switch existing.status {
         case .proposed, .scheduled, .snoozed:
             return sameOccurrence(existing, candidate)

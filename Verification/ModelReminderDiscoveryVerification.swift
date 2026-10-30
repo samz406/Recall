@@ -82,6 +82,7 @@ enum ModelReminderDiscoveryVerification {
         try deadlines(); try await stateReconciliation(); try await failureAndCancellation()
         try await incremental(); try await partialResume(); try await optIn(); try await changedSources()
         try await privacy(); try legacy(); try await persistenceFailure()
+        print("PASS: 14 model-reminder scenarios (semantic requests, roles, evidence audit, true deadlines, closure, deduplication, cancellation, resume, privacy, source races and rollback)")
     }
     static func semanticPath() async throws {
         let source = record("[聊天·自己] 我会整理验收清单"), model = Model()
@@ -181,6 +182,12 @@ enum ModelReminderDiscoveryVerification {
         _ = try await memory.discoverRemindersUsingModel(force:true,responder:Model("uncertain"))
         let uncertain = await memory.snapshot()
         try check(Set(uncertain.reminders.map(\.id)) == priorIDs, "不确定的分析直接删除了已有候选")
+        var customerA = ReminderCandidate(title:"提交客户甲的合成项目验收报告",detail:"客户甲的工作",sourceCaptureIDs:[first.id],confidence:1)
+        customerA.analysis = ReminderAnalysis(version:4,basis:"本人承诺")
+        var customerB = ReminderCandidate(title:"提交客户乙的合成项目验收报告",detail:"客户乙的工作",sourceCaptureIDs:[second.id],confidence:1)
+        customerB.analysis = ReminderAnalysis(version:4,basis:"本人承诺")
+        let distinct = ReminderExtractor().merging([customerB],into:[customerA])
+        try check(distinct.count == 2, "文字相似度覆盖了模型的不同事项判断")
     }
     static func partialResume() async throws {
         let records = (0..<3).map { record("[聊天·自己] 我会整理验收清单\n" + String(repeating:"合成背景资料。",count:1_500), offset:Double($0)) }
