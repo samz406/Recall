@@ -358,6 +358,8 @@ public enum ReminderFeedbackEvent: Sendable {
 public struct ReminderLearningProfile: Codable, Hashable, Sendable {
     public var semanticFeedback: [String: ReminderFeedbackStats]
     public var preferredHourHistogram: [String: Int]
+    public var excludedApplications: [String: String]?
+    public var clearedHistory: [ReminderHistorySuppression]?
 
     public init(
         semanticFeedback: [String: ReminderFeedbackStats] = [:],
@@ -423,6 +425,8 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
     public var completedAt: Date?
     public var dismissedUntil: Date?
     public var snoozeCount: Int
+    /// Stable terminal timestamp; rescans and metadata updates must not move history to today.
+    public var closedAt: Date?
 
     public init(
         id: UUID = UUID(),
@@ -440,7 +444,8 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
         scheduledAt: Date? = nil,
         completedAt: Date? = nil,
         dismissedUntil: Date? = nil,
-        snoozeCount: Int = 0
+        snoozeCount: Int = 0,
+        closedAt: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -458,11 +463,12 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
         self.completedAt = completedAt
         self.dismissedUntil = dismissedUntil
         self.snoozeCount = snoozeCount
+        self.closedAt = closedAt ?? (status.isHistory ? ((status == .completed ? completedAt : nil) ?? updatedAt ?? createdAt) : nil)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, title, detail, dueAt, sourceCaptureIDs, confidence, status, createdAt
-        case updatedAt, origin, recurrence, semanticKey, scheduledAt, completedAt, dismissedUntil, snoozeCount
+        case updatedAt, origin, recurrence, semanticKey, scheduledAt, completedAt, dismissedUntil, snoozeCount, closedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -483,6 +489,7 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
         completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
         dismissedUntil = try container.decodeIfPresent(Date.self, forKey: .dismissedUntil)
         snoozeCount = try container.decodeIfPresent(Int.self, forKey: .snoozeCount) ?? 0
+        closedAt = try container.decodeIfPresent(Date.self, forKey: .closedAt) ?? (status.isHistory ? ((status == .completed ? completedAt : nil) ?? updatedAt) : nil)
     }
 }
 

@@ -36,7 +36,34 @@ enum RecallLayoutPreviews {
                           ConversationMessage(role: .assistant, content: "Atlas 的页面方案已完成核对，生产发布仍待确认。\n\n可以先查看发布状态，再继续安排验收。", citations: [state.captures[0].id, state.captures[1].id]),
                           ConversationMessage(role: .user, content: "明白了")]
         state.reminders = [ReminderCandidate(title: "核对 Atlas 发布状态", detail: "合成验收候选，不安排实际通知。", sourceCaptureIDs: [state.captures[0].id], confidence: 0.9)]
+        addHistory(to: &state, now: now)
         return state
+    }
+    private static func addHistory(to state: inout RecallState, now: Date) {
+        let calendar = Calendar.current
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: now))!
+        let first = state.captures[0], second = state.captures[1]
+        func history(_ title: String, _ status: ReminderStatus, _ date: Date, _ source: CaptureRecord) -> ReminderCandidate {
+            ReminderCandidate(title: title, detail: "从合成内容识别；创建前请确认。", sourceCaptureIDs: [source.id], confidence: 0.8,
+                status: status, createdAt: date.addingTimeInterval(-3_600), updatedAt: date, origin: .discovered,
+                completedAt: status == .completed ? date : nil, dismissedUntil: status == .dismissed ? date.addingTimeInterval(30 * 86_400) : nil)
+        }
+        state.reminders += [
+            history("核对 Atlas 发布流程的验收边界，整理全部验证结果与后续安排，保留完整记录供下一轮方案核对时使用", .dismissed, now.addingTimeInterval(-60), first),
+            history("整理 Nova 图表边界验证结果", .dismissed, now.addingTimeInterval(-600), second),
+            history("检查每周阅读笔记的索引", .dismissed, now.addingTimeInterval(-1_200), first),
+            history("提交 Atlas 验收报告", .completed, yesterday.addingTimeInterval(16 * 3_600), first),
+            history("提交 Atlas 验收报告", .completed, yesterday.addingTimeInterval(16 * 3_600 - 60), first),
+            history("核对 Nova 留白方案", .dismissed, yesterday.addingTimeInterval(15 * 3_600), second),
+            history("整理每周学习笔记", .completed, yesterday.addingTimeInterval(11 * 3_600), first),
+            history("预订合成会议室", .cancelled, yesterday.addingTimeInterval(9 * 3_600), second)
+        ]
+        for offset in 0..<195 {
+            let status: ReminderStatus = offset < 38 ? .completed : (offset % 10 == 0 ? .cancelled : .dismissed)
+            state.reminders.append(history("核对合成验收记录 \(offset + 1)", status,
+                yesterday.addingTimeInterval(-86_400 - Double(offset * 3_600)), offset % 2 == 0 ? first : second))
+        }
+        state.reminderDiscoveryCheckpoint = ReminderDiscoveryCheckpoint(lastRunAt: now.addingTimeInterval(-120), eligibleRecordCount: state.captures.count, analyzedRecordCount: 2, discoveredCount: 1)
     }
     static func run() async throws {
         let args = CommandLine.arguments
@@ -52,7 +79,7 @@ enum RecallLayoutPreviews {
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(10)) }
         let defaults = UserDefaults(suiteName: "im.recall.synthetic-layout")!
         defer { defaults.removePersistentDomain(forName: "im.recall.synthetic-layout") }
-        let names = ["daily", "topics", "period", "period-stale", "knowledge", "knowledge-empty", "rules", "reminders", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "navigation"]
+        let names = ["daily", "topics", "period", "period-stale", "knowledge", "knowledge-empty", "rules", "reminders", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "navigation"]
         for mode in ["wide", "narrow", "dark"] {
             let width: CGFloat = mode == "narrow" ? 780 : 1050
             defaults.set(mode == "dark" ? "dark" : "system", forKey: RecallAppearance.storageKey)
@@ -61,6 +88,7 @@ enum RecallLayoutPreviews {
                 let saved = model.state
                 let savedReportSelection = model.weeklyReportToOpen
                 if name == "period-stale" { model.weeklyReportToOpen = model.state.weeklyReports.last?.id }
+                if name == "reminder-history-empty" { model.state.reminders.removeAll { $0.status.isHistory } }
                 if name == "knowledge-empty" { model.state.memoryKnowledge.claims = [] }
                 if name == "chat-empty" { model.state.messages = [ConversationMessage(role: .system, content: "已清空当前会话，可以开始新的对话。")] }
                 let pageWidth: CGFloat = name == "navigation" ? width + 196 : (name == "appearance-compact" ? 620 : (name.hasPrefix("model-editor") ? 700 : width))

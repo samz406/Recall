@@ -366,8 +366,10 @@ public actor FileMemoryStore {
                 if correction.kind == .completed {
                     state.reminders[i].status = .completed
                     state.reminders[i].completedAt = correction.createdAt
+                    state.reminders[i].closedAt = correction.createdAt
                 } else if state.reminders[i].origin == .discovered && state.reminders[i].status == .proposed {
                     state.reminders[i].status = .dismissed
+                    state.reminders[i].closedAt = correction.createdAt
                 }
                 state.reminders[i].updatedAt = correction.createdAt
             }
@@ -800,6 +802,7 @@ public actor FileMemoryStore {
         state.dailySummaries.removeAll { summary in removedSummaries.contains(where: { $0.id == summary.id }) }
         state.messages.removeAll { message in removedMessages.contains(where: { $0.id == message.id }) }
         state.reminders.removeAll { reminder in removedReminders.contains(where: { $0.id == reminder.id }) }
+        state.reminderLearningProfile.removeHistorySources(actualIDs)
         state.episodes.removeAll { episode in removedEpisodes.contains(where: { $0.id == episode.id }) }
         state.projects = state.projects.compactMap { project in
             guard actualIDs.contains(where: project.evidenceIDs.contains) else { return project }
@@ -1090,6 +1093,7 @@ public actor FileMemoryStore {
         // 提醒正文同样可能包含来源记录中的可识别文本。删除来源时删除其派生提醒，
         // 由用户手动创建且没有来源关联的提醒不受影响。
         state.reminders.removeAll { $0.sourceCaptureIDs.contains(id) }
+        state.reminderLearningProfile.removeHistorySources([id])
         state.messages.removeAll { $0.role == .assistant && $0.citations.contains(id) }
         state.conversationSummary = nil
         state.conversationSummaryCoveredMessageCount = 0
@@ -1177,6 +1181,7 @@ public actor FileMemoryStore {
             updated.status = .dismissed
             updated.dismissedUntil = Calendar.current.date(byAdding: .day, value: 30, to: .now)
             updated.updatedAt = .now
+            updated.closedAt = updated.updatedAt
             let semanticKey = reminder.semanticKey.isEmpty
                 ? String(reminder.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).filter { $0.isLetter || $0.isNumber })
                 : reminder.semanticKey
