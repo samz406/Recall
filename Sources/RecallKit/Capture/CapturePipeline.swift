@@ -2,7 +2,9 @@ import AppKit
 import CoreGraphics
 import CryptoKit
 import Foundation
-import ScreenCaptureKit
+// Older SDKs omit concurrency annotations for SCShareableContent. Its objects
+// remain confined to the @MainActor ScreenCaptureService below.
+@preconcurrency import ScreenCaptureKit
 @preconcurrency import Vision
 
 public enum CapturePipelineError: LocalizedError {
