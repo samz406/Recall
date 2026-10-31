@@ -74,10 +74,15 @@ public struct TimelineIndex: Sendable {
             calendar.dateInterval(of: .hour, for: $0.records[0].createdAt)?.start ?? $0.records[0].createdAt
         }
         let hours = grouped.keys.sorted(by: >).map { TimelineHour(date: $0, clusters: grouped[$0]!) }
-        let counts = Dictionary(grouping: matches, by: { $0.sourceAppName ?? "其他" })
-        let summary = counts.map { ($0.key, $0.value.count) }
-            .sorted { $0.1 == $1.1 ? $0.0 < $1.0 : $0.1 > $1.1 }
-            .prefix(4).map { "\($0.0) \($0.1)" }.joined(separator: " · ")
+        var counts: [String: Int] = [:]
+        for record in matches { counts[record.sourceAppName ?? "其他", default: 0] += 1 }
+        let entries: [(name: String, count: Int)] = counts.map { (name: $0.key, count: $0.value) }
+        let ranked = entries.sorted { lhs, rhs in
+            if lhs.count == rhs.count { return lhs.name < rhs.name }
+            return lhs.count > rhs.count
+        }
+        let labels: [String] = ranked.prefix(4).map { entry in "\(entry.name) \(entry.count)" }
+        let summary = labels.joined(separator: " · ")
         try Task.checkCancellation()
         return TimelineQueryResult(captures: matches, hours: hours, clusterCount: clusters.count, sourceSummary: summary)
     }
