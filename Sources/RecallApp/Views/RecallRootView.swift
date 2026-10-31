@@ -311,12 +311,6 @@ private struct RecordSheet: View {
     }
 }
 
-private struct TimelineDayOption: Identifiable {
-    let day: Date
-    let count: Int
-    var id: Date { day }
-}
-
 private struct TimelineDeletionRequest: Identifiable {
     let id = UUID()
     let captures: [CaptureRecord]
@@ -325,68 +319,65 @@ private struct TimelineDeletionRequest: Identifiable {
 
 private struct TimelineView: View {
     @EnvironmentObject private var model: RecallAppModel
-    @State private var searchText = ""
-    @State private var searchAllDates = false
+    var body: some View { TimelineContentView(workspace: model.timelineWorkspace) }
+}
+
+private struct TimelineContentView: View {
+    @ObservedObject var workspace: TimelineWorkspace
+    @EnvironmentObject private var model: RecallAppModel
     @State private var visibleDayCount = 14
     @AppStorage("recall.timeline.hideTitles") private var hideTitles = false
-    @State private var expandedDayIDs: Set<Date> = []
-    @State private var selectedDay = Calendar.current.startOfDay(for: .now)
     @AppStorage("recall.timeline.detailed") private var detailed = false
     @AppStorage("recall.timeline.collapseDuplicates") private var collapseDuplicates = true
-    @State private var sourceFilter = ""
     @State private var showsCalendar = false
     @State private var isManaging = false
     @State private var selectedCaptureIDs: Set<UUID> = []
     @State private var deletionRequest: TimelineDeletionRequest?
     @State private var captureShowingDetail: CaptureRecord?
 
-    private var availableDayOptions: [TimelineDayOption] {
-        let calendar = Calendar.current
-        let counts = model.state.captures.reduce(into: [Date: Int]()) { result, capture in
-            result[calendar.startOfDay(for: capture.createdAt), default: 0] += 1
-        }
-        return counts.keys
-            .sorted(by: >)
-            .map { TimelineDayOption(day: $0, count: counts[$0] ?? 0) }
+    private var selectedDay: Date {
+        get { workspace.query.day }
+        nonmutating set { workspace.query.day = newValue }
     }
-
-    private var selectedDayCaptures: [CaptureRecord] {
-        TimelineGrouping.captures(on: selectedDay, from: model.state.captures).filter { sourceFilter.isEmpty || $0.sourceAppName == sourceFilter }
+    private var searchText: String {
+        get { workspace.query.searchText }
+        nonmutating set { workspace.query.searchText = newValue }
     }
-
-    private var captures: [CaptureRecord] {
-        let pool = (searchAllDates && isSearching ? model.state.captures : selectedDayCaptures)
-            .filter { sourceFilter.isEmpty || $0.sourceAppName == sourceFilter }
-        guard isSearching else { return pool }
-        return MemorySearchEngine().search(MemorySearchQuery(text: searchText), in: pool, limit: Int.max).map(\.capture)
+    private var searchAllDates: Bool {
+        get { workspace.query.searchAllDates }
+        nonmutating set { workspace.query.searchAllDates = newValue }
     }
-
-    private var dayGroups: [TimelineDayGroup] {
-        TimelineGrouping.dayGroups(for: captures)
+    private var sourceFilter: String {
+        get { workspace.query.source }
+        nonmutating set { workspace.query.source = newValue }
     }
-
-    private var isSearching: Bool {
-        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
+    private var availableDayOptions: [TimelineDayCount] { workspace.days }
+    private var captures: [CaptureRecord] { workspace.result.captures }
+    private var isSearching: Bool { workspace.query.isSearching }
 
     var body: some View {
         VStack(spacing: 0) {
             timelineHeader
             toolbar.padding(.horizontal, 24).padding(.bottom, 16)
-            if model.state.captures.isEmpty { timelineEmptyState }
+            if model.isLoadingSavedState {
+                ProgressView("正在读取记录…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.state.captures.isEmpty { timelineEmptyState }
             else {
                 HStack(alignment: .top, spacing: 18) {
                     dateColumn.frame(width: 158)
-                    if captures.isEmpty { selectedDayEmptyState.frame(maxWidth: .infinity) }
+                    if workspace.isLoading {
+                        ProgressView(isSearching ? "正在搜索记录…" : "正在整理时间线…")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if captures.isEmpty { selectedDayEmptyState.frame(maxWidth: .infinity) }
                     else {
                         ScrollViewReader { proxy in
                             ScrollView {
                                 LazyVStack(alignment: .leading, spacing: 20) {
                                     resultsHeading
-                                    ForEach(hourGroups, id: \.date) { group in
+                                    ForEach(workspace.result.hours) { group in
                                         VStack(alignment: .leading, spacing: 10) {
                                             Text(group.date.formatted(.dateTime.hour().minute())).font(.caption.weight(.semibold)).foregroundStyle(RecallPalette.secondary)
-                                            VStack(spacing: 0) {
+                                            LazyVStack(spacing: 0) {
                                                 ForEach(group.clusters) { cluster in
                                                     TimelineClusterRow(cluster: cluster, isManaging: isManaging, selectedIDs: selectedCaptureIDs,
                                                         detailed: detailed, hideTitles: hideTitles, onSelect: toggleSelection, onDelete: requestDeletion, onOpen: { captureShowingDetail = $0 })
@@ -408,15 +399,18 @@ private struct TimelineView: View {
             if case .record(let id) = model.destination, let source = model.state.captures.first(where: { $0.id == id }) {
                 selectedDay = Calendar.current.startOfDay(for: source.createdAt)
             }
-            initializeExpandedDays()
+            updateGrouping()
+            visibleDayCount = max(visibleDayCount, (availableDayOptions.firstIndex { $0.day == selectedDay } ?? 0) + 1)
         }
         .onChange(of: model.navigationRevision) { _, _ in
             let target = model.destination
             if case .record(let id) = target, let source = model.state.captures.first(where: { $0.id == id }) { selectedDay = Calendar.current.startOfDay(for: source.createdAt) }
         }
-        .onChange(of: searchText) { _, _ in initializeExpandedDays() }
-        .onChange(of: selectedDay) { _, _ in initializeExpandedDays() }
-        .onChange(of: dayGroups.map(\.id)) { _, _ in initializeExpandedDays() }
+        .onChange(of: collapseDuplicates) { _, _ in updateGrouping() }
+        .onChange(of: isManaging) { _, _ in updateGrouping() }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.NSSystemTimeZoneDidChange)) { _ in
+            workspace.update(captures: model.state.captures)
+        }
         .safeAreaInset(edge: .bottom) {
             if isManaging { selectionBar }
         }
@@ -426,10 +420,10 @@ private struct TimelineView: View {
                     .inspectorColumnWidth(min: 440, ideal: 500, max: 620)
             }
         }
-        .onChange(of: model.state.captures.map(\.id)) { _, ids in
-            selectedCaptureIDs.formIntersection(ids)
-            if let capture = captureShowingDetail, !ids.contains(capture.id) {
-                captureShowingDetail = nil
+        .onChange(of: workspace.sourceRevision) { _, _ in
+            selectedCaptureIDs.formIntersection(Set(model.state.captures.map(\.id)))
+            if let capture = captureShowingDetail {
+                captureShowingDetail = model.state.captures.first { $0.id == capture.id }
             }
         }
         .sheet(item: $deletionRequest) { request in
@@ -448,7 +442,7 @@ private struct TimelineView: View {
         guard case .record(let id) = model.destination,
               let capture = model.state.captures.first(where: { $0.id == id }) else { return }
         selectedDay = Calendar.current.startOfDay(for: capture.createdAt); sourceFilter = ""; searchText = ""
-        collapseDuplicates = false; initializeExpandedDays(); captureShowingDetail = capture
+        collapseDuplicates = false; updateGrouping(); captureShowingDetail = capture
         DispatchQueue.main.async { proxy.scrollTo(id, anchor: .center) }
     }
     private var timelineHeader: some View {
@@ -456,15 +450,15 @@ private struct TimelineView: View {
     }
     private var toolbar: some View {
         HStack(spacing: 10) {
-            TextField(searchAllDates ? "搜索全部日期的记录" : "搜索当天记录", text: $searchText).textFieldStyle(.roundedBorder).frame(minWidth: 150)
+            TextField(searchAllDates ? "搜索全部日期的记录" : "搜索当天记录", text: $workspace.query.searchText).textFieldStyle(.roundedBorder).frame(minWidth: 150)
             Menu {
-                Toggle("搜索全部日期", isOn: $searchAllDates)
+                Toggle("搜索全部日期", isOn: $workspace.query.searchAllDates)
                 Toggle("合并相同内容", isOn: $collapseDuplicates)
                 Toggle("隐藏记录标题", isOn: $hideTitles)
             } label: { Image(systemName: "line.3.horizontal.decrease") }.fixedSize().help("搜索范围与显示选项")
-            Picker("来源", selection: $sourceFilter) {
+            Picker("来源", selection: $workspace.query.source) {
                 Text("全部来源").tag("")
-                ForEach(Array(Set(model.state.captures.compactMap(\.sourceAppName))).sorted(), id: \.self) { Text($0).tag($0) }
+                ForEach(workspace.sources, id: \.self) { Text($0).tag($0) }
             }.labelsHidden().frame(width: 122)
             Picker("显示", selection: $detailed) { Text("精简").tag(false); Text("详细").tag(true) }.labelsHidden().frame(width: 76).help("精简显示标题和应用；详细显示摘要和标签")
             Button(isManaging ? "完成" : "选择") { isManaging.toggle(); if !isManaging { selectedCaptureIDs.removeAll() } }.help("多选并批量删除记录")
@@ -487,7 +481,7 @@ private struct TimelineView: View {
                             GeometryReader { geometry in
                                 Capsule().fill(RecallPalette.border).frame(height: 3)
                                 Capsule().fill(selected ? RecallPalette.accent : RecallPalette.accent.opacity(0.35))
-                                    .frame(width: max(3, geometry.size.width * CGFloat(option.count) / CGFloat(availableDayOptions.map(\.count).max() ?? 1)), height: 3)
+                                    .frame(width: max(3, geometry.size.width * CGFloat(option.count) / CGFloat(workspace.maximumDayCount)), height: 3)
                             }.frame(height: 3)
                         }.padding(10).background(selected ? RecallPalette.selected : .clear, in: RoundedRectangle(cornerRadius: 8)).contentShape(Rectangle())
                     }.buttonStyle(.plain).font(.system(size: 13)).foregroundStyle(selected ? RecallPalette.accent : RecallPalette.text)
@@ -497,28 +491,16 @@ private struct TimelineView: View {
             }
         }.clipped()
     }
-    private var resultClusters: [TimelineRecordCluster] {
-        TimelineRecordCluster.make(captures.sorted { $0.createdAt > $1.createdAt }, enabled: collapseDuplicates && !isManaging)
-    }
-    private var hourGroups: [TimelineHourGroup] {
-        Dictionary(grouping: resultClusters) { Calendar.current.dateInterval(of: .hour, for: $0.records[0].createdAt)?.start ?? $0.records[0].createdAt }
-            .map { TimelineHourGroup(date: $0.key, clusters: $0.value) }.sorted { $0.date > $1.date }
-    }
     private var resultsHeading: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Text(searchAllDates && isSearching ? "全部日期" : selectedDay.formatted(.dateTime.month().day().weekday())).font(.system(size: 16, weight: .semibold))
-                Text("\(captures.count) 条记录" + (captures.count > resultClusters.count ? " · 已合并 \(captures.count - resultClusters.count) 条重复" : "")).font(.caption).foregroundStyle(RecallPalette.secondary)
+                Text("\(captures.count) 条记录" + (captures.count > workspace.result.clusterCount ? " · 已合并 \(captures.count - workspace.result.clusterCount) 条重复" : "")).font(.caption).foregroundStyle(RecallPalette.secondary)
                 Spacer()
             }
-            Text(sourceSummary).font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(2)
+            Text(workspace.result.sourceSummary).font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(2)
         }
     }
-    private var sourceSummary: String {
-        Dictionary(grouping: captures, by: { $0.sourceAppName ?? "其他" }).map { ($0.key, $0.value.count) }
-            .sorted { $0.1 > $1.1 }.prefix(4).map { "\($0.0) \($0.1)" }.joined(separator: " · ")
-    }
-
     private var timelineEmptyState: some View {
         VStack(alignment: .leading, spacing: 24) {
             HStack(alignment: .top, spacing: 18) {
@@ -605,111 +587,9 @@ private struct TimelineView: View {
         .padding(32)
     }
 
-    private var dayNavigator: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Button { moveSelectedDay(by: -1) } label: {
-                    Image(systemName: "chevron.left")
-                }
-                .buttonStyle(.bordered)
-                .help("前一天")
-
-                Button {
-                    showsCalendar.toggle()
-                } label: {
-                    HStack(spacing: 8) {
-                        Text(selectedDay.formatted(.dateTime.year().month().day()))
-                            .fontWeight(.medium)
-                        Image(systemName: "chevron.down")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(RecallPalette.secondary)
-                    }
-                }
-                .buttonStyle(.bordered)
-                .help("选择日期")
-                .accessibilityLabel("选择日期")
-                .accessibilityValue(selectedDay.formatted(date: .complete, time: .omitted))
-                .popover(isPresented: $showsCalendar, arrowEdge: .top) {
-                    TimelineCalendarPopover(selectedDay: selectedDay) { day in
-                        selectDay(day)
-                        showsCalendar = false
-                    }
-                }
-
-                Button { moveSelectedDay(by: 1) } label: {
-                    Image(systemName: "chevron.right")
-                }
-                .buttonStyle(.bordered)
-                .disabled(Calendar.current.isDateInToday(selectedDay))
-                .help("后一天")
-
-                if !Calendar.current.isDateInToday(selectedDay) {
-                    Button("今天") { selectDay(.now) }
-                        .buttonStyle(.borderedProminent)
-                }
-
-                Spacer()
-
-                Label("\(selectedDayCaptures.count) 条记录", systemImage: "doc.text")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(RecallPalette.secondary)
-            }
-
-            if !availableDayOptions.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(availableDayOptions) { option in
-                            dayButton(for: option)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 32)
-        .padding(.bottom, 14)
-    }
-
-    private func dayButton(for option: TimelineDayOption) -> some View {
-        let isSelected = Calendar.current.isDate(option.day, inSameDayAs: selectedDay)
-        return Button {
-            selectDay(option.day)
-        } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(navigationTitle(for: option.day))
-                    .font(.subheadline.weight(.semibold))
-                HStack(spacing: 4) {
-                    Text(option.day.formatted(.dateTime.weekday(.abbreviated)))
-                    Text("·")
-                    Text("\(option.count) 条")
-                }
-                .font(.caption)
-                .foregroundStyle(isSelected ? RecallPalette.onAccent.opacity(0.82) : RecallPalette.secondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .foregroundStyle(isSelected ? RecallPalette.onAccent : RecallPalette.text)
-            .background(
-                isSelected ? RecallPalette.accent : RecallPalette.surface,
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(isSelected ? Color.clear : RecallPalette.border.opacity(0.6), lineWidth: 1)
-            }
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func initializeExpandedDays() {
-        expandedDayIDs = Set(dayGroups.map(\.id))
-    }
-
-    private func toggle(_ day: Date) {
-        if expandedDayIDs.contains(day) {
-            expandedDayIDs.remove(day)
-        } else {
-            expandedDayIDs.insert(day)
-        }
+    private func updateGrouping() {
+        let enabled = collapseDuplicates && !isManaging
+        if workspace.query.collapseDuplicates != enabled { workspace.query.collapseDuplicates = enabled }
     }
 
     private func selectDay(_ day: Date) {
@@ -718,19 +598,6 @@ private struct TimelineView: View {
         let normalizedDay = min(calendar.startOfDay(for: day), today)
         selectedDay = normalizedDay
         selectedCaptureIDs.removeAll()
-        expandedDayIDs = [normalizedDay]
-    }
-
-    private func moveSelectedDay(by dayOffset: Int) {
-        guard let day = Calendar.current.date(byAdding: .day, value: dayOffset, to: selectedDay) else { return }
-        selectDay(day)
-    }
-
-    private func navigationTitle(for day: Date) -> String {
-        let calendar = Calendar.current
-        if calendar.isDateInToday(day) { return "今天" }
-        if calendar.isDateInYesterday(day) { return "昨天" }
-        return day.formatted(.dateTime.month().day())
     }
 
     private func dayTitle(for day: Date) -> String {
@@ -788,10 +655,6 @@ private struct TimelineView: View {
     }
 }
 
-private struct TimelineHourGroup {
-    let date: Date
-    let clusters: [TimelineRecordCluster]
-}
 private struct TimelineClusterRow: View {
     let cluster: TimelineRecordCluster
     let isManaging: Bool
@@ -1003,13 +866,30 @@ private struct SourceApplicationIcon: View {
     let capture: CaptureRecord
     var body: some View {
         Group {
-            if let id = capture.sourceBundleIdentifier, let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) {
-                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable().scaledToFit()
+            if let id = capture.sourceBundleIdentifier, let icon = SourceApplicationIcons.image(for: id) {
+                Image(nsImage: icon).resizable().scaledToFit()
             } else {
                 Image(systemName: capture.textOrigin == .userInput ? "square.and.pencil" : "app.fill")
                     .resizable().scaledToFit().foregroundStyle(RecallPalette.accent).padding(5)
             }
         }.frame(width: 30, height: 30).accessibilityLabel(capture.sourceAppName ?? "记录来源")
+    }
+}
+
+@MainActor
+private enum SourceApplicationIcons {
+    private static let images = NSCache<NSString, NSImage>()
+    private static var unavailable: [String: Date] = [:]
+    static func image(for identifier: String) -> NSImage? {
+        if let cached = images.object(forKey: identifier as NSString) { return cached }
+        if let checked = unavailable[identifier], Date.now.timeIntervalSince(checked) < 300 { return nil }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) else {
+            unavailable[identifier] = .now; return nil
+        }
+        images.countLimit = 128
+        let image = NSWorkspace.shared.icon(forFile: url.path)
+        images.setObject(image, forKey: identifier as NSString)
+        return image
     }
 }
 
@@ -1222,7 +1102,7 @@ private struct ChatView: View {
                                 )
                                 .id(message.id)
                             }
-                            if model.isThinking {
+                            if model.isThinking && model.typingMessageID == nil {
                                 ThinkingCard()
                             }
                             Color.clear
@@ -1487,17 +1367,7 @@ private struct ChatComposer: View {
             HStack {
                 Text("↵ 发送    ⇧↵ 换行").font(.caption).foregroundStyle(RecallPalette.secondary)
                 Spacer()
-                if isSending { Button("停止") { model.stopChat() }.font(.caption) }
-                Button(action: submit) {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(RecallPalette.onAccent)
-                        .frame(width: 32, height: 32)
-                        .background(sendButtonColor, in: Circle())
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
+                sendControl
             }
         }
         .padding(.top, 12)
@@ -1523,6 +1393,26 @@ private struct ChatComposer: View {
     private var canSend: Bool {
         (!isSending || ChatCommand.parse(question) == .clear)
             && !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    @ViewBuilder private var sendControl: some View {
+        if isSending && ChatCommand.parse(question) != .clear {
+            ProgressView().controlSize(.small)
+                .frame(width: 32, height: 32)
+                .background(RecallPalette.selected, in: Circle())
+                .accessibilityLabel("正在回答，暂时无法发送")
+                .help("正在回答；可以在回答下方停止")
+        } else {
+            Button(action: submit) {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(RecallPalette.onAccent)
+                    .frame(width: 32, height: 32)
+                    .background(sendButtonColor, in: Circle())
+                    .contentShape(Circle())
+            }.buttonStyle(.plain).disabled(!canSend)
+                .accessibilityLabel(ChatCommand.parse(question) == .clear ? "清空当前会话" : "发送消息")
+        }
     }
 
     private var commandMenu: some View {
@@ -1627,7 +1517,8 @@ private struct DailySummariesView: View {
                                     Button("生成回顾") { model.generateDailyReview(on: selectedDate) }.buttonStyle(.borderedProminent).disabled(model.isGeneratingDailySummary)
                                 }.frame(maxWidth: .infinity, minHeight: 360).recallSurface()
                             }
-                        }.padding(.bottom, 24)
+                        }.frame(maxWidth: 880, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 24)
                     }.clipped().id(selectedID)
                 }.padding(.horizontal, 24).padding(.bottom, 16)
             }
@@ -1716,16 +1607,23 @@ private struct DailySummaryCard: View {
                         .font(.caption).foregroundStyle(RecallPalette.secondary)
                 }
                 Spacer(minLength: 8)
-                Button("重新生成") { model.generateDailyReview(on: summary.day) }.disabled(model.isGeneratingDailySummary)
+                Button { model.summaryFeedbackTarget = .daily(summary) } label: {
+                    Label("纠正回顾", systemImage: "square.and.pencil")
+                }.help("说明遗漏或不准确的地方，对这整篇回顾进行纠正")
                 Menu {
+                    Button("重新生成") { model.generateDailyReview(on: summary.day) }.disabled(model.isGeneratingDailySummary)
                     Button("管理这份回顾", action: onManage)
-                    Button("反馈整份回顾") { model.summaryFeedbackTarget = .daily(summary) }
                 } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("更多回顾操作")
             }
             if isExpanded {
                 Divider()
                 if let overview = summary.modelOverview, !overview.isEmpty {
-                    Text(DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: DailySummaryContentFormatter.removingCitationMarkers(from: overview))).font(.system(size: 15, weight: .medium)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled).padding(14).frame(maxWidth: .infinity, alignment: .leading).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 10))
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("当天概览").font(.caption).foregroundStyle(RecallPalette.secondary)
+                        Text(DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: DailySummaryContentFormatter.removingCitationMarkers(from: overview)))
+                            .font(.system(size: 17, weight: .medium)).lineSpacing(6)
+                            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    }.padding(.vertical, 8).padding(.bottom, 8)
                 }
                 if !summary.items.isEmpty {
                     DailyReviewContentView(summary: summary)
@@ -1745,6 +1643,8 @@ private struct DailySummaryCard: View {
                     MarkdownDocumentView(markdown: displayContent)
                         .textSelection(.enabled)
                 }
+                Divider().padding(.top, 12)
+                SummaryFeedbackFooter(target: .daily(summary), showsFeedbackButton: false)
             } else {
                 Text(preview)
                     .font(.system(size: 15))
@@ -1753,9 +1653,9 @@ private struct DailySummaryCard: View {
                     .padding(.leading, 34)
             }
         }
-        .padding(isExpanded ? 19 : 15)
-        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(isExpanded ? RecallPalette.accent.opacity(0.28) : RecallPalette.border, lineWidth: 1))
+        .padding(isExpanded ? 24 : 15)
+        .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(RecallPalette.border, lineWidth: 1))
         .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
@@ -3713,7 +3613,7 @@ extension RecallRootView {
     @MainActor static func previewPage(_ name: String) -> AnyView {
         switch name {
         case "navigation": AnyView(RecallNavigationPreview())
-        case "daily": AnyView(DailySummariesView())
+        case "daily", "daily-long": AnyView(DailySummariesView())
         case "topics", "period", "period-stale", "knowledge", "knowledge-empty": AnyView(MatterWorkspaceView(continueChat: { _ in }))
         case "rules": AnyView(EventRulesView())
         case "reminders": AnyView(RemindersView())
