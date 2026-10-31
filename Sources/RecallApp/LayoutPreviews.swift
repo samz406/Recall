@@ -76,23 +76,33 @@ enum RecallLayoutPreviews {
         try await verifyAppearanceAndConnection()
         try await verifyReminderHistoryActions()
         try await verifyReminderDiscoveryActions()
+        try await verifyTimelineLoading()
         let model = RecallAppModel(previewState: try await fixture())
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(10)) }
         let defaults = UserDefaults(suiteName: "im.recall.synthetic-layout")!
         defer { defaults.removePersistentDomain(forName: "im.recall.synthetic-layout") }
-        let names = ["daily", "topics", "period", "period-stale", "knowledge", "knowledge-empty", "rules", "reminders", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "navigation"]
+        let names = ["daily", "daily-long", "topics", "period", "period-stale", "knowledge", "knowledge-empty", "rules", "reminders", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "chat-busy", "navigation"]
         for mode in ["wide", "narrow", "dark"] {
             let width: CGFloat = mode == "narrow" ? 780 : 1050
             defaults.set(mode == "dark" ? "dark" : "system", forKey: RecallAppearance.storageKey)
             for name in names {
                 defaults.set(name.hasPrefix("period") ? "周期回顾" : (name.hasPrefix("knowledge") ? "长期记忆" : "记忆主题"), forKey: "recall.memory.tab")
                 let saved = model.state
+                let savedThinking = model.isThinking
                 let savedReportSelection = model.weeklyReportToOpen
                 if name == "period-stale" { model.weeklyReportToOpen = model.state.weeklyReports.last?.id }
                 if name == "reminder-history-empty" { model.state.reminders.removeAll { $0.status.isHistory } }
                 if name == "knowledge-empty" { model.state.memoryKnowledge.claims = [] }
                 if name == "chat-empty" { model.state.messages = [ConversationMessage(role: .system, content: "已清空当前会话，可以开始新的对话。")] }
+                if name == "chat-busy" { model.isThinking = true }
+                if name == "daily-long", let first = model.state.dailySummaries.first {
+                    let proof = model.state.captures[0]
+                    let titles = ["页面方案核对完成，生产发布仍需确认", "完成图表边界与最小窗口的验证", "补充每周学习记录和后续安排"]
+                    let extra = titles.map { DailySummaryItem(section: .progress, title: $0,
+                        detail: "这是合成的完整说明：方案、实现与发布分别记录状态，内容自然换行，不截断标题，也不重复标题。保留原始记录用于后续核对。", evidenceIDs: [proof.id]) }
+                    if let i = model.state.dailySummaries.firstIndex(where: { $0.id == first.id }) { model.state.dailySummaries[i].items += extra }
+                }
                 let pageWidth: CGFloat = name == "navigation" ? width + 196 : (name == "appearance-compact" ? 620 : (name.hasPrefix("model-editor") ? 700 : width))
                 let pageHeight: CGFloat = name.hasPrefix("model-editor") ? min(744, (NSScreen.main?.visibleFrame.height ?? 900) - 48) : (name == "appearance-compact" ? 560 : 740)
                 let page = RecallRootView.previewPage(name)
@@ -111,6 +121,7 @@ enum RecallLayoutPreviews {
                 try data.write(to: directory.appendingPathComponent(mode + "-" + name + ".png"))
                 window.orderOut(nil)
                 model.state = saved
+                model.isThinking = savedThinking
                 model.weeklyReportToOpen = savedReportSelection
             }
         }

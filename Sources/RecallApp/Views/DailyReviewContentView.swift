@@ -1,11 +1,10 @@
 import SwiftUI
 import RecallKit
 
+/// The report is read and corrected as one document. Rows only expose real actions.
 struct DailyReviewContentView: View {
     @EnvironmentObject private var model: RecallAppModel
     let summary: DailySummary
-    @State private var expandedSections: Set<DailySummarySection> = []
-    @State private var source: DailySummaryItem?
     private var items: [DailySummaryItem] {
         let live = Set(model.state.captures.map(\.id))
         let presented = summary.modelCoverage == nil ? DailySummaryItemParser.sanitized(summary.items) : DailySummaryItemParser.modelValidated(summary.items)
@@ -19,7 +18,7 @@ struct DailyReviewContentView: View {
     }
     var body: some View {
         let rows = items
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 30) {
             if let notice = summary.modelCoverage?.notice {
                 Label(notice, systemImage: "info.circle").font(.callout).foregroundStyle(RecallPalette.secondary)
             }
@@ -31,32 +30,33 @@ struct DailyReviewContentView: View {
             ForEach(DailySummarySection.displaySections) { section in
                 let sectionRows = rows.filter { $0.section == section }
                 if !sectionRows.isEmpty {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Label(section == .progress ? "主线进展" : (section == .insights ? "其他值得留意的事" : "接下来要处理"), systemImage: section.systemImage)
-                            .font(RecallTypography.title).foregroundStyle(section == .actions ? RecallPalette.warning : RecallPalette.accent)
-                        let limit = section == .insights ? 2 : 5
-                        ForEach(Array((expandedSections.contains(section) ? sectionRows : Array(sectionRows.prefix(limit))))) { item in
-                            itemRow(item)
-                        }
-                        if sectionRows.count > limit {
-                            Button(expandedSections.contains(section) ? "收起其余内容" : "展开其余 \(sectionRows.count - limit) 项") {
-                                if !expandedSections.insert(section).inserted { expandedSections.remove(section) }
-                            }.font(.callout)
-                        }
+                    VStack(alignment: .leading, spacing: 18) {
+                        sectionHeading(section)
+                        VStack(alignment: .leading, spacing: 22) {
+                            ForEach(sectionRows) { item in itemRow(item) }
+                        }.padding(.leading, 28)
                     }
                 }
             }
-            SummaryFeedbackFooter(target: .daily(summary))
             if let versions = summary.versions, !versions.isEmpty {
                 DisclosureGroup("历史版本（\(versions.count)）") {
                     ForEach(versions) { version in
                         DisclosureGroup(version.createdAt.formatted()) {
-                            MarkdownDocumentView(markdown: DailySummaryItemParser.markdown(from: version.items)).font(RecallTypography.body).textSelection(.enabled).padding(.vertical, 12)
+                            MarkdownDocumentView(markdown: DailySummaryItemParser.markdown(from: version.items))
+                                .font(RecallTypography.body).textSelection(.enabled).padding(.vertical, 12)
                         }.padding(.vertical, 8)
                     }
                 }.font(.callout).foregroundStyle(RecallPalette.secondary)
             }
-        }.sheet(item: $source) { item in RecallSourcesView(title: item.title, ids: item.evidenceIDs).environmentObject(model) }
+        }
+    }
+    private func sectionHeading(_ section: DailySummarySection) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: section.systemImage).font(.system(size: 16, weight: .medium))
+                .foregroundStyle(section == .actions ? RecallPalette.warning : RecallPalette.accent).frame(width: 18)
+            Text(section == .progress ? "主线进展" : (section == .insights ? "值得留意" : "接下来要处理"))
+                .font(.system(size: 17, weight: .semibold)).foregroundStyle(RecallPalette.text)
+        }.accessibilityAddTraits(.isHeader)
     }
     private func statusLabel(_ status: String) -> String? {
         switch status { case "completed": "已完成"; case "inProgress": "进行中"; case "blocked": "受阻"; case "pending": "待处理"; default: nil }
@@ -64,36 +64,34 @@ struct DailyReviewContentView: View {
     private func itemRow(_ item: DailySummaryItem) -> some View {
         let text = ReviewContentQuality.presentation(item)
         let action = summary.todos.first { $0.id == item.actionCandidateID || $0.title == item.title }
-        return VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(text.title).font(.system(size: 15, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-                if let status = item.knowledge?.status, let label = statusLabel(status) {
-                    RecallStatusBadge(title: label, warning: status == "blocked")
-                }
+        return VStack(alignment: .leading, spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) { itemTitle(text.title); itemStatus(item) }
+                VStack(alignment: .leading, spacing: 6) { itemTitle(text.title); itemStatus(item) }
             }
             if !text.detail.isEmpty {
-                Text(text.detail)
-                    .font(RecallTypography.body)
-                    .foregroundStyle(RecallPalette.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                Text(text.detail).font(RecallTypography.body).lineSpacing(5)
+                    .foregroundStyle(RecallPalette.text.opacity(0.85))
+                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             }
-            HStack(spacing: 16) {
-                if item.section == .actions, let action {
+            if item.section == .actions, let action {
+                HStack(spacing: 16) {
                     Button(model.reminder(for: action.title, sourceIDs: action.sourceCaptureIDs, candidateID: action.id) == nil ? "设为提醒" : "查看提醒") {
                         model.prepareReminder(title: action.title, detail: action.detail, sourceIDs: action.sourceCaptureIDs, candidateID: action.id)
                     }
                     Button("已完成") { model.completeSummaryAction(item, summary: summary) }
-                }
-                Spacer(minLength: 0)
-                Menu {
-                    Button("反馈这条内容") { model.summaryFeedbackTarget = .daily(summary, item: item) }
-                    Button("从这份回顾移除") { model.removeSummaryItem(item, from: summary, reason: .noLongerNeeded) }
-                    Button("核对来源并更正") { source = item }
-                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
-            }.font(.caption)
-            Divider().padding(.top, 6)
+                }.buttonStyle(.borderless).font(.caption).padding(.top, 2)
+            }
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func itemTitle(_ title: String) -> some View {
+        Text(title).font(.system(size: 15, weight: .semibold)).lineSpacing(3)
+            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+    }
+    @ViewBuilder private func itemStatus(_ item: DailySummaryItem) -> some View {
+        if let status = item.knowledge?.status, let label = statusLabel(status) {
+            RecallStatusBadge(title: label, warning: status == "blocked").fixedSize()
+        }
     }
 }
 

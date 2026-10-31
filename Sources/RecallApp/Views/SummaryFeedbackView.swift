@@ -4,12 +4,15 @@ import RecallKit
 struct SummaryFeedbackFooter: View {
     @EnvironmentObject private var model: RecallAppModel
     let target: SummaryFeedbackTarget
+    var showsFeedbackButton = true
     private var latest: SummaryFeedback? { model.state.summaryFeedback.last { $0.target.reportID == target.reportID && $0.state != .withdrawn } }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 16) {
-                Button { model.summaryFeedbackTarget = target } label: { Label("反馈", systemImage: "bubble.left") }
-                    .buttonStyle(.borderless)
+                if showsFeedbackButton {
+                    Button { model.summaryFeedbackTarget = target } label: { Label("反馈", systemImage: "bubble.left") }
+                        .buttonStyle(.borderless)
+                }
                 Button("反馈记录与偏好") { model.showsSummaryFeedbackHistory = true }.buttonStyle(.borderless)
                 Spacer(minLength: 0)
             }

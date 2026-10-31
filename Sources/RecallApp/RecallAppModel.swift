@@ -18,7 +18,10 @@ extension Notification.Name {
 
 @MainActor
 final class RecallAppModel: ObservableObject {
-    @Published var state = RecallState()
+    @Published var state = RecallState() {
+        didSet { timelineWorkspace.update(captures: state.captures) }
+    }
+    let timelineWorkspace = TimelineWorkspace()
     @Published private(set) var isLoadingSavedState = true
     private var isFinishingStartup = true
     @Published var tasks: [RecallTaskStatus] = []
