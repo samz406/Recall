@@ -1241,7 +1241,10 @@ private struct ChatView: View {
                     }
                 }
                 .coordinateSpace(name: ChatScrollAnchor.viewport)
-                .onPreferenceChange(ChatContentFrameKey.self) { messageContentFrame = $0 }
+                .onPreferenceChange(ChatContentFrameKey.self) { frame in
+                    // Older SwiftUI SDKs expose this callback as Sendable, not MainActor.
+                    Task { @MainActor in messageContentFrame = frame }
+                }
                 .overlay(alignment: .bottom) {
                     if showsLatestButton {
                         ChatReadingColumn {
