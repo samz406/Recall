@@ -216,28 +216,72 @@ private struct ReminderHistoryEntry: View {
     private var icon: String {
         switch row.latest.status { case .completed: "checkmark"; case .cancelled: "xmark"; default: "nosign" }
     }
+    // Keep layout, input handling and accessibility in separate opaque view boundaries.
+    // Bound each inference problem for older SwiftUI toolchains as well as the latest SDK.
+    // Explicit closure and result types avoid overload inference across the whole row.
     var body: some View {
+        accessibleRow.disabled(busy)
+    }
+
+    private var rowContent: some View {
         HStack(spacing: 12) {
             stateIcon
             entryTitle
             trailingControls
-        }.font(.system(size: 12)).foregroundStyle(RecallPalette.accent)
-            .padding(.horizontal, 16).padding(.vertical, 8).frame(minHeight: 54)
-            .background(showsActions ? RecallPalette.selected : RecallPalette.surface)
-            .contentShape(Rectangle()).onHover { hovered = $0 }
-            .focusable().focused($focus, equals: .row)
-            .onKeyPress(.return) {
-                guard focus == .row else { return .ignored }
-                source(); return .handled
-            }
+        }
+    }
+
+    private var styledRow: some View {
+        rowContent
+            .font(.system(size: 12))
+            .foregroundStyle(RecallPalette.accent)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .frame(minHeight: 54)
+            .background { rowBackground }
+    }
+
+    private var rowBackground: Color {
+        showsActions ? RecallPalette.selected : RecallPalette.surface
+    }
+
+    private var pointerRow: some View {
+        styledRow
+            .contentShape(Rectangle())
+            .onHover { isHovered in hovered = isHovered }
+    }
+
+    private var keyboardRow: some View {
+        pointerRow
+            .focusable()
+            .focused($focus, equals: Focus.row)
+            .onKeyPress(.return) { handleReturnKey() }
+    }
+
+    private func handleReturnKey() -> KeyPress.Result {
+        guard focus == Focus.row else { return .ignored }
+        source()
+        return .handled
+    }
+
+    private var describedRow: some View {
+        keyboardRow
             .contextMenu { actions }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel(row.title + "，" + label + "，" + row.sourceDescription)
-            .accessibilityAction(named: Text("查看来源"), source)
-            .accessibilityAction(named: Text("恢复为待确认"), restore)
-            .accessibilityAction(named: Text("删除历史记录"), delete)
-            .disabled(busy)
+            .accessibilityLabel(accessibilityDescription)
     }
+
+    private var accessibilityDescription: String {
+        [row.title, label, row.sourceDescription].joined(separator: "，")
+    }
+
+    private var accessibleRow: some View {
+        describedRow
+            .accessibilityAction(named: Text("查看来源")) { source() }
+            .accessibilityAction(named: Text("恢复为待确认")) { restore() }
+            .accessibilityAction(named: Text("删除历史记录")) { delete() }
+    }
+
     private var stateIcon: some View {
         Image(systemName: icon).font(.system(size: 13, weight: .medium)).foregroundStyle(color)
             .frame(width: 30, height: 30).background(color.opacity(0.10), in: Circle())
@@ -268,22 +312,22 @@ private struct ReminderHistoryEntry: View {
     }
     private var compactActions: some View {
         HStack(spacing: 12) {
-            Button("查看来源", action: source).buttonStyle(.plain).focused($focus, equals: .source)
+            Button("查看来源", action: source).buttonStyle(.plain).focused($focus, equals: Focus.source)
             Menu { actions } label: { Image(systemName: "ellipsis") }
-                .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("历史记录操作").focused($focus, equals: .more)
+                .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("历史记录操作").focused($focus, equals: Focus.more)
         }
     }
     private var wideActions: some View {
         HStack(spacing: 12) {
-            Button("查看来源", action: source).focused($focus, equals: .source)
-            Button("恢复为待确认", action: restore).focused($focus, equals: .restore)
+            Button("查看来源", action: source).focused($focus, equals: Focus.source)
+            Button("恢复为待确认", action: restore).focused($focus, equals: Focus.restore)
             if let application = row.sources.first, row.sources.count == 1 && application.isApplication {
-                Button("不再从此应用识别") { block(application) }.focused($focus, equals: .block)
+                Button("不再从此应用识别") { block(application) }.focused($focus, equals: Focus.block)
             } else if row.sources.contains(where: \.isApplication) {
                 Menu("停止识别来源") { applicationActions }
             }
             Button(action: delete) { Image(systemName: "trash") }
-                .accessibilityLabel("删除历史记录").focused($focus, equals: .delete)
+                .accessibilityLabel("删除历史记录").focused($focus, equals: Focus.delete)
         }.buttonStyle(.plain)
     }
     @ViewBuilder private var actions: some View {

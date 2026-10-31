@@ -1,5 +1,7 @@
 import Foundation
-import UserNotifications
+// Keep notification objects confined to LocalNotificationScheduler on MainActor.
+// The Xcode 16 SDK has not yet annotated these Objective-C types for concurrency.
+@preconcurrency import UserNotifications
 
 public struct ReminderExtractor: Sendable {
     public static let version = 3
