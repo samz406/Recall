@@ -366,6 +366,9 @@ public struct ReminderLearningProfile: Codable, Hashable, Sendable {
     public var clearedHistory: [ReminderHistorySuppression]?
     /// Explicit opt-in. Connecting a model does not enable background model requests.
     public var automaticDiscovery: Bool? = nil
+    /// Local reuse of saved daily reviews, with no additional model requests.
+    public var reviewDiscoveryEnabled: Bool? = nil
+    public var reviewedDailyFingerprints: [String: String]? = nil
 
     public init(
         semanticFeedback: [String: ReminderFeedbackStats] = [:],

@@ -15,6 +15,7 @@ public struct ReminderAnalysis: Codable, Hashable, Sendable {
     public var basis: String
     public var deadlineText: String?
     public var evidence: [UnderstandingEvidence]
+    public var dailyReview: DailyReminderProvenance? = nil
     public init(version: Int, basis: String, deadlineText: String? = nil, evidence: [UnderstandingEvidence] = []) {
         self.version = version; self.basis = basis; self.deadlineText = deadlineText; self.evidence = evidence
     }

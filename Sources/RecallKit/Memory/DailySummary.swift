@@ -396,6 +396,12 @@ public enum DailyItemKind: String, Codable, CaseIterable, Sendable {
 }
 
 public struct DailyItemKnowledge: Codable, Hashable, Sendable {
+    /// Optional for old reports. Only the daily model may link an existing reminder.
+    public var reminderID: UUID? = nil
+    public var reminderRevision: String? = nil
+    public var sourceVersions: [UUID: String]? = nil
+    public var explicitCommitment: Bool? = nil
+    public var condition: String? = nil
     /// 事项所属主题，跨天用同一名字；资料类可为空。
     public var topic: String?
     public var kind: DailyItemKind

@@ -22,6 +22,10 @@ extension RecallLayoutPreviews {
             llmConfiguration: LLMConfiguration(provider: .openAICompatible, baseURLString: "https://model.invalid/v1", model: "synthetic", apiKey: "synthetic-not-a-key"))
         let model = RecallAppModel(previewState: state)
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
+        let backgroundProbe = ReminderModelProbe(slow: false)
+        model.discoverReminders(force: false, announce: false, responder: backgroundProbe)
+        try await Task.sleep(for: .milliseconds(25))
+        guard await backgroundProbe.started() == false else { throw DiscoveryActionFailure.failed("后台触发仍在重复调用原文提醒分析") }
         model.discoverReminders(force: true, responder: ReminderModelProbe(slow: false))
         try await waitForDiscovery(model)
         guard case .failed = model.reminderDiscoveryStatus, model.noticeMessage?.contains("未完成") == true,

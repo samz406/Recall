@@ -3,6 +3,7 @@ import Foundation
 public struct DirectDailyReviewOutcome: Sendable {
     public var summary: DailySummary
     public var metrics: DailyReviewMetrics
+    public var reminders = DailyReminderSync()
 }
 
 private actor DailyReviewMeter: LLMResponding {
@@ -60,8 +61,16 @@ extension FileMemoryStore {
                 onProgress: onProgress, onCacheHit: { await meter.hit() }, responder: meter)
             try Task.checkCancellation(); try validateDirectDailyReview(input, baseline: baseline)
             guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
-            let summary = result.dailySummary(day: day)
+            var summary = result.dailySummary(day: day)
+            let contextIDs = DailyReviewReminderEngine.contextIDs(input.reminderContext)
+            for i in summary.items.indices {
+                if let id = summary.items[i].knowledge?.reminderID,
+                   contextIDs.contains(id), let original = baseline.reminders.first(where: { $0.id == id }) {
+                    summary.items[i].knowledge?.reminderRevision = SummaryFeedbackLearning.hash(original)
+                } else { summary.items[i].knowledge?.reminderID = nil }
+            }
             await onProgress?(ReviewGenerationProgress(.saving, detail: "回顾已生成，本地来源和格式校验通过，正在保存。"))
+            try Task.checkCancellation(); try validateDirectDailyReview(input, baseline: baseline)
             let saveStart = Date.now, previous = state
             var saved = summary
             if let old = state.dailySummaries.first(where: { Calendar.current.isDate($0.day, inSameDayAs: day) }) {
@@ -73,10 +82,11 @@ extension FileMemoryStore {
             let liveSummaries = Set(state.dailySummaries.map(\.id))
             state.pendingDailyReviewMaintenance.removeAll { !liveSummaries.contains($0) }
             state.pendingDailyReviewMaintenance.append(saved.id)
+            let reminders = DailyReviewReminderEngine.reconcile(&state)
             do { try persistReviewState(indexChanged: true) } catch { state = previous; throw error }
             let metrics = await meter.finish(start: start, saveMilliseconds: DailyReviewMeter.milliseconds(since: saveStart))
             await onMetrics?(metrics)
-            return DirectDailyReviewOutcome(summary: saved, metrics: metrics)
+            return DirectDailyReviewOutcome(summary: saved, metrics: metrics, reminders: reminders)
         } catch {
             let metrics = await meter.finish(start: start)
             await onMetrics?(metrics)

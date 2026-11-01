@@ -103,7 +103,7 @@ public struct ReminderExtractor: Sendable {
     ) -> [ReminderCandidate] {
         var merged = existing.filter { reminder in
             // 只重验未经用户确认的自动候选，不能改动已安排、手动创建或用户关闭的事项。
-            guard reminder.status == .proposed, reminder.origin == .discovered,
+            guard reminder.status == .proposed, reminder.origin == .discovered, reminder.analysis?.dailyReview == nil,
                   !Set(reminder.sourceCaptureIDs).isDisjoint(with: revalidatedCaptureIDs) else { return true }
             return discovered.contains { sameOccurrence(reminder, $0) }
         }
@@ -113,6 +113,7 @@ public struct ReminderExtractor: Sendable {
                 continue
             }
             var current = merged[index]
+            if current.analysis?.dailyReview != nil { continue }
             if current.status.isHistory {
                 if blocks(candidate: candidate, existing: current, now: now) { continue }
                 var next = candidate
