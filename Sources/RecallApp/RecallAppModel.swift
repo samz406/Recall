@@ -19,7 +19,15 @@ extension Notification.Name {
 @MainActor
 final class RecallAppModel: ObservableObject {
     @Published var state = RecallState() {
-        didSet { timelineWorkspace.update(captures: state.captures) }
+        didSet {
+            timelineWorkspace.update(captures: state.captures)
+            if oldValue.reminders != state.reminders {
+                let active = Set(state.reminders.filter { $0.status == .scheduled || $0.status == .snoozed }.map(\.id))
+                for old in oldValue.reminders where (old.status == .scheduled || old.status == .snoozed) && !active.contains(old.id) {
+                    notificationScheduler.cancel(old)
+                }
+            }
+        }
     }
     let timelineWorkspace = TimelineWorkspace()
     @Published private(set) var isLoadingSavedState = true
@@ -86,13 +94,10 @@ final class RecallAppModel: ObservableObject {
     private var reminderDiscoveryTask: Task<Void, Never>?
     private var reminderDiscoveryRunID = UUID()
     private var reminderDiscoveryTaskID: UUID?
-    private var reminderDiscoveryAutomatic = false
-    private var reminderDiscoveryPaused = false
     @Published private(set) var reminderDiscoveryProgress = ReminderDiscoveryProgress(completedRecords: 0, totalRecords: 0, phase: "准备记录")
     private let notificationScheduler = LocalNotificationScheduler()
     private let enterKeyRecorder = GlobalEnterKeyRecorder()
     private var dailySummaryTimer: Timer?
-    private var reminderDiscoveryTimer: Timer?
     private var recentlyDeletedTimer: Timer?
     private var recentlyDeletedRetryAfter: Date?
     private var isPurgingRecentlyDeleted = false
@@ -166,8 +171,6 @@ final class RecallAppModel: ObservableObject {
                 isFinishingStartup = false
                 await refresh()
                 try? notificationScheduler.configureReminderActions()
-                discoverReminders(force: false, announce: false)
-                armReminderDiscoveryTimer()
             }
         } catch {
             fatalError("无法初始化本地记忆库：\(error.localizedDescription)")
@@ -177,6 +180,8 @@ final class RecallAppModel: ObservableObject {
 
     func refresh() async {
         guard !isLoadingSavedState else { return }
+        do { try await store.syncDailyReviewReminders() }
+        catch { recordError(error, source: "Reminders", message: "从每日回顾更新提醒失败，将重试") }
         state = await store.snapshot()
         guard !isFinishingStartup else { return }
         rebuildMatterFiles()
@@ -622,16 +627,6 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
-    /// 前台运行期间周期性处理新增记录；内容哈希检查点保证未变化的记录不会被重复分析。
-    private func armReminderDiscoveryTimer() {
-        reminderDiscoveryTimer?.invalidate()
-        reminderDiscoveryTimer = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.discoverReminders(force: false, announce: false)
-            }
-        }
-    }
-
     func verifyReminderDelivery() {
         Task {
             await refreshReminderDeliveryStates()
@@ -769,7 +764,6 @@ final class RecallAppModel: ObservableObject {
             do {
                 try await store.updateRules(rules)
                 await refresh()
-                discoverReminders(force: false, announce: false)
             } catch {
                 recordError(error, source: "Rules", message: "保存记录规则失败")
             }
@@ -807,9 +801,6 @@ final class RecallAppModel: ObservableObject {
                     metadata: ["eventTemplate": record.eventTemplate.rawValue, "hasScreenshot": record.imageRelativePath == nil ? "false" : "true"]
                 )
                 noticeMessage = "已记录：\(record.summary ?? "无可提取文本")"
-                if rule.participatesInReminders {
-                    discoverReminders(force: false, announce: false)
-                }
             } catch CapturePipelineError.screenRecordingPermissionRequired {
                 recordDiagnostic(.warning, source: diagnosticSource, message: "屏幕权限不可用", metadata: ["eventTemplate": rule.template.rawValue])
                 // 记录失败不应阻塞其他本地功能；提醒发现只读取已有记录，无需此权限。
@@ -1042,31 +1033,22 @@ final class RecallAppModel: ObservableObject {
     }
 
     func proposeReminders() {
-        reminderDiscoveryPaused = false
         discoverReminders(force: true, announce: true)
     }
 
     func retryReminderDiscovery() {
-        reminderDiscoveryPaused = false
         discoverReminders(force: false, announce: true)
     }
 
-    func setAutomaticReminderDiscovery(_ enabled: Bool) {
-        if enabled && (!state.privacy.cloudUseEnabled || state.llmConfiguration.provider == .localOnly || state.llmConfiguration.apiKey.isEmpty) {
-            noticeMessage = ReminderDiscoveryError.unavailable.localizedDescription
-            return
-        }
-        if !enabled && reminderDiscoveryAutomatic { cancelReminderDiscovery() }
+    func setReviewReminderDiscovery(_ enabled: Bool) {
         Task {
             do {
-                try await store.setAutomaticReminderDiscovery(enabled)
+                try await store.setReviewReminderDiscovery(enabled)
                 await refresh()
-                reminderDiscoveryPaused = false
-                noticeMessage = enabled ? "已开启后台发现；只分析已保存、允许参与的脱敏文本，候选仍需确认时间。" : "已关闭后台发现，可随时手动发现待办。"
-                if enabled { discoverReminders(force: false, announce: false) }
+                noticeMessage = enabled ? "每日回顾中的明确承诺会进入待确认，不增加模型调用；时间仍由你确认。" : "已暂停从每日回顾更新提醒，已有提醒保留。"
             } catch {
                 noticeMessage = "设置未保存，请重试。"
-                recordError(error, source: "Reminders", message: "保存后台发现设置失败")
+                recordError(error, source: "Reminders", message: "保存回顾提醒设置失败")
             }
         }
     }
@@ -1074,18 +1056,15 @@ final class RecallAppModel: ObservableObject {
     func cancelReminderDiscovery() {
         guard reminderDiscoveryTask != nil else { return }
         if let id = reminderDiscoveryTaskID { _ = requestTaskCancellation(id) }
-        reminderDiscoveryPaused = true
         reminderDiscoveryProgress.phase = "正在停止，保留已完成的分析…"
         reminderDiscoveryTask?.cancel()
     }
 
-    /// A foreground click is explicit authorization for this pass. Background model use has its
-    /// own default-off switch; it never depends on enabling per-capture understanding.
+    /// Raw OCR discovery is a manual deep scan. Automatic updates only reuse saved daily reviews.
     func discoverReminders(force: Bool, announce: Bool = true, responder: (any LLMResponding)? = nil) {
+        // Automatic triggers only project saved daily reviews; raw OCR analysis is explicitly manual.
+        if !announce { return }
         guard reminderDiscoveryTask == nil else { return }
-        let automatic = !announce
-        guard !automatic || (state.reminderLearningProfile.automaticDiscovery == true && !reminderDiscoveryPaused) else { return }
-        if automatic && (isGeneratingDailySummary || isGeneratingWeeklyReview || topicReviewTask != nil || isThinking) { return }
         let config = state.llmConfiguration
         guard state.privacy.cloudUseEnabled, config.provider != .localOnly, !config.apiKey.isEmpty else {
             if announce {
@@ -1094,7 +1073,7 @@ final class RecallAppModel: ObservableObject {
             }
             return
         }
-        let runID = UUID(); reminderDiscoveryRunID = runID; reminderDiscoveryAutomatic = automatic
+        let runID = UUID(); reminderDiscoveryRunID = runID
         let taskID = beginTask("发现待办", target: "已保存记录", phase: "准备脱敏文本", retry: { [weak self] in self?.retryReminderDiscovery() })
         reminderDiscoveryTaskID = taskID
         reminderDiscoveryProgress = ReminderDiscoveryProgress(completedRecords: 0, totalRecords: 0, phase: "准备脱敏文本")
@@ -1108,7 +1087,7 @@ final class RecallAppModel: ObservableObject {
                 }
             }
             do {
-                let result = try await store.discoverRemindersUsingModel(force: force, automatic: automatic,
+                let result = try await store.discoverRemindersUsingModel(force: force, automatic: false,
                     responder: responder ?? CompatibleLLM(configuration: config, apiKey: config.apiKey), progress: { [weak self] value in
                         await self?.updateReminderDiscovery(value, runID: runID, taskID: taskID)
                     })
@@ -1355,7 +1334,6 @@ final class RecallAppModel: ObservableObject {
                 try await store.setReminderApplication(source, disabled: disabled)
                 await refresh()
                 noticeMessage = disabled ? "不再从“\(source.title)”识别待办，已有提醒和原始记录保留。" : "已恢复从“\(source.title)”识别待办。"
-                if !disabled { discoverReminders(force: false, announce: false) }
             } catch {
                 noticeMessage = "来源设置未保存，请重试。"
                 recordError(error, source: "Reminders", message: "保存提醒来源设置失败")
@@ -1568,8 +1546,9 @@ final class RecallAppModel: ObservableObject {
                 let summary = outcome.summary
                 let partial = (summary.modelCoverage?.uncertainBlockCount ?? 0) > 0
                 state = await modelStore.snapshot()
+                let reminderNotice = outcome.reminders.added > 0 ? "，新增 \(outcome.reminders.added) 项待确认" : ""
                 finishTask(taskID, state: partial ? .partial : .succeeded,
-                    message: partial ? "回顾已保存，部分原文暂无法确认" : "回顾已保存", destination: .daily(summary.id), detail: outcome.metrics.detail)
+                    message: (partial ? "回顾已保存，部分原文暂无法确认" : "回顾已保存") + reminderNotice, destination: .daily(summary.id), detail: outcome.metrics.detail)
                 if reason == .manual { dailyToOpen = summary.id }
                 // Do not run whole-archive maintenance in the user's completion path.
                 // Pending local derived work is drained on the existing maintenance cycle.
@@ -1577,7 +1556,6 @@ final class RecallAppModel: ObservableObject {
                     do { try await notificationScheduler.deliverDailyBriefing(summary) }
                     catch { recordError(error, source: "DailySummary", message: "回顾已保存，通知投递失败") }
                 }
-                if !Task.isCancelled { discoverReminders(force: false, announce: false) }
             } catch {
                 let cancelled = ModelCallCancellation.isCancellation(error)
                 finishTask(taskID, state: cancelled ? .cancelled : .failed,

@@ -12,6 +12,13 @@ public extension ModelReviewResult {
                 let quotes = facts.filter { item.factIDs.contains($0.id) }.flatMap(\.quotes)
                 knowledge = DailyItemKnowledge(topic: item.topic, kind: kind, status: item.status ?? "unknown",
                     ownedByUser: item.ownedByUser ?? false, quotes: Array(Set(quotes)).sorted(), category: item.category)
+                knowledge?.reminderID = item.reminderID
+                let itemSources = Set(sourceIDs(for: item))
+                knowledge?.sourceVersions = Dictionary(uniqueKeysWithValues: sourceVersions.filter { itemSources.contains($0.key) }
+                    .map { ($0.key.uuidString, $0.value) })
+                let evidence = facts.filter { item.factIDs.contains($0.id) }
+                knowledge?.explicitCommitment = item.section == "actions" && !evidence.isEmpty && evidence.allSatisfy(\.isAction)
+                knowledge?.condition = evidence.compactMap(\.condition).first { !$0.isEmpty }
             }
             return DailySummaryItem(section: section, title: item.title, detail: item.detail, evidenceIDs: sourceIDs(for: item),
                 actionCandidateID: section == .actions ? actionID(item) : nil, knowledge: knowledge)

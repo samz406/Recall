@@ -44,6 +44,7 @@ public struct ModelReviewFact: Codable, Hashable, Identifiable, Sendable {
     public var category: String? = nil
 }
 public struct ModelReviewItem: Codable, Hashable, Sendable {
+    public var reminderID: UUID? = nil
     public var section: String
     public var title: String
     public var detail: String

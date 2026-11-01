@@ -2266,7 +2266,7 @@ private struct RemindersView: View {
                     VStack(spacing: 16) {
                         Image(systemName: "bell").font(.system(size: 38, weight: .light)).foregroundStyle(RecallPalette.accent)
                         Text(reminderTab == 0 ? "暂时没有待处理的提醒" : (reminderTab == 1 ? "没有需要确认的待办" : "还没有历史记录")).font(.headline)
-                        Text("从记录中发现的事项会先进入‘待确认’，安排时间后才通知。")
+                        Text("每日回顾中的明确行动会先进入‘待确认’，安排时间后才通知；也可以手动深查原始记录。")
                             .font(.callout).foregroundStyle(RecallPalette.secondary).multilineTextAlignment(.center)
                         HStack(spacing: 12) {
                             Button("新建提醒") { isCreatingReminder = true }.buttonStyle(.borderedProminent)
@@ -2345,9 +2345,10 @@ private struct RemindersView: View {
         RecallPageHeader(title: "提醒", subtitle: "把需要跟进的事，放到合适的时间") {
             HStack(spacing: 12) {
                 Button(isDiscovering ? "正在发现…" : "发现待办") { model.proposeReminders() }.disabled(isDiscovering)
+                    .help("手动深查允许参与的原始记录；每日回顾中的明确行动会自动进入待确认")
                 Menu {
-                    Toggle("后台发现待办", isOn: Binding(get: { model.state.reminderLearningProfile.automaticDiscovery == true }, set: { value in model.setAutomaticReminderDiscovery(value) }))
-                    Text("开启后定时用模型分析已保存的脱敏文本；不会自动安排通知。")
+                    Toggle("从每日回顾更新提醒", isOn: Binding(get: { model.state.reminderLearningProfile.reviewDiscoveryEnabled != false }, set: { value in model.setReviewReminderDiscovery(value) }))
+                    Text("复用已生成的回顾，不增加模型调用；安排时间后才通知。")
                 } label: { Image(systemName: "slider.horizontal.3").accessibilityLabel("待办发现设置") }
                 .menuStyle(.borderlessButton).fixedSize()
                 Button { isCreatingReminder = true } label: { Label("新建提醒", systemImage: "plus") }.buttonStyle(.borderedProminent)
@@ -3090,7 +3091,7 @@ private struct EventRuleEditor: View {
         }
         Divider()
         RecallSwitchRow(title: "问一问可检索这类记录", isOn: $includeChat)
-        RecallSwitchRow(title: "从这类记录中发现待办", isOn: $includeReminders)
+        RecallSwitchRow(title: "允许对这类记录手动深查待办", isOn: $includeReminders)
         Button("保存规则") {
             var updated = model.state.rules.first { $0.id == rule.id } ?? rule
             updated.scope = scope

@@ -58,7 +58,7 @@ public extension FileMemoryStore {
                     let safe = state.correctedForAnalysis()
                     for (id, status) in result.resolutions {
                         guard let i = state.reminders.firstIndex(where: {
-                            $0.id == id && $0.status == .proposed && $0.origin == .discovered && $0.updatedAt <= startedAt
+                            $0.id == id && $0.status == .proposed && $0.origin == .discovered && $0.analysis?.dailyReview == nil && $0.updatedAt <= startedAt
                         }), state.reminders[i].sourceCaptureIDs.allSatisfy({ sourceID in
                             safe.captures.first(where: { $0.id == sourceID }).map { ModelReminderDiscovery.eligible($0, in: state) } == true
                         }) else { continue }
