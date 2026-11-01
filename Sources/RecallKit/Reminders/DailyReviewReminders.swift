@@ -27,7 +27,7 @@ public struct DailyReminderSync: Sendable {
 /// checks provenance/state, performs exact deduplication and never calls a model.
 public enum DailyReviewReminderEngine {
     private struct Context: Codable {
-        var id: UUID; var revision: String; var title: String; var topic: String?; var commitment: [String]
+        var id: UUID; var revision: String; var title: String; var detail: String; var topic: String?; var commitment: [String]
     }
     public static func context(in state: RecallState, before end: Date) -> String {
         guard state.reminderLearningProfile.reviewDiscoveryEnabled != false else { return "[]" }
@@ -44,6 +44,7 @@ public enum DailyReviewReminderEngine {
                       sources[id].map { permitted($0, state: state) } == true
                   }) else { continue }
             let value = Context(id: reminder.id, revision: SummaryFeedbackLearning.hash(reminder), title: PrivacyEngine().redact(String(reminder.title.prefix(90))),
+                detail: PrivacyEngine().redact(String(reminder.detail.prefix(180))),
                 topic: reminder.analysis?.dailyReview?.topic.map { PrivacyEngine().redact(String($0.prefix(30))) },
                 commitment: Array(Set(reminder.analysis?.evidence.map(\.quote) ?? [])).sorted().prefix(2).map { PrivacyEngine().redact(String($0.prefix(120))) })
             let size = ((try? directReviewJSON(value)) ?? "").utf8.count
@@ -159,7 +160,7 @@ public enum DailyReviewReminderEngine {
                     state.reminders[i].analysis?.dailyReview?.completion = DailyReminderCompletion(summaryID: summary.id, itemID: item.id,
                         itemVersion: itemVersion(item), appliedAt: now, sourceVersions: versions)
                     outcome.completed += 1
-                } else if item.section == .actions, knowledge.status == "pending", knowledge.explicitCommitment != false,
+                } else if item.section == .actions, knowledge.status == "pending", knowledge.explicitCommitment == true,
                           let actionID = item.actionCandidateID, summary.todos.contains(where: { $0.id == actionID && ($0.status == .pending || $0.status == .inProgress) }),
                           !SummaryFeedbackLearning.rejectsAction(title: item.title, sourceIDs: item.evidenceIDs, in: safe) {
                     let words = knowledge.quotes.sorted().joined(separator: "|")

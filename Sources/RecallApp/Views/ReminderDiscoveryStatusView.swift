@@ -33,18 +33,28 @@ struct ReminderDiscoveryStatusView: View {
     }
     private var savedStatus: some View {
         let checkpoint = model.state.reminderDiscoveryCheckpoint
+        let marks = model.state.reminderLearningProfile.reviewedDailyFingerprints ?? [:]
+        let reports = model.state.dailySummaries.filter { marks[$0.id.uuidString] != nil }
+        let latest = reports.max { $0.day < $1.day }
+        let paused = model.state.reminderLearningProfile.reviewDiscoveryEnabled == false
         return HStack(spacing: 8) {
-            Text(checkpoint.failureReason != nil ? "上次分析未完成" : (checkpoint.lastRunAt == nil ? "尚未进行模型分析" : (checkpoint.extractorVersion == ModelReminderDiscovery.version ? "已用模型核对待办" : "上次使用本地规则检查")))
-            if let date = checkpoint.lastRunAt { Text("· " + date.formatted(date: .omitted, time: .shortened)) }
+            if paused { Text("已暂停从每日回顾更新提醒") }
+            else if let latest {
+                Text("已同步每日回顾 · " + latest.day.formatted(.dateTime.month().day()))
+            } else { Text("生成每日回顾后，明确行动会自动进入待确认") }
             Menu("查看检查详情") {
+                Text(paused ? "已暂停自动更新，已有提醒保留" : "复用每日回顾中的本人明确承诺，不增加提醒模型调用")
+                Text("已处理 \(reports.count) 篇回顾；仍需确认时间后才通知")
+                if let openPending { Button("查看待确认", action: openPending) }
+                Divider()
+                Text("手动深查原始记录")
                 if let failure = checkpoint.failureReason { Text(failure) }
-                Text("本次已分析 \(checkpoint.analyzedRecordCount) 条记录")
-                Text("共有 \(checkpoint.eligibleRecordCount) 条记录允许参与")
+                if let date = checkpoint.lastRunAt { Text("最近深查：" + date.formatted(date: .abbreviated, time: .shortened)) }
+                Text("上次深查 \(checkpoint.analyzedRecordCount) 条；\(checkpoint.eligibleRecordCount) 条允许参与深查")
                 Text("\(checkpoint.unchangedRecordCount ?? 0) 条内容未变化，复用上次检查")
                 Text("\(checkpoint.excludedRecordCount ?? 0) 条因来源或参与设置未纳入")
                 Text("新增 \(checkpoint.discoveredCount) 项待确认；忽略和已处理结果继续生效")
-                if let openPending { Button("查看待确认", action: openPending) }
-                Button("重新发现") { model.proposeReminders() }
+                Button("手动深查") { model.proposeReminders() }
             }.menuStyle(.borderlessButton).fixedSize().foregroundStyle(RecallPalette.accent)
         }
     }

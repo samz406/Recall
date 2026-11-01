@@ -77,6 +77,11 @@ enum DailyReviewReminderVerification {
         _ = DailyReviewReminderEngine.reconcile(&reopened, now: now.addingTimeInterval(30))
         try expect(reopened.reminders.count == 1 && reopened.reminders[0].id == value.id,
             "重新生成回顾丢失了原行动身份")
+        let preserved = ReminderExtractor().merging([], into: reopened.reminders, now: now, revalidatedCaptureIDs: [state.captures[0].id])
+        try expect(preserved == reopened.reminders, "手动深查的重验删除了回顾候选")
+        var raw = value; raw.detail = "来自手动深查的不同描述"; raw.analysis = nil
+        let merged = ReminderExtractor().merging([raw], into: reopened.reminders, now: now)
+        try expect(merged == reopened.reminders, "手动深查覆盖了回顾候选的归属或依据")
     }
     private static func ownershipAndBadRows() throws {
         var state = try base()
@@ -90,6 +95,9 @@ enum DailyReviewReminderVerification {
         state.dailySummaries[0].todos.append(DailySummaryTodo(id: broken.actionCandidateID!, title: broken.title, detail: broken.detail, priority: .normal))
         _ = DailyReviewReminderEngine.reconcile(&state, now: now)
         try expect(state.reminders.count == 1 && state.reminders[0].title.contains("Atlas"), "错误行使好行丢失，或对方/资料/未知归属变成本人待办")
+        var legacy = try base(); legacy.dailySummaries[0].items[0].knowledge?.explicitCommitment = nil
+        _ = DailyReviewReminderEngine.reconcile(&legacy, now: now)
+        try expect(legacy.reminders.isEmpty, "旧回顾缺少明确承诺判断，却被批量追认为当前待办")
     }
     private static func namespacesAndHistory() throws {
         var state = try base()
