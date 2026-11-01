@@ -86,8 +86,8 @@ public enum DailyReviewReminderEngine {
               knowledge.condition?.isEmpty ?? true, !knowledge.quotes.isEmpty, !item.evidenceIDs.isEmpty,
               item.evidenceIDs.allSatisfy({ sources[$0].map { permitted($0, state: state) } == true }) else { return nil }
         if let versions = knowledge.sourceVersions {
-            guard Set(versions.keys) == Set(item.evidenceIDs), versions.allSatisfy({ id, version in
-                sources[id].map { CaptureUnderstandingEngine.sourceVersion($0, in: state) == version } == true
+            guard Set(versions.keys) == Set(item.evidenceIDs.map(\.uuidString)), versions.allSatisfy({ key, version in
+                UUID(uuidString: key).flatMap { sources[$0] }.map { CaptureUnderstandingEngine.sourceVersion($0, in: state) == version } == true
             }) else { return nil }
         } else if item.evidenceIDs.contains(where: { sources[$0]?.correctedText != nil }) { return nil }
         let blocks = item.evidenceIDs.flatMap { sources[$0].map { CaptureUnderstandingEngine.blocks(for: $0) } ?? [] }

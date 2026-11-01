@@ -166,9 +166,10 @@ enum DailyReviewReminderVerification {
     }
     private static func actualGenerationAndRollback() async throws {
         let record = source(at: Date.now.addingTimeInterval(-2 * 86_400))
+        let duplicate = source(record.ocrText, at: record.createdAt.addingTimeInterval(30))
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-review-reminders-" + UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        var state = RecallState(captures: [record], privacy: PrivacySettings(cloudUseEnabled: true),
+        var state = RecallState(captures: [record, duplicate], privacy: PrivacySettings(cloudUseEnabled: true),
             llmConfiguration: LLMConfiguration(provider: .openAICompatible, baseURLString: "https://model.invalid/v1", model: "synthetic", apiKey: "synthetic-not-a-key"))
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(state).write(to: storage.stateURL)
@@ -179,6 +180,10 @@ enum DailyReviewReminderVerification {
         let calls = await model.log(), saved = await store.snapshot()
         try expect(calls.count == 1 && output.metrics.modelCalls == 1 && saved.reminders.count == 1 && output.reminders.added == 1,
             "真实回顾入口没有在一次调用中保存回顾与提醒")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let reloaded = try decoder.decode(RecallState.self, from: encoder.encode(saved))
+        try expect(SummaryFeedbackLearning.hash(saved.dailySummaries[0]) == SummaryFeedbackLearning.hash(reloaded.dailySummaries[0]),
+            "新增来源版本字段导致重启后回顾校验值不稳定")
         let next = source("[聊天·自己] Atlas 边界验证我已经补齐并提交给评审。", at: Date.now.addingTimeInterval(-86_400))
         try await store.addCapture(next)
         let completion = CompletionModel(saved.reminders[0].id)
@@ -187,7 +192,7 @@ enum DailyReviewReminderVerification {
         let linkedRequests = await completion.log(), completed = await store.snapshot()
         try expect(linkedRequests.count == 1 && linkedRequests[0].question.contains(saved.reminders[0].id.uuidString)
             && closed.reminders.completed == 1 && completed.reminders[0].status == .completed
-            && Set(completed.reminders[0].sourceCaptureIDs) == Set([record.id, next.id]),
+            && Set(completed.reminders[0].sourceCaptureIDs) == Set([record.id, duplicate.id, next.id]),
             "后续真实回顾没有把已有待办作为关联元数据发送，或没有保留两日证据并完成原提醒")
         // A local sync write failure must roll back candidates and its durable journal together.
         state = try base()

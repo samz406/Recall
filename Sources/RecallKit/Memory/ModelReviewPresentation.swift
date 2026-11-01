@@ -14,7 +14,8 @@ public extension ModelReviewResult {
                     ownedByUser: item.ownedByUser ?? false, quotes: Array(Set(quotes)).sorted(), category: item.category)
                 knowledge?.reminderID = item.reminderID
                 let itemSources = Set(sourceIDs(for: item))
-                knowledge?.sourceVersions = sourceVersions.filter { itemSources.contains($0.key) }
+                knowledge?.sourceVersions = Dictionary(uniqueKeysWithValues: sourceVersions.filter { itemSources.contains($0.key) }
+                    .map { ($0.key.uuidString, $0.value) })
                 let evidence = facts.filter { item.factIDs.contains($0.id) }
                 knowledge?.explicitCommitment = item.section == "actions" && !evidence.isEmpty && evidence.allSatisfy(\.isAction)
                 knowledge?.condition = evidence.compactMap(\.condition).first { !$0.isEmpty }
