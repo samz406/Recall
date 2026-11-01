@@ -5,26 +5,34 @@ struct SummaryFeedbackFooter: View {
     @EnvironmentObject private var model: RecallAppModel
     let target: SummaryFeedbackTarget
     var showsFeedbackButton = true
+    var showsHistoryButton = true
     private var latest: SummaryFeedback? { model.state.summaryFeedback.last { $0.target.reportID == target.reportID && $0.state != .withdrawn } }
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 16) {
-                if showsFeedbackButton {
-                    Button { model.summaryFeedbackTarget = target } label: { Label("反馈", systemImage: "bubble.left") }
-                        .buttonStyle(.borderless)
+        if showsFeedbackButton || showsHistoryButton || latest != nil {
+            VStack(alignment: .leading, spacing: 10) {
+                if showsFeedbackButton || showsHistoryButton {
+                    HStack(spacing: 16) {
+                        if showsFeedbackButton {
+                            Button { model.summaryFeedbackTarget = target } label: { Label("反馈", systemImage: "bubble.left") }
+                                .buttonStyle(.borderless)
+                        }
+                        if showsHistoryButton {
+                            Button("反馈记录与偏好") { model.showsSummaryFeedbackHistory = true }.buttonStyle(.borderless)
+                        }
+                        Spacer(minLength: 0)
+                    }
                 }
-                Button("反馈记录与偏好") { model.showsSummaryFeedbackHistory = true }.buttonStyle(.borderless)
-                Spacer(minLength: 0)
-            }
-            if let latest {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: latest.state == .applied ? "checkmark.circle" : "info.circle")
-                    Text(latest.message).fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 4)
-                    if latest.state == .applied { Button("撤销") { model.withdrawFeedback(latest.id) } }
-                }.foregroundStyle(RecallPalette.secondary)
-            }
-        }.font(.caption).padding(.top, 6)
+                if let latest {
+                    if !showsFeedbackButton && !showsHistoryButton { Divider().padding(.top, 12) }
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: latest.state == .applied ? "checkmark.circle" : "info.circle")
+                        Text(latest.message).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 4)
+                        if latest.state == .applied { Button("撤销") { model.withdrawFeedback(latest.id) } }
+                    }.foregroundStyle(RecallPalette.secondary)
+                }
+            }.font(.caption).padding(.top, 6)
+        }
     }
 }
 

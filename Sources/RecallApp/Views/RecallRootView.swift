@@ -1643,8 +1643,7 @@ private struct DailySummaryCard: View {
                     MarkdownDocumentView(markdown: displayContent)
                         .textSelection(.enabled)
                 }
-                Divider().padding(.top, 12)
-                SummaryFeedbackFooter(target: .daily(summary), showsFeedbackButton: false)
+                SummaryFeedbackFooter(target: .daily(summary), showsFeedbackButton: false, showsHistoryButton: false)
             } else {
                 Text(preview)
                     .font(.system(size: 15))
@@ -3258,6 +3257,16 @@ private struct PrivacyAndModelView: View {
                                     CaptureUnderstandingSettingsView().environmentObject(model)
                                     Divider()
                                     MemoryOrganizationSettings().environmentObject(model)
+                                    Divider()
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text("回顾纠正").font(.subheadline.weight(.medium))
+                                            Text("查看纠正记录，撤销更改或停用写作偏好。")
+                                                .font(.caption).foregroundStyle(RecallPalette.secondary)
+                                        }
+                                        Spacer(minLength: 12)
+                                        Button("管理纠正记录") { model.showsSummaryFeedbackHistory = true }
+                                    }
                                 }.padding(.top, 16)
                             } label: {
                                 HStack { Text("记忆整理").fontWeight(.semibold); Spacer(); Text(model.state.memoryKnowledgeSettings.automaticOrganization ? "后台整理已开启" : "后台整理已暂停").font(.caption).foregroundStyle(RecallPalette.secondary) }
