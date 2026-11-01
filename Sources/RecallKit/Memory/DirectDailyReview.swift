@@ -104,8 +104,8 @@ struct DailyReviewInput: Sendable {
         var duplicates: [String: Int] = [:], reused = 0
         var documentIndexByLine: [String: Int] = [:], pendingLineKeys: [String] = []
         // Consecutive screen captures repeat most of their OCR lines. A line already sent for the
-        // same app is skipped (its first occurrence keeps the source); user-entered text is never skipped.
-        var seenLines: [String: (document: Int, proof: Int)] = [:]
+        // same app/window is sent once, retaining every associated source; user-entered text is never skipped.
+        var seenLines = Set<String>()
         @discardableResult
         func append(basis: String, text: String, date: Date, proofs: [DailyReviewProof], app: String, meta: String? = nil) -> Int {
             let text = PrivacyEngine().redact(text)
@@ -126,6 +126,8 @@ struct DailyReviewInput: Sendable {
         }
         for source in records {
             try Task.checkCancellation()
+            let scope = (source.sourceBundleIdentifier ?? source.sourceAppName ?? "") + "|" + (source.windowTitle ?? "")
+            let sourceMeta = PrivacyEngine().redact("app=" + (source.sourceAppName ?? "未知") + ",window=" + String((source.windowTitle ?? "未知").prefix(120)))
             if let original = originals[source.id] { versions[source.id] = CaptureUnderstandingEngine.sourceVersion(original, in: state) }
             if let result = source.understanding, CaptureUnderstandingEngine.isCurrent(result, in: state), result.uncertainBlockCount == 0 {
                 reused += 1
@@ -137,8 +139,8 @@ struct DailyReviewInput: Sendable {
                         proofs.append(DailyReviewProof(text: evidence.quote, sourceIDs: [id], speaker: fact.speaker, actor: fact.actor,
                             status: fact.status, actionAllowed: fact.isUserAction, isReference: fact.kind == .reference, condition: fact.condition))
                     }
-                    append(basis: "understood", text: fact.statement, date: source.createdAt, proofs: proofs, app: source.sourceAppName ?? "",
-                           meta: "speaker=\(fact.speaker.rawValue),actor=\(fact.actor.rawValue),kind=\(fact.kind.rawValue)")
+                    append(basis: "understood", text: fact.statement, date: source.createdAt, proofs: proofs, app: scope,
+                           meta: sourceMeta + ",speaker=\(fact.speaker.rawValue),actor=\(fact.actor.rawValue),kind=\(fact.kind.rawValue)")
                 }
                 continue
             }
@@ -150,23 +152,30 @@ struct DailyReviewInput: Sendable {
                 guard !lines.isEmpty else { return }
                 let prefix = source.textOrigin == .userInput ? "来源为用户主动输入；原文：\n" : "来源为屏幕 OCR；角色未知时不可猜测；原文：\n"
                 let index = append(basis: "raw", text: prefix + lines.joined(separator: "\n"), date: source.createdAt,
-                    proofs: proofs, app: source.sourceAppName ?? "")
+                    proofs: proofs, app: scope, meta: sourceMeta)
                 for key in pendingLineKeys { documentIndexByLine[key] = index }
                 pendingLineKeys = []
                 lines = []; proofs = []; size = 0
             }
             for block in blocks {
+                var lineKey: String?
                 if source.textOrigin != .userInput, block.text.count >= 12 {
-                    let key = (source.sourceAppName ?? "") + "\u{1}" + block.text
-                    if seenLines[key] != nil {
-                        // Still on screen later: extend the first occurrence's span instead of losing that it persisted.
-                        if let index = documentIndexByLine[key] { documents[index].lastSeen = max(documents[index].lastSeen, source.createdAt) }
+                    let key = scope + "\u{1}" + block.text
+                    if !seenLines.insert(key).inserted {
+                        // Still on screen later: keep both its time span and all source screenshots.
+                        if let index = documentIndexByLine[key] {
+                            documents[index].lastSeen = max(documents[index].lastSeen, source.createdAt)
+                            if let proof = documents[index].proofs.firstIndex(where: { $0.text == block.text }) {
+                                let ids = documents[index].proofs[proof].sourceIDs + [source.id]
+                                documents[index].proofs[proof].sourceIDs = Array(Set(ids)).sorted { $0.uuidString < $1.uuidString }
+                            }
+                        }
                         continue
                     }
-                    seenLines[key] = (0, 0)
-                    pendingLineKeys.append(key)
+                    lineKey = key
                 }
                 if size + block.text.utf8.count > 12_000 { flush() }
+                if let lineKey { pendingLineKeys.append(lineKey) }
                 lines.append(block.text); size += block.text.utf8.count + 1
                 let note = source.manualMatter
                 proofs.append(DailyReviewProof(text: block.text, sourceIDs: [source.id], speaker: block.speaker,

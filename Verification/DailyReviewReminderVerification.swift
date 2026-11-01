@@ -180,6 +180,8 @@ enum DailyReviewReminderVerification {
         let calls = await model.log(), saved = await store.snapshot()
         try expect(calls.count == 1 && output.metrics.modelCalls == 1 && saved.reminders.count == 1 && output.reminders.added == 1,
             "真实回顾入口没有在一次调用中保存回顾与提醒")
+        try expect(Set(saved.reminders[0].sourceCaptureIDs) == Set([record.id, duplicate.id]),
+            "相同应用内的重复 OCR 去重后丢失了后续截图来源")
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         let reloaded = try decoder.decode(RecallState.self, from: encoder.encode(saved))
         try expect(SummaryFeedbackLearning.hash(saved.dailySummaries[0]) == SummaryFeedbackLearning.hash(reloaded.dailySummaries[0]),
@@ -190,10 +192,23 @@ enum DailyReviewReminderVerification {
         let closed = try await store.generateDirectDailyReview(day: next.createdAt,
             period: ReviewPeriod(start: next.createdAt.addingTimeInterval(-60), end: next.createdAt.addingTimeInterval(3_600)), responder: completion)
         let linkedRequests = await completion.log(), completed = await store.snapshot()
-        try expect(linkedRequests.count == 1 && linkedRequests[0].question.contains(saved.reminders[0].id.uuidString)
-            && closed.reminders.completed == 1 && completed.reminders[0].status == .completed
-            && Set(completed.reminders[0].sourceCaptureIDs) == Set([record.id, duplicate.id, next.id]),
-            "后续真实回顾没有把已有待办作为关联元数据发送，或没有保留两日证据并完成原提醒")
+        try expect(linkedRequests.count == 1 && linkedRequests[0].question.contains(saved.reminders[0].id.uuidString),
+            "后续真实回顾没有把已有待办作为关联元数据发送")
+        try expect(closed.reminders.completed == 1 && completed.reminders[0].status == .completed,
+            "后续真实回顾未完成原提醒")
+        try expect(Set(completed.reminders[0].sourceCaptureIDs) == Set([record.id, duplicate.id, next.id]),
+            "完成闭环没有保留两日全部来源截图")
+        // The same words in two different conversations are separate model inputs, not duplicate screenshots.
+        let separate = source(record.ocrText, at: record.createdAt.addingTimeInterval(60), window: "Nova")
+        let scopeStorage = try RecallStorage(rootURL: storage.rootURL.appendingPathComponent("scopes"))
+        state.captures.append(separate)
+        try encoder.encode(state).write(to: scopeStorage.stateURL)
+        let scopedStore = try FileMemoryStore(storage: scopeStorage), scopedModel = DirectDailyReviewVerification.Model("action")
+        let scoped = try await scopedStore.generateDirectDailyReview(day: record.createdAt, period: period, responder: scopedModel)
+        let scopedRequests = await scopedModel.log()
+        let documents = try JSONSerialization.jsonObject(with: Data(scopedRequests[0].context[0].ocrText.utf8)) as! [[String: Any]]
+        try expect(documents.count == 2 && scoped.summary.items[0].evidenceIDs == [separate.id],
+            "不同对话的同一句话被合并，或无关截图被挂到同一提醒")
         // A local sync write failure must roll back candidates and its durable journal together.
         state = try base()
         let other = try RecallStorage(rootURL: storage.rootURL.appendingPathComponent("failure"))

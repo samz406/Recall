@@ -27,7 +27,7 @@ public struct DailyReminderSync: Sendable {
 /// checks provenance/state, performs exact deduplication and never calls a model.
 public enum DailyReviewReminderEngine {
     private struct Context: Codable {
-        var id: UUID; var revision: String; var title: String; var detail: String; var topic: String?; var commitment: [String]
+        var id: UUID; var revision: String; var title: String; var detail: String; var topic: String?; var sources: [String]; var commitment: [String]
     }
     public static func context(in state: RecallState, before end: Date) -> String {
         guard state.reminderLearningProfile.reviewDiscoveryEnabled != false else { return "[]" }
@@ -46,6 +46,9 @@ public enum DailyReviewReminderEngine {
             let value = Context(id: reminder.id, revision: SummaryFeedbackLearning.hash(reminder), title: PrivacyEngine().redact(String(reminder.title.prefix(90))),
                 detail: PrivacyEngine().redact(String(reminder.detail.prefix(180))),
                 topic: reminder.analysis?.dailyReview?.topic.map { PrivacyEngine().redact(String($0.prefix(30))) },
+                sources: Array(Set(reminder.sourceCaptureIDs.compactMap { sources[$0] }.map {
+                    PrivacyEngine().redact(String((($0.sourceAppName ?? "") + " / " + ($0.windowTitle ?? "")).prefix(120)))
+                })).sorted().prefix(2).map { $0 },
                 commitment: Array(Set(reminder.analysis?.evidence.map(\.quote) ?? [])).sorted().prefix(2).map { PrivacyEngine().redact(String($0.prefix(120))) })
             let size = ((try? directReviewJSON(value)) ?? "").utf8.count
             guard bytes + size < 6_000, values.count < 24 else { break }
