@@ -274,6 +274,12 @@ public actor FileMemoryStore {
             var restoredState = try decoder.decode(RecallState.self, from: data)
             if !restoredState.llmConfiguration.apiKey.isEmpty {
                 var config = restoredState.llmConfiguration
+                // A pre-ID archive must find the same Keychain item after an interrupted migration.
+                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let savedConfig = json?["llmConfiguration"] as? [String: Any]
+                if savedConfig?["connectionID"] == nil {
+                    config.connectionID = MatterEvidence.eventID(source: UUID(uuidString: "9BC4F467-7190-4A65-AC39-E591E87A1817")!, topic: storage.rootURL.standardizedFileURL.path, ordinal: 0)
+                }
                 do {
                     if try credentials.read(config.connectionID) == nil { try credentials.write(config.apiKey, id: config.connectionID) }
                     guard try credentials.read(config.connectionID) != nil else { throw CredentialError.unavailable }
@@ -465,12 +471,13 @@ public actor FileMemoryStore {
     public func updateLLMConfiguration(_ configuration: LLMConfiguration) throws {
         let before = state
         var config = configuration
+        guard let origin = LLMConfiguration.credentialOrigin(config.baseURLString) else { throw LLMError.invalidBaseURL }
         let oldKey = try credentials.read(config.connectionID)
         if !config.apiKey.isEmpty {
             try credentials.write(config.apiKey, id: config.connectionID)
             config.credentialReference = config.connectionID.uuidString
             config.credentialRevision = max(config.credentialRevision, state.llmConfiguration.credentialRevision) + 1
-        } else if config.hasCredential && URL(string: config.baseURLString)?.host != URL(string: state.llmConfiguration.baseURLString)?.host {
+        } else if config.hasCredential && origin != LLMConfiguration.credentialOrigin(state.llmConfiguration.baseURLString) {
             throw CredentialError.endpointChanged
         }
         config.apiKey = ""; state.llmConfiguration = config

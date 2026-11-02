@@ -29,6 +29,8 @@ public enum EvidenceLinkRouter {
 public struct EvidenceExport: Sendable {
     public let markdown: String
     public let sourceVersions: [UUID: String]
+    public let messageID: UUID
+    public let messageVersion: String
 }
 public enum EvidenceExportBuilder {
     public static func answer(_ message: ConversationMessage, state: RecallState, now: Date = .now) throws -> EvidenceExport {
@@ -37,29 +39,30 @@ public enum EvidenceExportBuilder {
         guard message.citations.allSatisfy({ records[$0] != nil }) else { throw WorkflowError.changed }
         let saved = state.messages.first { $0.id == message.id }
         guard saved?.content == message.content, saved?.citations == message.citations else { throw WorkflowError.changed }
-        if let versions = message.sourceVersions {
-            guard message.citations.allSatisfy({ id in versions[id.uuidString] == records[id].map { CaptureUnderstandingEngine.sourceVersion($0, in: state) } }) else { throw WorkflowError.changed }
-        } else {
-            // Older answers have no immutable evidence version: do not certify their citations after edits.
-            guard message.citations.allSatisfy({ records[$0]?.correctedText == nil }) else { throw WorkflowError.changed }
-        }
+        // Unversioned historical answers remain readable but must be regenerated before source export.
+        guard let expectedVersions = message.sourceVersions,
+              message.citations.allSatisfy({ id in expectedVersions[id.uuidString] == records[id].map { CaptureUnderstandingEngine.sourceVersion($0, in: state) } }) else { throw WorkflowError.changed }
         var versions: [UUID: String] = [:]
         var sections = ["# Recall", publicText(message.content), "## " + RecallLocalization.text("回答依据"),
             RecallLocalization.text("以下来源支持整段回答，不表示每句话都有单独核验。")]
         for id in message.citations {
             guard let record = records[id] else { throw WorkflowError.changed }
             versions[id] = CaptureUnderstandingEngine.sourceVersion(record, in: state)
-            let label = escape(record.sourceAppName ?? "Record")
+            let label = escape(publicText(record.sourceAppName ?? "Record"))
             let date = ISO8601DateFormatter().string(from: record.createdAt)
             let quote = publicText(record.correctedText ?? record.ocrText).prefix(360)
             sections.append("- **\(label)** · \(date)\n\n" + quote.components(separatedBy: .newlines).map { "> " + escape($0) }.joined(separator: "\n"))
         }
         sections.append("---\n" + RecallLocalization.text("创建时间") + ": " + ISO8601DateFormatter().string(from: now))
-        return EvidenceExport(markdown: sections.joined(separator: "\n\n"), sourceVersions: versions)
+        return EvidenceExport(markdown: sections.joined(separator: "\n\n"), sourceVersions: versions, messageID: message.id, messageVersion: messageVersion(message))
     }
     public static func validate(_ export: EvidenceExport, state: RecallState) -> Bool {
+        guard let message = state.messages.first(where: { $0.id == export.messageID }), messageVersion(message) == export.messageVersion else { return false }
         let records = Dictionary(uniqueKeysWithValues: EvidenceAccess.records(state).map { ($0.id, $0) })
         return export.sourceVersions.allSatisfy { id, version in records[id].map { CaptureUnderstandingEngine.sourceVersion($0, in: state) == version } == true }
+    }
+    private static func messageVersion(_ message: ConversationMessage) -> String {
+        CaptureUnderstandingEngine.digest(message.content + "\n" + message.citations.map(\.uuidString).joined(separator: ","))
     }
     static func publicText(_ text: String) -> String {
         PrivacyEngine().redact(text)

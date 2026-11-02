@@ -36,13 +36,10 @@ final class ModelConnectionDraft: ObservableObject {
         value.model = modelName.trimmingCharacters(in: .whitespacesAndNewlines); value.apiKey = effectiveAPIKey
         return value
     }
-    var requiresNewCredential: Bool { URL(string: baseURL)?.host?.lowercased() != URL(string: initialConfiguration.baseURLString)?.host?.lowercased() }
+    var requiresNewCredential: Bool { LLMConfiguration.credentialOrigin(baseURL) != LLMConfiguration.credentialOrigin(initialConfiguration.baseURLString) }
     var hasCredentialForEndpoint: Bool { !normalizedAPIKey.isEmpty || (!requiresNewCredential && savedKeyExists) }
     var hasValidEndpoint: Bool {
-        guard let url = URL(string: configuration.baseURLString),
-              let host = url.host, !host.isEmpty, url.user == nil, url.password == nil,
-              !configuration.model.isEmpty else { return false }
-        return url.scheme == "https" || url.scheme == "http"
+        LLMConfiguration.credentialOrigin(configuration.baseURLString) != nil && !configuration.model.isEmpty
     }
     var connectionChanged: Bool { configuration != initialConfiguration || !normalizedAPIKey.isEmpty }
     var isTesting: Bool { testState == .testing }

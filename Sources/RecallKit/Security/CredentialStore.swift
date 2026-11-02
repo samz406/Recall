@@ -59,6 +59,7 @@ public final class InMemoryCredentialStore: CredentialStore, @unchecked Sendable
 }
 public enum ModelResponderFactory {
     public static func make(configuration: LLMConfiguration, credentials: any CredentialStore = KeychainCredentialStore.shared) throws -> CompatibleLLM {
+        guard LLMConfiguration.credentialOrigin(configuration.baseURLString) != nil else { throw LLMError.invalidBaseURL }
         let key = configuration.apiKey.isEmpty ? try credentials.read(configuration.connectionID) : configuration.apiKey
         guard let key, !key.isEmpty else { throw CredentialError.unavailable }
         return CompatibleLLM(configuration: configuration, apiKey: key)
@@ -68,7 +69,7 @@ extension FileMemoryStore {
     public func retryCredentialMaintenance() throws {
         if let pending = pendingLegacyCredential {
             let before = state
-            try credentials.write(pending.key, id: pending.id)
+            if try credentials.read(pending.id) == nil { try credentials.write(pending.key, id: pending.id) }
             guard try credentials.read(pending.id) != nil else { throw CredentialError.unavailable }
             state.llmConfiguration.credentialReference = pending.id.uuidString; state.llmConfiguration.credentialRevision += 1
             pendingLegacyCredential = nil

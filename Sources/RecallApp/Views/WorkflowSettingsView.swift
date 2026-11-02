@@ -72,7 +72,7 @@ struct WorkflowSettingsView: View {
     private func shortcutRow(_ title: String, binding: Binding<GlobalShortcutBinding>, action: String) -> some View {
         HStack {
             Toggle(title, isOn: binding.enabled).onChange(of: binding.wrappedValue.enabled) { _, _ in model.saveShortcut(binding.wrappedValue, action: action) }
-            ShortcutRecorder(binding: binding) { model.saveShortcut($0, action: action) }.frame(width: 180, height: 32)
+            ShortcutRecorder(binding: binding, save: { model.saveShortcut($0, action: action) }, editing: { model.setShortcutRecording($0) }).frame(width: 180, height: 32)
         }
     }
     private var identitySection: some View {
@@ -158,16 +158,27 @@ struct WorkflowSettingsView: View {
 private struct ShortcutRecorder: NSViewRepresentable {
     @Binding var binding: GlobalShortcutBinding
     let save: (GlobalShortcutBinding) -> Void
+    let editing: (Bool) -> Void
     func makeNSView(context: Context) -> ShortcutField { let v = ShortcutField(); updateNSView(v, context: context); return v }
-    func updateNSView(_ view: ShortcutField, context: Context) { view.title = binding.label; view.changed = { binding = $0; save($0) } }
+    func updateNSView(_ view: ShortcutField, context: Context) { view.restingTitle = binding.label; if !view.isRecording { view.title = binding.label }; view.changed = { binding = $0; save($0) }; view.editing = editing }
+    static func dismantleNSView(_ view: ShortcutField, coordinator: ()) { if view.isRecording { view.editing?(false) } }
 }
 private final class ShortcutField: NSButton {
     var changed: ((GlobalShortcutBinding) -> Void)?
+    var editing: ((Bool) -> Void)?
+    var restingTitle = ""
+    var isRecording = false
     override var acceptsFirstResponder: Bool { true }
     override init(frame frameRect: NSRect) { super.init(frame: frameRect); bezelStyle = .rounded; target = self; action = #selector(beginRecording) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    @objc private func beginRecording() { window?.makeFirstResponder(self); title = "⌘ / ⌃ + …" }
+    @objc private func beginRecording() { window?.makeFirstResponder(self); isRecording = true; editing?(true); title = "⌘ / ⌃ + …" }
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        if result && isRecording { isRecording = false; title = restingTitle; editing?(false) }
+        return result
+    }
     override func keyDown(with event: NSEvent) {
+        guard isRecording else { super.keyDown(with: event); return }
         if event.keyCode == 53 { window?.makeFirstResponder(nil); return }
         guard event.modifierFlags.contains(.command) || event.modifierFlags.contains(.control) else { NSSound.beep(); return }
         var modifiers: UInt32 = 0

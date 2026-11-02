@@ -24,10 +24,10 @@ public struct CaptureTarget: Sendable, Equatable {
         if let data = window?[kCGWindowBounds as String] as? [String: Any] { rect = CGRect(dictionaryRepresentation: data as CFDictionary) ?? .zero }
         var ids = [CGDirectDisplayID](repeating: 0, count: 16), count: UInt32 = 0
         CGGetActiveDisplayList(16, &ids, &count)
-        let display = ids.prefix(Int(count)).max { a, b in
+        let display = rect.width > 0 && rect.height > 0 ? ids.prefix(Int(count)).max { a, b in
             func area(_ id: CGDirectDisplayID) -> CGFloat { let r = CGDisplayBounds(id).intersection(rect); return r.isNull ? 0 : r.width * r.height }
             return area(a) < area(b)
-        }
+        } : nil
         return CaptureTarget(processID: app.processIdentifier, bundleIdentifier: bundle, appName: app.localizedName ?? bundle,
             windowID: (window?[kCGWindowNumber as String] as? NSNumber)?.uint32Value, displayID: display)
     }

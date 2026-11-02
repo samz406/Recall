@@ -43,6 +43,14 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
     public var anthropicVersion: String
     public var maxOutputTokens: Int
 
+    /// Credentials belong to an origin, not merely a hostname (HTTP downgrade and port changes count).
+    public static func credentialOrigin(_ value: String) -> String? {
+        guard let url = URL(string: value), let scheme = url.scheme?.lowercased(),
+              ["https", "http"].contains(scheme), let host = url.host?.lowercased(), !host.isEmpty,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else { return nil }
+        return "\(scheme)://\(host):\(url.port ?? (scheme == "https" ? 443 : 80))"
+    }
+
     public init(
         provider: LLMProviderKind = .openAICompatible,
         baseURLString: String = "https://api.openai.com/v1",

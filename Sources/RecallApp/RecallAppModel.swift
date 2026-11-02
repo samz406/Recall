@@ -33,6 +33,7 @@ final class RecallAppModel: ObservableObject {
     let isPreview: Bool
     let globalShortcuts = GlobalShortcutService()
     var shortcutConfigurationID: String?
+    var isRecordingShortcut = false
     @Published var credentialMaintenanceWarning: String?
     @Published var shortcutsReady = false
     @Published var openAskRequested = false
@@ -44,6 +45,7 @@ final class RecallAppModel: ObservableObject {
     @Published var lastExternalTarget: CaptureTarget?
     var openMainWindow: (() -> Void)?
     private var targetObserver: NSObjectProtocol?
+    private var shortcutWakeObserver: NSObjectProtocol?
     let timelineWorkspace = TimelineWorkspace()
     @Published private(set) var isLoadingSavedState = true
     private var isFinishingStartup = true
@@ -152,6 +154,9 @@ final class RecallAppModel: ObservableObject {
                 Task { @MainActor [weak self] in
                     if let target = CaptureTargetResolver.current(), target.bundleIdentifier != Bundle.main.bundleIdentifier { self?.lastExternalTarget = target }
                 }
+            }
+            shortcutWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.shortcutConfigurationID = nil; self?.configureShortcuts() }
             }
             recordDiagnostic(.info, source: "App", message: "应用已启动")
             reminderActionObserver = NotificationCenter.default.addObserver(

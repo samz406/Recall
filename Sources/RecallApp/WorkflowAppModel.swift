@@ -13,7 +13,7 @@ extension RecallAppModel {
     }
 
     func configureShortcuts() {
-        guard !isLoadingSavedState, !isPreview else { return }
+        guard !isLoadingSavedState, !isPreview, !isRecordingShortcut else { return }
         let record = GlobalShortcutBinding.load("record", fallback: .record), ask = GlobalShortcutBinding.load("ask", fallback: .ask)
         let identity = "\(record)\(ask)"
         guard shortcutConfigurationID != identity else { return }; shortcutConfigurationID = identity
@@ -24,6 +24,11 @@ extension RecallAppModel {
             self?.openAskRequested = true
             self?.openMainWindow?()
         })
+    }
+    func setShortcutRecording(_ recording: Bool) {
+        isRecordingShortcut = recording
+        if recording { globalShortcuts.stop(); shortcutConfigurationID = nil }
+        else { configureShortcuts() }
     }
     func saveShortcut(_ binding: GlobalShortcutBinding, action: String) {
         guard binding.modifiers & 0x1100 != 0 else { return }
@@ -60,7 +65,7 @@ extension RecallAppModel {
                     guard EvidenceExportBuilder.validate(result, state: await store.snapshot()) else { throw WorkflowError.changed }
                     NSPasteboard.general.clearContents(); NSPasteboard.general.setString(result.markdown, forType: .string)
                 }
-                noticeMessage = RecallLocalization.text("已复制。")
+                noticeMessage = toFile ? RecallLocalization.both("已导出 Markdown。", "Markdown exported.") : RecallLocalization.text("已复制。")
             } catch { noticeMessage = error.localizedDescription }
         }
     }

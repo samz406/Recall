@@ -79,6 +79,12 @@ enum InternationalWorkflowVerification {
         try await restarted.updateLLMConfiguration(edited)
         try expect(try credentials.read(config.connectionID) == config.apiKey, "Saving an empty Key field erased the saved credential")
         try expect(await restarted.snapshot().llmConfiguration.credentialRevision == revision, "Reusing a key spuriously changed its revision")
+        for endpoint in ["https://other.invalid/v1", "http://model.invalid/v1", "https://model.invalid:8443/v1"] {
+            var moved = edited; moved.baseURLString = endpoint
+            do { try await restarted.updateLLMConfiguration(moved); throw VerificationError.failed("A credential was reused across origins") }
+            catch CredentialError.endpointChanged {}
+        }
+        try expect(LLMConfiguration.credentialOrigin("https://model.invalid/v1?api_key=synthetic") == nil, "A credential-bearing endpoint URL was allowed")
         try await restarted.deleteModelCredential()
         try expect(try credentials.read(config.connectionID) == nil, "Delete credential did not remove Keychain item")
         let latest = await restarted.snapshot()
@@ -141,6 +147,10 @@ enum InternationalWorkflowVerification {
         answer.sourceVersions = [source.id.uuidString: CaptureUnderstandingEngine.sourceVersion(source, in: state)]
         state.messages = [answer]
         let export = try EvidenceExportBuilder.answer(answer, state: state)
+        var cleared = state; cleared.messages = []
+        try expect(!EvidenceExportBuilder.validate(export, state: cleared), "Cleared conversation could still be exported")
+        var legacy = answer; legacy.sourceVersions = nil; cleared = state; cleared.messages = [legacy]
+        do { _ = try EvidenceExportBuilder.answer(legacy, state: cleared); throw VerificationError.failed("Unversioned legacy answer was certified") } catch is WorkflowError {}
         try expect(export.markdown.contains("Atlas rollout passed") && !export.markdown.contains("<script>") && !export.markdown.contains("](file:"), "Export did not safely quote evidence")
         try expect(EvidenceLinkRouter.captureID(URL(string: EvidenceLinkRouter.link(source.id))!) == source.id, "Local deep link failed")
         try expect(EvidenceLinkRouter.captureID(URL(string: "recall://capture/" + source.id.uuidString + "?path=/private")!) == nil, "Deep link allowed arbitrary query")
