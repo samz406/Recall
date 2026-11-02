@@ -16,8 +16,8 @@ if CommandLine.arguments.dropFirst().first == "mcp" {
 
 // recall-cli: batch maintenance for an existing Recall data directory.
 //   summarize  Regenerate the daily review for every day that has records, in the structured format.
-// Nothing is changed or sent anywhere unless --apply is given. The API key is read from the data directory's own
-// settings and is never printed.
+// Without --apply, decode the archive directly: no store migration, Keychain, index writes or model calls.
+// Applied model requests resolve the archive's connection ID through the local Keychain; keys are never printed.
 
 struct Options {
     var command = ""
@@ -100,9 +100,12 @@ func backupOnce(_ storage: RecallStorage) throws {
 
 func dayStart(_ date: Date) -> Date { Calendar.current.startOfDay(for: date) }
 
-func runSummarize(_ store: FileMemoryStore, _ storage: RecallStorage) async throws {
+func runSummarize(_ store: FileMemoryStore?, _ storage: RecallStorage, preview: RecallState? = nil) async throws {
     say("— 重新生成每日回顾 —")
-    var state = await store.snapshot()
+    var state: RecallState
+    if let preview { state = preview }
+    else if let store { state = await store.snapshot() }
+    else { throw WorkflowError.invalid }
     let calendar = Calendar.current
     let excluded = state.privacy.excludedBundleIdentifiers
     var days = Set<Date>()
@@ -128,6 +131,7 @@ func runSummarize(_ store: FileMemoryStore, _ storage: RecallStorage) async thro
     let provider = state.llmConfiguration.provider
     say("模型：\(provider == .localOnly ? "未配置（仅本地）" : state.llmConfiguration.model)；允许发送脱敏文本：\(state.privacy.cloudUseEnabled ? "是" : "否")；密钥：\(!state.llmConfiguration.hasCredential ? "未配置" : "已配置（不显示）")。")
     guard options.apply else { say("预览结束：未调用模型、未改动数据。加 --apply 执行（每天一次模型调用）。"); return }
+    guard let store else { throw WorkflowError.invalid }
     guard state.privacy.cloudUseEnabled, provider != .localOnly, state.llmConfiguration.hasCredential else {
         say("无法执行：这个数据目录里没有可用的模型配置，或未允许发送脱敏文本。请先在那台电脑的应用里配置模型并开启云端使用。"); exit(1)
     }
@@ -168,8 +172,14 @@ do {
     } else { storage = try RecallStorage() }
     guard FileManager.default.fileExists(atPath: storage.stateURL.path) else { say("没有找到数据：\(storage.stateURL.path)"); exit(1) }
     say("数据目录：\(storage.rootURL.path)")
-    let store = try FileMemoryStore(storage: storage)
-    try await runSummarize(store, storage)
+    if options.apply {
+        let store = try FileMemoryStore(storage: storage)
+        try await runSummarize(store, storage)
+    } else {
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let preview = try decoder.decode(RecallState.self, from: Data(contentsOf: storage.stateURL))
+        try await runSummarize(nil, storage, preview: preview)
+    }
 } catch {
     say("出错：\(error.localizedDescription)")
     exit(1)
