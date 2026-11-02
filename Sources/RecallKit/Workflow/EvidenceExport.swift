@@ -35,14 +35,14 @@ public enum EvidenceExportBuilder {
             guard message.citations.allSatisfy({ records[$0]?.correctedText == nil }) else { throw WorkflowError.changed }
         }
         var versions: [UUID: String] = [:]
-        var sections = ["# Recall", PrivacyEngine().redact(message.content), "## " + RecallLocalization.text("回答依据"),
+        var sections = ["# Recall", publicText(message.content), "## " + RecallLocalization.text("回答依据"),
             RecallLocalization.text("以下来源支持整段回答，不表示每句话都有单独核验。")]
         for id in message.citations {
             guard let record = records[id] else { throw WorkflowError.changed }
             versions[id] = CaptureUnderstandingEngine.sourceVersion(record, in: state)
             let label = escape(record.sourceAppName ?? "Record")
             let date = ISO8601DateFormatter().string(from: record.createdAt)
-            let quote = PrivacyEngine().redact(record.correctedText ?? record.ocrText).prefix(360)
+            let quote = publicText(record.correctedText ?? record.ocrText).prefix(360)
             sections.append("- **\(label)** · \(date)\n\n" + quote.components(separatedBy: .newlines).map { "> " + escape($0) }.joined(separator: "\n"))
         }
         sections.append("---\n" + RecallLocalization.text("创建时间") + ": " + ISO8601DateFormatter().string(from: now))
@@ -51,6 +51,11 @@ public enum EvidenceExportBuilder {
     public static func validate(_ export: EvidenceExport, state: RecallState) -> Bool {
         let records = Dictionary(uniqueKeysWithValues: EvidenceAccess.records(state).map { ($0.id, $0) })
         return export.sourceVersions.allSatisfy { id, version in records[id].map { CaptureUnderstandingEngine.sourceVersion($0, in: state) == version } == true }
+    }
+    static func publicText(_ text: String) -> String {
+        PrivacyEngine().redact(text)
+            .replacingOccurrences(of: #"(?i)file://[^\s<>)]*"#, with: "[local path omitted]", options: .regularExpression)
+            .replacingOccurrences(of: #"/(?:Users|home|private|workspace|var)/[^\s<>)]*"#, with: "[local path omitted]", options: .regularExpression)
     }
     static func escape(_ text: String) -> String {
         text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "<", with: "&lt;")

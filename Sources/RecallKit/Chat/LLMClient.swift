@@ -330,7 +330,7 @@ public struct ExtractiveMemoryResponder: LLMResponding {
 
     public func answer(to request: LLMRequest) async throws -> LLMAnswer {
         guard !request.context.isEmpty else {
-            return LLMAnswer(content: "我没有在本地记忆中找到与“\(request.question)”相关的记录。你可以先使用“记录此刻”保存一个工作节点。", citedCaptureIDs: [])
+            return LLMAnswer(content: RecallLocalization.both("我没有在本地记忆中找到与“\(request.question)”相关的记录。你可以先使用“记录此刻”保存一个工作节点。", "No matching saved records for ‘\(request.question)’. Record a moment first."), citedCaptureIDs: [])
         }
 
         let citationLines = request.context.enumerated().map { index, record in
@@ -338,7 +338,7 @@ public struct ExtractiveMemoryResponder: LLMResponding {
             let excerpt = record.ocrText.replacingOccurrences(of: "\n", with: " ").prefix(260)
             return "[\(index + 1)] \(date) · \(record.sourceAppName ?? "未知来源")：\(excerpt)"
         }
-        let preface = "以下是基于本地检索记录的可追溯摘要；它不使用云端模型。"
+        let preface = RecallLocalization.both("以下是基于本地检索记录的可追溯摘要；它不使用云端模型。", "Local search results with sources. No cloud model was used.")
         return LLMAnswer(content: "\(preface)\n\n\(citationLines.joined(separator: "\n\n"))", citedCaptureIDs: request.context.map(\.id))
     }
 }
@@ -519,7 +519,7 @@ public struct CompatibleLLM: LLMResponding {
             """
         }
         var sections = [
-            "你是 Recall 的个人记忆助理。使用简体中文回答。",
+            "你是 Recall 的个人记忆助理。使用用户问题的语言回答，除非用户明确指定另一种语言。",
             MemoryQuestionIntent(question: request.question).guidance,
             "记录时间只是采集时间，不等于事情发生时间；只有明确的发生时间证据才可断言当天发生。多个来源若内容相同，只能算一份证据。",
             "本轮的“可用记忆证据”是唯一权威事实来源；历史对话只是语境，不能覆盖、否定或替代本轮证据。",

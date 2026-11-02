@@ -166,7 +166,10 @@ struct WorkflowSettingsView: View {
         }.sorted { $0.1 < $1.1 }
     }
     private func copyMCP(_ grant: MCPGrant) {
-        let config: [String: Any] = ["mcpServers": ["Recall": ["command": "/ABSOLUTE/PATH/TO/recall-cli", "args": ["mcp", "--data-dir", model.storage.rootURL.path], "env": ["RECALL_MCP_TOKEN": grant.token]]]]
+        let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        panel.message = w("选择你构建的 recall-cli 可执行文件", "Choose your locally built recall-cli executable")
+        guard panel.runModal() == .OK, let executable = panel.url, FileManager.default.isExecutableFile(atPath: executable.path) else { return }
+        let config: [String: Any] = ["mcpServers": ["Recall": ["command": executable.path, "args": ["mcp", "--data-dir", model.storage.rootURL.path], "env": ["RECALL_MCP_TOKEN": grant.token]]]]
         guard let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]), let text = String(data: data, encoding: .utf8) else { return }
         NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
     }

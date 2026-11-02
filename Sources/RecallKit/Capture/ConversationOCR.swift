@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 
 public enum TextRecognitionContext: Sendable, Equatable {
-    case document, conversation, messaging, leftAlignedMessaging, channelMessaging
+    case document, email, conversation, messaging, leftAlignedMessaging, channelMessaging
 
     public var layoutStyle: ConversationLayoutStyle? {
         switch self {
@@ -14,6 +14,8 @@ public enum TextRecognitionContext: Sendable, Equatable {
     }
 
     public static func resolve(appName: String?, bundleIdentifier: String?, windowTitle: String?, scope: CaptureScope) -> Self {
+        let profile = SourceProfile.resolve(app: appName, bundle: bundleIdentifier, title: windowTitle)
+        if profile == .email { return .email }
         let app = [appName, bundleIdentifier].compactMap { $0 }.joined(separator: " ").lowercased()
         if scope == .selectedWindow, app.contains("slack") || app.contains("teams") { return .channelMessaging }
         let native = ["微信", "wechat", "wework", "wecom", "imessage", "com.apple.ichat", "飞书", "lark", "feishu", "钉钉", "dingtalk", "telegram", "whatsapp", "signal", "beeper"]
@@ -72,6 +74,7 @@ public enum ConversationContentClassifier {
 
 public enum ConversationOCRFormatter {
     public static func format(_ lines: [PositionedTextLine], context: TextRecognitionContext, layout: ConversationOCRLayout? = nil) -> String {
+        if context == .email { return EmailOCRFormatter.format(lines) }
         if context == .channelMessaging { return ChannelOCRFormatter.format(lines, layout: layout) }
         if context == .document { return lines.map(\.text).map(trim).filter { !$0.isEmpty }.joined(separator: "\n") }
         guard let layout else {
