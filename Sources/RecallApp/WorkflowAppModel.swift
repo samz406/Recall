@@ -21,8 +21,8 @@ extension RecallAppModel {
             guard let self, !self.isRecording, let rule = self.state.rules.first(where: { $0.template == .manualMoment && $0.isEnabled }) else { return }
             self.record(rule: rule)
         }, onAsk: { [weak self] in
+            self?.openAskRequested = true
             self?.openMainWindow?()
-            DispatchQueue.main.async { NotificationCenter.default.post(name: .recallOpenAsk, object: nil) }
         })
     }
     func saveShortcut(_ binding: GlobalShortcutBinding, action: String) {

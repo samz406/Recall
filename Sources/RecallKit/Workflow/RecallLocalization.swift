@@ -184,7 +184,6 @@ public enum RecallLocalization {
         "从过去的记录里，找回进展、约定和当时的结论。": "Find progress, commitments and decisions in the moments you saved.",
         "向 Recall 提问…": "Ask Recall…",
         "向 Recall 提问...": "Ask Recall…",
-        "基于你的本地记忆，回答带来源": "Answers grounded in your saved memory",
         "基于你的本地记忆，回答带来源。": "Answers grounded in your saved memory.",
         "新对话": "New chat",
         "复制": "Copy",

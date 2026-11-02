@@ -12,7 +12,13 @@ public struct LocalDay: Codable, Hashable, Sendable {
         var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: timeZoneIdentifier) ?? .current
         return c.date(from: DateComponents(year: year, month: month, day: day)) ?? .distantPast
     }
-    public var label: String { date.formatted(date: .abbreviated, time: .omitted) + " · " + timeZoneIdentifier }
+    public var label: String {
+        let formatter = DateFormatter(); formatter.dateStyle = .medium; formatter.timeStyle = .none
+        formatter.locale = RecallLocalization.isEnglish ? Locale(identifier: "en") : Locale(identifier: "zh-Hans")
+        formatter.timeZone = TimeZone(identifier: timeZoneIdentifier)
+        return formatter.string(from: date) + " · " + timeZoneIdentifier
+    }
+    public var sortKey: Int { year * 10_000 + month * 100 + day }
 }
 public struct TextImportMetadata: Codable, Hashable, Sendable {
     public var source: String

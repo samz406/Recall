@@ -35,6 +35,7 @@ final class RecallAppModel: ObservableObject {
     var shortcutConfigurationID: String?
     @Published var credentialMaintenanceWarning: String?
     @Published var shortcutsReady = false
+    @Published var openAskRequested = false
     @Published var pendingEvidenceURL: URL?
     @Published var showsOnboarding = false
     @Published var showsTextEntry = false
@@ -799,6 +800,7 @@ final class RecallAppModel: ObservableObject {
     }
 
     func record(rule: EventRule, userText: String? = nil, diagnosticSource: String = "Capture") {
+        guard !showsOnboarding else { noticeMessage = RecallLocalization.both("请先退出样例，再保存真实记录。", "Leave the sample before saving a real record."); return }
         if rule.template == .dailyReview {
             guard rule.isEnabled else { noticeMessage = "请先启用这条记录规则。"; return }
             generateDailyReview(on: .now)
@@ -832,6 +834,7 @@ final class RecallAppModel: ObservableObject {
                 recordDiagnostic(.info, source: diagnosticSource, message: "内容命中本地忽略规则，已跳过")
             } catch {
                 recordDiagnostic(.error, source: diagnosticSource, message: "记录失败", metadata: ["eventTemplate": rule.template.rawValue, "error": recallSafeErrorCode(error)])
+                noticeMessage = error is CapturePipelineError || error is CredentialError ? error.localizedDescription : RecallLocalization.both("未能保存记录，请检查屏幕权限或重试。", "Unable to save. Check Screen Recording permission or try again.")
             }
         }
     }

@@ -52,7 +52,11 @@ struct RecallRootView: View {
         }
         .environment(\.locale, Locale(identifier: RecallLocalization.isEnglish ? "en" : "zh-Hans"))
         .onChange(of: interfaceLanguage) { _, _ in model.noticeMessage = nil }
-        .onAppear { model.openMainWindow = { openWindow(id: "main"); RecallAppDelegate.activateMainWindow() } }
+        .onAppear {
+            model.openMainWindow = { openWindow(id: "main"); RecallAppDelegate.activateMainWindow() }
+            if model.openAskRequested { section = .chat; model.openAskRequested = false }
+        }
+        .onChange(of: model.openAskRequested) { _, requested in if requested { section = .chat; model.openAskRequested = false } }
         .onReceive(NotificationCenter.default.publisher(for: .recallOpenAsk)) { _ in section = .chat }
         .onOpenURL { url in
             model.pendingEvidenceURL = url; model.resolveEvidenceURL()
@@ -2443,7 +2447,7 @@ private struct RemindersView: View {
     }
 
     private func timeGroup(_ reminder: ReminderCandidate) -> String {
-        if let day = reminder.plannedForDay, reminder.status == .planned { return Calendar.current.isDateInToday(day.date) ? "今天" : "此前安排" }
+        if let day = reminder.plannedForDay, reminder.status == .planned { return day.sortKey == LocalDay().sortKey ? "今天" : (day.sortKey < LocalDay().sortKey ? "此前安排" : "以后") }
         guard let due = reminder.dueAt else { return "以后" }
         if due < .now { return "已逾期" }
         return Calendar.current.isDateInToday(due) ? "今天" : "以后"
