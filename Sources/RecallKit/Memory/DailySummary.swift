@@ -142,6 +142,12 @@ public enum DailySummaryContentFormatter {
             of: #"^(?:今天|明天|后天|本周|下周|近期|以后|后续)(?:再)?(?:继续|处理|推进|看看|确认)?$"#,
             options: .regularExpression
         ) == nil else { return nil }
+        // English is a shape/quality check only; ownership and commitment still require model evidence.
+        if let range = action.range(of: #"(?i)^(?:(?:I(?: will|'ll| need to| have to)|todo:|action:)\s+)?(?:send|submit|review|verify|check|fix|update|write|prepare|schedule|book|contact|call|reply to|follow up on|publish|deploy|implement|finish|complete|confirm|test|read|practice|migrate|archive|pay|renew)\s+(.{4,})$"#, options: .regularExpression) {
+            let body = String(action[range]).lowercased()
+            let noise = ["network error", "please try again", "check your network", "how to", "for example", "an article", "if approved", "already completed"]
+            if !noise.contains(where: body.contains), ![" it", " this", " that", " something", " stuff"].contains(where: body.hasSuffix) { return action }
+        }
         let actionCues = [
             "完成", "修复", "确认", "联系", "回复", "提交", "评审", "复核", "核对", "验证", "整理", "安排", "决定", "选择", "下单",
             "输出", "拆分", "关闭", "更新", "跟进", "检查", "创建", "推进", "解决", "补充", "复盘", "记录", "归档",
