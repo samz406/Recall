@@ -188,12 +188,20 @@ final class RecallAppModel: ObservableObject {
                 state = await store.snapshot()
                 credentialMaintenanceWarning = await store.credentialMaintenanceWarning
                 isLoadingSavedState = false
+                configureShortcuts()
                 resolveEvidenceURL()
                 recordDiagnostic(.info, source: "Startup", message: "已载入保存的页面数据", metadata: [
                     "readMilliseconds": "\(max(0, Int(Date.now.timeIntervalSince(startupRead) * 1000)))",
                     "dailyReviewCount": "\(state.dailySummaries.count)", "captureCount": "\(state.captures.count)"])
                 // Publish saved reports before recovery, cleanup, projection or indexing.
                 await Task.yield()
+                // Backup cleanup can read large legacy files; keep it off the first-frame path.
+                // A failed Keychain migration requires the user's explicit retry, not repeated prompts.
+                if credentialMaintenanceWarning == nil {
+                    do { try await store.retryCredentialMaintenance() }
+                    catch { recordError(error, source: "Credentials", message: "旧凭据备份清理未完成，可在设置中重试") }
+                    credentialMaintenanceWarning = await store.credentialMaintenanceWarning
+                }
                 do { try await store.recoverCaptureUnderstandingJobs(); try await store.recoverSummaryFeedbackJobs() }
                 catch { recordError(error, source: "Feedback", message: "恢复反馈任务失败，将稍后重试") }
                 await cleanupExpiredRecentlyDeleted()
@@ -815,6 +823,7 @@ final class RecallAppModel: ObservableObject {
             return
         }
         isRecording = true
+        captureFeedback.dismiss()
         noticeMessage = nil
         recordDiagnostic(
             .info,

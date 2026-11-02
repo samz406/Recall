@@ -110,6 +110,7 @@ extension RecallAppModel {
     }
     func startMeeting(_ title: String) {
         guard !isRecording else { return }
+        captureFeedback.dismiss()
         guard let target = lastExternalTarget else { noticeMessage = RecallLocalization.both("请先切换到会议窗口，再回到 Recall。", "Switch to the meeting window, then return to Recall."); return }
         isRecording = true
         Task {
@@ -124,6 +125,7 @@ extension RecallAppModel {
     }
     func endMeeting(_ id: UUID) {
         guard !isRecording, let target = lastExternalTarget else { return }
+        captureFeedback.dismiss()
         isRecording = true
         Task {
             defer { isRecording = false }

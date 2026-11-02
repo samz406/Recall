@@ -292,7 +292,7 @@ public actor FileMemoryStore {
                     credentialMaintenanceWarning = "Credential migration pending. Local records are read-only until Keychain is available."
                 }
             }
-            if pendingLegacyCredential == nil {
+            if pendingLegacyCredential == nil && !deferMaintenance {
                 do { try Self.scrubLegacyBackups(in: storage.rootURL) }
                 catch { credentialMaintenanceWarning = "Legacy backup cleanup failed; retry from Settings." }
             }

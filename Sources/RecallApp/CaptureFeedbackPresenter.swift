@@ -7,8 +7,9 @@ import RecallKit
 @MainActor final class CaptureFeedbackPresenter {
     private var panel: NSPanel?
     private var dismissal: Task<Void, Never>?
+    func dismiss() { dismissal?.cancel(); panel?.orderOut(nil) }
     func show(_ message: String, target: CaptureTarget?, undo: (() -> Void)? = nil) {
-        dismissal?.cancel(); panel?.orderOut(nil)
+        dismiss()
         let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 390, height: 98),
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.isOpaque = false; window.backgroundColor = .clear
