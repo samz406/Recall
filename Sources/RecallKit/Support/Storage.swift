@@ -245,7 +245,7 @@ public actor FileMemoryStore {
     let storage: RecallStorage
     let credentials: any CredentialStore
     var pendingLegacyCredential: (id: UUID, key: String)?
-    public private(set) var credentialMaintenanceWarning: String?
+    public internal(set) var credentialMaintenanceWarning: String?
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     var state: RecallState
@@ -306,7 +306,8 @@ public actor FileMemoryStore {
                     return updated
                 }
             }
-            if !deferMaintenance && pendingLegacyCredential == nil { try Self.write(restoredState, encoder: encoder, to: storage.stateURL) }
+            let credentialsReady = pendingLegacyCredential == nil
+            if !deferMaintenance && credentialsReady { try Self.write(restoredState, encoder: encoder, to: storage.stateURL) }
             state = restoredState
         } else {
             state = RecallState()

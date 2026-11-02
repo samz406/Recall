@@ -150,7 +150,7 @@ struct DailyReviewInput: Sendable {
             var lines: [String] = [], proofs: [DailyReviewProof] = [], size = 0
             func flush() {
                 guard !lines.isEmpty else { return }
-                let prefix = source.textOrigin == .userInput ? "来源为用户主动输入；原文：\n" : "来源为屏幕 OCR；角色未知时不可猜测；原文：\n"
+                let prefix = source.textOrigin == .userInput ? "来源为用户主动输入；原文：\n" : source.textOrigin == .importedText ? "来源为导入纪要/资料，不代表本人发言；原文：\n" : "来源为屏幕 OCR；角色未知时不可猜测；原文：\n"
                 let index = append(basis: "raw", text: prefix + lines.joined(separator: "\n"), date: source.createdAt,
                     proofs: proofs, app: scope, meta: sourceMeta)
                 for key in pendingLineKeys { documentIndexByLine[key] = index }

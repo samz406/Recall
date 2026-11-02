@@ -171,7 +171,7 @@ public enum CaptureUnderstandingEngine {
     public static func blocks(for capture: CaptureRecord, contextOnly: Bool = false) -> [UnderstandingBlock] {
         var result: [UnderstandingBlock] = []
         for (lineIndex, raw) in (capture.correctedText ?? capture.ocrText).components(separatedBy: .newlines).enumerated() {
-            let line = PrivacyEngine().redact(raw).trimmingCharacters(in: .whitespacesAndNewlines)
+            var line = PrivacyEngine().redact(raw).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty else { continue }
             let speaker: UnderstandingSpeaker
             if let message = capture.sourceMessages?.first(where: { $0.text == raw }) { speaker = message.speaker }
@@ -180,6 +180,9 @@ public enum CaptureUnderstandingEngine {
             else if line.hasPrefix("[聊天·对方]") { speaker = .other }
             else if line.hasPrefix("[聊天·角色未知]") { speaker = .unknown }
             else { speaker = capture.textOrigin == .userInput ? .user : .unknown }
+            if speaker == .user && line.hasPrefix("[聊天·角色未知]") {
+                line = line.replacingOccurrences(of: "[聊天·角色未知]", with: "[聊天·自己]", options: .anchored)
+            }
             let reference = capture.textOrigin == .importedText || ["[内容·资料]", "[内容·附件]", "[内容·系统]", "[内容·片段]"].contains(where: line.contains)
             let confidence = capture.recognition?.lines.filter { line.contains($0.text) }.compactMap(\.confidence).min()
             let characters = Array(line)
