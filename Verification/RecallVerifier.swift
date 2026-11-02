@@ -8,6 +8,7 @@ struct RecallVerifier {
         UserDefaults.standard.set("zh-Hans", forKey: RecallLocalization.languageKey)
 
         do {
+            try await InternationalWorkflowVerification.run()
             try await ModelReminderDiscoveryVerification.run()
             try await DailyReviewReminderVerification.run()
             try await PageExperienceVerification.run()

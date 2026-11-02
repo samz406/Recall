@@ -1170,6 +1170,7 @@ public actor FileMemoryStore {
     public func addMessage(_ message: ConversationMessage, inConversation expectedID: UUID? = nil) throws {
         if expectedID != nil { try Task.checkCancellation() }
         if let expectedID, expectedID != conversationID { throw CancellationError() }
+        let before = state
         var message = message
         if message.role == .assistant {
             message.sourceVersions = Dictionary(uniqueKeysWithValues: message.citations.compactMap { id in
@@ -1177,7 +1178,7 @@ public actor FileMemoryStore {
             })
         }
         state.messages.append(message)
-        try persist()
+        do { try persist() } catch { state = before; throw error }
     }
 
     public func rateMessage(id: UUID, helpful: Bool?) throws {
