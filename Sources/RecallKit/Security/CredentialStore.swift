@@ -86,6 +86,7 @@ extension FileMemoryStore {
         try credentials.delete(config.connectionID)
         state.llmConfiguration.credentialReference = nil; state.llmConfiguration.apiKey = ""
         state.llmConfiguration.credentialRevision += 1
+        reconcileDailyReviewCheckpoints()
         do { try persistReviewState() }
         catch { state = before; if let key { try? credentials.write(key, id: config.connectionID) }; throw error }
     }

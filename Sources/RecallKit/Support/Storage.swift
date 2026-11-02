@@ -466,7 +466,7 @@ public actor FileMemoryStore {
         let before = state
         var config = configuration
         let oldKey = try credentials.read(config.connectionID)
-        if config.hasCredential {
+        if !config.apiKey.isEmpty {
             try credentials.write(config.apiKey, id: config.connectionID)
             config.credentialReference = config.connectionID.uuidString
             config.credentialRevision = max(config.credentialRevision, state.llmConfiguration.credentialRevision) + 1
@@ -474,6 +474,7 @@ public actor FileMemoryStore {
             throw CredentialError.endpointChanged
         }
         config.apiKey = ""; state.llmConfiguration = config
+        reconcileDailyReviewCheckpoints()
         do { try persistReviewState() }
         catch {
             state = before

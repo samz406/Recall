@@ -71,6 +71,12 @@ enum InternationalWorkflowVerification {
         _ = try await store.modelResponder()
         let restarted = try FileMemoryStore(storage: storage, deferMaintenance: true, credentials: credentials)
         _ = try await restarted.modelResponder()
+        var edited = await restarted.snapshot().llmConfiguration
+        let revision = edited.credentialRevision
+        edited.model = "another-synthetic-model"
+        try await restarted.updateLLMConfiguration(edited)
+        try expect(try credentials.read(config.connectionID) == config.apiKey, "Saving an empty Key field erased the saved credential")
+        try expect(await restarted.snapshot().llmConfiguration.credentialRevision == revision, "Reusing a key spuriously changed its revision")
         try await restarted.deleteModelCredential()
         try expect(try credentials.read(config.connectionID) == nil, "Delete credential did not remove Keychain item")
         let latest = await restarted.snapshot()
