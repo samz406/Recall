@@ -19,7 +19,7 @@ extension RecallAppModel {
         guard shortcutConfigurationID != identity else { return }; shortcutConfigurationID = identity
         shortcutsReady = globalShortcuts.configure(record: record, ask: ask, onRecord: { [weak self] in
             guard let self, !self.isRecording, let rule = self.state.rules.first(where: { $0.template == .manualMoment && $0.isEnabled }) else { return }
-            self.record(rule: rule)
+            self.record(rule: rule, backgroundFeedback: true)
         }, onAsk: { [weak self] in
             self?.openAskRequested = true
             self?.openMainWindow?()

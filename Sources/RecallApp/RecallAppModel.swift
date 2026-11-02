@@ -32,6 +32,7 @@ final class RecallAppModel: ObservableObject {
     }
     let isPreview: Bool
     let globalShortcuts = GlobalShortcutService()
+    let captureFeedback = CaptureFeedbackPresenter()
     var shortcutConfigurationID: String?
     var isRecordingShortcut = false
     @Published var credentialMaintenanceWarning: String?
@@ -805,7 +806,8 @@ final class RecallAppModel: ObservableObject {
         noticeMessage = granted ? "屏幕记录权限已可用。" : "请在“系统设置 → 隐私与安全性 → 屏幕与系统音频录制”中允许 Recall。"
     }
 
-    func record(rule: EventRule, userText: String? = nil, diagnosticSource: String = "Capture", targetOverride: CaptureTarget? = nil) {
+    func record(rule: EventRule, userText: String? = nil, diagnosticSource: String = "Capture", targetOverride: CaptureTarget? = nil, backgroundFeedback: Bool = false) {
+        guard !isRecording else { return }
         guard !showsOnboarding else { noticeMessage = RecallLocalization.both("请先退出样例，再保存真实记录。", "Leave the sample before saving a real record."); return }
         if rule.template == .dailyReview {
             guard rule.isEnabled else { noticeMessage = "请先启用这条记录规则。"; return }
@@ -813,6 +815,7 @@ final class RecallAppModel: ObservableObject {
             return
         }
         isRecording = true
+        noticeMessage = nil
         recordDiagnostic(
             .info,
             source: diagnosticSource,
@@ -821,9 +824,17 @@ final class RecallAppModel: ObservableObject {
         )
         let target = targetOverride ?? CaptureTargetResolver.current()
         Task {
-            defer { isRecording = false }
+            var saved: CaptureRecord?
+            defer {
+                isRecording = false
+                if backgroundFeedback {
+                    if let saved { captureFeedback.show(RecallLocalization.both("已保存到时间线", "Saved to Timeline"), target: target, undo: { [weak self] in self?.deleteCapture(saved) }) }
+                    else if let message = noticeMessage { captureFeedback.show(RecallLocalization.text(message), target: target) }
+                }
+            }
             do {
                 let record = try await pipeline.record(using: rule, userText: userText, targetOverride: target)
+                saved = record
                 await refresh()
                 recordDiagnostic(
                     .info,
@@ -837,6 +848,7 @@ final class RecallAppModel: ObservableObject {
                 // 记录失败不应阻塞其他本地功能；提醒发现只读取已有记录，无需此权限。
                 noticeMessage = "未能截图记录：如需保存屏幕内容，请在系统设置中允许屏幕与系统音频录制。"
             } catch CapturePipelineError.suppressedByUser {
+                noticeMessage = CapturePipelineError.suppressedByUser.localizedDescription
                 recordDiagnostic(.info, source: diagnosticSource, message: "内容命中本地忽略规则，已跳过")
             } catch {
                 recordDiagnostic(.error, source: diagnosticSource, message: "记录失败", metadata: ["eventTemplate": rule.template.rawValue, "error": recallSafeErrorCode(error)])

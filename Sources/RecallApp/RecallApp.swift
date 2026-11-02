@@ -17,7 +17,7 @@ struct RecallApp: App {
         }
         .defaultSize(width: 1180, height: 780)
 
-        MenuBarExtra("Recall", systemImage: "brain.head.profile") {
+        MenuBarExtra("Recall", systemImage: model.isRecording ? "circle.dotted.circle" : "brain.head.profile") {
             MenuBarPanel()
                 .environmentObject(model)
                 .recallColors()
