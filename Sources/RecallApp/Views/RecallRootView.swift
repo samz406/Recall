@@ -482,7 +482,7 @@ private struct TimelineContentView: View {
     }
     private var toolbar: some View {
         HStack(spacing: 10) {
-            TextField(searchAllDates ? "搜索全部日期的记录" : "搜索当天记录", text: $workspace.query.searchText).textFieldStyle(.roundedBorder).frame(minWidth: 150)
+            TextField(RecallLocalization.text(searchAllDates ? "搜索全部日期的记录" : "搜索当天记录"), text: $workspace.query.searchText).textFieldStyle(.roundedBorder).frame(minWidth: 150)
             Menu {
                 Toggle(RecallLocalization.text("搜索全部日期"), isOn: $workspace.query.searchAllDates)
                 Toggle(RecallLocalization.text("合并相同内容"), isOn: $collapseDuplicates)
@@ -492,8 +492,8 @@ private struct TimelineContentView: View {
                 Text(RecallLocalization.text("全部来源")).tag("")
                 ForEach(workspace.sources, id: \.self) { Text($0).tag($0) }
             }.labelsHidden().frame(width: 122)
-            Picker(RecallLocalization.text("显示"), selection: $detailed) { Text(RecallLocalization.text("精简")).tag(false); Text(RecallLocalization.text("详细")).tag(true) }.labelsHidden().frame(width: 76).help(RecallLocalization.text("精简显示标题和应用；详细显示摘要和标签"))
-            Button(isManaging ? "完成" : "选择") { isManaging.toggle(); if !isManaging { selectedCaptureIDs.removeAll() } }.help(RecallLocalization.text("多选并批量删除记录"))
+            Picker(RecallLocalization.text("显示"), selection: $detailed) { Text(RecallLocalization.text("精简")).tag(false); Text(RecallLocalization.text("详细")).tag(true) }.labelsHidden().frame(width: RecallLocalization.isEnglish ? 100 : 76).help(RecallLocalization.text("精简显示标题和应用；详细显示摘要和标签"))
+            Button(RecallLocalization.text(isManaging ? "完成" : "选择")) { isManaging.toggle(); if !isManaging { selectedCaptureIDs.removeAll() } }.help(RecallLocalization.text("多选并批量删除记录"))
         }
     }
     private var dateColumn: some View {
@@ -527,7 +527,7 @@ private struct TimelineContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Text(searchAllDates && isSearching ? "全部日期" : selectedDay.formatted(.dateTime.month().day().weekday())).font(.system(size: 16, weight: .semibold))
-                Text("\(captures.count) 条记录" + (captures.count > workspace.result.clusterCount ? " · 已合并 \(captures.count - workspace.result.clusterCount) 条重复" : "")).font(.caption).foregroundStyle(RecallPalette.secondary)
+                Text(RecallLocalization.both("\(captures.count) 条记录", "\(captures.count) records") + (captures.count > workspace.result.clusterCount ? RecallLocalization.both(" · 已合并 \(captures.count - workspace.result.clusterCount) 条重复", " · \(captures.count - workspace.result.clusterCount) duplicates grouped") : "")).font(.caption).foregroundStyle(RecallPalette.secondary)
                 Spacer()
             }
             Text(workspace.result.sourceSummary).font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(2)
@@ -1028,9 +1028,9 @@ private struct ChatView: View {
     @State private var messageContentFrame: CGRect = .zero
     @State private var messageViewportHeight: CGFloat = 0
     private var scopeTitle: String {
-        if let days = model.chatScope.recentDays { return "最近\(days)天" }
+        if let days = model.chatScope.recentDays { return RecallLocalization.both("最近\(days)天", "Last \(days) days") }
         if let id = model.chatScope.topicID { return model.matterFiles.first { $0.id == id }?.title ?? "所选主题" }
-        return "全部记忆"
+        return RecallLocalization.text("全部记忆")
     }
 
     private var hasChatMessages: Bool {
@@ -1099,7 +1099,7 @@ private struct ChatView: View {
             Button(RecallLocalization.text("最近七天")) { setRange(days: 7) }
             Button(RecallLocalization.text("最近三十天")) { setRange(days: 30) }
             if !model.matterFiles.isEmpty {
-                Menu("指定主题") {
+                Menu(RecallLocalization.text("指定主题")) {
                     ForEach(model.matterFiles) { file in
                         Button(file.title) { model.chatScope = MemoryQueryScope(topicID: file.id) }
                     }
@@ -1112,7 +1112,7 @@ private struct ChatView: View {
         model.chatScope = MemoryQueryScope(recentDays: days)
     }
     private var modelStatus: some View {
-        Label(isCloudModel ? model.state.llmConfiguration.model + " · 仅发脱敏文本" : "本地模式 · 数据不外发", systemImage: isCloudModel ? "cloud" : "lock")
+        Label(isCloudModel ? model.state.llmConfiguration.model + RecallLocalization.both(" · 仅发脱敏文本", " · Redacted text only") : RecallLocalization.both("本地模式 · 数据不外发", "Local mode · Stays on this Mac"), systemImage: isCloudModel ? "cloud" : "lock")
             .font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(1).help(isCloudModel ? model.state.llmConfiguration.provider.title : "未启用云端模型")
     }
     private var newConversation: some View {
@@ -1355,7 +1355,7 @@ private struct ThinkingCard: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: model.chatEvidenceCount == nil ? "magnifyingglass" : "checkmark.circle").foregroundStyle(RecallPalette.accent)
-            Text(model.chatEvidenceCount.map { "已检索记忆（\($0) 条） → 整理回答中…" } ?? "正在检索记忆…").font(.callout).foregroundStyle(RecallPalette.secondary)
+            Text(model.chatEvidenceCount.map { RecallLocalization.both("已检索记忆（\($0) 条） → 整理回答中…", "Found \($0) sources · Writing an answer…") } ?? RecallLocalization.both("正在检索记忆…", "Searching your memory…")).font(.callout).foregroundStyle(RecallPalette.secondary)
             Button(RecallLocalization.text("停止")) { model.stopChat() }
             Spacer(minLength: 0)
         }.padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
@@ -1569,7 +1569,7 @@ private struct DailySummariesView: View {
     private var dateList: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
-                Text("已保存 \(summaries.count) 天").font(.caption).foregroundStyle(RecallPalette.secondary).padding(.bottom, 4)
+                Text(RecallLocalization.both("已保存 \(summaries.count) 天", "\(summaries.count) days saved")).font(.caption).foregroundStyle(RecallPalette.secondary).padding(.bottom, 4)
                 ForEach(Array(summaries.prefix(visibleCount))) { summary in
                     RecallListChoice(title: summary.day.formatted(.dateTime.month().day().weekday()), detail: keywords(summary), selected: selectedID == summary.id) { select(summary.id) }
                 }
@@ -1639,7 +1639,7 @@ private struct DailySummaryCard: View {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(summary.day.formatted(.dateTime.month().day().weekday())).font(.system(size: 20, weight: .semibold))
-                    Text(RecallLocalization.text("更新于 ") + summary.createdAt.formatted(date: .omitted, time: .shortened) + " · 已保存")
+                    Text(RecallLocalization.text("更新于 ") + summary.createdAt.formatted(date: .omitted, time: .shortened) + " · " + RecallLocalization.text("已保存"))
                         .font(.caption).foregroundStyle(RecallPalette.secondary)
                 }
                 Spacer(minLength: 8)
@@ -1962,7 +1962,7 @@ private struct SummaryItemSourceSheet: View {
             .padding(22)
             Divider()
             if captures.isEmpty {
-                ContentUnavailableView("来源已不可用", systemImage: "link.badge.plus", description: Text(RecallLocalization.text("这可能是旧总结，或关联记录已经被删除。")))
+                ContentUnavailableView(RecallLocalization.text("来源已不可用"), systemImage: "link.badge.plus", description: Text(RecallLocalization.text("这可能是旧总结，或关联记录已经被删除。")))
             } else {
                 List(captures.sorted { $0.createdAt > $1.createdAt }) { capture in
                     VStack(alignment: .leading, spacing: 6) {
@@ -2301,13 +2301,13 @@ private struct RemindersView: View {
                 if (reminderTab == 0 && scheduled.isEmpty) || (reminderTab == 1 && proposed.isEmpty) {
                     VStack(spacing: 16) {
                         Image(systemName: "bell").font(.system(size: 38, weight: .light)).foregroundStyle(RecallPalette.accent)
-                        Text(reminderTab == 0 ? "暂时没有待处理的提醒" : (reminderTab == 1 ? "没有需要确认的待办" : "还没有历史记录")).font(.headline)
+                        Text(RecallLocalization.text(reminderTab == 0 ? "暂时没有待处理的提醒" : (reminderTab == 1 ? "没有需要确认的待办" : "还没有历史记录"))).font(.headline)
                         Text(RecallLocalization.text("每日回顾中的明确行动会先进入‘待确认’，安排时间后才通知；也可以手动深查原始记录。"))
                             .font(.callout).foregroundStyle(RecallPalette.secondary).multilineTextAlignment(.center)
                         HStack(spacing: 12) {
                             Button(RecallLocalization.text("新建提醒")) { isCreatingReminder = true }.buttonStyle(.borderedProminent)
                             if reminderTab != 1 && !proposed.isEmpty {
-                                Button("去看待确认（\(proposed.count)）") { reminderTab = 1 }
+                                Button(RecallLocalization.both("去看待确认（\(proposed.count)）", "To confirm (\(proposed.count))")) { reminderTab = 1 }
                             } else {
                                 Button(RecallLocalization.text("发现待办")) { model.proposeReminders() }.disabled(isDiscovering)
                             }
@@ -2364,7 +2364,7 @@ private struct RemindersView: View {
 
     private func reminderTabButton(_ title: String, count: Int, tab: Int) -> some View {
         Button { reminderTab = tab } label: {
-            Text(title + " \(count)").font(.system(size: 14, weight: reminderTab == tab ? .semibold : .regular))
+            Text(RecallLocalization.text(title) + " \(count)").font(.system(size: 14, weight: reminderTab == tab ? .semibold : .regular))
                 .foregroundStyle(reminderTab == tab ? RecallPalette.accent : RecallPalette.secondary)
                 .padding(.vertical, 12)
                 .overlay(alignment: .bottom) { if reminderTab == tab { Rectangle().fill(RecallPalette.accent).frame(height: 2) } }
@@ -2380,7 +2380,7 @@ private struct RemindersView: View {
     private var reminderHeader: some View {
         RecallPageHeader(title: "提醒", subtitle: "把需要跟进的事，放到合适的时间") {
             HStack(spacing: 12) {
-                Button(isDiscovering ? "正在发现…" : "发现待办") { model.proposeReminders() }.disabled(isDiscovering)
+                Button(RecallLocalization.text(isDiscovering ? "正在发现…" : "发现待办")) { model.proposeReminders() }.disabled(isDiscovering)
                     .help(RecallLocalization.text("手动深查允许参与的原始记录；每日回顾中的明确行动会自动进入待确认"))
                 Menu {
                     Toggle(RecallLocalization.text("从每日回顾更新提醒"), isOn: Binding(get: { model.state.reminderLearningProfile.reviewDiscoveryEnabled != false }, set: { value in model.setReviewReminderDiscovery(value) }))
@@ -2420,7 +2420,7 @@ private struct RemindersView: View {
                     let rows = paged(scheduled, page: scheduledPage)
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, reminder in
                         if index == 0 || timeGroup(rows[index - 1]) != timeGroup(reminder) {
-                            Text(timeGroup(reminder)).font(.headline).foregroundStyle(RecallPalette.secondary).padding(.top, 8)
+                            Text(RecallLocalization.text(timeGroup(reminder))).font(.headline).foregroundStyle(RecallPalette.secondary).padding(.top, 8)
                         }
                         reminderCard(reminder, deliveryState: model.reminderDeliveryStates[reminder.id])
                     }
@@ -2933,7 +2933,7 @@ private struct ReminderCandidateCard: View {
                         .buttonStyle(.borderedProminent)
                         .font(.caption)
                     HStack(spacing: 8) {
-                        Menu("稍后") {
+                        Menu(RecallLocalization.text("稍后")) {
                             Button(RecallLocalization.text("1 小时后")) { snooze(.now.addingTimeInterval(60 * 60)) }
                             Button("明天 \(preferredHour):00") {
                                 let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: .now) ?? .now.addingTimeInterval(86_400)
@@ -3176,7 +3176,7 @@ private struct RecallDiagnosticsLogSheet: View {
             Divider()
 
             if model.diagnosticEntries.isEmpty {
-                ContentUnavailableView("暂无诊断记录", systemImage: "stethoscope", description: Text(RecallLocalization.text("执行记录、Enter 监听或权限检查后，相关状态会显示在这里。")))
+                ContentUnavailableView(RecallLocalization.text("暂无诊断记录"), systemImage: "stethoscope", description: Text(RecallLocalization.text("执行记录、Enter 监听或权限检查后，相关状态会显示在这里。")))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(model.diagnosticEntries) { entry in
@@ -3290,7 +3290,7 @@ private struct PrivacyAndModelView: View {
                                 .background(settingsCategory == value ? RecallPalette.selected : .clear, in: RoundedRectangle(cornerRadius: 8))
                         }.buttonStyle(.plain)
                     }
-                }.frame(width: 126)
+                }.frame(width: RecallLocalization.isEnglish ? 172 : 126)
                 ScrollViewReader { proxy in
                     ScrollView {
                         if settingsCategory == "使用偏好" {

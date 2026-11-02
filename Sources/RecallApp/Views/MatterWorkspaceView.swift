@@ -230,7 +230,7 @@ struct MatterWorkspaceView: View {
 
     private var topicFilters: some View {
         HStack(spacing: 7) {
-            RecallFilterChip(title: "进行中 \(model.matterFiles.filter { $0.latest.status.isOpenMatter }.count)", selected: topicFilter == 0) { topicFilter = 0 }
+            RecallFilterChip(title: RecallLocalization.text("进行中") + " \(model.matterFiles.filter { $0.latest.status.isOpenMatter }.count)", selected: topicFilter == 0) { topicFilter = 0 }
             RecallFilterChip(title: "已完成", selected: topicFilter == 1) { topicFilter = 1 }
             RecallFilterChip(title: "全部", selected: topicFilter == 2) { topicFilter = 2 }
         }
@@ -244,7 +244,7 @@ struct MatterWorkspaceView: View {
             } else if tab == .topics {
             if model.isBuildingMatters { ProgressView().controlSize(.small).help(RecallLocalization.text("正在整理记录")) }
             Button { model.organizeExistingMatters() } label: {
-                Label(model.isBuildingMatters ? "正在更新…" : "更新记忆", systemImage: "arrow.clockwise")
+                Label(RecallLocalization.text(model.isBuildingMatters ? "正在更新…" : "更新记忆"), systemImage: "arrow.clockwise")
             }.disabled(model.isBuildingMatters || model.isOrganizingMemory)
                 .help(RecallLocalization.text("根据已保存的每日回顾重建主题、进展与长期记忆；不会改写原文，也不调用模型"))
             Button { supplement() } label: {
@@ -270,7 +270,7 @@ struct MatterWorkspaceView: View {
         HStack(spacing: 26) {
             ForEach(MatterWorkspaceTab.allCases, id: \.self) { value in
                 Button { tab = value } label: {
-                    Text(value == .topics ? "主题" : value.rawValue).font(.system(size: 14, weight: tab == value ? .semibold : .regular))
+                    Text(RecallLocalization.text(value == .topics ? "主题" : value.rawValue)).font(.system(size: 14, weight: tab == value ? .semibold : .regular))
                         .foregroundStyle(tab == value ? RecallPalette.accent : RecallPalette.secondary)
                         .padding(.vertical, 9)
                         .overlay(alignment: .bottom) { if tab == value { Rectangle().fill(RecallPalette.accent).frame(height: 2) } }
@@ -300,12 +300,12 @@ struct MatterWorkspaceView: View {
                 RecallTaskStatusView(task: task, cancel: model.cancelTopicReview)
             }
             HStack(spacing: 14) {
-                Text(RecallLocalization.text("最近记录 ") + file.latest.date.formatted(date: .abbreviated, time: .omitted) + " · \(file.evidenceIDs.count) 条来源")
+                Text(RecallLocalization.text("最近记录 ") + file.latest.date.formatted(date: .abbreviated, time: .omitted) + RecallLocalization.both(" · \(file.evidenceIDs.count) 条来源", " · \(file.evidenceIDs.count) sources"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
                 Spacer(minLength: 6)
                 Button(RecallLocalization.text("脉络")) { selected = file }.buttonStyle(.plain)
                 Button(RecallLocalization.text("补充")) { supplement(title: file.title) }.buttonStyle(.plain)
-                Button(RecallLocalization.text("接着问")) { continueChat("关于\(file.title)，请找回上次的进展、已确认的结论和仍缺少的信息。") }.buttonStyle(.borderedProminent)
+                Button(RecallLocalization.text("接着问")) { continueChat(RecallLocalization.both("关于\(file.title)，请找回上次的进展、已确认的结论和仍缺少的信息。", "About \(file.title), find the last progress, confirmed conclusions and missing information.")) }.buttonStyle(.borderedProminent)
                 Menu {
                     Button(RecallLocalization.text("查看完整主题")) { selected = file }
                     Button(model.state.topicReviews.contains { $0.id == file.id } ? "重新生成小结" : "生成主题小结") { model.generateTopicReview(file) }.disabled(model.generatingTopicID != nil)

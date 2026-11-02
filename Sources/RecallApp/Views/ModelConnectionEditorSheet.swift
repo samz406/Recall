@@ -196,7 +196,7 @@ struct ModelConnectionEditorSheet: View {
         HStack(spacing: 4) {
             ForEach([LLMProviderKind.openAICompatible, .anthropicCompatible]) { provider in
                 Button { draft.provider = provider } label: {
-                    Text(provider.title).font(.system(size: 14, weight: draft.provider == provider ? .semibold : .regular))
+                    Text(RecallLocalization.text(provider.title)).font(.system(size: 14, weight: draft.provider == provider ? .semibold : .regular))
                         .foregroundStyle(draft.provider == provider ? RecallPalette.accent : RecallPalette.secondary)
                         .frame(maxWidth: .infinity).frame(height: compact ? 36 : 40)
                         .background(draft.provider == provider ? RecallPalette.surface : .clear, in: RoundedRectangle(cornerRadius: 10))
@@ -208,7 +208,7 @@ struct ModelConnectionEditorSheet: View {
     }
     private func connectionField<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: compact ? 7 : 9) {
-            Text(title).font(.system(size: 14, weight: .semibold))
+            Text(RecallLocalization.text(title)).font(.system(size: 14, weight: .semibold))
             content().textFieldStyle(.plain).font(.system(size: 15))
                 .padding(.horizontal, 16).frame(height: compact ? 40 : 48).frame(maxWidth: .infinity, alignment: .leading)
                 .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
@@ -220,7 +220,7 @@ struct ModelConnectionEditorSheet: View {
             if draft.isTesting { ProgressView().controlSize(.small).frame(width: 12) }
             else { Circle().fill(statusColor).frame(width: 8, height: 8) }
             VStack(alignment: .leading, spacing: 5) {
-                Text(statusTitle).font(.system(size: 14, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                Text(RecallLocalization.text(statusTitle)).font(.system(size: 14, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                 Text(RecallLocalization.text("测试不会发送本地记忆")).font(.system(size: 13)).foregroundStyle(RecallPalette.secondary)
             }.accessibilityElement(children: .combine)
             Spacer(minLength: 6)

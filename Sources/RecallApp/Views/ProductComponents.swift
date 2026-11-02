@@ -188,7 +188,7 @@ struct RecallSourcesView: View {
                             Text(source.ocrText).font(RecallTypography.body).textSelection(.enabled)
                             HStack {
                                 Button(RecallLocalization.text("在时间线定位")) { dismiss(); model.destination = .record(source.id) }
-                                Menu("更正这条记录") {
+                                Menu(RecallLocalization.text("更正这条记录")) {
                                     Button(RecallLocalization.text("不是我说的")) { model.correctMatter(MatterCorrection(evidenceIDs: [source.id], kind: .notMine)); dismiss() }
                                     Button(RecallLocalization.text("内容不准确")) { model.correctMatter(MatterCorrection(evidenceIDs: [source.id], kind: .inaccurate)); dismiss() }
                                 }

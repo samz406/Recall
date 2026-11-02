@@ -42,7 +42,7 @@ struct ReminderDiscoveryStatusView: View {
             else if let latest {
                 Text(RecallLocalization.text("已同步每日回顾 · ") + latest.day.formatted(.dateTime.month().day()))
             } else { Text(RecallLocalization.text("生成每日回顾后，明确行动会自动进入待确认")) }
-            Menu("查看检查详情") {
+            Menu(RecallLocalization.text("查看检查详情")) {
                 Text(paused ? "已暂停自动更新，已有提醒保留" : "复用每日回顾中的本人明确承诺，不增加提醒模型调用")
                 Text("已处理 \(reports.count) 篇回顾；仍需确认时间后才通知")
                 if let openPending { Button(RecallLocalization.text("查看待确认"), action: openPending) }
