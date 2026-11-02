@@ -847,6 +847,11 @@ public actor FileMemoryStore {
         knowledgeSnapshot.entities = state.memoryKnowledge.entities.filter { !Set($0.sourceIDs).isDisjoint(with: actualIDs) }
         let affectedKeys = Set(knowledgeSnapshot.claims.map(\.key))
         knowledgeSnapshot.suppressedKeys = state.memoryKnowledge.suppressedKeys.filter(affectedKeys.contains)
+        let meetingIDs = Set(removedCaptures.compactMap(\.meetingSessionID)).filter { id in
+            state.captures.filter { $0.meetingSessionID == id }.allSatisfy { actualIDs.contains($0.id) }
+        }
+        transaction.meetingSessions = state.workflow.meetings.filter { meetingIDs.contains($0.id) }
+        state.workflow.meetings.removeAll { meetingIDs.contains($0.id) }
         transaction.memoryKnowledge = knowledgeSnapshot
         transaction.weeklyReports = state.weeklyReports.filter { !$0.sourceIDs.isDisjoint(with: actualIDs) }
         transaction.topicReviews = state.topicReviews.filter { !Set($0.sourceVersions.keys).isDisjoint(with: actualIDs) }
@@ -967,6 +972,7 @@ public actor FileMemoryStore {
         Self.restoreUnique(transaction.messages, to: &state.messages, id: \.id)
         state.messages.sort { $0.createdAt < $1.createdAt }
         Self.restoreUnique(transaction.reminders, to: &state.reminders, id: \.id)
+        Self.restoreUnique(transaction.meetingSessions ?? [], to: &state.workflow.meetings, id: \.id)
         let calendar = Calendar.current
         state.episodes.removeAll { episode in transaction.affectedDays.contains(where: { calendar.isDate(episode.day, inSameDayAs: $0) }) }
         Self.restoreUnique(transaction.episodes, to: &state.episodes, id: \.id)

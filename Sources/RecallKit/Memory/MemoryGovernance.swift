@@ -135,6 +135,7 @@ public struct RecentlyDeletedMemory: Identifiable, Codable, Sendable {
     public var previousConversationSummary: String?
     public var previousConversationSummaryCoveredMessageCount: Int?
     public var addedSuppressionRuleIDs: [UUID]
+    public var meetingSessions: [MeetingSession]? = nil
     public var topicGroups: [MemoryTopicGroup]? = nil
     public var matterCorrections: [MatterCorrection]?
     public var topicReviews: [TopicModelReview]? = nil

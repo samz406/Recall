@@ -122,6 +122,11 @@ public extension FileMemoryStore {
         let session = MeetingSession(title: title)
         var workflow = state.workflow; workflow.meetings.append(session); try updateWorkflow(workflow); return session
     }
+    @discardableResult func deleteMeeting(id: UUID) throws -> RecentlyDeletedMemory? {
+        let ids = Set(state.captures.filter { $0.meetingSessionID == id }.map(\.id))
+        if !ids.isEmpty { return try moveCapturesToRecentlyDeleted(ids: ids, reason: .noLongerNeeded, suppressSimilar: false) }
+        var workflow = state.workflow; workflow.meetings.removeAll { $0.id == id }; try updateWorkflow(workflow); return nil
+    }
     func finishMeeting(id: UUID) throws {
         var workflow = state.workflow
         guard let i = workflow.meetings.firstIndex(where: { $0.id == id && $0.endedAt == nil }) else { throw WorkflowError.changed }

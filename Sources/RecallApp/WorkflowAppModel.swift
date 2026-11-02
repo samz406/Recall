@@ -104,8 +104,11 @@ extension RecallAppModel {
         Task { do { var workflow = state.workflow; workflow.mcpGrant = nil; try await store.updateWorkflow(workflow); state = await store.snapshot() } catch { noticeMessage = error.localizedDescription } }
     }
     func startMeeting(_ title: String) {
+        guard !isRecording else { return }
         guard let target = lastExternalTarget else { noticeMessage = RecallLocalization.both("请先切换到会议窗口，再回到 Recall。", "Switch to the meeting window, then return to Recall."); return }
+        isRecording = true
         Task {
+            defer { isRecording = false }
             do {
                 let meeting = try await store.startMeeting(title: title)
                 var rule = EventRule.defaults().first { $0.template == .meetingSession }!; rule.isEnabled = true
@@ -115,12 +118,22 @@ extension RecallAppModel {
         }
     }
     func endMeeting(_ id: UUID) {
-        guard let target = lastExternalTarget else { return }
+        guard !isRecording, let target = lastExternalTarget else { return }
+        isRecording = true
         Task {
+            defer { isRecording = false }
             do {
                 var rule = EventRule.defaults().first { $0.template == .meetingSession }!; rule.isEnabled = true
                 _ = try await pipeline.record(using: rule, meetingID: id, targetOverride: target)
                 try await store.finishMeeting(id: id); await refresh()
+            } catch { noticeMessage = error.localizedDescription }
+        }
+    }
+    func deleteMeeting(_ id: UUID) {
+        Task {
+            do {
+                deletionUndoNotice = try await store.deleteMeeting(id: id)
+                await refresh()
             } catch { noticeMessage = error.localizedDescription }
         }
     }

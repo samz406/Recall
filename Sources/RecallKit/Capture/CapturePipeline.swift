@@ -246,8 +246,8 @@ public final class CapturePipeline {
         let normalizedText = CaptureTextFingerprint.normalized(redactedText)
         let digestSource = normalizedText.isEmpty ? (payload.imageData ?? Data()) : Data(normalizedText.utf8)
         let contentHash = SHA256.hash(data: digestSource).map { String(format: "%02x", $0) }.joined()
-        guard !(await store.hasRecentHash(contentHash)) else { throw CapturePipelineError.duplicateCapture }
-        if userText == nil, await store.hasRecentNearDuplicate(text: redactedText, bundleIdentifier: payload.sourceBundleIdentifier) {
+        if meetingID == nil, await store.hasRecentHash(contentHash) { throw CapturePipelineError.duplicateCapture }
+        if meetingID == nil, userText == nil, await store.hasRecentNearDuplicate(text: redactedText, bundleIdentifier: payload.sourceBundleIdentifier) {
             throw CapturePipelineError.duplicateCapture
         }
 

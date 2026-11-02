@@ -21,6 +21,7 @@ struct WorkflowSettingsView: View {
     @State private var reviews = true
     @State private var allowedApp = ""
     @State private var confirmMCP = false
+    @State private var meetingToDelete: UUID?
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             if let warning = model.credentialMaintenanceWarning {
@@ -85,15 +86,22 @@ struct WorkflowSettingsView: View {
                 Button(w("开始并记录", "Start & save")) { model.startMeeting(meetingTitle); meetingTitle = "" }
                     .disabled(meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.lastExternalTarget == nil || model.state.privacy.screenCapturePaused)
             }
-            ForEach(model.state.workflow.meetings.filter { $0.endedAt == nil }) { meeting in
+            ForEach(model.state.workflow.meetings) { meeting in
                 HStack {
                     VStack(alignment: .leading) { Text(meeting.title); Text(meeting.startedAt.formatted()).font(.caption).foregroundStyle(RecallPalette.secondary) }
                     Spacer()
-                    Button(w("结束并记录", "Finish & save")) { model.endMeeting(meeting.id) }.disabled(model.lastExternalTarget == nil || model.state.privacy.screenCapturePaused)
+                    if meeting.endedAt == nil {
+                        Button(w("结束并记录", "Finish & save")) { model.endMeeting(meeting.id) }.disabled(model.lastExternalTarget == nil || model.state.privacy.screenCapturePaused || model.isRecording)
+                    } else { Text(w("已结束", "Finished")).font(.caption).foregroundStyle(RecallPalette.secondary) }
+                    Button(role: .destructive) { meetingToDelete = meeting.id } label: { Image(systemName: "trash") }
                 }
             }
             Button(w("粘贴或导入纪要", "Paste or import notes")) { model.showsTextEntry = true }
         }.recallSurface()
+        .confirmationDialog(w("删除这场会议的全部记录和纪要？", "Delete all records and notes for this meeting?"), isPresented: Binding(get: { meetingToDelete != nil }, set: { if !$0 { meetingToDelete = nil } }), titleVisibility: .visible) {
+            Button(w("移到最近删除", "Move to Recently Deleted"), role: .destructive) { if let id = meetingToDelete { model.deleteMeeting(id) }; meetingToDelete = nil }
+            Button(w("取消", "Cancel"), role: .cancel) { meetingToDelete = nil }
+        }
     }
     private var identitySection: some View {
         VStack(alignment: .leading, spacing: 14) {
