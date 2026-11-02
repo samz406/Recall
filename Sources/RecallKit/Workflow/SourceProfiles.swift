@@ -28,7 +28,10 @@ public enum SourceNormalizer {
             if record.textOrigin != .importedText {
                 if line.hasPrefix("[聊天·自己]") { speaker = .user }
                 else if line.hasPrefix("[聊天·对方]") { speaker = .other }
-                else if let author, matches.count == 1, matches[0].sender == author { speaker = .user }
+                else {
+                    if line.hasPrefix("[聊天·角色未知]") { speaker = .unknown }
+                    if let author, matches.count == 1, matches[0].sender == author { speaker = .user }
+                }
             }
             let reference = record.textOrigin == .importedText || ["[内容·资料]", "[内容·附件]", "[内容·系统]", "[内容·片段]"].contains(where: line.contains)
             return SourceMessage(author: author, speaker: speaker, text: line, isReference: reference)

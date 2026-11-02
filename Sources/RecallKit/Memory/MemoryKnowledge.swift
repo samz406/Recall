@@ -221,6 +221,7 @@ public struct MemoryKnowledgeEngine: Sendable {
         var directive: MemoryDirective?
         var correctedText: String?
         var understanding: CaptureUnderstanding?
+        var sourceMessages: [SourceMessage]?
     }
     public init() {}
     public func canonicalConsolidation(day: Date, state: RecallState, fallback: IntelligenceConsolidation,
@@ -277,7 +278,8 @@ public struct MemoryKnowledgeEngine: Sendable {
         encoder.dateEncodingStrategy = .iso8601
         let snapshot = SourceSnapshot(text: capture.ocrText, recordedAt: capture.createdAt, title: capture.windowTitle,
             origin: capture.textOrigin, app: capture.sourceAppName, bundle: capture.sourceBundleIdentifier,
-            note: capture.manualMatter, directive: capture.memoryDirective, correctedText: capture.correctedText, understanding: capture.understanding)
+            note: capture.manualMatter, directive: capture.memoryDirective, correctedText: capture.correctedText, understanding: capture.understanding,
+            sourceMessages: capture.sourceMessages)
         let source = (try? encoder.encode(snapshot)) ?? Data(capture.ocrText.utf8)
         let changes = (try? encoder.encode(corrections.filter { $0.evidenceIDs.contains(capture.id) })) ?? Data()
         return SHA256.hash(data: source + changes).map { String(format: "%02x", $0) }.joined()

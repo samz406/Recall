@@ -123,10 +123,15 @@ enum InternationalWorkflowVerification {
         try await store.updateWorkflow(workflow)
         let bound = await store.snapshot().captures.first { $0.id == chat.id }!
         try expect(CaptureUnderstandingEngine.blocks(for: bound).first?.speaker == .user, "Confirmed sender identity was not used")
+        try expect(CaptureUnderstandingEngine.blocks(for: bound).first?.text == chat.ocrText, "Identity binding rewrote a verbatim source quote")
+        let boundVersion = CaptureUnderstandingEngine.sourceVersion(bound, in: await store.snapshot())
         let original = bound.ocrText
         workflow.identityBindings = []; try await store.updateWorkflow(workflow)
         let revoked = await store.snapshot().captures.first { $0.id == chat.id }!
         try expect(revoked.ocrText == original && CaptureUnderstandingEngine.blocks(for: revoked).first?.speaker == .unknown, "Identity revocation rewrote original evidence or kept ownership")
+        try expect(CaptureUnderstandingEngine.sourceVersion(revoked, in: await store.snapshot()) != boundVersion, "Identity revocation kept a valid in-flight source version")
+        var ownUnknown = chat; ownUnknown.textOrigin = .userInput
+        try expect(SourceNormalizer.messages(for: ownUnknown, bindings: []).allSatisfy { $0.speaker == .unknown }, "Explicit unknown speaker was overwritten by a manual origin")
         let mismatched = [IdentityBinding(bundleIdentifier: "example.atlas", windowTitle: "Other workspace", sender: "Morgan")]
         try expect(SourceNormalizer.messages(for: chat, bindings: mismatched).first?.speaker == .unknown, "Identity leaked across windows")
         let session = try await store.startMeeting(title: "Atlas planning")
