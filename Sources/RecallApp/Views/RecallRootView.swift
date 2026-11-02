@@ -5,6 +5,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 struct RecallRootView: View {
+    @Environment(\.openWindow) private var openWindow
     @EnvironmentObject private var model: RecallAppModel
     @AppStorage(RecallLocalization.languageKey) private var interfaceLanguage = "system"
     @State private var section: SidebarSection? = .matters
@@ -49,6 +50,17 @@ struct RecallRootView: View {
                 }
             }
         }
+        .onAppear { model.openMainWindow = { openWindow(id: "main"); RecallAppDelegate.activateMainWindow() } }
+        .onReceive(NotificationCenter.default.publisher(for: .recallOpenAsk)) { _ in section = .chat }
+        .onOpenURL { url in
+            guard let id = EvidenceLinkRouter.captureID(url), let source = EvidenceAccess.records(model.state).first(where: { $0.id == id }) else { return }
+            model.sourceToOpen = source
+        }
+        .onChange(of: model.isLoadingSavedState) { _, loading in
+            if !loading && model.state.captures.isEmpty && !model.state.workflow.onboardingCompleted { model.showsOnboarding = true }
+        }
+        .sheet(isPresented: $model.showsOnboarding) { FirstMomentView().environmentObject(model) }
+        .sheet(isPresented: $model.showsTextEntry) { TextEvidenceEntrySheet().environmentObject(model) }
         .onChange(of: model.navigationRevision) { _, _ in
             let target = model.destination
             guard let target else { return }
@@ -91,7 +103,13 @@ struct RecallRootView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if let deletion = model.deletionUndoNotice {
+            if model.addedTodayUndo != nil {
+                HStack(spacing: 16) {
+                    Label(RecallLocalization.text("已加入今天"), systemImage: "checkmark.circle")
+                    Button(RecallLocalization.text("撤销")) { model.undoToday() }
+                    Button { model.addedTodayUndo = nil } label: { Image(systemName: "xmark") }
+                }.padding(14).background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 10)).padding(.bottom, 22)
+            } else if let deletion = model.deletionUndoNotice {
                 DeletionUndoBanner(item: deletion, undo: model.undoLastDeletion, dismiss: model.dismissDeletionUndoNotice)
                     .padding(.bottom, 22)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -1256,6 +1274,10 @@ private struct RecallMessageCard: View {
                         }
                         HStack(spacing: 14) {
                             Button(RecallLocalization.text("复制")) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.content, forType: .string) }
+                            Menu {
+                                Button(RecallLocalization.text("复制并附来源")) { model.exportAnswer(message, toFile: false) }
+                                Button(RecallLocalization.text("导出 Markdown")) { model.exportAnswer(message, toFile: true) }
+                            } label: { Image(systemName: "square.and.arrow.up") }.disabled(message.citations.isEmpty)
                             Button(RecallLocalization.text("重新回答")) { if let index = model.state.messages.firstIndex(where: { $0.id == message.id }), let question = model.state.messages[..<index].last(where: { $0.role == .user })?.content { model.ask(question) } }.disabled(model.isThinking || model.typingMessageID != nil)
                             Button { model.rateChatMessage(message, helpful: true) } label: { Image(systemName: message.helpful == true ? "hand.thumbsup.fill" : "hand.thumbsup") }.help(RecallLocalization.text("回答有帮助"))
                             Button { model.rateChatMessage(message, helpful: false) } label: { Image(systemName: message.helpful == false ? "hand.thumbsdown.fill" : "hand.thumbsdown") }.help(RecallLocalization.text("回答不准确"))
@@ -3230,7 +3252,7 @@ private struct PrivacyAndModelView: View {
     @State private var showsDiagnosticSettings = false
     @State private var showsGovernance = false
     @State private var showsTime = false
-    private let categories = ["隐私与采集", "模型连接", "每日回顾", "记忆整理", "外观", "本地诊断"]
+    private let categories = ["使用偏好", "隐私与采集", "模型连接", "每日回顾", "记忆整理", "外观", "本地诊断"]
 
     init(initialCategory: String = "隐私与采集") { _settingsCategory = State(initialValue: initialCategory) }
 
@@ -3257,7 +3279,9 @@ private struct PrivacyAndModelView: View {
                 }.frame(width: 126)
                 ScrollViewReader { proxy in
                     ScrollView {
-                        if settingsCategory == "外观" {
+                        if settingsCategory == "使用偏好" {
+                            WorkflowSettingsView().padding(.bottom, 24)
+                        } else if settingsCategory == "外观" {
                             AppearanceSettingsView().padding(.bottom, 24)
                         } else {
                         VStack(alignment: .leading, spacing: 14) {
@@ -3397,6 +3421,7 @@ private struct PrivacyAndModelView: View {
                     Text(!model.state.llmConfiguration.hasCredential ? "尚未配置凭据" : "连接已配置 · 凭据仅保存在本机").font(.caption).foregroundStyle(RecallPalette.secondary)
                 }
                 Spacer(minLength: 0)
+                Button(RecallLocalization.text("删除凭据"), role: .destructive) { model.deleteModelKey() }
                 Button(RecallLocalization.text("编辑")) { activeConfiguration = model.state.llmConfiguration; savedKeyExists = activeConfiguration.hasCredential; isEditingModelConnection = true }
             }
             RecallSwitchRow(title: "允许发送脱敏文本", detail: "关闭后，问一问使用本地摘录；模型回顾和自动理解会暂停。", isOn: privacyBinding(\.cloudUseEnabled))

@@ -14,7 +14,7 @@ struct RecallFilterChip: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Text(title).font(.system(size: 13, weight: selected ? .semibold : .regular))
+            Text(RecallLocalization.text(title)).font(.system(size: 13, weight: selected ? .semibold : .regular))
                 .padding(.horizontal, 11).padding(.vertical, 7)
                 .foregroundStyle(selected ? RecallPalette.accent : RecallPalette.secondary)
                 .background(selected ? RecallPalette.selected : RecallPalette.border.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
@@ -26,7 +26,7 @@ struct RecallStatusBadge: View {
     let title: String
     var warning = false
     var body: some View {
-        Text(title).font(.system(size: 12, weight: .medium))
+        Text(RecallLocalization.text(title)).font(.system(size: 12, weight: .medium))
             .padding(.horizontal, 8).padding(.vertical, 3)
             .foregroundStyle(warning ? RecallPalette.warning : RecallPalette.accent)
             .background((warning ? RecallPalette.warning : RecallPalette.accent).opacity(0.10), in: Capsule())
@@ -43,10 +43,10 @@ struct RecallListChoice: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 8) {
-                    Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(2)
+                    Text(RecallLocalization.text(title)).font(.system(size: 14, weight: .semibold)).lineLimit(2)
                     if let warning { RecallStatusBadge(title: warning, warning: true) }
                 }
-                Text(detail).font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(2)
+                Text(RecallLocalization.text(detail)).font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(2)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(13)
                 .foregroundStyle(RecallPalette.text)
                 .background(selected ? RecallPalette.selected.opacity(0.7) : RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
@@ -63,8 +63,8 @@ struct RecallSwitchRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 20) {
             VStack(alignment: .leading, spacing: 5) {
-                Text(title).font(.system(size: 14, weight: .medium))
-                if !detail.isEmpty { Text(detail).font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true) }
+                Text(RecallLocalization.text(title)).font(.system(size: 14, weight: .medium))
+                if !detail.isEmpty { Text(RecallLocalization.text(detail)).font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true) }
             }.frame(maxWidth: .infinity, alignment: .leading)
             Toggle(title, isOn: $isOn).labelsHidden().toggleStyle(.switch).controlSize(.small).fixedSize()
         }.frame(maxWidth: .infinity)
@@ -93,8 +93,8 @@ struct RecallPageHeader<Actions: View>: View {
     }
     private var introduction: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(RecallTypography.page)
-            Text(subtitle).font(.subheadline).foregroundStyle(RecallPalette.secondary)
+            Text(RecallLocalization.text(title)).font(RecallTypography.page)
+            Text(RecallLocalization.text(subtitle)).font(.subheadline).foregroundStyle(RecallPalette.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }.frame(minWidth: 220, alignment: .leading)
     }
@@ -113,7 +113,7 @@ struct RecallTaskStatusView: View {
                 Text(task.phase).font(.callout).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
                 if let detail = task.detail, !detail.isEmpty {
                     DisclosureGroup(RecallLocalization.text("处理详情")) {
-                        Text(detail).font(.caption).foregroundStyle(RecallPalette.secondary)
+                        Text(RecallLocalization.text(detail)).font(.caption).foregroundStyle(RecallPalette.secondary)
                             .fixedSize(horizontal: false, vertical: true).textSelection(.enabled).padding(.top, 4)
                     }.font(.caption).foregroundStyle(RecallPalette.secondary)
                 }

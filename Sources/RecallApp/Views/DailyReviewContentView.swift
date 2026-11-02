@@ -54,7 +54,7 @@ struct DailyReviewContentView: View {
         HStack(spacing: 10) {
             Image(systemName: section.systemImage).font(.system(size: 16, weight: .medium))
                 .foregroundStyle(section == .actions ? RecallPalette.warning : RecallPalette.accent).frame(width: 18)
-            Text(section == .progress ? "主线进展" : (section == .insights ? "值得留意" : "接下来要处理"))
+            Text(RecallLocalization.text(section == .progress ? "主线进展" : (section == .insights ? "值得留意" : "接下来要处理")))
                 .font(.system(size: 17, weight: .semibold)).foregroundStyle(RecallPalette.text)
         }.accessibilityAddTraits(.isHeader)
     }
@@ -76,7 +76,10 @@ struct DailyReviewContentView: View {
             }
             if item.section == .actions, let action {
                 HStack(spacing: 16) {
-                    Button(model.reminder(for: action.title, sourceIDs: action.sourceCaptureIDs, candidateID: action.id) == nil ? "设为提醒" : "查看提醒") {
+                    if let reminder = model.reminder(for: action.title, sourceIDs: action.sourceCaptureIDs, candidateID: action.id), reminder.status == .proposed {
+                        Button(RecallLocalization.text("加入今天")) { model.addActionToToday(reminder.id) }
+                    }
+                    Button(model.reminder(for: action.title, sourceIDs: action.sourceCaptureIDs, candidateID: action.id) == nil ? RecallLocalization.text("设为提醒") : RecallLocalization.text("查看提醒")) {
                         model.prepareReminder(title: action.title, detail: action.detail, sourceIDs: action.sourceCaptureIDs, candidateID: action.id)
                     }
                     Button(RecallLocalization.text("已完成")) { model.completeSummaryAction(item, summary: summary) }

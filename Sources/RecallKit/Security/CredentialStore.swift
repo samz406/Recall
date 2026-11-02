@@ -65,6 +65,19 @@ public enum ModelResponderFactory {
     }
 }
 extension FileMemoryStore {
+    public func retryCredentialMaintenance() throws {
+        if let pending = pendingLegacyCredential {
+            let before = state
+            try credentials.write(pending.key, id: pending.id)
+            guard try credentials.read(pending.id) != nil else { throw CredentialError.unavailable }
+            state.llmConfiguration.credentialReference = pending.id.uuidString; state.llmConfiguration.credentialRevision += 1
+            pendingLegacyCredential = nil
+            do { try persistReviewState() } catch { state = before; pendingLegacyCredential = pending; throw error }
+        }
+        do { try Self.scrubLegacyBackups(in: storage.rootURL); credentialMaintenanceWarning = nil }
+        catch { credentialMaintenanceWarning = "Legacy backup cleanup failed; retry from Settings."; throw error }
+    }
+
     public func modelResponder() throws -> CompatibleLLM { try ModelResponderFactory.make(configuration: state.llmConfiguration, credentials: credentials) }
     public func deleteModelCredential() throws {
         let before = state

@@ -77,7 +77,8 @@ public extension FileMemoryStore {
             var changed = Set<UUID>()
             for i in state.captures.indices {
                 let messages = SourceNormalizer.messages(for: state.captures[i], bindings: workflow.identityBindings)
-                if state.captures[i].sourceMessages != messages {
+                let previousMessages = SourceNormalizer.messages(for: before.captures[i], bindings: before.workflow.identityBindings)
+                if previousMessages != messages {
                     state.captures[i].sourceMessages = messages; state.captures[i].understanding = nil; changed.insert(state.captures[i].id)
                 }
             }

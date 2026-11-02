@@ -21,7 +21,7 @@ public struct CaptureTarget: Sendable, Equatable {
             ($0[kCGWindowOwnerPID as String] as? Int32) == app.processIdentifier && ($0[kCGWindowLayer as String] as? Int) == 0
         }
         var rect = CGRect.zero
-        if let data = window?[kCGWindowBounds as String] as? CFDictionary { rect = CGRect(dictionaryRepresentation: data) ?? .zero }
+        if let data = window?[kCGWindowBounds as String] as? [String: Any] { rect = CGRect(dictionaryRepresentation: data as CFDictionary) ?? .zero }
         var ids = [CGDirectDisplayID](repeating: 0, count: 16), count: UInt32 = 0
         CGGetActiveDisplayList(16, &ids, &count)
         let display = ids.prefix(Int(count)).max { a, b in

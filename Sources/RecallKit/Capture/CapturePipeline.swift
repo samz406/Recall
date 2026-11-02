@@ -200,12 +200,12 @@ public final class CapturePipeline {
     }
 
     @discardableResult
-    public func record(using rule: EventRule, userText: String? = nil, meetingID: UUID? = nil) async throws -> CaptureRecord {
+    public func record(using rule: EventRule, userText: String? = nil, meetingID: UUID? = nil, targetOverride: CaptureTarget? = nil) async throws -> CaptureRecord {
         let currentState = await store.snapshot()
         guard rule.isEnabled else {
             throw CapturePipelineError.captureExcluded("该事件模板目前未启用。")
         }
-        let target = screenCapturer.currentTarget()
+        let target = targetOverride ?? screenCapturer.currentTarget()
         let before = privacyEngine.decision(for: target?.bundleIdentifier, settings: currentState.privacy)
         guard before.mayCapture else { throw CapturePipelineError.captureExcluded(before.reason ?? "采集已暂停") }
         if !rule.appAllowList.isEmpty, let target, !rule.appAllowList.contains(target.bundleIdentifier) {

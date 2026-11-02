@@ -11,6 +11,7 @@ enum ReminderDiscoveryStatus: Equatable {
 }
 
 extension Notification.Name {
+    static let recallOpenAsk = Notification.Name("im.recall.app.open-ask")
     static let recallReminderAction = Notification.Name("im.recall.app.reminder-action")
     static let recallOpenReminders = Notification.Name("im.recall.app.open-reminders")
     static let recallOpenWeeklyReview = Notification.Name("im.recall.app.open-weekly-review")
@@ -29,6 +30,16 @@ final class RecallAppModel: ObservableObject {
             }
         }
     }
+    let globalShortcuts = GlobalShortcutService()
+    var shortcutConfigurationID: String?
+    @Published var credentialMaintenanceWarning: String?
+    @Published var shortcutsReady = false
+    @Published var showsOnboarding = false
+    @Published var showsTextEntry = false
+    @Published var addedTodayUndo: ReminderCandidate?
+    @Published var lastExternalTarget: CaptureTarget?
+    var openMainWindow: (() -> Void)?
+    private var targetObserver: NSObjectProtocol?
     let timelineWorkspace = TimelineWorkspace()
     @Published private(set) var isLoadingSavedState = true
     private var isFinishingStartup = true
@@ -89,7 +100,7 @@ final class RecallAppModel: ObservableObject {
 
     let storage: RecallStorage
     let store: FileMemoryStore
-    private let pipeline: CapturePipeline
+    let pipeline: CapturePipeline
     private let assistant: MemoryAssistant
     private var reminderDiscoveryTask: Task<Void, Never>?
     private var reminderDiscoveryRunID = UUID()
@@ -132,6 +143,11 @@ final class RecallAppModel: ObservableObject {
                 rebuildMatterFiles()
                 return
             }
+            targetObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    if let target = CaptureTargetResolver.current(), target.bundleIdentifier != Bundle.main.bundleIdentifier { self?.lastExternalTarget = target }
+                }
+            }
             recordDiagnostic(.info, source: "App", message: "应用已启动")
             reminderActionObserver = NotificationCenter.default.addObserver(
                 forName: .recallReminderAction,
@@ -159,6 +175,7 @@ final class RecallAppModel: ObservableObject {
             }
             Task {
                 state = await store.snapshot()
+                credentialMaintenanceWarning = await store.credentialMaintenanceWarning
                 isLoadingSavedState = false
                 recordDiagnostic(.info, source: "Startup", message: "已载入保存的页面数据", metadata: [
                     "readMilliseconds": "\(max(0, Int(Date.now.timeIntervalSince(startupRead) * 1000)))",
@@ -185,6 +202,7 @@ final class RecallAppModel: ObservableObject {
         state = await store.snapshot()
         guard !isFinishingStartup else { return }
         rebuildMatterFiles()
+        configureShortcuts()
         updateEnterKeyRecorder()
         await refreshReminderDeliveryStates()
         armDailySummaryTimer()
@@ -789,10 +807,11 @@ final class RecallAppModel: ObservableObject {
             message: "开始记录",
             metadata: ["eventTemplate": rule.template.rawValue, "scope": rule.scope.rawValue]
         )
+        let target = CaptureTargetResolver.current()
         Task {
             defer { isRecording = false }
             do {
-                let record = try await pipeline.record(using: rule, userText: userText)
+                let record = try await pipeline.record(using: rule, userText: userText, targetOverride: target)
                 await refresh()
                 recordDiagnostic(
                     .info,

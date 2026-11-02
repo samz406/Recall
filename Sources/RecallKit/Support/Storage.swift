@@ -244,6 +244,8 @@ public struct RecallState: Codable, Sendable {
 public actor FileMemoryStore {
     let storage: RecallStorage
     let credentials: any CredentialStore
+    var pendingLegacyCredential: (id: UUID, key: String)?
+    public private(set) var credentialMaintenanceWarning: String?
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     var state: RecallState
@@ -272,13 +274,21 @@ public actor FileMemoryStore {
             var restoredState = try decoder.decode(RecallState.self, from: data)
             if !restoredState.llmConfiguration.apiKey.isEmpty {
                 var config = restoredState.llmConfiguration
-                // Do not rewrite the original file unless the only legacy credential is safely stored.
-                if try credentials.read(config.connectionID) == nil { try credentials.write(config.apiKey, id: config.connectionID) }
-                guard try credentials.read(config.connectionID) != nil else { throw CredentialError.unavailable }
-                config.apiKey = ""; config.credentialReference = config.connectionID.uuidString; config.credentialRevision += 1
-                restoredState.llmConfiguration = config
-                try Self.write(restoredState, encoder: encoder, to: storage.stateURL)
-                try Self.scrubLegacyBackups(in: storage.rootURL)
+                do {
+                    if try credentials.read(config.connectionID) == nil { try credentials.write(config.apiKey, id: config.connectionID) }
+                    guard try credentials.read(config.connectionID) != nil else { throw CredentialError.unavailable }
+                    config.apiKey = ""; config.credentialReference = config.connectionID.uuidString; config.credentialRevision += 1
+                    restoredState.llmConfiguration = config
+                    try Self.write(restoredState, encoder: encoder, to: storage.stateURL)
+                } catch {
+                    pendingLegacyCredential = (config.connectionID, config.apiKey)
+                    config.apiKey = ""; config.credentialReference = nil; restoredState.llmConfiguration = config
+                    credentialMaintenanceWarning = "Credential migration pending. Local records are read-only until Keychain is available."
+                }
+            }
+            if pendingLegacyCredential == nil {
+                do { try Self.scrubLegacyBackups(in: storage.rootURL) }
+                catch { credentialMaintenanceWarning = "Legacy backup cleanup failed; retry from Settings." }
             }
             let existingTemplates = Set(restoredState.rules.map(\.template))
             let missingRules = EventRule.defaults().filter { !existingTemplates.contains($0.template) }
@@ -296,12 +306,13 @@ public actor FileMemoryStore {
                     return updated
                 }
             }
-            if !deferMaintenance { try Self.write(restoredState, encoder: encoder, to: storage.stateURL) }
+            if !deferMaintenance && pendingLegacyCredential == nil { try Self.write(restoredState, encoder: encoder, to: storage.stateURL) }
             state = restoredState
         } else {
             state = RecallState()
             try Self.write(state, encoder: encoder, to: storage.stateURL)
         }
+        if pendingLegacyCredential != nil { indexNeedsRebuild = true; return }
         if deferMaintenance {
             // The saved state is authoritative. Only withdraw known missing/excluded
             // sources before first display; synthesis, migrations and index rebuilding
@@ -469,7 +480,7 @@ public actor FileMemoryStore {
             throw error
         }
     }
-    private static func scrubLegacyBackups(in root: URL) throws {
+    static func scrubLegacyBackups(in root: URL) throws {
         for url in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             where url.lastPathComponent.hasPrefix("recall-state.backup-") && url.pathExtension == "json" {
             guard var json = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any],
@@ -781,7 +792,7 @@ public actor FileMemoryStore {
         let actualIDs = Set(removedCaptures.map(\.id))
         let removedSummaries = state.dailySummaries.filter { !$0.sourceCaptureIDs.filter(actualIDs.contains).isEmpty }
         let removedMessages = state.messages.filter { $0.role == .assistant && !$0.citations.filter(actualIDs.contains).isEmpty }
-        let removedReminders = state.reminders.filter { $0.origin != .manual && !$0.sourceCaptureIDs.filter(actualIDs.contains).isEmpty }
+        let removedReminders = state.reminders.filter { $0.status != .planned && $0.origin != .manual && !$0.sourceCaptureIDs.filter(actualIDs.contains).isEmpty }
         let removedEpisodes = state.episodes.filter { !$0.evidenceIDs.filter(actualIDs.contains).isEmpty }
         let affectedProjects = state.projects.filter { !$0.evidenceIDs.filter(actualIDs.contains).isEmpty }
         let removedMemories = state.userMemories.filter { !$0.evidenceIDs.filter(actualIDs.contains).isEmpty }
@@ -844,6 +855,10 @@ public actor FileMemoryStore {
         state.captures.removeAll { actualIDs.contains($0.id) }
         state.dailySummaries.removeAll { summary in removedSummaries.contains(where: { $0.id == summary.id }) }
         state.messages.removeAll { message in removedMessages.contains(where: { $0.id == message.id }) }
+        for i in state.reminders.indices where state.reminders[i].status == .planned && !Set(state.reminders[i].sourceCaptureIDs).isDisjoint(with: actualIDs) {
+            state.reminders[i].sourceCaptureIDs.removeAll { actualIDs.contains($0) }
+            state.reminders[i].analysis = nil
+        }
         state.reminders.removeAll { reminder in removedReminders.contains(where: { $0.id == reminder.id }) }
         state.reminderLearningProfile.removeHistorySources(actualIDs)
         state.episodes.removeAll { episode in removedEpisodes.contains(where: { $0.id == episode.id }) }
@@ -1095,6 +1110,7 @@ public actor FileMemoryStore {
     /// understanding stay valid. The whole-archive reconciliation in `persist()` runs on the
     /// maintenance cycle (`organizeMemory`) instead of blocking every recording.
     private func persistAppended() throws {
+        guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
         try Self.write(state, encoder: encoder, to: storage.stateURL)
         do {
             if indexNeedsRebuild { try intelligenceIndex?.replace(with: state) }
@@ -1135,6 +1151,9 @@ public actor FileMemoryStore {
         state.learnedRoutines.removeAll { $0.evidenceIDs.contains(id) }
         // 提醒正文同样可能包含来源记录中的可识别文本。删除来源时删除其派生提醒，
         // 由用户手动创建且没有来源关联的提醒不受影响。
+        for i in state.reminders.indices where state.reminders[i].status == .planned && state.reminders[i].sourceCaptureIDs.contains(id) {
+            state.reminders[i].sourceCaptureIDs.removeAll { $0 == id }; state.reminders[i].analysis = nil
+        }
         state.reminders.removeAll { $0.sourceCaptureIDs.contains(id) }
         state.reminderLearningProfile.removeHistorySources([id])
         state.messages.removeAll { $0.role == .assistant && $0.citations.contains(id) }
@@ -1320,6 +1339,7 @@ public actor FileMemoryStore {
     }
 
     func persist(preservingReviewsFrom previous: RecallState? = nil) throws {
+        guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
         reconcileDailyReviewCheckpoints()
         let liveIDs = Set(state.captures.map(\.id))
         let excludedIDs = Set(state.captures.filter { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id))
@@ -1358,6 +1378,7 @@ public actor FileMemoryStore {
     /// Only review-owned fields changed. Full reconciliation/index maintenance follows
     /// on the existing maintenance cycle; queries use their memory fallback meanwhile.
     func persistReviewState(indexChanged: Bool = false) throws {
+        guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
         try Task.checkCancellation()
         try Self.write(state, encoder: encoder, to: storage.stateURL)
         if indexChanged { indexNeedsRebuild = true }

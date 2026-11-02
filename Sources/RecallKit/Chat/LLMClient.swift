@@ -85,6 +85,17 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
         anthropicVersion = try container.decodeIfPresent(String.self, forKey: .anthropicVersion) ?? "2023-06-01"
         maxOutputTokens = try container.decodeIfPresent(Int.self, forKey: .maxOutputTokens) ?? 1_000
     }
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.provider == rhs.provider && lhs.baseURLString == rhs.baseURLString && lhs.model == rhs.model
+            && lhs.connectionID == rhs.connectionID && lhs.credentialReference == rhs.credentialReference
+            && lhs.credentialRevision == rhs.credentialRevision && lhs.anthropicVersion == rhs.anthropicVersion
+            && lhs.maxOutputTokens == rhs.maxOutputTokens
+    }
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(provider); hasher.combine(baseURLString); hasher.combine(model); hasher.combine(connectionID)
+        hasher.combine(credentialReference); hasher.combine(credentialRevision); hasher.combine(anthropicVersion); hasher.combine(maxOutputTokens)
+    }
+
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(provider, forKey: .provider); try c.encode(baseURLString, forKey: .baseURLString)
