@@ -237,7 +237,7 @@ struct ModelConnectionEditorSheet: View {
         case .idle: "尚未测试连接"
         case .testing: "正在测试连接…"
         case .success: "连接正常"
-        case .failure(let reason): "失败：" + reason
+        case .failure(let reason): RecallLocalization.both("失败：", "Failed: ") + RecallLocalization.text(reason)
         }
     }
     private var statusColor: Color {

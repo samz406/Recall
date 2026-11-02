@@ -831,7 +831,7 @@ final class RecallAppModel: ObservableObject {
                     message: "记录已写入时间线",
                     metadata: ["eventTemplate": record.eventTemplate.rawValue, "hasScreenshot": record.imageRelativePath == nil ? "false" : "true"]
                 )
-                noticeMessage = "已记录：\(record.summary ?? "无可提取文本")"
+                noticeMessage = RecallLocalization.both("已记录：", "Saved: ") + (record.summary ?? RecallLocalization.both("无可提取文本", "No readable text"))
             } catch CapturePipelineError.screenRecordingPermissionRequired {
                 recordDiagnostic(.warning, source: diagnosticSource, message: "屏幕权限不可用", metadata: ["eventTemplate": rule.template.rawValue])
                 // 记录失败不应阻塞其他本地功能；提醒发现只读取已有记录，无需此权限。

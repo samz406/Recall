@@ -16,7 +16,7 @@ public enum CapturePipelineError: LocalizedError {
     case screenshotUnavailable
 
     public var errorDescription: String? {
-        switch self {
+        let description = switch self {
         case .screenRecordingPermissionRequired: "需要在系统设置中授予屏幕与系统音频录制权限。"
         case .noShareableWindow: "找不到可供记录的当前窗口。"
         case .captureExcluded(let reason): reason
@@ -24,6 +24,7 @@ public enum CapturePipelineError: LocalizedError {
         case .suppressedByUser: "这条内容符合你设置的忽略规则，已跳过记录。"
         case .screenshotUnavailable: "未能取得当前窗口的截图。"
         }
+        return RecallLocalization.text(description)
     }
 }
 

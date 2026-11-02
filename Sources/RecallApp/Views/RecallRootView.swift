@@ -57,7 +57,7 @@ struct RecallRootView: View {
                 }
             }
         }
-        .environment(\.locale, Locale(identifier: RecallLocalization.isEnglish ? "en" : "zh-Hans"))
+        .environment(\.locale, RecallLocalization.locale)
         .onChange(of: interfaceLanguage) { _, _ in model.noticeMessage = nil }
         .onAppear {
             model.openMainWindow = { openWindow(id: "main"); RecallAppDelegate.activateMainWindow() }
@@ -282,7 +282,7 @@ private struct NoticeBanner: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(RecallPalette.accent)
-            Text(text)
+            Text(RecallLocalization.text(text))
                 .font(.subheadline)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)

@@ -14,7 +14,7 @@ public struct LocalDay: Codable, Hashable, Sendable {
     }
     public var label: String {
         let formatter = DateFormatter(); formatter.dateStyle = .medium; formatter.timeStyle = .none
-        formatter.locale = RecallLocalization.isEnglish ? Locale(identifier: "en") : Locale(identifier: "zh-Hans")
+        formatter.locale = RecallLocalization.locale
         formatter.timeZone = TimeZone(identifier: timeZoneIdentifier)
         return formatter.string(from: date) + " · " + timeZoneIdentifier
     }

@@ -59,6 +59,7 @@ public final class InMemoryCredentialStore: CredentialStore, @unchecked Sendable
 }
 public enum ModelResponderFactory {
     public static func make(configuration: LLMConfiguration, credentials: any CredentialStore = KeychainCredentialStore.shared) throws -> CompatibleLLM {
+        guard configuration.hasCredential else { throw CredentialError.unavailable }
         guard LLMConfiguration.credentialOrigin(configuration.baseURLString) != nil else { throw LLMError.invalidBaseURL }
         let key = configuration.apiKey.isEmpty ? try credentials.read(configuration.connectionID) : configuration.apiKey
         guard let key, !key.isEmpty else { throw CredentialError.unavailable }

@@ -116,7 +116,7 @@ private struct MenuBarPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Recall")
                 .font(.headline)
-            Text(model.state.privacy.screenCapturePaused ? "屏幕采集已暂停" : "本地优先的个人记忆")
+            Text(RecallLocalization.text(model.state.privacy.screenCapturePaused ? "屏幕采集已暂停" : "本地优先的个人记忆"))
                 .font(.caption)
                 .foregroundStyle(RecallPalette.secondary)
             Divider()
@@ -126,7 +126,7 @@ private struct MenuBarPanel: View {
                 }
             }
             .disabled(model.state.privacy.screenCapturePaused || model.isRecording)
-            Button(model.state.privacy.screenCapturePaused ? "恢复屏幕采集" : "暂停屏幕采集") {
+            Button(RecallLocalization.text(model.state.privacy.screenCapturePaused ? "恢复屏幕采集" : "暂停屏幕采集")) {
                 var privacy = model.state.privacy
                 privacy.screenCapturePaused.toggle()
                 model.updatePrivacy(privacy)

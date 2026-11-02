@@ -1848,7 +1848,7 @@ struct RecallVerifier {
                 probe.didRefreshAfterSave = true
             }
             throw VerificationError.failed("缺少 API Key 时问一问应失败")
-        } catch LLMError.missingAPIKey {
+        } catch CredentialError.unavailable {
             // 预期：模型请求失败，但用户消息已经持久化并触发界面刷新。
         }
         let snapshot = await store.snapshot()
