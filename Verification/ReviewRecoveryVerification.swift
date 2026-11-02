@@ -147,7 +147,7 @@ enum ReviewRecoveryVerification {
         let state = await f.store.snapshot(), log = await model.log()
         try expect(log.filter { $0.purpose == .captureUnderstanding }.count == 2
             && !log.contains { $0.purpose == .reviewSynthesis } && state.dailySummaries.contains { $0.id == old.id && $0.content == old.content }, "修复次数未封顶或失败覆盖旧回顾")
-        let reopened = try FileMemoryStore(storage: f.storage), reopenedState = await reopened.snapshot()
+        let reopened = try verificationStore(storage: f.storage), reopenedState = await reopened.snapshot()
         try expect(reopenedState.understandingJobs[0].lastFailureCode == "understanding.importantContentMissing", "重启后丢失了安全失败原因")
     }
     static func uncertaintyContinues() async throws {

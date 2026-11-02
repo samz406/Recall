@@ -16,7 +16,7 @@ public enum CapturePipelineError: LocalizedError {
     case screenshotUnavailable
 
     public var errorDescription: String? {
-        switch self {
+        let description = switch self {
         case .screenRecordingPermissionRequired: "需要在系统设置中授予屏幕与系统音频录制权限。"
         case .noShareableWindow: "找不到可供记录的当前窗口。"
         case .captureExcluded(let reason): reason
@@ -24,6 +24,7 @@ public enum CapturePipelineError: LocalizedError {
         case .suppressedByUser: "这条内容符合你设置的忽略规则，已跳过记录。"
         case .screenshotUnavailable: "未能取得当前窗口的截图。"
         }
+        return RecallLocalization.text(description)
     }
 }
 
@@ -31,6 +32,12 @@ public enum CapturePipelineError: LocalizedError {
 public protocol ScreenCapturing {
     func capture(scope: CaptureScope) async throws -> CapturePayload
     func requestScreenRecordingAccess() -> Bool
+    func currentTarget() -> CaptureTarget?
+    func capture(scope: CaptureScope, target: CaptureTarget?) async throws -> CapturePayload
+}
+public extension ScreenCapturing {
+    func currentTarget() -> CaptureTarget? { nil }
+    func capture(scope: CaptureScope, target: CaptureTarget?) async throws -> CapturePayload { try await capture(scope: scope) }
 }
 
 @MainActor
@@ -42,9 +49,12 @@ public final class ScreenCaptureService: ScreenCapturing {
     }
 
     public func capture(scope: CaptureScope) async throws -> CapturePayload {
-        let frontmost = NSWorkspace.shared.frontmostApplication
-        let appName = frontmost?.localizedName
-        let bundleIdentifier = frontmost?.bundleIdentifier
+        try await capture(scope: scope, target: currentTarget())
+    }
+    public func currentTarget() -> CaptureTarget? { CaptureTargetResolver.current() }
+    public func capture(scope: CaptureScope, target: CaptureTarget?) async throws -> CapturePayload {
+        let appName = target?.appName
+        let bundleIdentifier = target?.bundleIdentifier
 
         guard scope != .textOnly else {
             return CapturePayload(imageData: nil, sourceAppName: appName, sourceBundleIdentifier: bundleIdentifier, windowTitle: nil)
@@ -59,11 +69,10 @@ public final class ScreenCaptureService: ScreenCapturing {
 
         switch scope {
         case .selectedWindow:
-            guard let selectedWindow = content.windows.first(where: { window in
-                window.owningApplication?.bundleIdentifier == bundleIdentifier && window.isOnScreen && window.frame.width > 80 && window.frame.height > 80
-            }) ?? content.windows.first(where: { $0.isOnScreen && $0.frame.width > 80 && $0.frame.height > 80 }) else {
-                throw CapturePipelineError.noShareableWindow
-            }
+            guard let target, let selectedWindow = content.windows.first(where: {
+                $0.windowID == target.windowID && $0.owningApplication?.processID == target.processID
+                    && $0.owningApplication?.bundleIdentifier == target.bundleIdentifier && $0.isOnScreen
+            }) else { throw CapturePipelineError.noShareableWindow }
             let filter = SCContentFilter(desktopIndependentWindow: selectedWindow)
             let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
             return CapturePayload(
@@ -73,7 +82,7 @@ public final class ScreenCaptureService: ScreenCapturing {
                 windowTitle: selectedWindow.title
             )
         case .activeDisplay:
-            guard let display = content.displays.first else { throw CapturePipelineError.noShareableWindow }
+            guard let display = content.displays.first(where: { $0.displayID == target?.displayID }) else { throw CapturePipelineError.noShareableWindow }
             let filter = SCContentFilter(display: display, excludingWindows: [])
             let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
             // Without a title a full-display record cannot be linked to the same session's window captures.
@@ -192,12 +201,18 @@ public final class CapturePipeline {
     }
 
     @discardableResult
-    public func record(using rule: EventRule, userText: String? = nil) async throws -> CaptureRecord {
+    public func record(using rule: EventRule, userText: String? = nil, meetingID: UUID? = nil, targetOverride: CaptureTarget? = nil) async throws -> CaptureRecord {
         let currentState = await store.snapshot()
         guard rule.isEnabled else {
             throw CapturePipelineError.captureExcluded("该事件模板目前未启用。")
         }
-        let payload = try await screenCapturer.capture(scope: rule.scope)
+        let target = targetOverride ?? screenCapturer.currentTarget()
+        let before = privacyEngine.decision(for: target?.bundleIdentifier, settings: currentState.privacy)
+        guard before.mayCapture else { throw CapturePipelineError.captureExcluded(before.reason ?? "采集已暂停") }
+        if !rule.appAllowList.isEmpty, let target, !rule.appAllowList.contains(target.bundleIdentifier) {
+            throw CapturePipelineError.captureExcluded("当前应用不在此事件的应用白名单中。")
+        }
+        let payload = try await screenCapturer.capture(scope: rule.scope, target: target)
         let decision = privacyEngine.decision(for: payload.sourceBundleIdentifier, settings: currentState.privacy)
         guard decision.mayCapture else {
             throw CapturePipelineError.captureExcluded(decision.reason ?? "该内容被隐私策略排除。")
@@ -232,8 +247,8 @@ public final class CapturePipeline {
         let normalizedText = CaptureTextFingerprint.normalized(redactedText)
         let digestSource = normalizedText.isEmpty ? (payload.imageData ?? Data()) : Data(normalizedText.utf8)
         let contentHash = SHA256.hash(data: digestSource).map { String(format: "%02x", $0) }.joined()
-        guard !(await store.hasRecentHash(contentHash)) else { throw CapturePipelineError.duplicateCapture }
-        if userText == nil, await store.hasRecentNearDuplicate(text: redactedText, bundleIdentifier: payload.sourceBundleIdentifier) {
+        if meetingID == nil, await store.hasRecentHash(contentHash) { throw CapturePipelineError.duplicateCapture }
+        if meetingID == nil, userText == nil, await store.hasRecentNearDuplicate(text: redactedText, bundleIdentifier: payload.sourceBundleIdentifier) {
             throw CapturePipelineError.duplicateCapture
         }
 
@@ -245,7 +260,7 @@ public final class CapturePipeline {
             imageRelativePath = nil
         }
 
-        let record = CaptureRecord(
+        var record = CaptureRecord(
             id: captureID,
             eventTemplate: rule.template,
             sourceAppName: payload.sourceAppName,
@@ -260,7 +275,19 @@ public final class CapturePipeline {
             textOrigin: userText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? .userInput : .screenOCR,
             recognition: recognition
         )
-        try await store.addCapture(record)
+        record.meetingSessionID = meetingID
+        record.sourceMessages = SourceNormalizer.messages(for: record, bindings: currentState.workflow.identityBindings)
+        let latest = await store.snapshot()
+        guard privacyEngine.decision(for: payload.sourceBundleIdentifier, settings: latest.privacy).mayCapture,
+              latest.rules.first(where: { $0.id == rule.id })?.isEnabled != false else {
+            if let path = imageRelativePath { try? FileManager.default.removeItem(at: storage.rootURL.appendingPathComponent(path)) }
+            throw CapturePipelineError.captureExcluded("采集设置已变化，未保存记录。")
+        }
+        do { try await store.addCapture(record) }
+        catch {
+            if let path = imageRelativePath { try? storage.deleteScreenshot(relativePath: path) }
+            throw error
+        }
         return record
     }
 

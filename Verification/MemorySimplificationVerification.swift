@@ -138,7 +138,7 @@ enum MemorySimplificationVerification {
         let source = capture("[聊天·自己] 我一直喜欢苹果。\n[聊天·自己] 我不喜欢苹果。", at: now.addingTimeInterval(-60))
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         try await store.addCapture(source); try await store.organizeMemory(force: true, now: now)
         let before = await store.snapshot()
         try expect(before.memoryKnowledge.claims.filter { $0.kind == .preference }.allSatisfy { $0.state == .conflicted }, "同语境矛盾的说法不能继续用于个性化")
@@ -175,7 +175,7 @@ enum MemorySimplificationVerification {
         try expect(decoded.content == original.content && decoded.scopeExplicitlySet == nil, "新增范围元数据必须兼容旧记忆")
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         _ = try await store.remember(original)
         let saved = await store.snapshot().memoryKnowledge.claims.first { $0.explicit }!
         try await store.retireMemory(id: saved.id)

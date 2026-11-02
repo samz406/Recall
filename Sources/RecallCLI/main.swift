@@ -1,10 +1,23 @@
 import Foundation
 import RecallKit
 
+// The MCP subcommand never invokes a model or changes the core database.
+if CommandLine.arguments.dropFirst().first == "mcp" {
+    let args = Array(CommandLine.arguments.dropFirst(2))
+    let root: URL
+    if let i = args.firstIndex(of: "--data-dir"), i + 1 < args.count { root = URL(fileURLWithPath: (args[i + 1] as NSString).expandingTildeInPath) }
+    else { root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Recall") }
+    do {
+        let storage = try RecallStorage(rootURL: root)
+        try ReadOnlyMCPServer(storage: storage, token: ProcessInfo.processInfo.environment["RECALL_MCP_TOKEN"] ?? "").run()
+    } catch { FileHandle.standardError.write(Data("Recall MCP stopped: unavailable or invalid input.\n".utf8)); exit(1) }
+    exit(0)
+}
+
 // recall-cli: batch maintenance for an existing Recall data directory.
 //   summarize  Regenerate the daily review for every day that has records, in the structured format.
-// Nothing is changed or sent anywhere unless --apply is given. The API key is read from the data directory's own
-// settings and is never printed.
+// Without --apply, decode the archive directly: no store migration, Keychain, index writes or model calls.
+// Applied model requests resolve the archive's connection ID through the local Keychain; keys are never printed.
 
 struct Options {
     var command = ""
@@ -87,9 +100,12 @@ func backupOnce(_ storage: RecallStorage) throws {
 
 func dayStart(_ date: Date) -> Date { Calendar.current.startOfDay(for: date) }
 
-func runSummarize(_ store: FileMemoryStore, _ storage: RecallStorage) async throws {
+func runSummarize(_ store: FileMemoryStore?, _ storage: RecallStorage, preview: RecallState? = nil) async throws {
     say("— 重新生成每日回顾 —")
-    var state = await store.snapshot()
+    var state: RecallState
+    if let preview { state = preview }
+    else if let store { state = await store.snapshot() }
+    else { throw WorkflowError.invalid }
     let calendar = Calendar.current
     let excluded = state.privacy.excludedBundleIdentifiers
     var days = Set<Date>()
@@ -113,15 +129,16 @@ func runSummarize(_ store: FileMemoryStore, _ storage: RecallStorage) async thro
         say("日期：" + ordered.map { f.string(from: $0) + ($0 == today ? "(今天,未结束)" : "") + "·\(counts[$0] ?? 0)条" }.joined(separator: "  "))
     }
     let provider = state.llmConfiguration.provider
-    say("模型：\(provider == .localOnly ? "未配置（仅本地）" : state.llmConfiguration.model)；允许发送脱敏文本：\(state.privacy.cloudUseEnabled ? "是" : "否")；密钥：\(state.llmConfiguration.apiKey.isEmpty ? "未配置" : "已配置（不显示）")。")
+    say("模型：\(provider == .localOnly ? "未配置（仅本地）" : state.llmConfiguration.model)；允许发送脱敏文本：\(state.privacy.cloudUseEnabled ? "是" : "否")；密钥：\(!state.llmConfiguration.hasCredential ? "未配置" : "已配置（不显示）")。")
     guard options.apply else { say("预览结束：未调用模型、未改动数据。加 --apply 执行（每天一次模型调用）。"); return }
-    guard state.privacy.cloudUseEnabled, provider != .localOnly, !state.llmConfiguration.apiKey.isEmpty else {
+    guard let store else { throw WorkflowError.invalid }
+    guard state.privacy.cloudUseEnabled, provider != .localOnly, state.llmConfiguration.hasCredential else {
         say("无法执行：这个数据目录里没有可用的模型配置，或未允许发送脱敏文本。请先在那台电脑的应用里配置模型并开启云端使用。"); exit(1)
     }
     guard !ordered.isEmpty else { say("没有需要处理的日期。"); return }
     guard confirm("将向 \(state.llmConfiguration.baseURLString) 发送 \(ordered.count) 天的脱敏文本。继续？") else { say("已取消。"); return }
     try backupOnce(storage)
-    let responder = CompatibleLLM(configuration: state.llmConfiguration, apiKey: state.llmConfiguration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines))
+    let responder = try await store.modelResponder()
     var succeeded = 0, failed: [(Date, String)] = []
     let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
     for (offset, day) in ordered.enumerated() {
@@ -155,8 +172,14 @@ do {
     } else { storage = try RecallStorage() }
     guard FileManager.default.fileExists(atPath: storage.stateURL.path) else { say("没有找到数据：\(storage.stateURL.path)"); exit(1) }
     say("数据目录：\(storage.rootURL.path)")
-    let store = try FileMemoryStore(storage: storage)
-    try await runSummarize(store, storage)
+    if options.apply {
+        let store = try FileMemoryStore(storage: storage)
+        try await runSummarize(store, storage)
+    } else {
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let preview = try decoder.decode(RecallState.self, from: Data(contentsOf: storage.stateURL))
+        try await runSummarize(nil, storage, preview: preview)
+    }
 } catch {
     say("出错：\(error.localizedDescription)")
     exit(1)

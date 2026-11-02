@@ -22,18 +22,19 @@ enum CaptureUnderstandingVerification {
         let storage: RecallStorage
         let store: FileMemoryStore
         let source: CaptureRecord
-        let config = LLMConfiguration(provider: .openAICompatible, apiKey: "verification-placeholder")
+        var config = LLMConfiguration(provider: .openAICompatible, apiKey: "verification-placeholder")
         let privacy = PrivacySettings(cloudUseEnabled: true)
     }
     private static func fixture(_ text: String = "[聊天·自己] 我会在明天补充 Atlas 导出分页测试并提交评审。") async throws -> Fixture {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-understanding-" + UUID().uuidString))
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let source = CaptureRecord(eventTemplate: .workCheckpoint, sourceAppName: "合成测试聊天",
             sourceBundleIdentifier: "example.synthetic-chat", windowTitle: "Atlas 会话", contentHash: UUID().uuidString,
             ocrText: text, textOrigin: .screenOCR)
-        let f = Fixture(storage: storage, store: store, source: source)
+        var f = Fixture(storage: storage, store: store, source: source)
         try await store.addCapture(source)
         try await store.updatePrivacy(f.privacy); try await store.updateLLMConfiguration(f.config)
+        f.config = await store.snapshot().llmConfiguration
         var settings = CaptureUnderstandingSettings(); settings.enabled = true
         settings.enabledSince = source.createdAt.addingTimeInterval(-1)
         try await store.updateCaptureUnderstandingSettings(settings)
@@ -183,7 +184,7 @@ enum CaptureUnderstandingVerification {
     private static func durabilityAndRetry() async throws {
         let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
         let (first, _) = try await claim(f)
-        let reopened = try FileMemoryStore(storage: f.storage)
+        let reopened = try verificationStore(storage: f.storage)
         try await reopened.recoverCaptureUnderstandingJobs()
         let recovered = await reopened.snapshot()
         try expect(recovered.understandingJobs[0].state == .queued && recovered.understandingJobs[0].lease == nil, "退出重启后任务无法恢复")
@@ -206,7 +207,7 @@ enum CaptureUnderstandingVerification {
         try await f.store.finishCaptureUnderstandingPage(job, result: result, configuration: f.config, privacy: f.privacy)
         var state = await f.store.snapshot()
         try expect(state.captures[0].understanding == nil && state.understandingJobs[0].nextPage == 1, "半份结果提前公开或断点未持久化")
-        let reopened = try FileMemoryStore(storage: f.storage)
+        let reopened = try verificationStore(storage: f.storage)
         let next = try await reopened.claimCaptureUnderstanding()
         try expect(next?.nextPage == 1, "重启后重复从首段处理")
         var changed = f.config; changed.model = "other-test-model"
@@ -250,7 +251,7 @@ enum CaptureUnderstandingVerification {
         var duplicate = f.source; duplicate.id = UUID(); duplicate.createdAt = f.source.createdAt.addingTimeInterval(1)
         try await f.store.addCapture(duplicate)
         _ = try await f.store.enqueueCaptureUnderstanding(captureID: duplicate.id)
-        let repeated = Fixture(storage: f.storage, store: f.store, source: duplicate)
+        let repeated = Fixture(storage: f.storage, store: f.store, source: duplicate, config: f.config)
         let updated = try await finish(repeated) { [fact($0)] }
         let deduplicated = MatterMemoryEngine().files(in: updated)
         try expect(deduplicated.count == 1 && deduplicated[0].events.count == 1 && Set(deduplicated[0].evidenceIDs) == [source.id, duplicate.id],

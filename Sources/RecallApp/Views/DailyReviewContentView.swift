@@ -23,10 +23,10 @@ struct DailyReviewContentView: View {
                 Label(notice, systemImage: "info.circle").font(.callout).foregroundStyle(RecallPalette.secondary)
             }
             if summary.formatVersion != 2 {
-                Text("这份回顾使用较早的整理规则，可以重新生成；原版本会保留。")
+                Text(RecallLocalization.text("这份回顾使用较早的整理规则，可以重新生成；原版本会保留。"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
-            if rows.isEmpty { Text("这一天暂无可以可靠整理的内容，原始记录仍可在时间线查看。") }
+            if rows.isEmpty { Text(RecallLocalization.text("这一天暂无可以可靠整理的内容，原始记录仍可在时间线查看。")) }
             ForEach(DailySummarySection.displaySections) { section in
                 let sectionRows = rows.filter { $0.section == section }
                 if !sectionRows.isEmpty {
@@ -54,7 +54,7 @@ struct DailyReviewContentView: View {
         HStack(spacing: 10) {
             Image(systemName: section.systemImage).font(.system(size: 16, weight: .medium))
                 .foregroundStyle(section == .actions ? RecallPalette.warning : RecallPalette.accent).frame(width: 18)
-            Text(section == .progress ? "主线进展" : (section == .insights ? "值得留意" : "接下来要处理"))
+            Text(RecallLocalization.text(section == .progress ? "主线进展" : (section == .insights ? "值得留意" : "接下来要处理")))
                 .font(.system(size: 17, weight: .semibold)).foregroundStyle(RecallPalette.text)
         }.accessibilityAddTraits(.isHeader)
     }
@@ -76,10 +76,13 @@ struct DailyReviewContentView: View {
             }
             if item.section == .actions, let action {
                 HStack(spacing: 16) {
-                    Button(model.reminder(for: action.title, sourceIDs: action.sourceCaptureIDs, candidateID: action.id) == nil ? "设为提醒" : "查看提醒") {
+                    if let reminder = model.reminder(for: action.title, sourceIDs: action.sourceCaptureIDs, candidateID: action.id), reminder.status == .proposed {
+                        Button(RecallLocalization.text("加入今天")) { model.addActionToToday(reminder.id) }
+                    }
+                    Button(model.reminder(for: action.title, sourceIDs: action.sourceCaptureIDs, candidateID: action.id) == nil ? RecallLocalization.text("设为提醒") : RecallLocalization.text("查看提醒")) {
                         model.prepareReminder(title: action.title, detail: action.detail, sourceIDs: action.sourceCaptureIDs, candidateID: action.id)
                     }
-                    Button("已完成") { model.completeSummaryAction(item, summary: summary) }
+                    Button(RecallLocalization.text("已完成")) { model.completeSummaryAction(item, summary: summary) }
                 }.buttonStyle(.borderless).font(.caption).padding(.top, 2)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
@@ -90,7 +93,7 @@ struct DailyReviewContentView: View {
     }
     @ViewBuilder private func itemStatus(_ item: DailySummaryItem) -> some View {
         if let status = item.knowledge?.status, let label = statusLabel(status) {
-            RecallStatusBadge(title: label, warning: status == "blocked").fixedSize()
+            RecallStatusBadge(title: RecallLocalization.text(label), warning: status == "blocked").fixedSize()
         }
     }
 }
@@ -105,11 +108,11 @@ struct TopicMergeSheet: View {
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("合并为同一个主题").font(.title2.bold())
-            Text("只合并浏览方式，原始记录、时间和状态都会保留。可以在主题中撤销合并，相关旧回顾需重新生成。")
+            Text(RecallLocalization.text("合并为同一个主题")).font(.title2.bold())
+            Text(RecallLocalization.text("只合并浏览方式，原始记录、时间和状态都会保留。可以在主题中撤销合并，相关旧回顾需重新生成。"))
                 .foregroundStyle(RecallPalette.secondary)
-            TextField("合并后的主题名称", text: $title).textFieldStyle(.roundedBorder)
-            TextField("筛选主题", text: $search).textFieldStyle(.roundedBorder)
+            TextField(RecallLocalization.text("合并后的主题名称"), text: $title).textFieldStyle(.roundedBorder)
+            TextField(RecallLocalization.text("筛选主题"), text: $search).textFieldStyle(.roundedBorder)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     ForEach(model.matterFiles.filter { !$0.id.hasPrefix("group:") && (search.isEmpty || $0.title.localizedCaseInsensitiveContains(search)) }) { file in
@@ -122,8 +125,8 @@ struct TopicMergeSheet: View {
             if let error { Text(error).foregroundStyle(RecallPalette.warning) }
             HStack {
                 Text("已选 \(selected.count) 个主题").font(.caption)
-                Spacer(); Button("取消") { dismiss() }.disabled(saving)
-                Button("合并主题") {
+                Spacer(); Button(RecallLocalization.text("取消")) { dismiss() }.disabled(saving)
+                Button(RecallLocalization.text("合并主题")) {
                     saving = true
                     Task { if await model.mergeTopics(title: title, members: selected) { dismiss() } else { error = "未能合并，主题或分类可能已经变化。" }; saving = false }
                 }.buttonStyle(.borderedProminent).disabled(saving || selected.count < 2 || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

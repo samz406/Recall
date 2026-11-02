@@ -37,7 +37,7 @@ enum ReminderHistoryVerification {
         try encoder.encode(state).write(to: storage.stateURL)
         return storage
     }
-    private static func store(_ state: RecallState) throws -> FileMemoryStore { try FileMemoryStore(storage: storage(state)) }
+    private static func store(_ state: RecallState) throws -> FileMemoryStore { try verificationStore(storage: storage(state)) }
     private static func legacyDates() throws {
         let encoder = JSONEncoder(), decoder = JSONDecoder()
         var old = item(status: .cancelled); old.completedAt = now.addingTimeInterval(-86_400)
@@ -88,13 +88,13 @@ enum ReminderHistoryVerification {
         var dismissed = old; dismissed.sourceCaptureIDs = [source.id]; dismissed.dueAt = now.addingTimeInterval(-60)
         let complete = item("整理 Nova 方案", status: .completed, source: source), scheduled = item("保留已安排提醒", status: .scheduled)
         let storage = try storage(RecallState(captures: [source], reminders: [dismissed, complete, scheduled]))
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let count = try await store.restoreReminderHistory(ids: [dismissed.id, complete.id, scheduled.id], now: now)
         let state = await store.snapshot()
         try expect(count == 2 && state.reminders.filter { $0.status == .proposed }.count == 2, "恢复没有准确限制为历史记录")
         try expect(state.reminders.first { $0.id == dismissed.id }?.dueAt == nil && state.reminders.first { $0.id == dismissed.id }?.closedAt == nil, "恢复保留了过去的通知时间或终态时间")
         try expect(state.reminders.first { $0.id == scheduled.id }?.status == .scheduled && state.captures.count == 1, "恢复误改了通知状态或原始记录")
-        let reopened = try FileMemoryStore(storage: storage)
+        let reopened = try verificationStore(storage: storage)
         let snapshot = await reopened.snapshot()
         try expect(snapshot.reminders.filter { $0.status == .proposed }.count == 2, "重启后恢复状态丢失")
     }
@@ -174,7 +174,7 @@ enum ReminderHistoryVerification {
         let source = capture(), old = item(source: capture())
         var linked = old; linked.sourceCaptureIDs = [source.id]
         let storage = try storage(RecallState(captures: [source], reminders: [linked]))
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let backup = storage.stateURL.appendingPathExtension("backup")
         try FileManager.default.moveItem(at: storage.stateURL, to: backup)
         try FileManager.default.createDirectory(at: storage.stateURL, withIntermediateDirectories: false)

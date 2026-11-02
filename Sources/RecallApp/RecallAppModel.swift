@@ -11,6 +11,7 @@ enum ReminderDiscoveryStatus: Equatable {
 }
 
 extension Notification.Name {
+    static let recallOpenAsk = Notification.Name("im.recall.app.open-ask")
     static let recallReminderAction = Notification.Name("im.recall.app.reminder-action")
     static let recallOpenReminders = Notification.Name("im.recall.app.open-reminders")
     static let recallOpenWeeklyReview = Notification.Name("im.recall.app.open-weekly-review")
@@ -29,6 +30,23 @@ final class RecallAppModel: ObservableObject {
             }
         }
     }
+    let isPreview: Bool
+    let globalShortcuts = GlobalShortcutService()
+    let captureFeedback = CaptureFeedbackPresenter()
+    var shortcutConfigurationID: String?
+    var isRecordingShortcut = false
+    @Published var credentialMaintenanceWarning: String?
+    @Published var shortcutsReady = false
+    @Published var openAskRequested = false
+    @Published var pendingEvidenceURL: URL?
+    @Published var showsOnboarding = false
+    @Published var showsTextEntry = false
+    @Published var showsMeetingPanel = false
+    @Published var addedTodayUndo: ReminderCandidate?
+    @Published var lastExternalTarget: CaptureTarget?
+    var openMainWindow: (() -> Void)?
+    private var targetObserver: NSObjectProtocol?
+    private var shortcutWakeObserver: NSObjectProtocol?
     let timelineWorkspace = TimelineWorkspace()
     @Published private(set) var isLoadingSavedState = true
     private var isFinishingStartup = true
@@ -80,7 +98,7 @@ final class RecallAppModel: ObservableObject {
     private var chatTask: Task<Void, Never>?
     private var chatRequestID = UUID()
     @Published var noticeMessage: String?
-    @Published private(set) var deletionUndoNotice: RecentlyDeletedMemory?
+    @Published var deletionUndoNotice: RecentlyDeletedMemory?
     @Published private(set) var enterKeyMonitorStatus: GlobalEnterKeyRecorderStatus = .disabled
     @Published private(set) var diagnosticEntries: [RecallDiagnosticEntry]
     @Published private(set) var reminderDeliveryStates: [UUID: ReminderDeliveryState] = [:]
@@ -89,7 +107,7 @@ final class RecallAppModel: ObservableObject {
 
     let storage: RecallStorage
     let store: FileMemoryStore
-    private let pipeline: CapturePipeline
+    let pipeline: CapturePipeline
     private let assistant: MemoryAssistant
     private var reminderDiscoveryTask: Task<Void, Never>?
     private var reminderDiscoveryRunID = UUID()
@@ -112,6 +130,7 @@ final class RecallAppModel: ObservableObject {
     private var appActiveObserver: NSObjectProtocol?
 
     init(previewState: RecallState? = nil) {
+        self.isPreview = previewState != nil
         do {
             let storage: RecallStorage
             if previewState == nil { storage = try RecallStorage() }
@@ -124,13 +143,21 @@ final class RecallAppModel: ObservableObject {
             self.diagnosticLog = RecallDiagnosticLogStore(storage: storage)
             self.diagnosticEntries = diagnosticLog.entries
             let startupRead = Date.now
-            self.store = try FileMemoryStore(storage: storage, deferMaintenance: true)
+            self.store = try FileMemoryStore(storage: storage, deferMaintenance: true, credentials: previewState == nil ? KeychainCredentialStore.shared : InMemoryCredentialStore())
             self.pipeline = CapturePipeline(store: store, storage: storage)
             self.assistant = MemoryAssistant(store: store)
             if let previewState {
                 state = previewState; isLoadingSavedState = false; isFinishingStartup = false
                 rebuildMatterFiles()
                 return
+            }
+            targetObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    if let target = CaptureTargetResolver.current(), target.bundleIdentifier != Bundle.main.bundleIdentifier { self?.lastExternalTarget = target }
+                }
+            }
+            shortcutWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.shortcutConfigurationID = nil; self?.configureShortcuts() }
             }
             recordDiagnostic(.info, source: "App", message: "应用已启动")
             reminderActionObserver = NotificationCenter.default.addObserver(
@@ -159,12 +186,22 @@ final class RecallAppModel: ObservableObject {
             }
             Task {
                 state = await store.snapshot()
+                credentialMaintenanceWarning = await store.credentialMaintenanceWarning
                 isLoadingSavedState = false
+                configureShortcuts()
+                resolveEvidenceURL()
                 recordDiagnostic(.info, source: "Startup", message: "已载入保存的页面数据", metadata: [
                     "readMilliseconds": "\(max(0, Int(Date.now.timeIntervalSince(startupRead) * 1000)))",
                     "dailyReviewCount": "\(state.dailySummaries.count)", "captureCount": "\(state.captures.count)"])
                 // Publish saved reports before recovery, cleanup, projection or indexing.
                 await Task.yield()
+                // Backup cleanup can read large legacy files; keep it off the first-frame path.
+                // A failed Keychain migration requires the user's explicit retry, not repeated prompts.
+                if credentialMaintenanceWarning == nil {
+                    do { try await store.retryCredentialMaintenance() }
+                    catch { recordError(error, source: "Credentials", message: "旧凭据备份清理未完成，可在设置中重试") }
+                    credentialMaintenanceWarning = await store.credentialMaintenanceWarning
+                }
                 do { try await store.recoverCaptureUnderstandingJobs(); try await store.recoverSummaryFeedbackJobs() }
                 catch { recordError(error, source: "Feedback", message: "恢复反馈任务失败，将稍后重试") }
                 await cleanupExpiredRecentlyDeleted()
@@ -185,6 +222,7 @@ final class RecallAppModel: ObservableObject {
         state = await store.snapshot()
         guard !isFinishingStartup else { return }
         rebuildMatterFiles()
+        configureShortcuts()
         updateEnterKeyRecorder()
         await refreshReminderDeliveryStates()
         armDailySummaryTimer()
@@ -776,23 +814,36 @@ final class RecallAppModel: ObservableObject {
         noticeMessage = granted ? "屏幕记录权限已可用。" : "请在“系统设置 → 隐私与安全性 → 屏幕与系统音频录制”中允许 Recall。"
     }
 
-    func record(rule: EventRule, userText: String? = nil, diagnosticSource: String = "Capture") {
+    func record(rule: EventRule, userText: String? = nil, diagnosticSource: String = "Capture", targetOverride: CaptureTarget? = nil, backgroundFeedback: Bool = false) {
+        guard !isRecording else { return }
+        guard !showsOnboarding else { noticeMessage = RecallLocalization.both("请先退出样例，再保存真实记录。", "Leave the sample before saving a real record."); return }
         if rule.template == .dailyReview {
             guard rule.isEnabled else { noticeMessage = "请先启用这条记录规则。"; return }
             generateDailyReview(on: .now)
             return
         }
         isRecording = true
+        captureFeedback.dismiss()
+        noticeMessage = nil
         recordDiagnostic(
             .info,
             source: diagnosticSource,
             message: "开始记录",
             metadata: ["eventTemplate": rule.template.rawValue, "scope": rule.scope.rawValue]
         )
+        let target = targetOverride ?? CaptureTargetResolver.current()
         Task {
-            defer { isRecording = false }
+            var saved: CaptureRecord?
+            defer {
+                isRecording = false
+                if backgroundFeedback {
+                    if let saved { captureFeedback.show(RecallLocalization.both("已保存到时间线", "Saved to Timeline"), target: target, undo: { [weak self] in self?.deleteCapture(saved) }) }
+                    else if let message = noticeMessage { captureFeedback.show(RecallLocalization.text(message), target: target) }
+                }
+            }
             do {
-                let record = try await pipeline.record(using: rule, userText: userText)
+                let record = try await pipeline.record(using: rule, userText: userText, targetOverride: target)
+                saved = record
                 await refresh()
                 recordDiagnostic(
                     .info,
@@ -800,15 +851,17 @@ final class RecallAppModel: ObservableObject {
                     message: "记录已写入时间线",
                     metadata: ["eventTemplate": record.eventTemplate.rawValue, "hasScreenshot": record.imageRelativePath == nil ? "false" : "true"]
                 )
-                noticeMessage = "已记录：\(record.summary ?? "无可提取文本")"
+                noticeMessage = RecallLocalization.both("已记录：", "Saved: ") + (record.summary ?? RecallLocalization.both("无可提取文本", "No readable text"))
             } catch CapturePipelineError.screenRecordingPermissionRequired {
                 recordDiagnostic(.warning, source: diagnosticSource, message: "屏幕权限不可用", metadata: ["eventTemplate": rule.template.rawValue])
                 // 记录失败不应阻塞其他本地功能；提醒发现只读取已有记录，无需此权限。
                 noticeMessage = "未能截图记录：如需保存屏幕内容，请在系统设置中允许屏幕与系统音频录制。"
             } catch CapturePipelineError.suppressedByUser {
+                noticeMessage = CapturePipelineError.suppressedByUser.localizedDescription
                 recordDiagnostic(.info, source: diagnosticSource, message: "内容命中本地忽略规则，已跳过")
             } catch {
                 recordDiagnostic(.error, source: diagnosticSource, message: "记录失败", metadata: ["eventTemplate": rule.template.rawValue, "error": recallSafeErrorCode(error)])
+                noticeMessage = error is CapturePipelineError || error is CredentialError ? error.localizedDescription : RecallLocalization.both("未能保存记录，请检查屏幕权限或重试。", "Unable to save. Check Screen Recording permission or try again.")
             }
         }
     }
@@ -1066,7 +1119,7 @@ final class RecallAppModel: ObservableObject {
         if !announce { return }
         guard reminderDiscoveryTask == nil else { return }
         let config = state.llmConfiguration
-        guard state.privacy.cloudUseEnabled, config.provider != .localOnly, !config.apiKey.isEmpty else {
+        guard state.privacy.cloudUseEnabled, config.provider != .localOnly, config.hasCredential else {
             if announce {
                 let message = ReminderDiscoveryError.unavailable.localizedDescription
                 reminderDiscoveryStatus = .unavailable(message); noticeMessage = message
@@ -1088,7 +1141,7 @@ final class RecallAppModel: ObservableObject {
             }
             do {
                 let result = try await store.discoverRemindersUsingModel(force: force, automatic: false,
-                    responder: responder ?? CompatibleLLM(configuration: config, apiKey: config.apiKey), progress: { [weak self] value in
+                    responder: responder ?? (try ModelResponderFactory.make(configuration: config)), progress: { [weak self] value in
                         await self?.updateReminderDiscovery(value, runID: runID, taskID: taskID)
                     })
                 try Task.checkCancellation()
@@ -1614,14 +1667,8 @@ final class RecallAppModel: ObservableObject {
     }
 
     func dailySummaryResponder() -> (any LLMResponding)? {
-        let configuration = state.llmConfiguration
-        let apiKey = configuration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard state.privacy.cloudUseEnabled,
-              configuration.provider != .localOnly,
-              !apiKey.isEmpty else {
-            return nil
-        }
-        return CompatibleLLM(configuration: configuration, apiKey: apiKey)
+        guard state.privacy.cloudUseEnabled, state.llmConfiguration.provider != .localOnly else { return nil }
+        return try? ModelResponderFactory.make(configuration: state.llmConfiguration)
     }
 
     private func armDailySummaryTimer() {

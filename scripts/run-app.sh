@@ -48,6 +48,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <string>RecallApp</string>
     <key>CFBundleIdentifier</key>
     <string>im.recall.app</string>
+    <key>CFBundleURLTypes</key>
+    <array><dict><key>CFBundleURLName</key><string>Recall local evidence</string><key>CFBundleURLSchemes</key><array><string>recall</string></array></dict></array>
     <key>CFBundleIconFile</key>
     <string>AppIcon.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>

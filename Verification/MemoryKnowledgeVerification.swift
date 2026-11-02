@@ -16,7 +16,7 @@ enum MemoryKnowledgeVerification {
     }
     static func fixture() throws -> (RecallStorage, FileMemoryStore) {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
-        return (storage, try FileMemoryStore(storage: storage))
+        return (storage, try verificationStore(storage: storage))
     }
     static func run() async throws {
         try sourceOwnership()
@@ -155,7 +155,7 @@ enum MemoryKnowledgeVerification {
         try await store.organizeMemory(force: true)
         state = await store.snapshot()
         try expect(!state.memoryKnowledge.claims.isEmpty, "手动整理没有处理待整理记录")
-        let reloaded = try FileMemoryStore(storage: storage)
+        let reloaded = try verificationStore(storage: storage)
         let restored = await reloaded.snapshot()
         try expect(restored.memoryKnowledge.claims.map(\.id) == state.memoryKnowledge.claims.map(\.id), "重启丢失事实或整理检查点")
         _ = try await reloaded.deleteCapture(id: record.id)
@@ -196,7 +196,7 @@ enum MemoryKnowledgeVerification {
         report.sourceVersions = [recent.id: oldVersion]
         state.weeklyReports = [report]
         try encoder.encode(state).write(to: storage.stateURL, options: .atomic)
-        let reloaded = try FileMemoryStore(storage: storage)
+        let reloaded = try verificationStore(storage: storage)
         _ = try await reloaded.prune()
         let pruned = await reloaded.snapshot()
         try expect(pruned.captures.first?.imageRelativePath == nil && pruned.memoryKnowledge.claims.contains { $0.kind == .event && $0.usable() }, "截图到期误删了仍有效的文字事实")

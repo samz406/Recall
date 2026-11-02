@@ -134,14 +134,14 @@ enum WeeklyReviewVerification {
     private static func verifyPersistenceAndDeletion() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("Recall-Weekly-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let storage = try RecallStorage(rootURL: root), store = try FileMemoryStore(storage: storage)
+        let storage = try RecallStorage(rootURL: root), store = try verificationStore(storage: storage)
         let note = ManualMatterNote(title: "Nacre 清单整理", detail: "清单已归档，保留三条修改理由。", status: .completed, eventAt: date(20), reviewCategory: .work)
         _ = try await store.addManualMatter(note, now: date(20))
         let state = await store.snapshot(), period = ReviewPeriod.make(.currentWeek, at: date(21, 20), calendar: calendar)
         let report = try await WeeklyReviewEngine().generate(in: state, period: period, template: ReviewTemplate(kind: .work), now: date(21, 20))
         _ = try await store.commitWeeklyReport(report)
         try await store.editWeeklyReport(id: report.id, markdown: "# 人工调整\n清单整理已完成。")
-        let reread = try FileMemoryStore(storage: storage)
+        let reread = try verificationStore(storage: storage)
         let reloaded = await reread.snapshot()
         try expect(reloaded.weeklyReports.first?.editedMarkdown?.contains("人工调整") == true, "回顾快照和编辑内容必须持久保存")
         let captureID = state.captures[0].id
@@ -386,7 +386,7 @@ private extension WeeklyReviewVerification {
     static func verifyIndependentRefinement() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("Recall-Weekly-Retry-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let store = try FileMemoryStore(storage: RecallStorage(rootURL: root))
+        let store = try verificationStore(storage: RecallStorage(rootURL: root))
         _ = try await store.addManualMatter(ManualMatterNote(title: "Orion 联系测试", detail: "联络表核对已完成，测试结果已保留。", status: .completed,
             eventAt: date(20), reviewCategory: .work), now: date(20))
         var privacy = await store.snapshot().privacy; privacy.cloudUseEnabled = true; try await store.updatePrivacy(privacy)

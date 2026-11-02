@@ -417,7 +417,7 @@ public struct ReminderExtractor: Sendable {
             guard isSemanticallyEquivalent(existing.title, candidate.title) else { return false }
         }
         switch existing.status {
-        case .proposed, .scheduled, .snoozed:
+        case .proposed, .planned, .scheduled, .snoozed:
             return sameOccurrence(existing, candidate)
         case .dismissed:
             return (existing.dismissedUntil ?? existing.updatedAt.addingTimeInterval(30 * 86_400)) > now

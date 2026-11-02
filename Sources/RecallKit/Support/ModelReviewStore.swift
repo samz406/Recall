@@ -10,7 +10,7 @@ extension FileMemoryStore {
                                    onProgress: (@Sendable (ReviewGenerationProgress) async -> Void)? = nil) async throws -> RecallState {
         try Task.checkCancellation()
         guard state.privacy.cloudUseEnabled, state.llmConfiguration.provider != .localOnly,
-              !state.llmConfiguration.apiKey.isEmpty else { throw ModelReviewError.unavailable }
+              state.llmConfiguration.hasCredential else { throw ModelReviewError.unavailable }
         guard expectedConfiguration == nil || state.llmConfiguration == expectedConfiguration,
               expectedPrivacy == nil || state.privacy == expectedPrivacy else { throw ModelReviewError.changed }
         let baseline = state

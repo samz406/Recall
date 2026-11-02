@@ -75,7 +75,7 @@ enum ModelReminderDiscoveryVerification {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-reminder-model-" + UUID().uuidString))
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(value).write(to: storage.stateURL)
-        return (try FileMemoryStore(storage: storage), storage)
+        return (try verificationStore(storage: storage), storage)
     }
     static func run() async throws {
         try await semanticPath(); try await ownership(); try await falsePositives(); try await validation()
@@ -207,7 +207,7 @@ enum ModelReminderDiscoveryVerification {
         let calls = await model.log(); try check(calls.isEmpty, "未启用后台发现就调用模型")
         try await memory.setAutomaticReminderDiscovery(true)
         _ = try await memory.discoverRemindersUsingModel(automatic:true, responder:model)
-        let reopened = try FileMemoryStore(storage:storage), saved = await reopened.snapshot()
+        let reopened = try verificationStore(storage:storage), saved = await reopened.snapshot()
         try check(saved.reminderLearningProfile.automaticDiscovery == true && saved.reminders.first?.analysis != nil, "设置或模型依据未持久化")
     }
     static func changedSources() async throws {

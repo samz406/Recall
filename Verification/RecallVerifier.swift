@@ -5,7 +5,10 @@ import RecallKit
 @main
 struct RecallVerifier {
     static func main() async {
+        UserDefaults.standard.set("zh-Hans", forKey: RecallLocalization.languageKey)
+
         do {
+            try await InternationalWorkflowVerification.run()
             try await ModelReminderDiscoveryVerification.run()
             try await DailyReviewReminderVerification.run()
             try await PageExperienceVerification.run()
@@ -87,9 +90,9 @@ struct RecallVerifier {
             try await verifyLocalAnswer()
             if CommandLine.arguments.contains("--live-anthropic") {
                 try await verifyLiveAnthropicCompatibility()
-                print("PASS: RecallVerifier completed 261 checks, including live Anthropic compatibility.")
+                print("PASS: RecallVerifier completed 269 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 260 integration checks.")
+                print("PASS: RecallVerifier completed 268 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -308,7 +311,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("Recall-Matter-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let record = CaptureRecord(eventTemplate: .taskCommitment, contentHash: "correction-test", ocrText: "[聊天·自己] 提醒我明天提交账单导出修复。")
         try await store.addCapture(record)
         let reminder = ReminderCandidate(title: "提交账单导出修复", detail: "测试", dueAt: .now, sourceCaptureIDs: [record.id], confidence: 0.9)
@@ -317,7 +320,7 @@ struct RecallVerifier {
         try await store.saveMatterCorrection(correction)
         try await store.setExperienceHints(enabled: true)
         try await store.dismissExperience(id: "test-hint")
-        let reloaded = try FileMemoryStore(storage: storage)
+        let reloaded = try verificationStore(storage: storage)
         let state = await reloaded.snapshot()
         try expect(state.captures.first?.ocrText == record.ocrText, "纠错不能改写原始证据")
         try expect(state.reminders.first?.status == .completed, "用户标记完成应同步关闭关联提醒")
@@ -345,7 +348,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("Recall-ManualMatter-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let now = Date.now
         let yesterday = now.addingTimeInterval(-86400)
         let first = try await store.addManualMatter(ManualMatterNote(title: "  账单导出修复  ",
@@ -354,7 +357,7 @@ struct RecallVerifier {
             detail: "已交付验收结果。", status: .completed, eventAt: now), now: now.addingTimeInterval(1))
         let neutral = try await store.addManualMatter(ManualMatterNote(title: "周末旅行备忘",
             detail: "湖边路线", status: .explored, eventAt: now), now: now)
-        let reloaded = try FileMemoryStore(storage: storage)
+        let reloaded = try verificationStore(storage: storage)
         let state = await reloaded.snapshot()
         let engine = MatterMemoryEngine()
         let files = engine.files(in: state)
@@ -423,7 +426,7 @@ struct RecallVerifier {
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(legacyState).write(to: storage.stateURL, options: .atomic)
 
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let migratedState = await store.snapshot()
         try expect(migratedState.rules.contains(where: { $0.template == .enterKeyTrigger && !$0.isEnabled }), "旧状态没有补入默认关闭的 Enter 键规则")
     }
@@ -806,7 +809,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let candidate = ReminderCandidate(title: "在用户指定时间提醒", detail: "验证自定义提醒时间。", confidence: 0.8)
         try await store.replaceReminders([candidate])
 
@@ -816,7 +819,7 @@ struct RecallVerifier {
         scheduled.status = .scheduled
         try await store.updateReminder(scheduled)
 
-        let reloaded = try FileMemoryStore(storage: storage)
+        let reloaded = try verificationStore(storage: storage)
         let restored = await reloaded.snapshot().reminders.first
         try expect(restored?.status.rawValue == ReminderStatus.scheduled.rawValue, "用户确认的提醒状态没有保存")
         try expect(abs((restored?.dueAt?.timeIntervalSince1970 ?? 0) - selectedDate.timeIntervalSince1970) < 0.01, "用户选择的提醒时间没有保存")
@@ -836,7 +839,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let capture = makeCapture(text: "待办：明天提交删除联动测试", app: "Verifier")
         let linked = ReminderCandidate(title: "提交删除联动测试", detail: "测试", sourceCaptureIDs: [capture.id], confidence: 0.9)
         let manual = ReminderCandidate(title: "手动提醒", detail: "保留", sourceCaptureIDs: [], confidence: 1, origin: .manual)
@@ -914,7 +917,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let settings = DailySummarySettings(isEnabled: true, hour: 0, minute: 8)
         let capture = makeCapture(text: "待办：测试每日总结删除联动", app: "Verifier")
         let summary = DailySummary(
@@ -1051,7 +1054,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let captureID = UUID()
         let screenshotPath = try storage.saveScreenshot(Data("image".utf8), captureID: captureID)
         let capture = CaptureRecord(
@@ -1133,7 +1136,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         var capture = makeCapture(text: "忽略这段重复的测试记录内容", app: "mockeditor")
         capture.sourceBundleIdentifier = "com.example.mockeditor"
         try await store.addCapture(capture)
@@ -1466,7 +1469,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let indexAvailable = await store.isIntelligenceIndexAvailable()
         try expect(indexAvailable, "SQLite/FTS5 本地智能索引没有启用")
         let capture = makeCapture(text: "项目：RecallUniqueFTSTerm 完成智能索引迁移", app: "Verifier")
@@ -1500,7 +1503,7 @@ struct RecallVerifier {
         if let memory = consolidation.memories.first {
             try await store.reviewUserMemory(id: memory.id, status: .confirmed)
         }
-        let reloaded = try FileMemoryStore(storage: storage)
+        let reloaded = try verificationStore(storage: storage)
         let restored = await reloaded.snapshot()
         try expect(!restored.episodes.isEmpty && !restored.projects.isEmpty, "工作片段或项目状态重新加载后丢失")
         try expect(restored.dailySummaries.first?.briefing != nil, "结构化简报重新加载后丢失")
@@ -1533,7 +1536,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let pipeline = CapturePipeline(
             store: store,
             storage: storage,
@@ -1599,10 +1602,10 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let capture = makeCapture(text: "本地持久化验证", app: "Recall")
         try await store.addCapture(capture)
-        let reloaded = try FileMemoryStore(storage: storage)
+        let reloaded = try verificationStore(storage: storage)
         let snapshot = await reloaded.snapshot()
         try expect(snapshot.captures.count == 1, "重新加载后记录丢失")
         try expect(snapshot.captures.first?.ocrText == "本地持久化验证", "重新加载后的 OCR 文本不一致")
@@ -1612,7 +1615,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let custom = LLMConfiguration(
             provider: .anthropicCompatible,
             baseURLString: "https://example.invalid/custom-anthropic",
@@ -1620,12 +1623,12 @@ struct RecallVerifier {
             apiKey: "plain-text-test-key"
         )
         try await store.updateLLMConfiguration(custom)
-        let reloaded = try FileMemoryStore(storage: storage)
+        let reloaded = try verificationStore(storage: storage)
         let restored = await reloaded.snapshot().llmConfiguration
         try expect(restored.provider == .anthropicCompatible, "自定义模型类型没有保存")
         try expect(restored.baseURLString == custom.baseURLString, "自定义 API 地址没有保存")
         try expect(restored.model == custom.model, "自定义模型名称没有保存")
-        try expect(restored.apiKey == "plain-text-test-key", "普通文本 API Key 没有保存")
+        try expect(restored.apiKey.isEmpty && restored.hasCredential, "密钥不能再写入普通状态文件")
     }
 
     private static func verifyMiniMaxAuthenticationHeaders() async throws {
@@ -1674,7 +1677,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let capture = makeCapture(text: "上午完成了 Recall 的时间线检索修复。", app: "Xcode")
         try await store.addCapture(capture)
         try await store.updateLLMConfiguration(LLMConfiguration(provider: .localOnly))
@@ -1689,7 +1692,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: .now)
         var summaryIDs: [UUID] = []
@@ -1722,7 +1725,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let summary = DailySummary(
             day: .now,
             content: "家庭事项：妙妙的 6 岁生日聚会已办，安安、糯米和小满到场；现有记录没有写妙妙的出生日期。",
@@ -1752,7 +1755,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("Recall-Commands-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let capture = makeCapture(text: "测试记忆：项目预算周五评审", app: "测试笔记")
         try await store.addCapture(capture)
         let reminder = ReminderCandidate(title: "提交预算评审", detail: "测试提醒", dueAt: .now, sourceCaptureIDs: [capture.id], confidence: 0.9)
@@ -1770,7 +1773,7 @@ struct RecallVerifier {
         try expect(result.role == .system && result.content.contains("已清空"), "命令应本地返回实际执行结果，无模型密钥也能工作")
         try expect(cleared.messages.map(\.id) == [result.id] && cleared.conversationSummary == nil && cleared.conversationSummaryCoveredMessageCount == 0, "清空应移除全部聊天历史及压缩上下文，只留下命令结果")
         try expect(cleared.captures.map(\.id) == [capture.id] && cleared.reminders.map(\.id) == [reminder.id] && cleared.dailySummaries.map(\.id) == [summary.id], "清会话不能删除采集、提醒和每日总结")
-        let reloaded = try FileMemoryStore(storage: storage)
+        let reloaded = try verificationStore(storage: storage)
         let persisted = await reloaded.snapshot()
         try expect(persisted.messages.map(\.id) == [result.id] && persisted.conversationSummary == nil, "重启后不能恢复已清空的会话和摘要")
         let unknown = try await assistant.ask("/unknown")
@@ -1803,7 +1806,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("Recall-Clear-Race-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         try await store.addCapture(makeCapture(text: "测试项目：上周完成预算方案", app: "测试笔记"))
         let old = await store.conversationSnapshot()
         let assistant = MemoryAssistant(store: store)
@@ -1835,7 +1838,7 @@ struct RecallVerifier {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = try RecallStorage(rootURL: root)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         try await store.updatePrivacy(PrivacySettings(cloudUseEnabled: true))
         try await store.updateLLMConfiguration(LLMConfiguration(provider: .openAICompatible, apiKey: ""))
         let probe = ChatPersistenceProbe()
@@ -1845,7 +1848,7 @@ struct RecallVerifier {
                 probe.didRefreshAfterSave = true
             }
             throw VerificationError.failed("缺少 API Key 时问一问应失败")
-        } catch LLMError.missingAPIKey {
+        } catch CredentialError.unavailable {
             // 预期：模型请求失败，但用户消息已经持久化并触发界面刷新。
         }
         let snapshot = await store.snapshot()
@@ -1960,4 +1963,8 @@ enum VerificationError: LocalizedError {
         case .failed(let message): message
         }
     }
+}
+
+func verificationStore(storage: RecallStorage, deferMaintenance: Bool = false) throws -> FileMemoryStore {
+    try FileMemoryStore(storage: storage, deferMaintenance: deferMaintenance, credentials: InMemoryCredentialStore())
 }

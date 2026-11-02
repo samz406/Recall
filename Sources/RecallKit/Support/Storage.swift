@@ -82,6 +82,8 @@ public struct RecallStorage: Sendable {
 }
 
 public struct RecallState: Codable, Sendable {
+    public var schemaVersion = 2
+    public var workflow = WorkflowSettings()
     public var rules: [EventRule]
     public var captures: [CaptureRecord]
     public var messages: [ConversationMessage]
@@ -183,6 +185,7 @@ public struct RecallState: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case schemaVersion, workflow
         case topicReviews, understandingJobs, understandingSettings, dailyReviewCheckpoints, pendingDailyReviewMaintenance
         case summaryFeedback, summaryFeedbackSettings
         case rules, captures, messages, reminders, reminderDiscoveryCheckpoint, reminderLearningProfile, dailySummaries, dailySummarySettings
@@ -194,6 +197,10 @@ public struct RecallState: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        guard schemaVersion <= 2 else { throw WorkflowError.changed }
+        schemaVersion = 2
+        workflow = try container.decodeIfPresent(WorkflowSettings.self, forKey: .workflow) ?? WorkflowSettings()
         topicReviews = try container.decodeIfPresent([TopicModelReview].self, forKey: .topicReviews) ?? []
         understandingJobs = try container.decodeIfPresent([CaptureUnderstandingJob].self, forKey: .understandingJobs) ?? []
         understandingSettings = try container.decodeIfPresent(CaptureUnderstandingSettings.self, forKey: .understandingSettings) ?? CaptureUnderstandingSettings()
@@ -236,6 +243,9 @@ public struct RecallState: Codable, Sendable {
 
 public actor FileMemoryStore {
     let storage: RecallStorage
+    let credentials: any CredentialStore
+    var pendingLegacyCredential: (id: UUID, key: String)?
+    public internal(set) var credentialMaintenanceWarning: String?
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     var state: RecallState
@@ -249,7 +259,8 @@ public actor FileMemoryStore {
         try self.init(storage: RecallStorage())
     }
 
-    public init(storage: RecallStorage, deferMaintenance: Bool = false) throws {
+    public init(storage: RecallStorage, deferMaintenance: Bool = false, credentials: any CredentialStore = KeychainCredentialStore.shared) throws {
+        self.credentials = credentials
         self.storage = storage
         intelligenceIndex = try? SQLiteIntelligenceIndex(databaseURL: storage.intelligenceDatabaseURL)
         encoder = JSONEncoder()
@@ -261,6 +272,30 @@ public actor FileMemoryStore {
         if FileManager.default.fileExists(atPath: storage.stateURL.path) {
             let data = try Data(contentsOf: storage.stateURL)
             var restoredState = try decoder.decode(RecallState.self, from: data)
+            if !restoredState.llmConfiguration.apiKey.isEmpty {
+                var config = restoredState.llmConfiguration
+                // A pre-ID archive must find the same Keychain item after an interrupted migration.
+                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let savedConfig = json?["llmConfiguration"] as? [String: Any]
+                if savedConfig?["connectionID"] == nil {
+                    config.connectionID = MatterEvidence.eventID(source: UUID(uuidString: "9BC4F467-7190-4A65-AC39-E591E87A1817")!, topic: storage.rootURL.standardizedFileURL.path, ordinal: 0)
+                }
+                do {
+                    if try credentials.read(config.connectionID) == nil { try credentials.write(config.apiKey, id: config.connectionID) }
+                    guard try credentials.read(config.connectionID) != nil else { throw CredentialError.unavailable }
+                    config.apiKey = ""; config.credentialReference = config.connectionID.uuidString; config.credentialRevision += 1
+                    restoredState.llmConfiguration = config
+                    try Self.write(restoredState, encoder: encoder, to: storage.stateURL)
+                } catch {
+                    pendingLegacyCredential = (config.connectionID, config.apiKey)
+                    config.apiKey = ""; config.credentialReference = nil; restoredState.llmConfiguration = config
+                    credentialMaintenanceWarning = "Credential migration pending. Local records are read-only until Keychain is available."
+                }
+            }
+            if pendingLegacyCredential == nil && !deferMaintenance {
+                do { try Self.scrubLegacyBackups(in: storage.rootURL) }
+                catch { credentialMaintenanceWarning = "Legacy backup cleanup failed; retry from Settings." }
+            }
             let existingTemplates = Set(restoredState.rules.map(\.template))
             let missingRules = EventRule.defaults().filter { !existingTemplates.contains($0.template) }
             if !missingRules.isEmpty {
@@ -277,12 +312,14 @@ public actor FileMemoryStore {
                     return updated
                 }
             }
-            if !deferMaintenance { try Self.write(restoredState, encoder: encoder, to: storage.stateURL) }
+            let credentialsReady = pendingLegacyCredential == nil
+            if !deferMaintenance && credentialsReady { try Self.write(restoredState, encoder: encoder, to: storage.stateURL) }
             state = restoredState
         } else {
             state = RecallState()
             try Self.write(state, encoder: encoder, to: storage.stateURL)
         }
+        if pendingLegacyCredential != nil { indexNeedsRebuild = true; return }
         if deferMaintenance {
             // The saved state is authoritative. Only withdraw known missing/excluded
             // sources before first display; synthesis, migrations and index rebuilding
@@ -432,8 +469,42 @@ public actor FileMemoryStore {
     }
 
     public func updateLLMConfiguration(_ configuration: LLMConfiguration) throws {
-        state.llmConfiguration = configuration
-        try persist()
+        let before = state
+        var config = configuration
+        guard let origin = LLMConfiguration.credentialOrigin(config.baseURLString) else { throw LLMError.invalidBaseURL }
+        var candidateCredentialID: UUID?
+        if !config.apiKey.isEmpty {
+            // Never overwrite the currently referenced Key. A failed state write, even with
+            // a failed cleanup, cannot bind the new service's Key to the previous connection.
+            let id = UUID()
+            try credentials.write(config.apiKey, id: id)
+            candidateCredentialID = id
+            config.credentialReference = id.uuidString
+            config.credentialRevision = max(config.credentialRevision, state.llmConfiguration.credentialRevision) + 1
+        } else if config.hasCredential && origin != LLMConfiguration.credentialOrigin(state.llmConfiguration.baseURLString) {
+            throw CredentialError.endpointChanged
+        }
+        config.apiKey = ""; state.llmConfiguration = config
+        reconcileDailyReviewCheckpoints()
+        do { try persistReviewState() }
+        catch {
+            state = before
+            if let candidateCredentialID { try? credentials.delete(candidateCredentialID) }
+            throw error
+        }
+        if candidateCredentialID != nil, before.llmConfiguration.hasCredential,
+           before.llmConfiguration.credentialID != config.credentialID {
+            try? credentials.delete(before.llmConfiguration.credentialID)
+        }
+    }
+    static func scrubLegacyBackups(in root: URL) throws {
+        for url in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            where url.lastPathComponent.hasPrefix("recall-state.backup-") && url.pathExtension == "json" {
+            guard var json = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any],
+                  var config = json["llmConfiguration"] as? [String: Any], config["apiKey"] != nil else { continue }
+            config.removeValue(forKey: "apiKey"); json["llmConfiguration"] = config
+            try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]).write(to: url, options: .atomic)
+        }
     }
 
     private func invalidateWeeklyReports() {
@@ -738,7 +809,7 @@ public actor FileMemoryStore {
         let actualIDs = Set(removedCaptures.map(\.id))
         let removedSummaries = state.dailySummaries.filter { !$0.sourceCaptureIDs.filter(actualIDs.contains).isEmpty }
         let removedMessages = state.messages.filter { $0.role == .assistant && !$0.citations.filter(actualIDs.contains).isEmpty }
-        let removedReminders = state.reminders.filter { $0.origin != .manual && !$0.sourceCaptureIDs.filter(actualIDs.contains).isEmpty }
+        let removedReminders = state.reminders.filter { $0.status != .planned && $0.origin != .manual && !$0.sourceCaptureIDs.filter(actualIDs.contains).isEmpty }
         let removedEpisodes = state.episodes.filter { !$0.evidenceIDs.filter(actualIDs.contains).isEmpty }
         let affectedProjects = state.projects.filter { !$0.evidenceIDs.filter(actualIDs.contains).isEmpty }
         let removedMemories = state.userMemories.filter { !$0.evidenceIDs.filter(actualIDs.contains).isEmpty }
@@ -792,6 +863,11 @@ public actor FileMemoryStore {
         knowledgeSnapshot.entities = state.memoryKnowledge.entities.filter { !Set($0.sourceIDs).isDisjoint(with: actualIDs) }
         let affectedKeys = Set(knowledgeSnapshot.claims.map(\.key))
         knowledgeSnapshot.suppressedKeys = state.memoryKnowledge.suppressedKeys.filter(affectedKeys.contains)
+        let meetingIDs = Set(removedCaptures.compactMap(\.meetingSessionID)).filter { id in
+            state.captures.filter { $0.meetingSessionID == id }.allSatisfy { actualIDs.contains($0.id) }
+        }
+        transaction.meetingSessions = state.workflow.meetings.filter { meetingIDs.contains($0.id) }
+        state.workflow.meetings.removeAll { meetingIDs.contains($0.id) }
         transaction.memoryKnowledge = knowledgeSnapshot
         transaction.weeklyReports = state.weeklyReports.filter { !$0.sourceIDs.isDisjoint(with: actualIDs) }
         transaction.topicReviews = state.topicReviews.filter { !Set($0.sourceVersions.keys).isDisjoint(with: actualIDs) }
@@ -801,6 +877,10 @@ public actor FileMemoryStore {
         state.captures.removeAll { actualIDs.contains($0.id) }
         state.dailySummaries.removeAll { summary in removedSummaries.contains(where: { $0.id == summary.id }) }
         state.messages.removeAll { message in removedMessages.contains(where: { $0.id == message.id }) }
+        for i in state.reminders.indices where state.reminders[i].status == .planned && !Set(state.reminders[i].sourceCaptureIDs).isDisjoint(with: actualIDs) {
+            state.reminders[i].sourceCaptureIDs.removeAll { actualIDs.contains($0) }
+            state.reminders[i].analysis = nil
+        }
         state.reminders.removeAll { reminder in removedReminders.contains(where: { $0.id == reminder.id }) }
         state.reminderLearningProfile.removeHistorySources(actualIDs)
         state.episodes.removeAll { episode in removedEpisodes.contains(where: { $0.id == episode.id }) }
@@ -908,6 +988,7 @@ public actor FileMemoryStore {
         Self.restoreUnique(transaction.messages, to: &state.messages, id: \.id)
         state.messages.sort { $0.createdAt < $1.createdAt }
         Self.restoreUnique(transaction.reminders, to: &state.reminders, id: \.id)
+        Self.restoreUnique(transaction.meetingSessions ?? [], to: &state.workflow.meetings, id: \.id)
         let calendar = Calendar.current
         state.episodes.removeAll { episode in transaction.affectedDays.contains(where: { calendar.isDate(episode.day, inSameDayAs: $0) }) }
         Self.restoreUnique(transaction.episodes, to: &state.episodes, id: \.id)
@@ -1052,6 +1133,7 @@ public actor FileMemoryStore {
     /// understanding stay valid. The whole-archive reconciliation in `persist()` runs on the
     /// maintenance cycle (`organizeMemory`) instead of blocking every recording.
     private func persistAppended() throws {
+        guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
         try Self.write(state, encoder: encoder, to: storage.stateURL)
         do {
             if indexNeedsRebuild { try intelligenceIndex?.replace(with: state) }
@@ -1092,6 +1174,9 @@ public actor FileMemoryStore {
         state.learnedRoutines.removeAll { $0.evidenceIDs.contains(id) }
         // 提醒正文同样可能包含来源记录中的可识别文本。删除来源时删除其派生提醒，
         // 由用户手动创建且没有来源关联的提醒不受影响。
+        for i in state.reminders.indices where state.reminders[i].status == .planned && state.reminders[i].sourceCaptureIDs.contains(id) {
+            state.reminders[i].sourceCaptureIDs.removeAll { $0 == id }; state.reminders[i].analysis = nil
+        }
         state.reminders.removeAll { $0.sourceCaptureIDs.contains(id) }
         state.reminderLearningProfile.removeHistorySources([id])
         state.messages.removeAll { $0.role == .assistant && $0.citations.contains(id) }
@@ -1107,8 +1192,15 @@ public actor FileMemoryStore {
     public func addMessage(_ message: ConversationMessage, inConversation expectedID: UUID? = nil) throws {
         if expectedID != nil { try Task.checkCancellation() }
         if let expectedID, expectedID != conversationID { throw CancellationError() }
+        let before = state
+        var message = message
+        if message.role == .assistant {
+            message.sourceVersions = Dictionary(uniqueKeysWithValues: message.citations.compactMap { id in
+                state.captures.first(where: { $0.id == id }).map { (id.uuidString, CaptureUnderstandingEngine.sourceVersion($0, in: state)) }
+            })
+        }
         state.messages.append(message)
-        try persist()
+        do { try persist() } catch { state = before; throw error }
     }
 
     public func rateMessage(id: UUID, helpful: Bool?) throws {
@@ -1271,6 +1363,7 @@ public actor FileMemoryStore {
     }
 
     func persist(preservingReviewsFrom previous: RecallState? = nil) throws {
+        guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
         reconcileDailyReviewCheckpoints()
         let liveIDs = Set(state.captures.map(\.id))
         let excludedIDs = Set(state.captures.filter { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id))
@@ -1309,6 +1402,7 @@ public actor FileMemoryStore {
     /// Only review-owned fields changed. Full reconciliation/index maintenance follows
     /// on the existing maintenance cycle; queries use their memory fallback meanwhile.
     func persistReviewState(indexChanged: Bool = false) throws {
+        guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
         try Task.checkCancellation()
         try Self.write(state, encoder: encoder, to: storage.stateURL)
         if indexChanged { indexNeedsRebuild = true }

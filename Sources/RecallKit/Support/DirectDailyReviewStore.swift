@@ -41,7 +41,7 @@ extension FileMemoryStore {
         let start = Date.now, meter = DailyReviewMeter(responder)
         do {
             try Task.checkCancellation()
-            guard state.privacy.cloudUseEnabled, state.llmConfiguration.provider != .localOnly, !state.llmConfiguration.apiKey.isEmpty,
+            guard state.privacy.cloudUseEnabled, state.llmConfiguration.provider != .localOnly, state.llmConfiguration.hasCredential,
                   expectedConfiguration == nil || state.llmConfiguration == expectedConfiguration,
                   expectedPrivacy == nil || state.privacy == expectedPrivacy else { throw ModelReviewError.unavailable }
             let baseline = state

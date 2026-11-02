@@ -84,7 +84,7 @@ enum ProductExperienceVerification {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("Recall-product-" + UUID().uuidString))
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(state).write(to: storage.stateURL)
-        return try FileMemoryStore(storage: storage)
+        return try verificationStore(storage: storage)
     }
     static func mergeLifecycle() async throws {
         let a = try note("Atlas 接口修复"), b = try note("Atlas 联调验证")

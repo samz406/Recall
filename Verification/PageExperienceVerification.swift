@@ -35,7 +35,7 @@ enum PageExperienceVerification {
     private static func referenceSwitches() async throws {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-page-switches-" + UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         _ = try await store.remember(MemoryDirective.parse("记住：以后回答先结论后细节，简洁一点")!)
         var state = await store.snapshot()
         let claim = state.memoryKnowledge.claims.first { $0.usable() && $0.kind == .preference }!
@@ -49,7 +49,7 @@ enum PageExperienceVerification {
         try expect(selected.isEmpty, "停用的长期记忆也不能作为语义查找的名称发给模型")
         settings.referenceInChat = true; settings.disabledClaimKeys = [claim.key]
         try await store.updateMemoryKnowledgeSettings(settings)
-        let reopened = try FileMemoryStore(storage: storage); state = await reopened.snapshot()
+        let reopened = try verificationStore(storage: storage); state = await reopened.snapshot()
         try expect(!state.memoryKnowledgeSettings.references(claim) && plan(state).preferences == nil && plan(state).evidence.isEmpty, "单条停用必须持久化且不能经原文回退绕过")
         settings.disabledClaimKeys = []
         try await reopened.updateMemoryKnowledgeSettings(settings); state = await reopened.snapshot()
@@ -95,7 +95,7 @@ enum PageExperienceVerification {
         state.privacy.cloudUseEnabled = false
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(state).write(to: storage.stateURL)
-        let store = try FileMemoryStore(storage: storage), assistant = MemoryAssistant(store: store)
+        let store = try verificationStore(storage: storage), assistant = MemoryAssistant(store: store)
         var evidenceCount: Int?
         let answer = try await assistant.ask("我最近做了什么", scope: MemoryQueryScope(start: now.addingTimeInterval(-604_800), end: now), onEvidenceReady: { evidenceCount = $0 })
         try expect(!answer.citations.contains(state.captures[1].id) && evidenceCount != nil, "范围外的记录不能被聊天引用，进度必须来自实际检索结果")
@@ -105,11 +105,11 @@ enum PageExperienceVerification {
     private static func feedbackAndClear() async throws {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-page-feedback-" + UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let user = ConversationMessage(role: .user, content: "合成问题"), answer = ConversationMessage(role: .assistant, content: "合成回答")
         try await store.addMessage(user); try await store.addMessage(answer)
         try await store.rateMessage(id: answer.id, helpful: false)
-        let reopened = try FileMemoryStore(storage: storage), rated = await reopened.snapshot()
+        let reopened = try verificationStore(storage: storage), rated = await reopened.snapshot()
         try expect(rated.messages.last?.helpful == false, "回答反馈必须保存到档案")
         try await reopened.rateMessage(id: answer.id, helpful: nil)
         _ = try await reopened.clearConversation()
@@ -126,7 +126,7 @@ enum PageExperienceVerification {
         }
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(RecallState(captures: records)).write(to: storage.stateURL)
-        let store = try FileMemoryStore(storage: storage), assistant = MemoryAssistant(store: store)
+        let store = try verificationStore(storage: storage), assistant = MemoryAssistant(store: store)
         let answer = try await assistant.ask("我做了哪些事情", scope: MemoryQueryScope(recentDays: 7))
         let days = Set(records.filter { answer.citations.contains($0.id) }.map { Calendar.current.startOfDay(for: $0.createdAt) })
         try expect(days.count == 7, "从范围选择最近七天时，即使问题未复述日期也应覆盖各天，不能只回答今天")
@@ -137,7 +137,7 @@ enum PageExperienceVerification {
         let record = source("[聊天·自己] 合成删除回退记录。")
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(RecallState(captures: [record])).write(to: storage.stateURL)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let removed = try await store.moveCapturesToRecentlyDeleted(ids: [record.id], reason: .noLongerNeeded, suppressSimilar: false)!
         let empty = await store.snapshot()
         try expect(empty.captures.isEmpty, "删除后记录必须立即退出时间线")

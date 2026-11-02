@@ -34,10 +34,24 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
     public var provider: LLMProviderKind
     public var baseURLString: String
     public var model: String
-    /// 项目所有者明确选择的本机普通文本凭据，仅持久化在用户 Application Support 配置中。
+    /// Transient request/editor or legacy migration value. Never encoded in state.
     public var apiKey: String
+    public var connectionID: UUID
+    public var credentialReference: String?
+    public var credentialRevision: Int
+    public var hasCredential: Bool { !apiKey.isEmpty || credentialReference != nil }
+    /// A replaceable secret reference keeps the connection identity stable and failed writes isolated.
+    public var credentialID: UUID { credentialReference.flatMap(UUID.init(uuidString:)) ?? connectionID }
     public var anthropicVersion: String
     public var maxOutputTokens: Int
+
+    /// Credentials belong to an origin, not merely a hostname (HTTP downgrade and port changes count).
+    public static func credentialOrigin(_ value: String) -> String? {
+        guard let url = URL(string: value), let scheme = url.scheme?.lowercased(),
+              ["https", "http"].contains(scheme), let host = url.host?.lowercased(), !host.isEmpty,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else { return nil }
+        return "\(scheme)://\(host):\(url.port ?? (scheme == "https" ? 443 : 80))"
+    }
 
     public init(
         provider: LLMProviderKind = .openAICompatible,
@@ -51,6 +65,9 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
         self.baseURLString = baseURLString
         self.model = model
         self.apiKey = apiKey
+        self.connectionID = UUID()
+        self.credentialReference = apiKey.isEmpty ? nil : self.connectionID.uuidString
+        self.credentialRevision = 0
         self.anthropicVersion = anthropicVersion
         self.maxOutputTokens = maxOutputTokens
     }
@@ -62,7 +79,7 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case provider, baseURLString, model, apiKey, anthropicVersion, maxOutputTokens
+        case provider, baseURLString, model, apiKey, anthropicVersion, maxOutputTokens, connectionID, credentialReference, credentialRevision
     }
 
     public init(from decoder: Decoder) throws {
@@ -72,9 +89,31 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
         baseURLString = try container.decodeIfPresent(String.self, forKey: .baseURLString) ?? decodedProvider.defaultBaseURL
         model = try container.decodeIfPresent(String.self, forKey: .model) ?? decodedProvider.defaultModel
         apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
+        connectionID = try container.decodeIfPresent(UUID.self, forKey: .connectionID) ?? UUID()
+        credentialReference = try container.decodeIfPresent(String.self, forKey: .credentialReference)
+        credentialRevision = try container.decodeIfPresent(Int.self, forKey: .credentialRevision) ?? 0
         anthropicVersion = try container.decodeIfPresent(String.self, forKey: .anthropicVersion) ?? "2023-06-01"
         maxOutputTokens = try container.decodeIfPresent(Int.self, forKey: .maxOutputTokens) ?? 1_000
     }
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.provider == rhs.provider && lhs.baseURLString == rhs.baseURLString && lhs.model == rhs.model
+            && lhs.connectionID == rhs.connectionID && lhs.credentialReference == rhs.credentialReference
+            && lhs.credentialRevision == rhs.credentialRevision && lhs.anthropicVersion == rhs.anthropicVersion
+            && lhs.maxOutputTokens == rhs.maxOutputTokens
+    }
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(provider); hasher.combine(baseURLString); hasher.combine(model); hasher.combine(connectionID)
+        hasher.combine(credentialReference); hasher.combine(credentialRevision); hasher.combine(anthropicVersion); hasher.combine(maxOutputTokens)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(provider, forKey: .provider); try c.encode(baseURLString, forKey: .baseURLString)
+        try c.encode(model, forKey: .model); try c.encode(anthropicVersion, forKey: .anthropicVersion)
+        try c.encode(maxOutputTokens, forKey: .maxOutputTokens); try c.encode(connectionID, forKey: .connectionID)
+        try c.encodeIfPresent(credentialReference, forKey: .credentialReference); try c.encode(credentialRevision, forKey: .credentialRevision)
+    }
+
 }
 
 public enum LLMRequestPurpose: Equatable, Sendable {
@@ -301,7 +340,7 @@ public struct ExtractiveMemoryResponder: LLMResponding {
 
     public func answer(to request: LLMRequest) async throws -> LLMAnswer {
         guard !request.context.isEmpty else {
-            return LLMAnswer(content: "我没有在本地记忆中找到与“\(request.question)”相关的记录。你可以先使用“记录此刻”保存一个工作节点。", citedCaptureIDs: [])
+            return LLMAnswer(content: RecallLocalization.both("我没有在本地记忆中找到与“\(request.question)”相关的记录。你可以先使用“记录此刻”保存一个工作节点。", "No matching saved records for ‘\(request.question)’. Record a moment first."), citedCaptureIDs: [])
         }
 
         let citationLines = request.context.enumerated().map { index, record in
@@ -309,7 +348,7 @@ public struct ExtractiveMemoryResponder: LLMResponding {
             let excerpt = record.ocrText.replacingOccurrences(of: "\n", with: " ").prefix(260)
             return "[\(index + 1)] \(date) · \(record.sourceAppName ?? "未知来源")：\(excerpt)"
         }
-        let preface = "以下是基于本地检索记录的可追溯摘要；它不使用云端模型。"
+        let preface = RecallLocalization.both("以下是基于本地检索记录的可追溯摘要；它不使用云端模型。", "Local search results with sources. No cloud model was used.")
         return LLMAnswer(content: "\(preface)\n\n\(citationLines.joined(separator: "\n\n"))", citedCaptureIDs: request.context.map(\.id))
     }
 }
@@ -374,7 +413,7 @@ public struct CompatibleLLM: LLMResponding {
             model: configuration.model,
             maxTokens: outputLimit(for: request),
             temperature: 0.2,
-            system: systemInstruction(for: request),
+            system: systemInstruction(for: request) + RecallLocalization.languageInstruction(for: request),
             messages: anthropicMessages(for: request),
             outputConfig: lowEffort ? .init(effort: "low") : nil,
             thinking: disableThinking ? .init(type: "disabled") : nil
@@ -490,7 +529,7 @@ public struct CompatibleLLM: LLMResponding {
             """
         }
         var sections = [
-            "你是 Recall 的个人记忆助理。使用简体中文回答。",
+            "你是 Recall 的个人记忆助理。使用用户问题的语言回答，除非用户明确指定另一种语言。",
             MemoryQuestionIntent(question: request.question).guidance,
             "记录时间只是采集时间，不等于事情发生时间；只有明确的发生时间证据才可断言当天发生。多个来源若内容相同，只能算一份证据。",
             "本轮的“可用记忆证据”是唯一权威事实来源；历史对话只是语境，不能覆盖、否定或替代本轮证据。",
@@ -520,7 +559,7 @@ public struct CompatibleLLM: LLMResponding {
     }
 
     private func openAIMessages(for request: LLMRequest) -> [OpenAIRequest.Message] {
-        var messages = [OpenAIRequest.Message(role: "system", content: systemInstruction(for: request))]
+        var messages = [OpenAIRequest.Message(role: "system", content: systemInstruction(for: request) + RecallLocalization.languageInstruction(for: request))]
         messages += (request.purpose == .chat ? request.recentMessages : []).compactMap { message in
             switch message.role {
             case .user: OpenAIRequest.Message(role: "user", content: message.content)

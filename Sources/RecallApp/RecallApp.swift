@@ -17,7 +17,7 @@ struct RecallApp: App {
         }
         .defaultSize(width: 1180, height: 780)
 
-        MenuBarExtra("Recall", systemImage: "brain.head.profile") {
+        MenuBarExtra("Recall", systemImage: model.isRecording ? "circle.dotted.circle" : "brain.head.profile") {
             MenuBarPanel()
                 .environmentObject(model)
                 .recallColors()
@@ -36,6 +36,7 @@ struct RecallApp: App {
 final class RecallAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if CommandLine.arguments.contains("--layout-previews") {
+            UserDefaults.standard.set("zh-Hans", forKey: RecallLocalization.languageKey)
             Task { @MainActor in
                 do { try await RecallLayoutPreviews.run(); exit(0) }
                 catch { print("FAIL: layout previews: \(error)"); exit(1) }
@@ -115,29 +116,31 @@ private struct MenuBarPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Recall")
                 .font(.headline)
-            Text(model.state.privacy.screenCapturePaused ? "屏幕采集已暂停" : "本地优先的个人记忆")
+            Text(RecallLocalization.text(model.state.privacy.screenCapturePaused ? "屏幕采集已暂停" : "本地优先的个人记忆"))
                 .font(.caption)
                 .foregroundStyle(RecallPalette.secondary)
             Divider()
-            Button("记录此刻  ⌥↩") {
+            Button(RecallLocalization.text("记录此刻") + " " + GlobalShortcutBinding.load("record", fallback: .record).label) {
                 if let rule = model.state.rules.first(where: { $0.template == .manualMoment }) {
                     model.record(rule: rule)
                 }
             }
             .disabled(model.state.privacy.screenCapturePaused || model.isRecording)
-            Button(model.state.privacy.screenCapturePaused ? "恢复屏幕采集" : "暂停屏幕采集") {
+            Button(RecallLocalization.text(model.state.privacy.screenCapturePaused ? "恢复屏幕采集" : "暂停屏幕采集")) {
                 var privacy = model.state.privacy
                 privacy.screenCapturePaused.toggle()
                 model.updatePrivacy(privacy)
             }
-            Button("打开 Recall") {
+            Button(RecallLocalization.text("打开 Recall")) {
                 openWindow(id: "main")
                 DispatchQueue.main.async {
                     RecallAppDelegate.activateMainWindow()
                 }
             }
+            Button(RecallLocalization.both("写一条记录", "Write a record")) { openWindow(id: "main"); model.showsTextEntry = true; RecallAppDelegate.activateMainWindow() }
+            Button(RecallLocalization.both("会议记录", "Meeting moments")) { openWindow(id: "main"); model.showsMeetingPanel = true; RecallAppDelegate.activateMainWindow() }
             Divider()
-            Button("退出 Recall") { NSApplication.shared.terminate(nil) }
+            Button(RecallLocalization.text("退出 Recall")) { NSApplication.shared.terminate(nil) }
         }
         .padding()
         .frame(width: 250)

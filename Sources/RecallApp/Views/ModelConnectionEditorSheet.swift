@@ -23,7 +23,7 @@ final class ModelConnectionDraft: ObservableObject {
 
     init(configuration: LLMConfiguration, savedKeyExists: Bool) {
         initialConfiguration = configuration
-        self.savedKeyExists = savedKeyExists && !configuration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        self.savedKeyExists = savedKeyExists && configuration.hasCredential
         provider = configuration.provider == .anthropicCompatible ? .anthropicCompatible : .openAICompatible
         baseURL = configuration.baseURLString; modelName = configuration.model
         // Never populate either the visible or secure input with the persisted credential.
@@ -31,23 +31,25 @@ final class ModelConnectionDraft: ObservableObject {
     var normalizedAPIKey: String { apiKey.trimmingCharacters(in: .whitespacesAndNewlines) }
     var effectiveAPIKey: String { normalizedAPIKey.isEmpty ? initialConfiguration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines) : normalizedAPIKey }
     var configuration: LLMConfiguration {
-        LLMConfiguration(provider: provider, baseURLString: baseURL.trimmingCharacters(in: .whitespacesAndNewlines), model: modelName.trimmingCharacters(in: .whitespacesAndNewlines), apiKey: effectiveAPIKey, anthropicVersion: initialConfiguration.anthropicVersion, maxOutputTokens: initialConfiguration.maxOutputTokens)
+        var value = initialConfiguration
+        value.provider = provider; value.baseURLString = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        value.model = modelName.trimmingCharacters(in: .whitespacesAndNewlines); value.apiKey = effectiveAPIKey
+        return value
     }
+    var requiresNewCredential: Bool { LLMConfiguration.credentialOrigin(baseURL) != LLMConfiguration.credentialOrigin(initialConfiguration.baseURLString) }
+    var hasCredentialForEndpoint: Bool { !normalizedAPIKey.isEmpty || (!requiresNewCredential && savedKeyExists) }
     var hasValidEndpoint: Bool {
-        guard let url = URL(string: configuration.baseURLString),
-              let host = url.host, !host.isEmpty, url.user == nil, url.password == nil,
-              !configuration.model.isEmpty else { return false }
-        return url.scheme == "https" || url.scheme == "http"
+        LLMConfiguration.credentialOrigin(configuration.baseURLString) != nil && !configuration.model.isEmpty
     }
     var connectionChanged: Bool { configuration != initialConfiguration || !normalizedAPIKey.isEmpty }
     var isTesting: Bool { testState == .testing }
-    var canTest: Bool { hasValidEndpoint && !effectiveAPIKey.isEmpty && !isTesting }
-    var canSave: Bool { hasValidEndpoint && !effectiveAPIKey.isEmpty && !isTesting && ((!connectionChanged && savedKeyExists) || testState == .success) }
+    var canTest: Bool { hasValidEndpoint && hasCredentialForEndpoint && !isTesting }
+    var canSave: Bool { hasValidEndpoint && hasCredentialForEndpoint && !isTesting && ((!connectionChanged && savedKeyExists) || testState == .success) }
     func invalidateTest() {
         testID = nil; testTask?.cancel(); testTask = nil; testState = .idle
     }
     func test(using tester: @escaping @Sendable (LLMConfiguration) async throws -> Void = { configuration in
-        _ = try await CompatibleLLM(configuration: configuration, apiKey: configuration.apiKey)
+        _ = try await ModelResponderFactory.make(configuration: configuration)
             .answerCancellably(to: LLMRequest(question: "仅回复连接成功", context: []))
     }) {
         guard canTest else { return }
@@ -118,7 +120,7 @@ struct ModelConnectionEditorSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: compact ? 16 : 21) {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("接口协议").font(.system(size: 14, weight: .semibold))
+                        Text(RecallLocalization.text("接口协议")).font(.system(size: 14, weight: .semibold))
                         protocolControl
                     }
                     connectionField("API 地址") {
@@ -131,12 +133,12 @@ struct ModelConnectionEditorSheet: View {
                         connectionField("API Key") {
                             HStack(spacing: 10) {
                                 ZStack(alignment: .leading) {
-                                    if draft.apiKey.isEmpty && draft.savedKeyExists {
-                                        Text("已保存 · 留空则继续使用").foregroundStyle(RecallPalette.secondary).allowsHitTesting(false)
+                                    if draft.apiKey.isEmpty && draft.savedKeyExists && !draft.requiresNewCredential {
+                                        Text(RecallLocalization.text("已保存 · 留空则继续使用")).foregroundStyle(RecallPalette.secondary).allowsHitTesting(false)
                                     }
                                     Group {
-                                        if revealsAPIKey { TextField(draft.savedKeyExists ? "" : "输入 API Key", text: $draft.apiKey) }
-                                        else { SecureField(draft.savedKeyExists ? "" : "输入 API Key", text: $draft.apiKey) }
+                                        if revealsAPIKey { TextField(draft.savedKeyExists && !draft.requiresNewCredential ? "" : RecallLocalization.text("输入 API Key"), text: $draft.apiKey) }
+                                        else { SecureField(draft.savedKeyExists && !draft.requiresNewCredential ? "" : RecallLocalization.text("输入 API Key"), text: $draft.apiKey) }
                                     }.focused($focusedField, equals: .apiKey)
                                         .accessibilityLabel("API Key")
                                 }
@@ -147,7 +149,8 @@ struct ModelConnectionEditorSheet: View {
                                     .accessibilityLabel(revealsAPIKey ? "隐藏输入的 API Key" : "显示输入的 API Key")
                             }
                         }
-                        Label("Key 只保存在本机，重新打开时不会显示", systemImage: "lock")
+                        if draft.requiresNewCredential { Text(RecallLocalization.both("服务地址变更后，请重新输入该服务的 API Key。", "The server changed. Re-enter the API Key for this service.")).font(.caption).foregroundStyle(RecallPalette.warning) }
+                        Label(RecallLocalization.text("Key 只保存在本机，重新打开时不会显示"), systemImage: "lock")
                             .font(.system(size: 13)).foregroundStyle(RecallPalette.secondary)
                     }
                 }.padding(.horizontal, 26).padding(.vertical, compact ? 16 : 26)
@@ -155,11 +158,11 @@ struct ModelConnectionEditorSheet: View {
             testStrip.padding(.horizontal, 26).padding(.bottom, compact ? 16 : 24)
             Divider().overlay(RecallPalette.border)
             HStack(spacing: 18) {
-                Label("保存后，下一次提问立即使用新连接", systemImage: "info.circle")
+                Label(RecallLocalization.text("保存后，下一次提问立即使用新连接"), systemImage: "info.circle")
                     .font(.system(size: 13)).foregroundStyle(RecallPalette.secondary)
                 Spacer(minLength: 8)
-                Button("取消", action: close).buttonStyle(.plain).keyboardShortcut(.cancelAction)
-                Button("保存") {
+                Button(RecallLocalization.text("取消"), action: close).buttonStyle(.plain).keyboardShortcut(.cancelAction)
+                Button(RecallLocalization.text("保存")) {
                     guard draft.canSave else { return }
                     onSave(draft.configuration, draft.normalizedAPIKey); close()
                 }.buttonStyle(EditorButtonStyle(prominent: true)).disabled(!draft.canSave).keyboardShortcut(.defaultAction)
@@ -175,13 +178,13 @@ struct ModelConnectionEditorSheet: View {
                 .foregroundStyle(RecallPalette.accent).frame(width: 48, height: 48)
                 .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 13))
             VStack(alignment: .leading, spacing: 5) {
-                Text("编辑模型连接").font(.system(size: 21, weight: .semibold))
-                Text("配置与 OpenAI 或 Anthropic 协议兼容的模型服务")
+                Text(RecallLocalization.text("编辑模型连接")).font(.system(size: 21, weight: .semibold))
+                Text(RecallLocalization.text("配置与 OpenAI 或 Anthropic 协议兼容的模型服务"))
                     .font(.system(size: 13)).foregroundStyle(RecallPalette.secondary)
             }
             Spacer(minLength: 4)
             if draft.savedKeyExists {
-                Label("凭据已配置", systemImage: "checkmark").font(.system(size: 12, weight: .semibold))
+                Label(RecallLocalization.text("凭据已配置"), systemImage: "checkmark").font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(RecallPalette.accent).padding(.horizontal, 12).padding(.vertical, 8)
                     .background(RecallPalette.selected, in: Capsule()).fixedSize()
             }
@@ -193,7 +196,7 @@ struct ModelConnectionEditorSheet: View {
         HStack(spacing: 4) {
             ForEach([LLMProviderKind.openAICompatible, .anthropicCompatible]) { provider in
                 Button { draft.provider = provider } label: {
-                    Text(provider.title).font(.system(size: 14, weight: draft.provider == provider ? .semibold : .regular))
+                    Text(RecallLocalization.text(provider.title)).font(.system(size: 14, weight: draft.provider == provider ? .semibold : .regular))
                         .foregroundStyle(draft.provider == provider ? RecallPalette.accent : RecallPalette.secondary)
                         .frame(maxWidth: .infinity).frame(height: compact ? 36 : 40)
                         .background(draft.provider == provider ? RecallPalette.surface : .clear, in: RoundedRectangle(cornerRadius: 10))
@@ -205,7 +208,7 @@ struct ModelConnectionEditorSheet: View {
     }
     private func connectionField<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: compact ? 7 : 9) {
-            Text(title).font(.system(size: 14, weight: .semibold))
+            Text(RecallLocalization.text(title)).font(.system(size: 14, weight: .semibold))
             content().textFieldStyle(.plain).font(.system(size: 15))
                 .padding(.horizontal, 16).frame(height: compact ? 40 : 48).frame(maxWidth: .infinity, alignment: .leading)
                 .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
@@ -217,14 +220,14 @@ struct ModelConnectionEditorSheet: View {
             if draft.isTesting { ProgressView().controlSize(.small).frame(width: 12) }
             else { Circle().fill(statusColor).frame(width: 8, height: 8) }
             VStack(alignment: .leading, spacing: 5) {
-                Text(statusTitle).font(.system(size: 14, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-                Text("测试不会发送本地记忆").font(.system(size: 13)).foregroundStyle(RecallPalette.secondary)
+                Text(RecallLocalization.text(statusTitle)).font(.system(size: 14, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                Text(RecallLocalization.text("测试不会发送本地记忆")).font(.system(size: 13)).foregroundStyle(RecallPalette.secondary)
             }.accessibilityElement(children: .combine)
             Spacer(minLength: 6)
             if draft.isTesting {
-                Button("取消测试") { draft.invalidateTest() }.buttonStyle(EditorButtonStyle())
+                Button(RecallLocalization.text("取消测试")) { draft.invalidateTest() }.buttonStyle(EditorButtonStyle())
             } else {
-                Button { draft.test() } label: { Label("测试连接", systemImage: "waveform.path.ecg") }
+                Button { draft.test() } label: { Label(RecallLocalization.text("测试连接"), systemImage: "waveform.path.ecg") }
                     .buttonStyle(EditorButtonStyle()).disabled(!draft.canTest)
             }
         }.padding(compact ? 14 : 18).background(RecallPalette.background, in: RoundedRectangle(cornerRadius: 12))
@@ -234,7 +237,7 @@ struct ModelConnectionEditorSheet: View {
         case .idle: "尚未测试连接"
         case .testing: "正在测试连接…"
         case .success: "连接正常"
-        case .failure(let reason): "失败：" + reason
+        case .failure(let reason): RecallLocalization.both("失败：", "Failed: ") + RecallLocalization.text(reason)
         }
     }
     private var statusColor: Color {

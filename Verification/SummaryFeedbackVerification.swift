@@ -11,7 +11,7 @@ enum SummaryFeedbackVerification {
         let source: CaptureRecord
         let other: CaptureRecord
         let summary: DailySummary
-        let config = LLMConfiguration(provider: .openAICompatible, apiKey: "verification-placeholder")
+        var config = LLMConfiguration(provider: .openAICompatible, apiKey: "verification-placeholder")
         let privacy = PrivacySettings(cloudUseEnabled: true)
     }
     private struct Responder: LLMResponding {
@@ -34,7 +34,7 @@ enum SummaryFeedbackVerification {
     }
     private static func fixture() async throws -> Fixture {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-feedback-" + UUID().uuidString))
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let source = CaptureRecord(eventTemplate: .workCheckpoint, sourceAppName: "测试聊天", sourceBundleIdentifier: "example.chat",
             contentHash: "feedback-fixture-a", ocrText: "[聊天·自己] Atlas 导出修复已完成上线。\n[聊天·对方] 明天核对分页边界。")
         let other = CaptureRecord(eventTemplate: .workCheckpoint, sourceAppName: "测试笔记", sourceBundleIdentifier: "example.notes",
@@ -42,9 +42,10 @@ enum SummaryFeedbackVerification {
         let items = [DailySummaryItem(section: .progress, title: "Atlas 导出修复已上线", detail: "导出修复完成。", evidenceIDs: [source.id]),
                      DailySummaryItem(section: .progress, title: "发票下载通过空值测试", evidenceIDs: [other.id])]
         let summary = DailySummary(day: .now, content: DailySummaryItemParser.markdown(from: items), sourceCaptureIDs: [source.id, other.id], todos: [], generationKind: .cloud, items: items)
-        let result = Fixture(store: store, storage: storage, source: source, other: other, summary: summary)
+        var result = Fixture(store: store, storage: storage, source: source, other: other, summary: summary)
         try await store.addCapture(source); try await store.addCapture(other)
         try await store.updatePrivacy(result.privacy); try await store.updateLLMConfiguration(result.config)
+        result.config = await store.snapshot().llmConfiguration
         try await store.upsertDailySummary(summary)
         return result
     }
@@ -83,7 +84,7 @@ enum SummaryFeedbackVerification {
         let duplicate = try await f.store.submitSummaryFeedback(target: .daily(f.summary), text: "结果应当放在前面。")
         try check(first.id == duplicate.id, "重复提交生成了两个任务")
         _ = try await f.store.claimSummaryFeedback(modelAvailable: true)
-        let reopened = try FileMemoryStore(storage: f.storage)
+        let reopened = try verificationStore(storage: f.storage)
         try await reopened.recoverSummaryFeedbackJobs()
         let snapshot = await reopened.snapshot()
         try check(snapshot.summaryFeedback.count == 1 && snapshot.summaryFeedback[0].state == .queued && snapshot.summaryFeedback[0].lease == nil, "重启丢失任务或保留死锁租约")
@@ -122,7 +123,7 @@ enum SummaryFeedbackVerification {
             feedbackInstructions: instructions, responder: responder)
         let purposes = await responder.purposes
         try check(next.content.contains("只完成联调") && purposes.contains(.summaryFeedbackAudit), "后续每日回顾没有生成后核验反馈要求")
-        let reloaded = try FileMemoryStore(storage: f.storage)
+        let reloaded = try verificationStore(storage: f.storage)
         let reloadedState = await reloaded.snapshot()
         try check(reloadedState.correctedForAnalysis().captures.first { $0.id == f.source.id }?.ocrText == adjusted?.ocrText, "重启丢失事实纠错")
     }
@@ -220,7 +221,7 @@ enum SummaryFeedbackVerification {
         let period = ReviewPeriod(start: Calendar.current.startOfDay(for: .now), end: Date.now)
         let report = try await WeeklyReviewEngine().generate(in: state, period: period, template: ReviewTemplate(kind: .work))
         let saved = try await f.store.commitWeeklyReport(report)
-        let reopened = try FileMemoryStore(storage: f.storage)
+        let reopened = try verificationStore(storage: f.storage)
         let reopenedState = await reopened.snapshot()
         try check(SummaryFeedbackLearning.targetIsCurrent(.period(saved), in: reopenedState), "重启重排来源字典后回顾版本指纹发生变化")
         guard let row = saved.digestRows.first else { throw Failure(text: "测试缺少周报条目") }

@@ -9,16 +9,16 @@ struct CaptureUnderstandingSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             RecallSwitchRow(title: "采集后自动理解新记录", detail: "逐条调用模型，默认关闭。", isOn: Binding(get: { model.state.understandingSettings.enabled && model.state.understandingSettings.automatic == true }, set: { value in model.setCaptureUnderstandingEnabled(value) }))
-            Text("先保存识别文字，再用模型核对事情、角色和状态。回顾可以直接使用已保存的文本，不必等待逐条理解。仅发送脱敏文本，可随时暂停。")
+            Text(RecallLocalization.text("先保存识别文字，再用模型核对事情、角色和状态。回顾可以直接使用已保存的文本，不必等待逐条理解。仅发送脱敏文本，可随时暂停。"))
                 .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
-            if model.state.understandingSettings.enabled && (!model.state.privacy.cloudUseEnabled || model.state.llmConfiguration.apiKey.isEmpty) {
-                Label("连接模型并允许使用脱敏文本后开始整理", systemImage: "pause.circle")
+            if model.state.understandingSettings.enabled && (!model.state.privacy.cloudUseEnabled || !model.state.llmConfiguration.hasCredential) {
+                Label(RecallLocalization.text("连接模型并允许使用脱敏文本后开始整理"), systemImage: "pause.circle")
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
             HStack(spacing: 12) {
-                Button("整理近 30 天记录") { model.queueCaptureUnderstanding() }
+                Button(RecallLocalization.text("整理近 30 天记录")) { model.queueCaptureUnderstanding() }
                     .disabled(!model.state.understandingSettings.enabled)
-                Button("查看进度") { showQueue = true }
+                Button(RecallLocalization.text("查看进度")) { showQueue = true }
                 Spacer()
                 Text(!model.state.understandingSettings.enabled ? "启用后可整理历史记录" : (waiting > 0 ? "\(waiting) 条待整理" : "暂无等待中的记录"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
@@ -27,7 +27,7 @@ struct CaptureUnderstandingSettingsView: View {
                 HStack {
                     Text("\(failed) 条未通过核对或连接失败，原文仍可使用。")
                         .font(.caption).foregroundStyle(RecallPalette.secondary)
-                    Button("重试") { model.queueCaptureUnderstanding(retryFailed: true) }
+                    Button(RecallLocalization.text("重试")) { model.queueCaptureUnderstanding(retryFailed: true) }
                         .disabled(!model.state.understandingSettings.enabled)
                 }
             }
@@ -42,12 +42,12 @@ private struct CaptureUnderstandingQueueView: View {
     var body: some View {
         let jobs = model.state.understandingJobs.sorted { $0.updatedAt > $1.updatedAt }
         VStack(alignment: .leading, spacing: 18) {
-            HStack { Text("记录整理").font(.title2.weight(.semibold)); Spacer(); Button("完成") { dismiss() } }
+            HStack { Text(RecallLocalization.text("记录整理")).font(.title2.weight(.semibold)); Spacer(); Button(RecallLocalization.text("完成")) { dismiss() } }
             Text(model.state.understandingSettings.enabled ? "关闭应用后任务会暂停，下次启动继续。" : "已暂停，已保存的整理结果仍可使用。")
                 .foregroundStyle(RecallPalette.secondary)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    if jobs.isEmpty { Text("启用后，新记录会在后台逐段整理。").foregroundStyle(RecallPalette.secondary) }
+                    if jobs.isEmpty { Text(RecallLocalization.text("启用后，新记录会在后台逐段整理。")).foregroundStyle(RecallPalette.secondary) }
                     ForEach(Array(jobs.prefix(limit))) { job in
                         HStack(alignment: .top, spacing: 16) {
                             VStack(alignment: .leading, spacing: 5) {
@@ -64,13 +64,13 @@ private struct CaptureUnderstandingQueueView: View {
                             }
                             Spacer()
                             if job.state == .failed || job.state == .paused {
-                                Button("重试") { model.queueCaptureUnderstanding(captureID: job.captureID) }
+                                Button(RecallLocalization.text("重试")) { model.queueCaptureUnderstanding(captureID: job.captureID) }
                                     .disabled(!model.state.understandingSettings.enabled)
                             }
                         }.padding(.vertical, 8)
                         Divider()
                     }
-                    if jobs.count > limit { Button("再显示 40 条") { limit += 40 } }
+                    if jobs.count > limit { Button(RecallLocalization.text("再显示 40 条")) { limit += 40 } }
                 }
             }
         }.padding(26).frame(width: 650, height: 540).tint(RecallPalette.accent)
@@ -100,21 +100,21 @@ struct CaptureUnderstandingDetailView: View {
         if let source, source.manualMatter == nil, source.memoryDirective == nil, source.isMemoryEvidenceArchive != true {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Text("理解这条记录").font(.headline)
+                    Text(RecallLocalization.text("理解这条记录")).font(.headline)
                     Spacer()
                     Menu {
-                        Button("重新整理") { model.queueCaptureUnderstanding(captureID: captureID) }
+                        Button(RecallLocalization.text("重新整理")) { model.queueCaptureUnderstanding(captureID: captureID) }
                             .disabled(!model.state.understandingSettings.enabled)
-                        Button("更正识别文字") { editing = true }
+                        Button(RecallLocalization.text("更正识别文字")) { editing = true }
                         if source.understanding != nil {
-                            Button("删除整理结果", role: .destructive) { model.removeCaptureUnderstanding(captureID) }
+                            Button(RecallLocalization.text("删除整理结果"), role: .destructive) { model.removeCaptureUnderstanding(captureID) }
                         }
                     } label: { Image(systemName: "ellipsis.circle").accessibilityLabel("管理记录理解") }
                     .menuStyle(.borderlessButton).fixedSize()
                 }
                 if let result = source.understanding {
                     if result.facts.isEmpty {
-                        Text("暂未发现有充分依据的事实或行动。原文已保留，可以更正文字后重新整理。")
+                        Text(RecallLocalization.text("暂未发现有充分依据的事实或行动。原文已保留，可以更正文字后重新整理。"))
                             .foregroundStyle(RecallPalette.secondary)
                     }
                     ForEach(result.facts) { fact in
@@ -127,7 +127,7 @@ struct CaptureUnderstandingDetailView: View {
                             if let time = fact.messageTime { Text("原文消息时间：\(time.text)").font(.caption) }
                             if let time = fact.eventTime { Text("原文发生时间：\(time.text)").font(.caption) }
                             if let time = fact.deadline { Text("原文截止时间：\(time.text)").font(.caption) }
-                            DisclosureGroup("原文片段") {
+                            DisclosureGroup(RecallLocalization.text("原文片段")) {
                                 Text(fact.evidence.map(\.quote).joined(separator: "\n"))
                                     .font(.callout).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                             }.font(.caption).foregroundStyle(RecallPalette.secondary)
@@ -138,7 +138,7 @@ struct CaptureUnderstandingDetailView: View {
                 } else if let job = model.state.understandingJobs.first(where: { $0.captureID == captureID }) {
                     Text(job.label).foregroundStyle(RecallPalette.secondary)
                 } else {
-                    Text("尚未整理，可在设置中开启后台理解。识别文字仍可搜索和回顾。")
+                    Text(RecallLocalization.text("尚未整理，可在设置中开启后台理解。识别文字仍可搜索和回顾。"))
                         .foregroundStyle(RecallPalette.secondary)
                 }
             }.padding(16).background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
@@ -156,15 +156,15 @@ private struct CaptureTextCorrectionView: View {
     @State private var saving = false
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("更正识别文字").font(.title2.weight(.semibold))
-            Text("修正错字或说话人标记。原始识别文字仍保留，后续理解使用更正后的版本。相关回顾和记忆将重新核对。")
+            Text(RecallLocalization.text("更正识别文字")).font(.title2.weight(.semibold))
+            Text(RecallLocalization.text("修正错字或说话人标记。原始识别文字仍保留，后续理解使用更正后的版本。相关回顾和记忆将重新核对。"))
                 .font(.callout).foregroundStyle(RecallPalette.secondary)
             TextEditor(text: $text).font(.body).frame(minHeight: 300)
             if let error { Text(error).foregroundStyle(RecallPalette.danger) }
             HStack {
-                if source.correctedText != nil { Button("恢复原始文字") { save(nil) }.disabled(saving) }
-                Spacer(); Button("取消") { dismiss() }.disabled(saving)
-                Button("保存更正") { save(text) }.buttonStyle(.borderedProminent)
+                if source.correctedText != nil { Button(RecallLocalization.text("恢复原始文字")) { save(nil) }.disabled(saving) }
+                Spacer(); Button(RecallLocalization.text("取消")) { dismiss() }.disabled(saving)
+                Button(RecallLocalization.text("保存更正")) { save(text) }.buttonStyle(.borderedProminent)
                     .disabled(saving || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }.padding(26).frame(width: 700, height: 520).tint(RecallPalette.accent)

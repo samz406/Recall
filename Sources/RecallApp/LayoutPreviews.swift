@@ -82,8 +82,9 @@ enum RecallLayoutPreviews {
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(10)) }
         let defaults = UserDefaults(suiteName: "im.recall.synthetic-layout")!
         defer { defaults.removePersistentDomain(forName: "im.recall.synthetic-layout") }
-        let names = ["daily", "daily-long", "topics", "period", "period-stale", "knowledge", "knowledge-empty", "rules", "reminders", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "chat-busy", "navigation"]
-        for mode in ["wide", "narrow", "dark"] {
+        let names = ["preferences", "first-moment", "sample", "daily", "daily-long", "topics", "period", "period-stale", "knowledge", "knowledge-empty", "rules", "reminders", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "chat-busy", "navigation"]
+        for mode in ["wide", "narrow", "dark", "english"] {
+            UserDefaults.standard.set(mode == "english" ? "en" : "zh-Hans", forKey: RecallLocalization.languageKey)
             let width: CGFloat = mode == "narrow" ? 780 : 1050
             defaults.set(mode == "dark" ? "dark" : "system", forKey: RecallAppearance.storageKey)
             for name in names {
@@ -125,7 +126,7 @@ enum RecallLayoutPreviews {
                 model.weeklyReportToOpen = savedReportSelection
             }
         }
-        print("PASS: rendered \(names.count * 3) native SwiftUI page previews (wide, minimum detail width, compact settings and dark appearance)")
+        print("PASS: rendered \(names.count * 4) native SwiftUI page previews (wide, minimum detail width, compact settings and dark appearance)")
     }
     private enum PreviewFailure: Error { case noImage }
 }

@@ -6,7 +6,7 @@ public enum ModelReviewError: LocalizedError {
     case unavailable, incomplete, invalid, changed, declined
     case validation(ModelValidationIssue)
     public var errorDescription: String? {
-        switch self {
+        let description = switch self {
         case .unavailable: "请先连接模型并允许使用脱敏文本，正式回顾需要模型生成。"
         case .incomplete: "部分记录尚未完成理解，请重试整理后再生成；已有回顾保持不变。"
         case .invalid: "本次回顾未通过内容与来源核对，已有回顾保持不变，可重新生成。"
@@ -14,6 +14,7 @@ public enum ModelReviewError: LocalizedError {
         case .changed: "记录、权限或设置已变化，已停止本次生成。"
         case .declined: "所选范围包含已停用理解的记录，请先在记录详情中重新整理该记录。"
         }
+        return RecallLocalization.text(description)
     }
 }
 

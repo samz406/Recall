@@ -27,6 +27,8 @@ public struct PrivacyEngine: Sendable {
     public func redact(_ text: String) -> String {
         var result = text
         let rules: [(String, String)] = [
+            (#"(?i)\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{16,}\b"#, "[REDACTED]"),
+            (#"(?i)(?:api[ _-]?key|x-api-key|authorization)\s*[:=]\s*[\"']?(?:Bearer\s+)?[^\s\"',;]+"#, "[REDACTED]"),
             (#"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"#, "[已隐藏邮箱]"),
             (#"\b(?:\d[ -]?){13,19}\b"#, "[已隐藏卡号]"),
             (#"(?i)(password|密码|验证码|verification code)\s*[:：]?\s*\S+"#, "[已隐藏凭证]")

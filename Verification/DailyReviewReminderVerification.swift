@@ -173,7 +173,7 @@ enum DailyReviewReminderVerification {
             llmConfiguration: LLMConfiguration(provider: .openAICompatible, baseURLString: "https://model.invalid/v1", model: "synthetic", apiKey: "synthetic-not-a-key"))
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(state).write(to: storage.stateURL)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let model = DirectDailyReviewVerification.Model("action")
         let period = ReviewPeriod(start: record.createdAt.addingTimeInterval(-60), end: record.createdAt.addingTimeInterval(3_600))
         let output = try await store.generateDirectDailyReview(day: record.createdAt, period: period, responder: model)
@@ -203,7 +203,7 @@ enum DailyReviewReminderVerification {
         let scopeStorage = try RecallStorage(rootURL: storage.rootURL.appendingPathComponent("scopes"))
         state.captures.append(separate)
         try encoder.encode(state).write(to: scopeStorage.stateURL)
-        let scopedStore = try FileMemoryStore(storage: scopeStorage), scopedModel = DirectDailyReviewVerification.Model("action")
+        let scopedStore = try verificationStore(storage: scopeStorage), scopedModel = DirectDailyReviewVerification.Model("action")
         let scoped = try await scopedStore.generateDirectDailyReview(day: record.createdAt, period: period, responder: scopedModel)
         let scopedRequests = await scopedModel.log()
         let documents = try JSONSerialization.jsonObject(with: Data(scopedRequests[0].context[0].ocrText.utf8)) as! [[String: Any]]
@@ -213,7 +213,7 @@ enum DailyReviewReminderVerification {
         state = try base()
         let other = try RecallStorage(rootURL: storage.rootURL.appendingPathComponent("failure"))
         try encoder.encode(state).write(to: other.stateURL)
-        let failed = try FileMemoryStore(storage: other)
+        let failed = try verificationStore(storage: other)
         let before = await failed.snapshot()
         try FileManager.default.removeItem(at: other.stateURL)
         try FileManager.default.createDirectory(at: other.stateURL, withIntermediateDirectories: false)

@@ -55,7 +55,7 @@ struct ReminderHistoryView: View {
             Button("删除 \(item.ids.count) 条历史记录", role: .destructive) {
                 model.deleteReminderHistory(item.ids, onlyDismissed: item.onlyDismissed)
             }
-            Button("取消", role: .cancel) {}
+            Button(RecallLocalization.text("取消"), role: .cancel) {}
         } message: { item in
             Text(item.onlyDismissed
                  ? "清理当前筛选范围内的全部已忽略记录，包含其他页。原始记忆、已完成与已取消记录保留；有效期内的忽略规则继续生效。"
@@ -63,7 +63,7 @@ struct ReminderHistoryView: View {
         }
         .confirmationDialog("不再从此应用识别待办？", isPresented: $confirmsSource, titleVisibility: .visible, presenting: disabledSource) { source in
             Button("停止从“\(source.title)”识别", role: .destructive) { model.setReminderApplication(source, disabled: true) }
-            Button("取消", role: .cancel) {}
+            Button(RecallLocalization.text("取消"), role: .cancel) {}
         } message: { source in
             Text("已有记录、待处理提醒和采集设置保持不变。可在“来源”菜单中恢复从“\(source.title)”识别待办。")
         }
@@ -92,7 +92,7 @@ struct ReminderHistoryView: View {
         HStack(spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(RecallPalette.secondary)
-                TextField("搜索历史", text: $search).textFieldStyle(.plain).font(.system(size: 13))
+                TextField(RecallLocalization.text("搜索历史"), text: $search).textFieldStyle(.plain).font(.system(size: 13))
                     .accessibilityLabel("搜索提醒历史")
                 if !search.isEmpty {
                     Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(RecallPalette.secondary) }
@@ -102,7 +102,7 @@ struct ReminderHistoryView: View {
                 .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 9))
                 .overlay(RoundedRectangle(cornerRadius: 9).stroke(RecallPalette.border, lineWidth: 1))
             Menu {
-                Button("全部来源") { sourceID = nil }
+                Button(RecallLocalization.text("全部来源")) { sourceID = nil }
                 ForEach(index.sourceChoices) { source in
                     Button(source.title) { sourceID = source.id }
                 }
@@ -118,7 +118,7 @@ struct ReminderHistoryView: View {
                     }
                 }
             } label: {
-                Text("来源：" + (sourceID.flatMap { id in index.sourceChoices.first { $0.id == id }?.title } ?? (sourceID == nil ? "全部" : "所选来源")))
+                Text(RecallLocalization.text("来源：") + (sourceID.flatMap { id in index.sourceChoices.first { $0.id == id }?.title } ?? (sourceID == nil ? "全部" : "所选来源")))
                     .font(.system(size: 13)).lineLimit(1)
             }.menuStyle(.borderlessButton).padding(.horizontal, 12).frame(minWidth: 116, maxWidth: 180).frame(height: 34)
                 .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 9))
@@ -152,15 +152,15 @@ struct ReminderHistoryView: View {
             Text(index.reminders.isEmpty ? "还没有历史记录" : "没有符合条件的历史记录").font(.headline)
             Text(index.reminders.isEmpty ? "完成、忽略或取消的提醒会按处理日期保存在这里。" : "换个关键词、状态或来源试试。")
                 .font(.system(size: 13)).foregroundStyle(RecallPalette.secondary)
-            if !index.reminders.isEmpty { Button("清除筛选") { search = ""; sourceID = nil; filter = .all } }
+            if !index.reminders.isEmpty { Button(RecallLocalization.text("清除筛选")) { search = ""; sourceID = nil; filter = .all } }
         }.frame(maxWidth: .infinity, minHeight: 270)
     }
     private var pagination: some View {
         HStack(spacing: 12) {
             Spacer()
-            Button("上一页") { page = max(1, page - 1) }.disabled(page <= 1)
+            Button(RecallLocalization.text("上一页")) { page = max(1, page - 1) }.disabled(page <= 1)
             Text("\(min(page, pageCount)) / \(pageCount) 页").font(.system(size: 12)).foregroundStyle(RecallPalette.secondary)
-            Button("下一页") { page = min(pageCount, page + 1) }.disabled(page >= pageCount)
+            Button(RecallLocalization.text("下一页")) { page = min(pageCount, page + 1) }.disabled(page >= pageCount)
         }.buttonStyle(.borderless).padding(.vertical, 4)
     }
     private var footer: some View {
@@ -180,7 +180,7 @@ struct ReminderHistoryView: View {
             Button("清理 \(ignoredIDs.count) 条已忽略记录") {
                 deletion = HistoryDeletion(ids: ignoredIDs, onlyDismissed: true); confirmsDeletion = true
             }.font(.system(size: 12)).buttonStyle(.plain).foregroundStyle(RecallPalette.accent)
-                .disabled(model.isUpdatingReminderHistory).help("仅清理当前筛选范围内的已忽略记录，包含其他页")
+                .disabled(model.isUpdatingReminderHistory).help(RecallLocalization.text("仅清理当前筛选范围内的已忽略记录，包含其他页"))
         }
     }
     private func openDestination() {
@@ -277,9 +277,9 @@ private struct ReminderHistoryEntry: View {
 
     private var accessibleRow: some View {
         describedRow
-            .accessibilityAction(named: Text("查看来源")) { source() }
-            .accessibilityAction(named: Text("恢复为待确认")) { restore() }
-            .accessibilityAction(named: Text("删除历史记录")) { delete() }
+            .accessibilityAction(named: Text(RecallLocalization.text("查看来源"))) { source() }
+            .accessibilityAction(named: Text(RecallLocalization.text("恢复为待确认"))) { restore() }
+            .accessibilityAction(named: Text(RecallLocalization.text("删除历史记录"))) { delete() }
     }
 
     private var stateIcon: some View {
@@ -293,7 +293,7 @@ private struct ReminderHistoryEntry: View {
                     .foregroundStyle(row.latest.status == .dismissed ? RecallPalette.secondary : RecallPalette.text)
                 if row.reminders.count > 1 { duplicateBadge }
             }
-            Text("来自 " + row.sourceDescription + " · " + reminderHistoryTime(row.date))
+            Text(RecallLocalization.text("来自 ") + row.sourceDescription + " · " + reminderHistoryTime(row.date))
                 .font(.system(size: 13)).foregroundStyle(RecallPalette.secondary).lineLimit(1)
         }.frame(maxWidth: .infinity, alignment: .leading).help(row.title)
     }
@@ -312,17 +312,17 @@ private struct ReminderHistoryEntry: View {
     }
     private var compactActions: some View {
         HStack(spacing: 12) {
-            Button("查看来源", action: source).buttonStyle(.plain).focused($focus, equals: Focus.source)
+            Button(RecallLocalization.text("查看来源"), action: source).buttonStyle(.plain).focused($focus, equals: Focus.source)
             Menu { actions } label: { Image(systemName: "ellipsis") }
                 .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("历史记录操作").focused($focus, equals: Focus.more)
         }
     }
     private var wideActions: some View {
         HStack(spacing: 12) {
-            Button("查看来源", action: source).focused($focus, equals: Focus.source)
-            Button("恢复为待确认", action: restore).focused($focus, equals: Focus.restore)
+            Button(RecallLocalization.text("查看来源"), action: source).focused($focus, equals: Focus.source)
+            Button(RecallLocalization.text("恢复为待确认"), action: restore).focused($focus, equals: Focus.restore)
             if let application = row.sources.first, row.sources.count == 1 && application.isApplication {
-                Button("不再从此应用识别") { block(application) }.focused($focus, equals: Focus.block)
+                Button(RecallLocalization.text("不再从此应用识别")) { block(application) }.focused($focus, equals: Focus.block)
             } else if row.sources.contains(where: \.isApplication) {
                 Menu("停止识别来源") { applicationActions }
             }
@@ -331,11 +331,11 @@ private struct ReminderHistoryEntry: View {
         }.buttonStyle(.plain)
     }
     @ViewBuilder private var actions: some View {
-        Button("查看来源", action: source)
-        Button("恢复为待确认", action: restore)
+        Button(RecallLocalization.text("查看来源"), action: source)
+        Button(RecallLocalization.text("恢复为待确认"), action: restore)
         applicationActions
         Divider()
-        Button("删除历史记录", role: .destructive, action: delete)
+        Button(RecallLocalization.text("删除历史记录"), role: .destructive, action: delete)
     }
     @ViewBuilder private var applicationActions: some View {
         ForEach(row.sources.filter(\.isApplication)) { application in

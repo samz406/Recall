@@ -77,7 +77,7 @@ extension FileMemoryStore {
 
     public func claimCaptureUnderstanding(captureID: UUID? = nil, forReview: Bool = false, now: Date = .now) throws -> CaptureUnderstandingJob? {
         guard (forReview || state.understandingSettings.enabled), state.privacy.cloudUseEnabled,
-              state.llmConfiguration.provider != .localOnly, !state.llmConfiguration.apiKey.isEmpty else { return nil }
+              state.llmConfiguration.provider != .localOnly, state.llmConfiguration.hasCredential else { return nil }
         let before = state
         for i in state.understandingJobs.indices where state.understandingJobs[i].state == .processing && now.timeIntervalSince(state.understandingJobs[i].updatedAt) > 600 {
             state.understandingJobs[i].state = .queued; state.understandingJobs[i].lease = nil

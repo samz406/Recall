@@ -79,6 +79,11 @@ extension RecallLayoutPreviews {
         try require(!draft.canTest && !draft.canSave, "hostless URLs must be invalid")
         draft.baseURL = "https://user:password@example.invalid"
         try require(!draft.canTest, "URLs must not contain credentials")
+        let moved = ModelConnectionDraft(configuration: configuration, savedKeyExists: true)
+        moved.baseURL = "http://model.example.invalid/v1"
+        try require(moved.requiresNewCredential && !moved.canTest, "a scheme downgrade must not reuse a saved credential")
+        moved.baseURL = "https://model.example.invalid/v1?api_key=synthetic"
+        try require(!moved.hasValidEndpoint, "endpoint URLs cannot contain query credentials")
         let empty = ModelConnectionDraft(configuration: LLMConfiguration(), savedKeyExists: false)
         try require(empty.apiKey.isEmpty && !empty.canTest && !empty.canSave, "new connection must require a credential")
         print("PASS: native theme persistence, immediate switching, system inheritance, saved-key reuse, test gating, safe failures and stale-result cancellation")
