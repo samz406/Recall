@@ -50,11 +50,12 @@ struct RecallRootView: View {
                 }
             }
         }
+        .environment(\.locale, Locale(identifier: RecallLocalization.isEnglish ? "en" : "zh-Hans"))
+        .onChange(of: interfaceLanguage) { _, _ in model.noticeMessage = nil }
         .onAppear { model.openMainWindow = { openWindow(id: "main"); RecallAppDelegate.activateMainWindow() } }
         .onReceive(NotificationCenter.default.publisher(for: .recallOpenAsk)) { _ in section = .chat }
         .onOpenURL { url in
-            guard let id = EvidenceLinkRouter.captureID(url), let source = EvidenceAccess.records(model.state).first(where: { $0.id == id }) else { return }
-            model.sourceToOpen = source
+            model.pendingEvidenceURL = url; model.resolveEvidenceURL()
         }
         .onChange(of: model.isLoadingSavedState) { _, loading in
             if !loading && model.state.captures.isEmpty && !model.state.workflow.onboardingCompleted { model.showsOnboarding = true }
@@ -2811,6 +2812,7 @@ private struct ReminderSourceSheet: View {
 }
 
 private struct ReminderCandidateCard: View {
+    @EnvironmentObject private var model: RecallAppModel
     let reminder: ReminderCandidate
     let deliveryState: ReminderDeliveryState?
     let schedule: () -> Void
@@ -2935,8 +2937,8 @@ private struct ReminderCandidateCard: View {
                 }
             } else if reminder.status == .proposed {
                 VStack(alignment: .trailing, spacing: 8) {
-                    Button(RecallLocalization.text("选择时间并创建"), action: schedule)
-                        .buttonStyle(.borderedProminent)
+                    Button(RecallLocalization.text("加入今天")) { model.addActionToToday(reminder.id) }.buttonStyle(.borderedProminent)
+                    Button(RecallLocalization.text("提醒我…"), action: schedule).buttonStyle(.borderless)
                     Button(RecallLocalization.text("忽略"), role: .destructive, action: dismiss)
                         .buttonStyle(.borderless)
                         .font(.caption)

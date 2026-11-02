@@ -5,6 +5,13 @@ import UniformTypeIdentifiers
 import RecallKit
 
 extension RecallAppModel {
+    func resolveEvidenceURL() {
+        guard let url = pendingEvidenceURL, !isLoadingSavedState else { return }
+        pendingEvidenceURL = nil
+        if let id = EvidenceLinkRouter.captureID(url), let record = EvidenceAccess.records(state).first(where: { $0.id == id }) { sourceToOpen = record }
+        else { noticeMessage = RecallLocalization.both("来源不存在或已不可用。", "This source is no longer available.") }
+    }
+
     func configureShortcuts() {
         guard !isLoadingSavedState, !isPreview else { return }
         let record = GlobalShortcutBinding.load("record", fallback: .record), ask = GlobalShortcutBinding.load("ask", fallback: .ask)

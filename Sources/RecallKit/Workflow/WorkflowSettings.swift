@@ -114,7 +114,7 @@ public extension FileMemoryStore {
             isRedacted: safe != clean, ocrText: safe, summary: title, tags: [], textOrigin: metadata == nil ? .userInput : .importedText)
         record.importMetadata = metadata; record.meetingSessionID = meetingID ?? metadata?.meetingSessionID
         let before = state; state.captures.append(record)
-        do { try persistReviewState() } catch { state = before; throw error }
+        do { try persistReviewState(indexChanged: true) } catch { state = before; throw error }
         return record
     }
     func startMeeting(title: String) throws -> MeetingSession {

@@ -282,7 +282,11 @@ public final class CapturePipeline {
             if let path = imageRelativePath { try? FileManager.default.removeItem(at: storage.rootURL.appendingPathComponent(path)) }
             throw CapturePipelineError.captureExcluded("采集设置已变化，未保存记录。")
         }
-        try await store.addCapture(record)
+        do { try await store.addCapture(record) }
+        catch {
+            if let path = imageRelativePath { try? storage.deleteScreenshot(relativePath: path) }
+            throw error
+        }
         return record
     }
 

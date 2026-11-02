@@ -35,6 +35,7 @@ final class RecallAppModel: ObservableObject {
     var shortcutConfigurationID: String?
     @Published var credentialMaintenanceWarning: String?
     @Published var shortcutsReady = false
+    @Published var pendingEvidenceURL: URL?
     @Published var showsOnboarding = false
     @Published var showsTextEntry = false
     @Published var addedTodayUndo: ReminderCandidate?
@@ -179,6 +180,7 @@ final class RecallAppModel: ObservableObject {
                 state = await store.snapshot()
                 credentialMaintenanceWarning = await store.credentialMaintenanceWarning
                 isLoadingSavedState = false
+                resolveEvidenceURL()
                 recordDiagnostic(.info, source: "Startup", message: "已载入保存的页面数据", metadata: [
                     "readMilliseconds": "\(max(0, Int(Date.now.timeIntervalSince(startupRead) * 1000)))",
                     "dailyReviewCount": "\(state.dailySummaries.count)", "captureCount": "\(state.captures.count)"])
