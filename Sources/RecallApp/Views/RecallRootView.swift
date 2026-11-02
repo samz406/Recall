@@ -43,6 +43,13 @@ struct RecallRootView: View {
                         if let back = returnSection {
                             Button { section = back; returnSection = nil } label: { Label(RecallLocalization.text("返回"), systemImage: "arrow.left") }
                         }
+                        Menu {
+                            if let target = model.lastExternalTarget, let rule = model.state.rules.first(where: { $0.template == .manualMoment && $0.isEnabled }) {
+                                Button(RecallLocalization.both("记录：", "Record: ") + target.appName) { model.record(rule: rule, targetOverride: target) }.disabled(model.isRecording || model.state.privacy.screenCapturePaused)
+                            }
+                            Button(RecallLocalization.both("写一条记录", "Write a record")) { model.showsTextEntry = true }
+                            Button(RecallLocalization.both("会议记录", "Meeting moments")) { model.showsMeetingPanel = true }
+                        } label: { Label(RecallLocalization.text("记录此刻"), systemImage: "plus.square") }
                         Button { model.showsGlobalSearch = true } label: { Label(RecallLocalization.text("搜索记忆"), systemImage: "magnifyingglass") }.keyboardShortcut("f", modifiers: [.command, .shift]).labelStyle(.titleAndIcon)
                         Button { showingTasks.toggle() } label: { Label(RecallLocalization.text("处理任务"), systemImage: model.tasks.contains(where: \.isRunning) ? "clock.badge" : "clock") }
                             .labelStyle(.titleAndIcon).help(RecallLocalization.text("查看处理进度和结果")).popover(isPresented: $showingTasks) { RecallTaskHistory().environmentObject(model) }
@@ -65,6 +72,7 @@ struct RecallRootView: View {
             if !loading && model.state.captures.isEmpty && !model.state.workflow.onboardingCompleted { model.showsOnboarding = true }
         }
         .sheet(isPresented: $model.showsOnboarding) { FirstMomentView().environmentObject(model) }
+        .sheet(isPresented: $model.showsMeetingPanel) { MeetingMomentsSheet().environmentObject(model) }
         .sheet(isPresented: $model.showsTextEntry) { TextEvidenceEntrySheet().environmentObject(model) }
         .onChange(of: model.navigationRevision) { _, _ in
             let target = model.destination

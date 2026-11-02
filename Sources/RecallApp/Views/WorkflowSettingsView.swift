@@ -14,14 +14,12 @@ struct WorkflowSettingsView: View {
     @State private var askShortcut = GlobalShortcutBinding.load("ask", fallback: .ask)
     @State private var identityCapture: UUID?
     @State private var sender = ""
-    @State private var meetingTitle = ""
     @State private var client = ""
     @State private var from = Calendar.current.date(byAdding: .day, value: -7, to: .now) ?? .now
     @State private var through = Date.now
     @State private var reviews = true
     @State private var allowedApp = ""
     @State private var confirmMCP = false
-    @State private var meetingToDelete: UUID?
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             if let warning = model.credentialMaintenanceWarning {
@@ -35,7 +33,7 @@ struct WorkflowSettingsView: View {
             }
             languageSection
             shortcutSection
-            meetingSection
+            MeetingMomentsSection()
             identitySection
             mcpSection
         }
@@ -73,34 +71,6 @@ struct WorkflowSettingsView: View {
         HStack {
             Toggle(title, isOn: binding.enabled).onChange(of: binding.wrappedValue.enabled) { _, _ in model.saveShortcut(binding.wrappedValue, action: action) }
             ShortcutRecorder(binding: binding) { model.saveShortcut($0, action: action) }.frame(width: 180, height: 32)
-        }
-    }
-    private var meetingSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(w("会议记录", "Meeting moments")).font(.headline)
-            Text(w("只在你点击开始和结束时各记录一帧，不录音、不自动参会。先切到会议窗口，再回到这里。", "Save one frame when you start and one when you finish. No audio or meeting bot. Switch to the meeting window, then return here."))
-                .font(.caption).foregroundStyle(RecallPalette.secondary)
-            if let target = model.lastExternalTarget { Text(w("将记录：", "Capture target: ") + target.appName).font(.caption).foregroundStyle(RecallPalette.accent) }
-            HStack {
-                TextField(w("会议名称", "Meeting title"), text: $meetingTitle).textFieldStyle(.roundedBorder)
-                Button(w("开始并记录", "Start & save")) { model.startMeeting(meetingTitle); meetingTitle = "" }
-                    .disabled(meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.lastExternalTarget == nil || model.state.privacy.screenCapturePaused)
-            }
-            ForEach(model.state.workflow.meetings) { meeting in
-                HStack {
-                    VStack(alignment: .leading) { Text(meeting.title); Text(meeting.startedAt.formatted()).font(.caption).foregroundStyle(RecallPalette.secondary) }
-                    Spacer()
-                    if meeting.endedAt == nil {
-                        Button(w("结束并记录", "Finish & save")) { model.endMeeting(meeting.id) }.disabled(model.lastExternalTarget == nil || model.state.privacy.screenCapturePaused || model.isRecording)
-                    } else { Text(w("已结束", "Finished")).font(.caption).foregroundStyle(RecallPalette.secondary) }
-                    Button(role: .destructive) { meetingToDelete = meeting.id } label: { Image(systemName: "trash") }
-                }
-            }
-            Button(w("粘贴或导入纪要", "Paste or import notes")) { model.showsTextEntry = true }
-        }.recallSurface()
-        .confirmationDialog(w("删除这场会议的全部记录和纪要？", "Delete all records and notes for this meeting?"), isPresented: Binding(get: { meetingToDelete != nil }, set: { if !$0 { meetingToDelete = nil } }), titleVisibility: .visible) {
-            Button(w("移到最近删除", "Move to Recently Deleted"), role: .destructive) { if let id = meetingToDelete { model.deleteMeeting(id) }; meetingToDelete = nil }
-            Button(w("取消", "Cancel"), role: .cancel) { meetingToDelete = nil }
         }
     }
     private var identitySection: some View {
@@ -204,5 +174,54 @@ private final class ShortcutField: NSButton {
         if event.modifierFlags.contains(.option) { modifiers |= UInt32(optionKey) }
         if event.modifierFlags.contains(.shift) { modifiers |= UInt32(shiftKey) }
         changed?(GlobalShortcutBinding(keyCode: UInt32(event.keyCode), modifiers: modifiers)); window?.makeFirstResponder(nil)
+    }
+}
+
+struct MeetingMomentsSection: View {
+    @EnvironmentObject private var model: RecallAppModel
+    @State private var meetingTitle = ""
+    @State private var meetingToDelete: UUID?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(w("会议记录", "Meeting moments")).font(.headline)
+            Text(w("只在你点击开始和结束时各记录一帧，不录音、不自动参会。先切到会议窗口，再回到这里。", "Save one frame when you start and one when you finish. No audio or meeting bot. Switch to the meeting window, then return here."))
+                .font(.caption).foregroundStyle(RecallPalette.secondary)
+            if let target = model.lastExternalTarget { Text(w("将记录：", "Capture target: ") + target.appName).font(.caption).foregroundStyle(RecallPalette.accent) }
+            HStack {
+                TextField(w("会议名称", "Meeting title"), text: $meetingTitle).textFieldStyle(.roundedBorder)
+                Button(w("开始并记录", "Start & save")) { model.startMeeting(meetingTitle); meetingTitle = "" }
+                    .disabled(meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.lastExternalTarget == nil || model.state.privacy.screenCapturePaused)
+            }
+            ForEach(model.state.workflow.meetings) { meeting in
+                HStack {
+                    VStack(alignment: .leading) { Text(meeting.title); Text(meeting.startedAt.formatted()).font(.caption).foregroundStyle(RecallPalette.secondary) }
+                    Spacer()
+                    if meeting.endedAt == nil {
+                        Button(w("结束并记录", "Finish & save")) { model.endMeeting(meeting.id) }.disabled(model.lastExternalTarget == nil || model.state.privacy.screenCapturePaused || model.isRecording)
+                    } else { Text(w("已结束", "Finished")).font(.caption).foregroundStyle(RecallPalette.secondary) }
+                    Button(role: .destructive) { meetingToDelete = meeting.id } label: { Image(systemName: "trash") }
+                }
+            }
+            Button(w("粘贴或导入纪要", "Paste or import notes")) {
+                if model.showsMeetingPanel { model.showsMeetingPanel = false; DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { model.showsTextEntry = true } }
+                else { model.showsTextEntry = true }
+            }
+        }.recallSurface()
+        .confirmationDialog(w("删除这场会议的全部记录和纪要？", "Delete all records and notes for this meeting?"), isPresented: Binding(get: { meetingToDelete != nil }, set: { if !$0 { meetingToDelete = nil } }), titleVisibility: .visible) {
+            Button(w("移到最近删除", "Move to Recently Deleted"), role: .destructive) { if let id = meetingToDelete { model.deleteMeeting(id) }; meetingToDelete = nil }
+            Button(w("取消", "Cancel"), role: .cancel) { meetingToDelete = nil }
+        }
+    }
+
+}
+struct MeetingMomentsSheet: View {
+    @EnvironmentObject private var model: RecallAppModel
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        VStack(spacing: 18) {
+            HStack { Text(w("会议记录", "Meeting moments")).font(.title2.bold()); Spacer(); Button(w("完成", "Done")) { dismiss() } }
+            ScrollView { MeetingMomentsSection() }
+            if let message = model.noticeMessage { Text(message).font(.callout).foregroundStyle(RecallPalette.secondary) }
+        }.padding(26).frame(width: 740, height: 650).background(RecallPalette.background)
     }
 }

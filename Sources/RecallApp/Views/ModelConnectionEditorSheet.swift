@@ -36,8 +36,9 @@ final class ModelConnectionDraft: ObservableObject {
         value.model = modelName.trimmingCharacters(in: .whitespacesAndNewlines); value.apiKey = effectiveAPIKey
         return value
     }
+    var requiresNewCredential: Bool { URL(string: baseURL)?.host?.lowercased() != URL(string: initialConfiguration.baseURLString)?.host?.lowercased() }
+    var hasCredentialForEndpoint: Bool { !normalizedAPIKey.isEmpty || (!requiresNewCredential && savedKeyExists) }
     var hasValidEndpoint: Bool {
-        if normalizedAPIKey.isEmpty && URL(string: baseURL)?.host != URL(string: initialConfiguration.baseURLString)?.host { return false }
         guard let url = URL(string: configuration.baseURLString),
               let host = url.host, !host.isEmpty, url.user == nil, url.password == nil,
               !configuration.model.isEmpty else { return false }
@@ -45,8 +46,8 @@ final class ModelConnectionDraft: ObservableObject {
     }
     var connectionChanged: Bool { configuration != initialConfiguration || !normalizedAPIKey.isEmpty }
     var isTesting: Bool { testState == .testing }
-    var canTest: Bool { hasValidEndpoint && (savedKeyExists || !effectiveAPIKey.isEmpty) && !isTesting }
-    var canSave: Bool { hasValidEndpoint && (savedKeyExists || !effectiveAPIKey.isEmpty) && !isTesting && ((!connectionChanged && savedKeyExists) || testState == .success) }
+    var canTest: Bool { hasValidEndpoint && hasCredentialForEndpoint && !isTesting }
+    var canSave: Bool { hasValidEndpoint && hasCredentialForEndpoint && !isTesting && ((!connectionChanged && savedKeyExists) || testState == .success) }
     func invalidateTest() {
         testID = nil; testTask?.cancel(); testTask = nil; testState = .idle
     }
@@ -135,12 +136,12 @@ struct ModelConnectionEditorSheet: View {
                         connectionField("API Key") {
                             HStack(spacing: 10) {
                                 ZStack(alignment: .leading) {
-                                    if draft.apiKey.isEmpty && draft.savedKeyExists {
+                                    if draft.apiKey.isEmpty && draft.savedKeyExists && !draft.requiresNewCredential {
                                         Text(RecallLocalization.text("已保存 · 留空则继续使用")).foregroundStyle(RecallPalette.secondary).allowsHitTesting(false)
                                     }
                                     Group {
-                                        if revealsAPIKey { TextField(draft.savedKeyExists ? "" : "输入 API Key", text: $draft.apiKey) }
-                                        else { SecureField(draft.savedKeyExists ? "" : "输入 API Key", text: $draft.apiKey) }
+                                        if revealsAPIKey { TextField(draft.savedKeyExists && !draft.requiresNewCredential ? "" : RecallLocalization.text("输入 API Key"), text: $draft.apiKey) }
+                                        else { SecureField(draft.savedKeyExists && !draft.requiresNewCredential ? "" : RecallLocalization.text("输入 API Key"), text: $draft.apiKey) }
                                     }.focused($focusedField, equals: .apiKey)
                                         .accessibilityLabel("API Key")
                                 }
@@ -151,6 +152,7 @@ struct ModelConnectionEditorSheet: View {
                                     .accessibilityLabel(revealsAPIKey ? "隐藏输入的 API Key" : "显示输入的 API Key")
                             }
                         }
+                        if draft.requiresNewCredential { Text(RecallLocalization.both("服务地址变更后，请重新输入该服务的 API Key。", "The server changed. Re-enter the API Key for this service.")).font(.caption).foregroundStyle(RecallPalette.warning) }
                         Label(RecallLocalization.text("Key 只保存在本机，重新打开时不会显示"), systemImage: "lock")
                             .font(.system(size: 13)).foregroundStyle(RecallPalette.secondary)
                     }

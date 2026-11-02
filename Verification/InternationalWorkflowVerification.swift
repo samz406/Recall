@@ -115,6 +115,14 @@ enum InternationalWorkflowVerification {
         try expect(revoked.ocrText == original && CaptureUnderstandingEngine.blocks(for: revoked).first?.speaker == .unknown, "Identity revocation rewrote original evidence or kept ownership")
         let mismatched = [IdentityBinding(bundleIdentifier: "example.atlas", windowTitle: "Other workspace", sender: "Morgan")]
         try expect(SourceNormalizer.messages(for: chat, bindings: mismatched).first?.speaker == .unknown, "Identity leaked across windows")
+        let session = try await store.startMeeting(title: "Atlas planning")
+        _ = try await store.saveText("Decision: ship the smaller release.", title: "Atlas notes", metadata: TextImportMetadata(source: "Granola", meetingSessionID: session.id))
+        try await store.finishMeeting(id: session.id)
+        let deleted = try await store.deleteMeeting(id: session.id)
+        try expect(deleted?.captures.count == 1 && deleted?.meetingSessions?.first?.id == session.id, "Meeting deletion lost its linked notes or grouping")
+        if let deleted { _ = try await store.restoreRecentlyDeleted(id: deleted.id) }
+        let recovered = await store.snapshot()
+        try expect(recovered.workflow.meetings.contains { $0.id == session.id } && recovered.captures.contains { $0.meetingSessionID == session.id }, "Meeting grouping did not recover")
         let duplicate = [IdentityBinding(bundleIdentifier: "example.atlas", windowTitle: "Atlas", sender: "Morgan"), IdentityBinding(bundleIdentifier: "example.atlas", windowTitle: "Atlas", sender: "Morgan")]
         try expect(SourceNormalizer.messages(for: chat, bindings: duplicate).first?.speaker == .unknown, "Ambiguous duplicate identity was promoted")
     }

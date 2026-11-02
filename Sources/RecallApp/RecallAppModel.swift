@@ -39,6 +39,7 @@ final class RecallAppModel: ObservableObject {
     @Published var pendingEvidenceURL: URL?
     @Published var showsOnboarding = false
     @Published var showsTextEntry = false
+    @Published var showsMeetingPanel = false
     @Published var addedTodayUndo: ReminderCandidate?
     @Published var lastExternalTarget: CaptureTarget?
     var openMainWindow: (() -> Void)?
@@ -799,7 +800,7 @@ final class RecallAppModel: ObservableObject {
         noticeMessage = granted ? "屏幕记录权限已可用。" : "请在“系统设置 → 隐私与安全性 → 屏幕与系统音频录制”中允许 Recall。"
     }
 
-    func record(rule: EventRule, userText: String? = nil, diagnosticSource: String = "Capture") {
+    func record(rule: EventRule, userText: String? = nil, diagnosticSource: String = "Capture", targetOverride: CaptureTarget? = nil) {
         guard !showsOnboarding else { noticeMessage = RecallLocalization.both("请先退出样例，再保存真实记录。", "Leave the sample before saving a real record."); return }
         if rule.template == .dailyReview {
             guard rule.isEnabled else { noticeMessage = "请先启用这条记录规则。"; return }
@@ -813,7 +814,7 @@ final class RecallAppModel: ObservableObject {
             message: "开始记录",
             metadata: ["eventTemplate": rule.template.rawValue, "scope": rule.scope.rawValue]
         )
-        let target = CaptureTargetResolver.current()
+        let target = targetOverride ?? CaptureTargetResolver.current()
         Task {
             defer { isRecording = false }
             do {

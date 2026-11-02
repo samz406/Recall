@@ -120,7 +120,7 @@ private struct MenuBarPanel: View {
                 .font(.caption)
                 .foregroundStyle(RecallPalette.secondary)
             Divider()
-            Button(RecallLocalization.text("记录此刻  ⌥↩")) {
+            Button(RecallLocalization.text("记录此刻") + " " + GlobalShortcutBinding.load("record", fallback: .record).label) {
                 if let rule = model.state.rules.first(where: { $0.template == .manualMoment }) {
                     model.record(rule: rule)
                 }
@@ -137,6 +137,8 @@ private struct MenuBarPanel: View {
                     RecallAppDelegate.activateMainWindow()
                 }
             }
+            Button(RecallLocalization.both("写一条记录", "Write a record")) { openWindow(id: "main"); model.showsTextEntry = true; RecallAppDelegate.activateMainWindow() }
+            Button(RecallLocalization.both("会议记录", "Meeting moments")) { openWindow(id: "main"); model.showsMeetingPanel = true; RecallAppDelegate.activateMainWindow() }
             Divider()
             Button(RecallLocalization.text("退出 Recall")) { NSApplication.shared.terminate(nil) }
         }

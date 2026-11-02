@@ -1,6 +1,15 @@
 import Foundation
 
 public enum EvidenceAccess {
+    public static func permits(_ review: DailySummary, in state: RecallState, allowedIDs: Set<UUID>) -> Bool {
+        guard !review.items.isEmpty, !review.sourceCaptureIDs.isEmpty, Set(review.sourceCaptureIDs).isSubset(of: allowedIDs) else { return false }
+        let records = Dictionary(uniqueKeysWithValues: records(state).map { ($0.id, $0) })
+        return review.items.allSatisfy { item in
+            guard !item.evidenceIDs.isEmpty, Set(item.evidenceIDs).isSubset(of: allowedIDs), let versions = item.knowledge?.sourceVersions else { return false }
+            return item.evidenceIDs.allSatisfy { id in records[id].map { versions[id.uuidString] == CaptureUnderstandingEngine.sourceVersion($0, in: state) } == true }
+        }
+    }
+
     public static func records(_ state: RecallState) -> [CaptureRecord] {
         let invalid = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
         return state.captures.filter {
