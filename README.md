@@ -2,11 +2,11 @@
 
 [简体中文](README.zh-Hans.md)
 
-**A local-first, explicitly triggered work-experience ledger for Mac knowledge workers.**
+**Your private work ledger.**
 
 Recall shows where yesterday's work stopped, what to pick up today, and which saved record an answer came from. You decide when a moment is worth keeping. The record stays on your Mac.
 
-It keeps work you chose to save: not passive always-on screen recording (Limitless, Microsoft Recall), and not a generic second-brain notes app.
+Connect moments you chose to save into a searchable history of your work.
 
 Core workflows support English and Simplified Chinese. See [workflow guide](docs/work-ledger-usage.md).
 
@@ -33,32 +33,32 @@ Three actions cover the first week.
 
 ### Record this moment
 
-In the menu bar, choose **记录此刻**. That click saves one record of the current window: a single screenshot, then on-device OCR (Apple Vision) for Chinese and English. Time, source app, text, and the image go to `~/Library/Application Support/Recall/`. The same menu can pause screen capture.
+Press **⌃⌥⌘R** in your working app, or choose **Record a moment** in the menu bar. This saves one record of the current window: a single screenshot, then on-device OCR (Apple Vision) for Chinese and English. Time, source app, text, and the image go to `~/Library/Application Support/Recall/`. The same menu can pause screen capture. Customize shortcuts in Settings → Preferences; Recall must be running.
 
-In **记录管理** you can switch that rule to the current display (**当前显示器**) or to text only (**仅文本**, no screenshot). Other templates live there too. Recording when you press Enter in another app stays off until you enable it.
+In **Recording** you can switch that rule to the current display or to text only (no screenshot). Other templates live there too. Recording when you press Enter in another app stays off until you enable it.
 
 ### Daily review
 
-Open **每日回顾** and generate a review for a chosen day. Yesterday is the default. The review reads records already saved and does not take a new screenshot. When the material supports it, three sections appear:
+Open **Daily Review** and generate a review for a chosen day. Yesterday is the default. The review reads records already saved and does not take a new screenshot. When the material supports it, three sections appear:
 
-- **今天推进了什么** — what moved forward
-- **接下来要处理** — what to handle next
-- **值得留意** — what is worth noticing
+- **Progress** — what moved forward
+- **Next actions** — what to handle next
+- **Worth noticing** — what deserves attention
 
-A section with nothing reliable behind it stays hidden. A full daily review needs a model connection you configure, plus permission to send redacted text. Saved records stay in **时间线** either way.
+A section with nothing reliable behind it stays hidden. A full daily review needs a model connection you configure, plus permission to send redacted text. Saved records stay in **Timeline** either way. **Add to Today** accepts a proposed action without scheduling a notification; **Remind me** separately asks you to choose a time.
 
 ### Ask
 
-Open **问一问**. Each answer cites local records, and you can open those sources. With cloud text off, Recall searches on this Mac and returns a traceable summary, without a network request. With cloud text on, the request carries the current question, retrieved excerpts, a rolling summary, and the recent message window, after basic redaction. Screenshot files stay on the Mac.
+Open **Ask Recall** or press **⌃⌥⌘A**. Each answer cites local records, and you can open those sources. With cloud text off, Recall searches on this Mac and returns a traceable summary, without a network request. With cloud text on, the request carries the current question, retrieved excerpts, a rolling summary, and the recent message window, after basic redaction. Screenshot files stay on the Mac. Copy with sources or export Markdown from an answer; source versions are checked again before export.
 
 ## Privacy snapshot
 
 - **Local-first.** Screenshots, OCR, the SQLite index, and chat history stay in `~/Library/Application Support/Recall/`. Search and storage work offline. You can pause capture, stop saving original screenshots, and exclude apps by bundle ID.
 - **Explicit trigger.** A record starts when you trigger it. Continuous screenshots, scheduled screenshots, audio recording, and automatic message collection stay off. Enter-key capture in other apps stays off until you enable it, can be paused, and does not run while Recall is frontmost.
-- **Deletable and traceable.** Delete a record and restore it from **最近删除** for 7 days, or clear local memory. Reviews and reminders that depended on a deleted record are removed with it. Answers keep their sources.
+- **Deletable and traceable.** Delete a record and restore it from **Recently Deleted** for 7 days, or clear local memory. Dependent reviews and unconfirmed suggestions are withdrawn. User-accepted Today actions keep your intent without the deleted proof.
 - **Cloud is opt-in.** Connect an OpenAI-compatible or Anthropic-compatible API with your own key, or leave cloud text off. The key is stored in the macOS Keychain, not in `recall-state.json`. It is not written to logs or committed to this repository. A reminder is scheduled only after you confirm it. Recall does not send messages, create calendar events, or edit your files.
 
-The full boundary is in [Privacy design](docs/PRIVACY.md).
+The full boundary is in [Privacy and data boundaries](docs/PRIVACY.en.md). The [workflow guide](docs/work-ledger-usage.md) covers local samples, first records, meeting notes, identity confirmation and optional read-only MCP. See the [acceptance report](docs/international-workflow-acceptance.md) for verified behavior and manual checks. Signing, downloads and automatic updates remain outside this change.
 
 ## Roadmap
 
