@@ -20,7 +20,7 @@ struct CaptureDetailSheet: View {
                     Text(presentation.title)
                         .font(.title2.weight(.semibold))
                         .textSelection(.enabled)
-                    Text(capture.createdAt.formatted(date: .complete, time: .standard))
+                    Text(capture.createdAt.formatted(.dateTime.locale(RecallLocalization.locale).year().month().day().hour().minute()))
                         .font(.subheadline)
                         .foregroundStyle(RecallPalette.secondary)
                 }
@@ -39,6 +39,13 @@ struct CaptureDetailSheet: View {
                                 metadata("窗口", window)
                             }
                             metadata("记录方式", capture.eventTemplate.title)
+                            if let imported = capture.importMetadata {
+                                metadata(RecallLocalization.both("文字来源", "Text origin"), RecallLocalization.both("导入资料（非本人承诺）", "Imported reference, not a personal commitment"))
+                                if let author = imported.author { metadata(RecallLocalization.both("原作者", "Original author"), author) }
+                                if let original = imported.occurredAt {
+                                    metadata(RecallLocalization.both("原始时间", "Original date"), original.formatted(.dateTime.locale(RecallLocalization.locale).year().month().day().hour().minute()))
+                                }
+                            }
                             if capture.isRedacted {
                                 Label(RecallLocalization.text("识别文本已脱敏"), systemImage: "lock.fill")
                                     .font(.caption).foregroundStyle(RecallPalette.secondary)
@@ -57,20 +64,20 @@ struct CaptureDetailSheet: View {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             Text(RecallLocalization.text("完整识别文本")).font(.headline)
-                            Text("\(capture.ocrText.count) 字符")
+                            Text(RecallLocalization.both("\(capture.ocrText.count) 字符", "\(capture.ocrText.count) characters"))
                                 .font(.caption).foregroundStyle(RecallPalette.secondary)
                             Spacer()
                             Button {
                                 NSPasteboard.general.clearContents()
                                 didCopy = NSPasteboard.general.setString(capture.ocrText, forType: .string)
                             } label: {
-                                Label(didCopy ? "已复制" : "复制全文", systemImage: didCopy ? "checkmark" : "doc.on.doc")
+                                Label(RecallLocalization.text(didCopy ? "已复制" : "复制全文"), systemImage: didCopy ? "checkmark" : "doc.on.doc")
                             }
                             .disabled(capture.ocrText.isEmpty)
                         }
-                        Text(RecallLocalization.text("以下为当时保存的识别文本，仅覆盖截图中的可见内容，可能包含识别误差。"))
+                        Text(capture.textOrigin == .screenOCR ? RecallLocalization.text("以下为当时保存的识别文本，仅覆盖截图中的可见内容，可能包含识别误差。") : RecallLocalization.both("以下为保存时的文字；导入资料中的发言不自动归属于你。", "Text as saved. Statements in imported material are not automatically attributed to you."))
                             .font(.caption).foregroundStyle(RecallPalette.secondary)
-                        Text(capture.ocrText.isEmpty ? "这条记录没有识别出文本。" : capture.ocrText)
+                        Text(capture.ocrText.isEmpty ? RecallLocalization.text("这条记录没有识别出文本。") : capture.ocrText)
                             .font(.body)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -85,11 +92,11 @@ struct CaptureDetailSheet: View {
                                 .resizable().scaledToFit()
                                 .frame(maxWidth: .infinity)
                                 .clipShape(RoundedRectangle(cornerRadius: 10))
-                                .accessibilityLabel("记录时的窗口截图")
+                                .accessibilityLabel(RecallLocalization.text("记录时的窗口截图"))
                         } else {
-                            Text(capture.imageRelativePath == nil
+                            Text(RecallLocalization.text(capture.imageRelativePath == nil
                                 ? "这条记录未保留截图。"
-                                : "截图文件已清理或无法读取，识别文本仍可查看。")
+                                : "截图文件已清理或无法读取，识别文本仍可查看。"))
                                 .foregroundStyle(RecallPalette.secondary)
                         }
                     }
@@ -110,8 +117,8 @@ struct CaptureDetailSheet: View {
 
     private func metadata(_ label: String, _ value: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Text(label).foregroundStyle(RecallPalette.secondary).frame(width: 64, alignment: .leading)
-            Text(value).textSelection(.enabled)
+            Text(RecallLocalization.text(label)).foregroundStyle(RecallPalette.secondary).frame(width: RecallLocalization.isEnglish ? 100 : 64, alignment: .leading)
+            Text(RecallLocalization.text(value)).textSelection(.enabled)
         }
         .font(.subheadline)
     }
