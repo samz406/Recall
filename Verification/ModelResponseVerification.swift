@@ -134,7 +134,7 @@ enum ModelResponseVerification {
         let record = source()
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         try await store.addCapture(record)
         let saved = DailySummary(day: record.createdAt, content: "原回顾完整保留", sourceCaptureIDs: [record.id], todos: [], generationKind: .localFallback)
         try await store.upsertDailySummary(saved)
@@ -226,7 +226,7 @@ enum ModelResponseVerification {
             let record = source()
             let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
             defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-            let store = try FileMemoryStore(storage: storage)
+            let store = try verificationStore(storage: storage)
             try await store.addCapture(record); try await store.updatePrivacy(PrivacySettings(cloudUseEnabled: true))
             try await store.updateLLMConfiguration(configuration(.anthropicCompatible))
             let expected = await store.snapshot().correctedForAnalysis()

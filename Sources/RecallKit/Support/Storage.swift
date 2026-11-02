@@ -82,6 +82,8 @@ public struct RecallStorage: Sendable {
 }
 
 public struct RecallState: Codable, Sendable {
+    public var schemaVersion = 2
+    public var workflow = WorkflowSettings()
     public var rules: [EventRule]
     public var captures: [CaptureRecord]
     public var messages: [ConversationMessage]
@@ -183,6 +185,7 @@ public struct RecallState: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case schemaVersion, workflow
         case topicReviews, understandingJobs, understandingSettings, dailyReviewCheckpoints, pendingDailyReviewMaintenance
         case summaryFeedback, summaryFeedbackSettings
         case rules, captures, messages, reminders, reminderDiscoveryCheckpoint, reminderLearningProfile, dailySummaries, dailySummarySettings
@@ -194,6 +197,10 @@ public struct RecallState: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        guard schemaVersion <= 2 else { throw WorkflowError.changed }
+        schemaVersion = 2
+        workflow = try container.decodeIfPresent(WorkflowSettings.self, forKey: .workflow) ?? WorkflowSettings()
         topicReviews = try container.decodeIfPresent([TopicModelReview].self, forKey: .topicReviews) ?? []
         understandingJobs = try container.decodeIfPresent([CaptureUnderstandingJob].self, forKey: .understandingJobs) ?? []
         understandingSettings = try container.decodeIfPresent(CaptureUnderstandingSettings.self, forKey: .understandingSettings) ?? CaptureUnderstandingSettings()
@@ -236,6 +243,7 @@ public struct RecallState: Codable, Sendable {
 
 public actor FileMemoryStore {
     let storage: RecallStorage
+    let credentials: any CredentialStore
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     var state: RecallState
@@ -249,7 +257,8 @@ public actor FileMemoryStore {
         try self.init(storage: RecallStorage())
     }
 
-    public init(storage: RecallStorage, deferMaintenance: Bool = false) throws {
+    public init(storage: RecallStorage, deferMaintenance: Bool = false, credentials: any CredentialStore = KeychainCredentialStore.shared) throws {
+        self.credentials = credentials
         self.storage = storage
         intelligenceIndex = try? SQLiteIntelligenceIndex(databaseURL: storage.intelligenceDatabaseURL)
         encoder = JSONEncoder()
@@ -261,6 +270,16 @@ public actor FileMemoryStore {
         if FileManager.default.fileExists(atPath: storage.stateURL.path) {
             let data = try Data(contentsOf: storage.stateURL)
             var restoredState = try decoder.decode(RecallState.self, from: data)
+            if !restoredState.llmConfiguration.apiKey.isEmpty {
+                var config = restoredState.llmConfiguration
+                // Do not rewrite the original file unless the only legacy credential is safely stored.
+                if try credentials.read(config.connectionID) == nil { try credentials.write(config.apiKey, id: config.connectionID) }
+                guard try credentials.read(config.connectionID) != nil else { throw CredentialError.unavailable }
+                config.apiKey = ""; config.credentialReference = config.connectionID.uuidString; config.credentialRevision += 1
+                restoredState.llmConfiguration = config
+                try Self.write(restoredState, encoder: encoder, to: storage.stateURL)
+                try Self.scrubLegacyBackups(in: storage.rootURL)
+            }
             let existingTemplates = Set(restoredState.rules.map(\.template))
             let missingRules = EventRule.defaults().filter { !existingTemplates.contains($0.template) }
             if !missingRules.isEmpty {
@@ -432,8 +451,32 @@ public actor FileMemoryStore {
     }
 
     public func updateLLMConfiguration(_ configuration: LLMConfiguration) throws {
-        state.llmConfiguration = configuration
-        try persist()
+        let before = state
+        var config = configuration
+        let oldKey = try credentials.read(config.connectionID)
+        if config.hasCredential {
+            try credentials.write(config.apiKey, id: config.connectionID)
+            config.credentialReference = config.connectionID.uuidString
+            config.credentialRevision = max(config.credentialRevision, state.llmConfiguration.credentialRevision) + 1
+        } else if config.hasCredential && URL(string: config.baseURLString)?.host != URL(string: state.llmConfiguration.baseURLString)?.host {
+            throw CredentialError.endpointChanged
+        }
+        config.apiKey = ""; state.llmConfiguration = config
+        do { try persistReviewState() }
+        catch {
+            state = before
+            if let oldKey { try? credentials.write(oldKey, id: config.connectionID) } else { try? credentials.delete(config.connectionID) }
+            throw error
+        }
+    }
+    private static func scrubLegacyBackups(in root: URL) throws {
+        for url in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            where url.lastPathComponent.hasPrefix("recall-state.backup-") && url.pathExtension == "json" {
+            guard var json = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any],
+                  var config = json["llmConfiguration"] as? [String: Any], config["apiKey"] != nil else { continue }
+            config.removeValue(forKey: "apiKey"); json["llmConfiguration"] = config
+            try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]).write(to: url, options: .atomic)
+        }
     }
 
     private func invalidateWeeklyReports() {
@@ -1107,6 +1150,12 @@ public actor FileMemoryStore {
     public func addMessage(_ message: ConversationMessage, inConversation expectedID: UUID? = nil) throws {
         if expectedID != nil { try Task.checkCancellation() }
         if let expectedID, expectedID != conversationID { throw CancellationError() }
+        var message = message
+        if message.role == .assistant {
+            message.sourceVersions = Dictionary(uniqueKeysWithValues: message.citations.compactMap { id in
+                state.captures.first(where: { $0.id == id }).map { (id.uuidString, CaptureUnderstandingEngine.sourceVersion($0, in: state)) }
+            })
+        }
         state.messages.append(message)
         try persist()
     }

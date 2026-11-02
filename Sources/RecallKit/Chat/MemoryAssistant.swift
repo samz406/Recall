@@ -123,9 +123,9 @@ public final class MemoryAssistant {
         var retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: retrieved,
             conversationID: conversation.id, limit: contextManager.maxEvidenceRecords)
         if retrieval.needsSemanticLookup, state.privacy.cloudUseEnabled,
-           state.llmConfiguration.provider != .localOnly, !state.llmConfiguration.apiKey.isEmpty {
+           state.llmConfiguration.provider != .localOnly, state.llmConfiguration.hasCredential {
             do {
-                let responder = CompatibleLLM(configuration: state.llmConfiguration, apiKey: state.llmConfiguration.apiKey)
+                let responder = (try await store.modelResponder())
                 let ids = try await MemorySemanticLookup().topics(for: retrievalText, in: state, responder: responder)
                 if !ids.isEmpty {
                     retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: retrieved,
@@ -176,8 +176,7 @@ public final class MemoryAssistant {
                   beforeCloud.memoryKnowledge.suppressedKeys == state.memoryKnowledge.suppressedKeys else {
                 throw LLMError.serviceError("记忆或隐私设置已更新，请重新提问。")
             }
-            let key = state.llmConfiguration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { throw LLMError.missingAPIKey }
+            guard beforeCloud.llmConfiguration == state.llmConfiguration else { throw CredentialError.unavailable }
             let safeContext = privacyEngine.cloudContext(from: request.context, settings: state.privacy)
             let safeSummary = request.conversationSummary.map(privacyEngine.redact)
             let safeRecentMessages = request.recentMessages.map { message in
@@ -192,7 +191,7 @@ public final class MemoryAssistant {
                 supplementaryContext: request.supplementaryContext.map(privacyEngine.redact),
                 recentMessages: safeRecentMessages
             )
-            let cloudAnswer = try await CompatibleLLM(configuration: state.llmConfiguration, apiKey: key).answerCancellably(to: cloudRequest)
+            let cloudAnswer = try await (try await store.modelResponder()).answerCancellably(to: cloudRequest)
             // 已传入证据时，不能接受模型仍声称“记忆为空”的幻觉式回答。
             // 此时保留本地可追溯摘要，确保用户至少得到真实的时间线内容。
             response = !safeContext.isEmpty && claimsEvidenceIsEmpty(cloudAnswer.content)
@@ -201,7 +200,8 @@ public final class MemoryAssistant {
         }
 
         let latestState = await store.snapshot()
-        guard latestState.matterCorrections.map(\.id) == originalState.matterCorrections.map(\.id),
+        guard latestState.llmConfiguration == state.llmConfiguration,
+              latestState.matterCorrections.map(\.id) == originalState.matterCorrections.map(\.id),
               SummaryFeedbackLearning.revision(in: latestState) == SummaryFeedbackLearning.revision(in: originalState),
               Set(state.captures.map(\.id)).isSubset(of: Set(latestState.captures.map(\.id))) else {
             throw LLMError.serviceError("记忆已更正或删除，请重新提问以使用最新内容。")

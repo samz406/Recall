@@ -133,7 +133,7 @@ enum ReviewCapacityVerification {
         let middle = await f.store.snapshot()
         try expect(middle.understandingJobs[0].nextPage == 2 && middle.understandingJobs[0].coveredBlocks == 36
             && middle.understandingJobs[0].pageBlockCounts == [24, 12, 12, 4], "拆分后前一检查点被重置")
-        let reopened = try FileMemoryStore(storage: f.storage)
+        let reopened = try verificationStore(storage: f.storage)
         try await reopened.recoverCaptureUnderstandingJobs()
         var settings = CaptureUnderstandingSettings(); settings.enabled = true
         try await reopened.updateCaptureUnderstandingSettings(settings)

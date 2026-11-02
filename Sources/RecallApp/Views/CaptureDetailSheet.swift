@@ -25,14 +25,14 @@ struct CaptureDetailSheet: View {
                         .foregroundStyle(RecallPalette.secondary)
                 }
                 Spacer()
-                Button("关闭") { if embedded { close?() } else { dismiss() } }
+                Button(RecallLocalization.text("关闭")) { if embedded { close?() } else { dismiss() } }
                     .keyboardShortcut(.cancelAction)
             }
             .padding(24)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    GroupBox("来源") {
+                    GroupBox(RecallLocalization.text("来源")) {
                         VStack(alignment: .leading, spacing: 8) {
                             metadata("应用", capture.sourceAppName ?? "未知应用")
                             if let window = capture.windowTitle, !window.isEmpty {
@@ -40,7 +40,7 @@ struct CaptureDetailSheet: View {
                             }
                             metadata("记录方式", capture.eventTemplate.title)
                             if capture.isRedacted {
-                                Label("识别文本已脱敏", systemImage: "lock.fill")
+                                Label(RecallLocalization.text("识别文本已脱敏"), systemImage: "lock.fill")
                                     .font(.caption).foregroundStyle(RecallPalette.secondary)
                             }
                         }
@@ -49,14 +49,14 @@ struct CaptureDetailSheet: View {
                     }
                     CaptureUnderstandingDetailView(captureID: capture.id).environmentObject(model)
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("内容摘要").font(.headline)
+                        Text(RecallLocalization.text("内容摘要")).font(.headline)
                         Text(presentation.summary)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Text("完整识别文本").font(.headline)
+                            Text(RecallLocalization.text("完整识别文本")).font(.headline)
                             Text("\(capture.ocrText.count) 字符")
                                 .font(.caption).foregroundStyle(RecallPalette.secondary)
                             Spacer()
@@ -68,7 +68,7 @@ struct CaptureDetailSheet: View {
                             }
                             .disabled(capture.ocrText.isEmpty)
                         }
-                        Text("以下为当时保存的识别文本，仅覆盖截图中的可见内容，可能包含识别误差。")
+                        Text(RecallLocalization.text("以下为当时保存的识别文本，仅覆盖截图中的可见内容，可能包含识别误差。"))
                             .font(.caption).foregroundStyle(RecallPalette.secondary)
                         Text(capture.ocrText.isEmpty ? "这条记录没有识别出文本。" : capture.ocrText)
                             .font(.body)
@@ -79,7 +79,7 @@ struct CaptureDetailSheet: View {
                             .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 10))
                     }
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("原始截图").font(.headline)
+                        Text(RecallLocalization.text("原始截图")).font(.headline)
                         if let screenshot {
                             Image(nsImage: screenshot)
                                 .resizable().scaledToFit()

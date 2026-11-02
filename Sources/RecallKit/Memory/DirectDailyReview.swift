@@ -193,7 +193,7 @@ struct DailyReviewInput: Sendable {
             reminderContext: DailyReviewReminderEngine.context(in: state, before: period.end))
     }
     static func configurationVersion(_ config: LLMConfiguration) -> String {
-        CaptureUnderstandingEngine.digest((try? directReviewJSON(config)) ?? "")
+        CaptureUnderstandingEngine.digest(((try? directReviewJSON(config)) ?? "") + RecallLocalization.outputCode)
     }
 }
 

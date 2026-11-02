@@ -36,6 +36,7 @@ struct RecallApp: App {
 final class RecallAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if CommandLine.arguments.contains("--layout-previews") {
+            UserDefaults.standard.set("zh-Hans", forKey: RecallLocalization.languageKey)
             Task { @MainActor in
                 do { try await RecallLayoutPreviews.run(); exit(0) }
                 catch { print("FAIL: layout previews: \(error)"); exit(1) }
@@ -119,7 +120,7 @@ private struct MenuBarPanel: View {
                 .font(.caption)
                 .foregroundStyle(RecallPalette.secondary)
             Divider()
-            Button("记录此刻  ⌥↩") {
+            Button(RecallLocalization.text("记录此刻  ⌥↩")) {
                 if let rule = model.state.rules.first(where: { $0.template == .manualMoment }) {
                     model.record(rule: rule)
                 }
@@ -130,14 +131,14 @@ private struct MenuBarPanel: View {
                 privacy.screenCapturePaused.toggle()
                 model.updatePrivacy(privacy)
             }
-            Button("打开 Recall") {
+            Button(RecallLocalization.text("打开 Recall")) {
                 openWindow(id: "main")
                 DispatchQueue.main.async {
                     RecallAppDelegate.activateMainWindow()
                 }
             }
             Divider()
-            Button("退出 Recall") { NSApplication.shared.terminate(nil) }
+            Button(RecallLocalization.text("退出 Recall")) { NSApplication.shared.terminate(nil) }
         }
         .padding()
         .frame(width: 250)

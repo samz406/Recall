@@ -15,7 +15,7 @@ public enum TextRecognitionContext: Sendable, Equatable {
 
     public static func resolve(appName: String?, bundleIdentifier: String?, windowTitle: String?, scope: CaptureScope) -> Self {
         let app = [appName, bundleIdentifier].compactMap { $0 }.joined(separator: " ").lowercased()
-        if scope == .selectedWindow, app.contains("slack") { return .channelMessaging }
+        if scope == .selectedWindow, app.contains("slack") || app.contains("teams") { return .channelMessaging }
         let native = ["微信", "wechat", "wework", "wecom", "imessage", "com.apple.ichat", "飞书", "lark", "feishu", "钉钉", "dingtalk", "telegram", "whatsapp", "signal", "beeper"]
         if scope == .selectedWindow, native.contains(where: app.contains) {
             return ["飞书", "lark", "feishu"].contains(where: app.contains) ? .leftAlignedMessaging : .messaging

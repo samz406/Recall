@@ -45,9 +45,9 @@ struct WeeklyReviewView: View {
                         RecallListChoice(title: item.displayName, detail: item.period.label, selected: item.id == report?.id,
                             warning: item.isReadable ? nil : "待更新") { selectedID = item.id }
                     }
-                    if model.state.weeklyReports.count > historyCount { Button("更早的回顾") { historyCount += 20 } }
+                    if model.state.weeklyReports.count > historyCount { Button(RecallLocalization.text("更早的回顾")) { historyCount += 20 } }
                     Button { showsComposer = true } label: {
-                        Label("模板与时间范围", systemImage: "slider.horizontal.3").font(.caption).frame(maxWidth: .infinity).padding(.vertical, 10)
+                        Label(RecallLocalization.text("模板与时间范围"), systemImage: "slider.horizontal.3").font(.caption).frame(maxWidth: .infinity).padding(.vertical, 10)
                     }.buttonStyle(.bordered).padding(.top, 4)
                     utilityActions.padding(.top, 4)
                 }
@@ -65,8 +65,8 @@ struct WeeklyReviewView: View {
         }
         .sheet(isPresented: $showsComposer) {
             VStack(alignment: .leading, spacing: 20) {
-                HStack { Text("新建周期回顾").font(.title2.weight(.semibold)); Spacer(); Button("取消") { showsComposer = false } }
-                Text("选择用途和日期，回顾这一段时间的记录。").foregroundStyle(RecallPalette.secondary)
+                HStack { Text(RecallLocalization.text("新建周期回顾")).font(.title2.weight(.semibold)); Spacer(); Button(RecallLocalization.text("取消")) { showsComposer = false } }
+                Text(RecallLocalization.text("选择用途和日期，回顾这一段时间的记录。")).foregroundStyle(RecallPalette.secondary)
                 composer(range: range, preview: preview)
             }.padding(24).frame(width: 660)
         }
@@ -94,12 +94,12 @@ struct WeeklyReviewView: View {
         .sheet(item: $exporting) { ReviewExportSheet(reportID: $0.id).environmentObject(model) }
         .sheet(item: $sourceItem) { ReviewSourcesSheet(item: $0, reportID: report?.id).environmentObject(model) }
         .alert("删除这份回顾？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
-            Button("取消", role: .cancel) { deleting = nil }
-            Button("删除回顾", role: .destructive) {
+            Button(RecallLocalization.text("取消"), role: .cancel) { deleting = nil }
+            Button(RecallLocalization.text("删除回顾"), role: .destructive) {
                 if let id = deleting?.id { Task { await model.deleteWeeklyReport(id) } }
                 deleting = nil
             }
-        } message: { Text("原始记录会保留。这份回顾会进入最近删除，七天内可以恢复。") }
+        } message: { Text(RecallLocalization.text("原始记录会保留。这份回顾会进入最近删除，七天内可以恢复。")) }
     }
 
     private func openTopicReview(_ id: String) {
@@ -118,14 +118,14 @@ struct WeeklyReviewView: View {
     }
     private var introductionText: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text("把一段时间，整理成一份回顾。").font(.title2.weight(.semibold))
-            Text("按周、按月或选择日期，找回值得记住的变化。")
+            Text(RecallLocalization.text("把一段时间，整理成一份回顾。")).font(.title2.weight(.semibold))
+            Text(RecallLocalization.text("按周、按月或选择日期，找回值得记住的变化。"))
                 .foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
     private var utilityActions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button { showsTemplates = true } label: { Label("调整输出格式", systemImage: "slider.horizontal.3") }
+            Button { showsTemplates = true } label: { Label(RecallLocalization.text("调整输出格式"), systemImage: "slider.horizontal.3") }
             Button { showsSchedules = true } label: {
                 Label(model.state.reviewSchedules.contains(where: \.isEnabled) ? "定时已开启" : "定时生成", systemImage: "clock")
             }
@@ -159,15 +159,15 @@ struct WeeklyReviewView: View {
             }
             if scope.useSelectedTopics {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Label("回顾这件事：" + (model.reviewIndex.topics.first { scope.topicIDs.contains($0.id) }?.title ?? "指定事项"), systemImage: "text.book.closed")
+                    Label(RecallLocalization.text("回顾这件事：") + (model.reviewIndex.topics.first { scope.topicIDs.contains($0.id) }?.title ?? "指定事项"), systemImage: "text.book.closed")
                         .font(.callout).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
-                    Button("回顾全部内容") { scope = ReviewScope(); model.reviewTopicToOpen = nil }.fixedSize()
+                    Button(RecallLocalization.text("回顾全部内容")) { scope = ReviewScope(); model.reviewTopicToOpen = nil }.fixedSize()
                 }
             }
             // Only explain a blocked action; ordinary generation has no diagnostic/configuration panel.
             if !range.isValid {
-                Text("请选择不超过 31 天的有效日期范围。")
+                Text(RecallLocalization.text("请选择不超过 31 天的有效日期范围。"))
                     .font(.caption).foregroundStyle(RecallPalette.warning)
             } else if !model.isBuildingMatters && preview.eligibleTopicCount == 0 {
                 Text(template.kind.requiresWorkScope && preview.topicCount > 0
@@ -180,7 +180,7 @@ struct WeeklyReviewView: View {
 
     private var templateControl: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("回顾模板").font(.caption).foregroundStyle(RecallPalette.secondary)
+            Text(RecallLocalization.text("回顾模板")).font(.caption).foregroundStyle(RecallPalette.secondary)
             Menu {
                 ForEach(allTemplates) { option in
                     Button { template = option } label: {
@@ -196,7 +196,7 @@ struct WeeklyReviewView: View {
     }
     private var rangeControl: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("时间范围").font(.caption).foregroundStyle(RecallPalette.secondary)
+            Text(RecallLocalization.text("时间范围")).font(.caption).foregroundStyle(RecallPalette.secondary)
             Menu {
                 ForEach(ReviewPeriodKind.allCases) { option in
                     Button { periodKind = option; rangeNow = .now } label: {
@@ -233,7 +233,7 @@ struct WeeklyReviewView: View {
             model.generateWeeklyReview(period: range, template: template, scope: scope)
             showsComposer = false
         } label: {
-            Label("生成回顾", systemImage: "sparkles")
+            Label(RecallLocalization.text("生成回顾"), systemImage: "sparkles")
                 .font(.system(size: 15, weight: .semibold))
                 .padding(.horizontal, 8).frame(minHeight: 30)
         }
@@ -243,8 +243,8 @@ struct WeeklyReviewView: View {
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 14) {
             Image(systemName: "book.closed").font(.system(size: 30, weight: .light)).foregroundStyle(RecallPalette.accent)
-            Text("你的第一份回顾，从这里开始").font(.title3.weight(.semibold))
-            Text("选一个用途和时间范围，Recall 会回看本人事项与保存的内容。记录线索会单独标明，不会被写成你完成的工作、形成的偏好或已经学会的技能。")
+            Text(RecallLocalization.text("你的第一份回顾，从这里开始")).font(.title3.weight(.semibold))
+            Text(RecallLocalization.text("选一个用途和时间范围，Recall 会回看本人事项与保存的内容。记录线索会单独标明，不会被写成你完成的工作、形成的偏好或已经学会的技能。"))
                 .foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(32).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()
     }
@@ -261,16 +261,16 @@ struct WeeklyReviewView: View {
             }
             if !report.isReadable {
                 VStack(alignment: .leading, spacing: 12) {
-                    Label("部分来源已删除或更正，这份回顾需要更新。", systemImage: "exclamationmark.circle")
-                    Text("失效内容已隐藏，避免重新显示你删除或更正的信息。").font(.caption)
-                    Button("更新回顾") { model.generateWeeklyReview(period: report.period, template: report.template, scope: report.scope, replacing: nil) }
+                    Label(RecallLocalization.text("部分来源已删除或更正，这份回顾需要更新。"), systemImage: "exclamationmark.circle")
+                    Text(RecallLocalization.text("失效内容已隐藏，避免重新显示你删除或更正的信息。")).font(.caption)
+                    Button(RecallLocalization.text("更新回顾")) { model.generateWeeklyReview(period: report.period, template: report.template, scope: report.scope, replacing: nil) }
                         .buttonStyle(.borderedProminent).disabled(model.isGeneratingWeeklyReview)
                 }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                     .foregroundStyle(RecallPalette.warning).background(RecallPalette.warning.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
             } else if let edited = report.editedMarkdown {
                 MarkdownDocumentView(markdown: edited).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     .font(.system(size: 15)).lineSpacing(7)
-                DisclosureGroup("查看自动整理的小结") { reportSections(report).padding(.top, 18) }
+                DisclosureGroup(RecallLocalization.text("查看自动整理的小结")) { reportSections(report).padding(.top, 18) }
             } else {
                 Text(report.overview).font(.system(size: 16, weight: .medium)).lineSpacing(7)
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
@@ -293,16 +293,16 @@ struct WeeklyReviewView: View {
     }
     private func reportActions(_ report: WeeklyReport) -> some View {
         HStack(spacing: 12) {
-            Button { editing = report } label: { Label("编辑", systemImage: "pencil") }.disabled(!report.isReadable)
-            Button { exporting = report } label: { Label("复制与导出", systemImage: "square.and.arrow.up") }.disabled(!report.isReadable)
+            Button { editing = report } label: { Label(RecallLocalization.text("编辑"), systemImage: "pencil") }.disabled(!report.isReadable)
+            Button { exporting = report } label: { Label(RecallLocalization.text("复制与导出"), systemImage: "square.and.arrow.up") }.disabled(!report.isReadable)
             Menu {
-                Button("查看本期来源") { materials = report }.disabled(!report.isReadable)
+                Button(RecallLocalization.text("查看本期来源")) { materials = report }.disabled(!report.isReadable)
                 Divider()
-                Button("重新生成（保留原版本）") {
+                Button(RecallLocalization.text("重新生成（保留原版本）")) {
                     model.generateWeeklyReview(period: report.period, template: report.template, scope: report.scope,
                         replacing: nil)
                 }.disabled(model.isGeneratingWeeklyReview)
-                Button("删除回顾", role: .destructive) { deleting = report }
+                Button(RecallLocalization.text("删除回顾"), role: .destructive) { deleting = report }
             } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
         }.fixedSize()
     }
@@ -327,16 +327,16 @@ struct WeeklyReviewView: View {
             if !row.summary.isEmpty { Text(row.summary).fixedSize(horizontal: false, vertical: true) }
             if let action = row.action {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("已明确的后续安排").font(.caption).foregroundStyle(RecallPalette.secondary)
+                    Text(RecallLocalization.text("已明确的后续安排")).font(.caption).foregroundStyle(RecallPalette.secondary)
                     Text(action).fixedSize(horizontal: false, vertical: true)
-                    Button("设为提醒") { model.prepareReminder(title: action, detail: row.title, sourceIDs: row.item.nextActionSourceIDs) }
+                    Button(RecallLocalization.text("设为提醒")) { model.prepareReminder(title: action, detail: row.title, sourceIDs: row.item.nextActionSourceIDs) }
                 }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
                     .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 12))
             }
         }.font(.system(size: 15)).lineSpacing(6).textSelection(.enabled).padding(.leading, 2)
             .contextMenu {
-                Button("反馈这条内容") { model.summaryFeedbackTarget = .period(report, item: row.item) }
-                Button("查看这条内容的来源") { sourceItem = row.item }
+                Button(RecallLocalization.text("反馈这条内容")) { model.summaryFeedbackTarget = .period(report, item: row.item) }
+                Button(RecallLocalization.text("查看这条内容的来源")) { sourceItem = row.item }
             }
     }
     private func stamp(_ date: Date, report: WeeklyReport) -> String {
@@ -349,9 +349,9 @@ struct WeeklyReviewView: View {
     }
     private var history: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text("已保存的回顾").font(.headline); Spacer(); Text("\(model.state.weeklyReports.count) 份").foregroundStyle(RecallPalette.secondary) }
+            HStack { Text(RecallLocalization.text("已保存的回顾")).font(.headline); Spacer(); Text("\(model.state.weeklyReports.count) 份").foregroundStyle(RecallPalette.secondary) }
             if model.state.weeklyReports.isEmpty {
-                Text("生成后会保存在这里，之后可以随时回看或调整。").font(.callout).foregroundStyle(RecallPalette.secondary)
+                Text(RecallLocalization.text("生成后会保存在这里，之后可以随时回看或调整。")).font(.callout).foregroundStyle(RecallPalette.secondary)
             }
             ForEach(Array(model.state.weeklyReports.prefix(historyCount))) { report in
                 Button { selectedID = report.id; DispatchQueue.main.async { scrollToReport() } } label: {
@@ -370,7 +370,7 @@ struct WeeklyReviewView: View {
                     }.padding(16).reviewSurface()
                 }.buttonStyle(.plain)
             }
-            if model.state.weeklyReports.count > historyCount { Button("再显示 8 份") { historyCount += 8 } }
+            if model.state.weeklyReports.count > historyCount { Button(RecallLocalization.text("再显示 8 份")) { historyCount += 8 } }
         }
     }
 }
@@ -390,13 +390,13 @@ private struct ReviewTemplateSheet: View {
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            HStack { Text("调整输出格式").font(.title2.bold()); Spacer(); Button("完成") { dismiss() } }
+            HStack { Text(RecallLocalization.text("调整输出格式")).font(.title2.bold()); Spacer(); Button(RecallLocalization.text("完成")) { dismiss() } }
             Text("当前模板：\(template.kind.title)。这里仅调整栏目名称、顺序、篇幅和表达，不改变你选择的日期范围。没有依据的栏目会省略。")
                 .foregroundStyle(RecallPalette.secondary)
-            TextField("模板名称", text: $template.name).textFieldStyle(.roundedBorder)
+            TextField(RecallLocalization.text("模板名称"), text: $template.name).textFieldStyle(.roundedBorder)
             HStack {
-                Picker("篇幅", selection: $template.length) { ForEach(ReviewLength.allCases) { Text($0.title).tag($0) } }
-                Picker("表达", selection: $template.tone) { ForEach(ReviewTone.allCases) { Text($0.title).tag($0) } }
+                Picker(RecallLocalization.text("篇幅"), selection: $template.length) { ForEach(ReviewLength.allCases) { Text($0.title).tag($0) } }
+                Picker(RecallLocalization.text("表达"), selection: $template.tone) { ForEach(ReviewTone.allCases) { Text($0.title).tag($0) } }
             }
             Text(template.length.explanation).font(.caption).foregroundStyle(RecallPalette.secondary)
             ForEach(Array(template.sections.enumerated()), id: \.element) { index, section in
@@ -409,12 +409,12 @@ private struct ReviewTemplateSheet: View {
                 }
             }
             if !model.state.reviewTemplates.isEmpty {
-                DisclosureGroup("已保存的模板") {
+                DisclosureGroup(RecallLocalization.text("已保存的模板")) {
                     ForEach(model.state.reviewTemplates) { value in
                         HStack {
                             Button(value.name) { template = value }
                             Spacer()
-                            Button("删除", role: .destructive) { Task { await model.deleteReviewTemplate(value.id) } }
+                            Button(RecallLocalization.text("删除"), role: .destructive) { Task { await model.deleteReviewTemplate(value.id) } }
                         }.padding(.vertical, 5)
                     }
                 }
@@ -422,8 +422,8 @@ private struct ReviewTemplateSheet: View {
             if let error { Text(error).foregroundStyle(RecallPalette.danger).font(.callout) }
             HStack {
                 Spacer()
-                Button("保存为新模板") { save(copy: true) }.disabled(!template.isValid)
-                Button("保存并使用") { save(copy: false) }.buttonStyle(.borderedProminent).disabled(!template.isValid)
+                Button(RecallLocalization.text("保存为新模板")) { save(copy: true) }.disabled(!template.isValid)
+                Button(RecallLocalization.text("保存并使用")) { save(copy: false) }.buttonStyle(.borderedProminent).disabled(!template.isValid)
             }
         }.padding(28).frame(width: 620)
     }
@@ -448,17 +448,17 @@ private struct ReviewEditSheet: View {
     private var report: WeeklyReport? { model.state.weeklyReports.first { $0.id == reportID } }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("调整这份回顾").font(.title2.bold())
-            Text("可以补充遗漏、调整措辞。修改会单独保存，原始依据仍然保留。") .foregroundStyle(RecallPalette.secondary)
+            Text(RecallLocalization.text("调整这份回顾")).font(.title2.bold())
+            Text(RecallLocalization.text("可以补充遗漏、调整措辞。修改会单独保存，原始依据仍然保留。")) .foregroundStyle(RecallPalette.secondary)
             TextEditor(text: $markdown).font(.system(size: 15)).scrollContentBackground(.hidden).padding(12)
                 .background(RecallPalette.surface)
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(RecallPalette.secondary.opacity(0.2)))
             if let error { Text(error).foregroundStyle(RecallPalette.danger).font(.callout) }
             HStack {
-                Button("还原为原始整理") { save(nil) }.disabled(report?.editedMarkdown == nil || isSaving)
+                Button(RecallLocalization.text("还原为原始整理")) { save(nil) }.disabled(report?.editedMarkdown == nil || isSaving)
                 Spacer()
-                Button("取消") { dismiss() }.disabled(isSaving)
-                Button("保存修改") { save(markdown) }.buttonStyle(.borderedProminent)
+                Button(RecallLocalization.text("取消")) { dismiss() }.disabled(isSaving)
+                Button(RecallLocalization.text("保存修改")) { save(markdown) }.buttonStyle(.borderedProminent)
                     .disabled(isSaving || markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || markdown.count > 60_000 || report?.isReadable != true)
             }
         }.padding(28).frame(width: 740, height: 610)
@@ -482,8 +482,8 @@ private struct ReviewExportSheet: View {
     private var report: WeeklyReport? { model.state.weeklyReports.first { $0.id == reportID && $0.isReadable } }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack { Text("复制与导出").font(.title2.bold()); Spacer(); Button("完成") { dismiss() } }
-            Text("下方就是将要输出的完整内容，可以先核对再用于工作汇报或分享。") .foregroundStyle(RecallPalette.secondary)
+            HStack { Text(RecallLocalization.text("复制与导出")).font(.title2.bold()); Spacer(); Button(RecallLocalization.text("完成")) { dismiss() } }
+            Text(RecallLocalization.text("下方就是将要输出的完整内容，可以先核对再用于工作汇报或分享。")) .foregroundStyle(RecallPalette.secondary)
             ScrollView {
                 MarkdownDocumentView(markdown: report?.markdown ?? "来源已变化，请重新生成。").textSelection(.enabled)
                     .font(.system(size: 16)).lineSpacing(6).frame(maxWidth: .infinity, alignment: .leading).padding(18)
@@ -491,7 +491,7 @@ private struct ReviewExportSheet: View {
             if let message { Text(message).font(.callout).foregroundStyle(RecallPalette.secondary) }
             HStack {
                 Spacer()
-                Button("复制文字") {
+                Button(RecallLocalization.text("复制文字")) {
                     Task {
                         if let content = await model.weeklyMarkdownForExport(reportID) {
                             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(content, forType: .string)
@@ -499,7 +499,7 @@ private struct ReviewExportSheet: View {
                         } else { message = "来源已变化，未能复制。请先更新回顾。" }
                     }
                 }.disabled(report == nil)
-                Button("导出 Markdown") { export() }.buttonStyle(.borderedProminent).disabled(report == nil)
+                Button(RecallLocalization.text("导出 Markdown")) { export() }.buttonStyle(.borderedProminent).disabled(report == nil)
             }
         }.padding(28).frame(width: 740, height: 620)
     }
@@ -530,15 +530,15 @@ private struct ReviewMaterialsSheet: View {
     var body: some View {
         let rows = report?.items.filter { $0.memberTopicIDs == nil && (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)) } ?? []
         VStack(alignment: .leading, spacing: 18) {
-            HStack { Text("本期整理依据").font(.title2.bold()); Spacer(); Button("完成") { dismiss() } }
-            Text("这里保留本期的候选材料与完整过程，包含未进入回顾正文的零碎记录；材料标题不代表已确认的真实事项。")
+            HStack { Text(RecallLocalization.text("本期整理依据")).font(.title2.bold()); Spacer(); Button(RecallLocalization.text("完成")) { dismiss() } }
+            Text(RecallLocalization.text("这里保留本期的候选材料与完整过程，包含未进入回顾正文的零碎记录；材料标题不代表已确认的真实事项。"))
                 .foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
-            TextField("搜索材料标题", text: $query).textFieldStyle(.roundedBorder)
+            TextField(RecallLocalization.text("搜索材料标题"), text: $query).textFieldStyle(.roundedBorder)
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if report == nil { Text("来源已删除或更正，请更新回顾后再查看。") }
-                    else if rows.isEmpty { Text("没有匹配的材料。") }
+                    if report == nil { Text(RecallLocalization.text("来源已删除或更正，请更新回顾后再查看。")) }
+                    else if rows.isEmpty { Text(RecallLocalization.text("没有匹配的材料。")) }
                     ForEach(Array(rows.prefix(limit))) { item in
                         Button { selected = item } label: {
                             VStack(alignment: .leading, spacing: 6) {
@@ -547,7 +547,7 @@ private struct ReviewMaterialsSheet: View {
                             }.padding(14).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()
                         }.buttonStyle(.plain)
                     }
-                    if rows.count > limit { Button("再显示 20 组材料") { limit += 20 } }
+                    if rows.count > limit { Button(RecallLocalization.text("再显示 20 组材料")) { limit += 20 } }
                 }
             }.clipped()
         }.padding(28).frame(width: 720, height: 600)
@@ -569,28 +569,28 @@ private struct ReviewSourcesSheet: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack { Text(current ? item.title : "依据已变化").font(.title2.bold()); Spacer(); Button("完成") { dismiss() } }
-            Text("回看原始记录，核对发生时间、归属与前后变化。") .foregroundStyle(RecallPalette.secondary)
+            HStack { Text(current ? item.title : "依据已变化").font(.title2.bold()); Spacer(); Button(RecallLocalization.text("完成")) { dismiss() } }
+            Text(RecallLocalization.text("回看原始记录，核对发生时间、归属与前后变化。")) .foregroundStyle(RecallPalette.secondary)
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
-                    if !current { Text("来源已删除或更正，请关闭后更新回顾。").foregroundStyle(RecallPalette.secondary) }
+                    if !current { Text(RecallLocalization.text("来源已删除或更正，请关闭后更新回顾。")).foregroundStyle(RecallPalette.secondary) }
                     else {
                         ForEach((item.previous.map { [$0] } ?? []) + item.excerpts) { entry in
                             VStack(alignment: .leading, spacing: 10) {
                                 Text((entry.eventTimeKnown == true ? "发生于 " : "记录于 ") + entry.date.formatted()).font(.caption).foregroundStyle(RecallPalette.secondary)
                                 Text(entry.text).textSelection(.enabled)
                                 ForEach(model.state.captures.filter { entry.sourceIDs.contains($0.id) }) { capture in
-                                    Button("在时间线定位 · " + (capture.sourceAppName ?? "已保存记录")) { dismiss(); model.destination = .record(capture.id) }
+                                    Button(RecallLocalization.text("在时间线定位 · ") + (capture.sourceAppName ?? "已保存记录")) { dismiss(); model.destination = .record(capture.id) }
                                 }
                             }.padding(18).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()
                         }
                         if let action = item.nextAction {
                             VStack(alignment: .leading, spacing: 10) {
-                                Text("记录中的后续安排").font(.caption).foregroundStyle(RecallPalette.secondary)
+                                Text(RecallLocalization.text("记录中的后续安排")).font(.caption).foregroundStyle(RecallPalette.secondary)
                                 Text(action).textSelection(.enabled)
                                 ForEach(model.state.captures.filter { item.nextActionSourceIDs.contains($0.id) }) { capture in
-                                    Button("在时间线定位 · " + (capture.sourceAppName ?? "已保存记录")) { dismiss(); model.destination = .record(capture.id) }
+                                    Button(RecallLocalization.text("在时间线定位 · ") + (capture.sourceAppName ?? "已保存记录")) { dismiss(); model.destination = .record(capture.id) }
                                 }
                             }.padding(18).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()
                         }
@@ -610,21 +610,21 @@ private struct ReviewSchedulesSheet: View {
     @State private var editing: ReviewSchedule?
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack { Text("定时生成回顾").font(.title2.bold()); Spacer(); Button("完成") { dismiss() } }
-            Text("为不同用途分别设置时间和范围。应用关闭时，将在下次启动后补生成最近一次回顾。")
+            HStack { Text(RecallLocalization.text("定时生成回顾")).font(.title2.bold()); Spacer(); Button(RecallLocalization.text("完成")) { dismiss() } }
+            Text(RecallLocalization.text("为不同用途分别设置时间和范围。应用关闭时，将在下次启动后补生成最近一次回顾。"))
                 .foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     if model.state.reviewSchedules.isEmpty {
-                        Text("例如，周五下班前整理工作，周日晚上回看生活。计划默认使用本地记录整理，不会新增采集。") .foregroundStyle(RecallPalette.secondary)
+                        Text(RecallLocalization.text("例如，周五下班前整理工作，周日晚上回看生活。计划默认使用本地记录整理，不会新增采集。")) .foregroundStyle(RecallPalette.secondary)
                     }
                     ForEach(model.state.reviewSchedules) { value in
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
                                 Text(value.name).font(.headline)
                                 Spacer()
-                                Toggle("开启", isOn: Binding(get: { value.isEnabled }, set: { enabled in
+                                Toggle(RecallLocalization.text("开启"), isOn: Binding(get: { value.isEnabled }, set: { enabled in
                                     var updated = value; updated.isEnabled = enabled
                                     Task { _ = await model.saveReviewSchedule(updated) }
                                 })).labelsHidden()
@@ -632,21 +632,21 @@ private struct ReviewSchedulesSheet: View {
                             Text((value.monthDay.map { "每月 \($0) 日" } ?? "每\(weekday(value.weekday))") + " \(String(format: "%02d:%02d", value.hour, value.minute)) · \(value.template.name)")
                             Text(value.timeZoneIdentifier + " · " + value.periodKind.title).font(.caption).foregroundStyle(RecallPalette.secondary)
                             if value.scope.useSelectedTopics {
-                                Text("仅回顾指定事项；可编辑计划改为整个日期范围。")
+                                Text(RecallLocalization.text("仅回顾指定事项；可编辑计划改为整个日期范围。"))
                                     .font(.caption).foregroundStyle(RecallPalette.secondary)
                             }
-                            if value.failureCount > 0 { Text("模型或保存暂未完成，将自动重试；已有的本地版本可以阅读。") .font(.caption).foregroundStyle(RecallPalette.warning) }
-                            else if value.isEnabled, let next = value.nextRunAt { Text("下次生成：" + next.formatted()).font(.caption).foregroundStyle(RecallPalette.secondary) }
+                            if value.failureCount > 0 { Text(RecallLocalization.text("模型或保存暂未完成，将自动重试；已有的本地版本可以阅读。")) .font(.caption).foregroundStyle(RecallPalette.warning) }
+                            else if value.isEnabled, let next = value.nextRunAt { Text(RecallLocalization.text("下次生成：") + next.formatted()).font(.caption).foregroundStyle(RecallPalette.secondary) }
                             HStack {
-                                Button("编辑计划") { editing = value }
+                                Button(RecallLocalization.text("编辑计划")) { editing = value }
                                 Spacer()
-                                Button("删除计划", role: .destructive) { Task { await model.deleteReviewSchedule(value.id) } }
+                                Button(RecallLocalization.text("删除计划"), role: .destructive) { Task { await model.deleteReviewSchedule(value.id) } }
                             }
                         }.padding(18).reviewSurface()
                     }
                 }
             }.clipped()
-            HStack { Spacer(); Button("新建生成计划") { editing = ReviewSchedule(template: template, scope: scope) }.buttonStyle(.borderedProminent) }
+            HStack { Spacer(); Button(RecallLocalization.text("新建生成计划")) { editing = ReviewSchedule(template: template, scope: scope) }.buttonStyle(.borderedProminent) }
         }.padding(28).frame(width: 680, height: 580)
             .sheet(item: $editing) { ReviewScheduleEditor(schedule: $0).environmentObject(model) }
     }
@@ -662,23 +662,23 @@ private struct ReviewScheduleEditor: View {
     @State private var saving = false
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("安排一份定时回顾").font(.title2.bold())
-            TextField("计划名称", text: $schedule.name).textFieldStyle(.roundedBorder)
-            Picker("使用模板", selection: Binding(get: { schedule.template.id }, set: { id in
+            Text(RecallLocalization.text("安排一份定时回顾")).font(.title2.bold())
+            TextField(RecallLocalization.text("计划名称"), text: $schedule.name).textFieldStyle(.roundedBorder)
+            Picker(RecallLocalization.text("使用模板"), selection: Binding(get: { schedule.template.id }, set: { id in
                 if let value = (ReviewTemplate.builtIns + model.state.reviewTemplates).first(where: { $0.id == id }) { schedule.template = value }
             })) {
                 ForEach(ReviewTemplate.builtIns + model.state.reviewTemplates) { Text($0.name).tag($0.id) }
             }
-            Picker("重复周期", selection: Binding(get: { schedule.monthDay != nil }, set: { schedule.monthDay = $0 ? 1 : nil })) {
-                Text("每周").tag(false); Text("每月").tag(true)
+            Picker(RecallLocalization.text("重复周期"), selection: Binding(get: { schedule.monthDay != nil }, set: { schedule.monthDay = $0 ? 1 : nil })) {
+                Text(RecallLocalization.text("每周")).tag(false); Text(RecallLocalization.text("每月")).tag(true)
             }.pickerStyle(.segmented)
             HStack {
                 if schedule.monthDay != nil {
                     Stepper("每月 \(schedule.monthDay ?? 1) 日", value: Binding(get: { schedule.monthDay ?? 1 }, set: { schedule.monthDay = $0 }), in: 1...28)
                 } else {
-                Picker("生成时间", selection: $schedule.weekday) {
-                    Text("周一").tag(2); Text("周二").tag(3); Text("周三").tag(4); Text("周四").tag(5)
-                    Text("周五").tag(6); Text("周六").tag(7); Text("周日").tag(1)
+                Picker(RecallLocalization.text("生成时间"), selection: $schedule.weekday) {
+                    Text(RecallLocalization.text("周一")).tag(2); Text(RecallLocalization.text("周二")).tag(3); Text(RecallLocalization.text("周三")).tag(4); Text(RecallLocalization.text("周四")).tag(5)
+                    Text(RecallLocalization.text("周五")).tag(6); Text(RecallLocalization.text("周六")).tag(7); Text(RecallLocalization.text("周日")).tag(1)
                 }
                 }
                 DatePicker("时刻", selection: Binding(get: {
@@ -688,32 +688,32 @@ private struct ReviewScheduleEditor: View {
                     schedule.minute = schedule.calendar.component(.minute, from: date)
                 }), displayedComponents: .hourAndMinute).labelsHidden().environment(\.timeZone, schedule.calendar.timeZone)
             }
-            Picker("回顾范围", selection: $schedule.periodKind) {
+            Picker(RecallLocalization.text("回顾范围"), selection: $schedule.periodKind) {
                 ForEach(ReviewPeriodKind.allCases.filter { $0 != .custom }) { Text($0.title).tag($0) }
             }
             if schedule.scope.useSelectedTopics {
                 HStack {
-                    Label("此计划仅回顾指定事项", systemImage: "text.book.closed")
+                    Label(RecallLocalization.text("此计划仅回顾指定事项"), systemImage: "text.book.closed")
                     Spacer()
-                    Button("改为整个日期范围") { schedule.scope = ReviewScope() }
+                    Button(RecallLocalization.text("改为整个日期范围")) { schedule.scope = ReviewScope() }
                 }.font(.callout)
             } else {
-                Text("按所选日期范围自动整理，模板决定内容用途和输出格式。")
+                Text(RecallLocalization.text("按所选日期范围自动整理，模板决定内容用途和输出格式。"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
-            DisclosureGroup("时区") {
-                TextField("例如 Asia/Shanghai", text: $schedule.timeZoneIdentifier).textFieldStyle(.roundedBorder)
+            DisclosureGroup(RecallLocalization.text("时区")) {
+                TextField(RecallLocalization.text("例如 Asia/Shanghai"), text: $schedule.timeZoneIdentifier).textFieldStyle(.roundedBorder)
             }
             Text("使用 \(schedule.timeZoneIdentifier) 时区。选择‘本周’时，只总结到计划生成时刻；需要完整周一至周日，可在周一生成‘上一个完整周’。")
                 .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
-            Text("回顾由已连接的模型生成。生成前会先补齐这段时间的记录理解；模型不可用时保留原回顾，稍后重试。")
+            Text(RecallLocalization.text("回顾由已连接的模型生成。生成前会先补齐这段时间的记录理解；模型不可用时保留原回顾，稍后重试。"))
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
-            Toggle("生成后发送系统通知", isOn: $schedule.notifyWhenReady)
-            Text("支持暂停或删除计划；失败会记录日志并重试，不自动发送周报或创建提醒。")
+            Toggle(RecallLocalization.text("生成后发送系统通知"), isOn: $schedule.notifyWhenReady)
+            Text(RecallLocalization.text("支持暂停或删除计划；失败会记录日志并重试，不自动发送周报或创建提醒。"))
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
             if let error { Text(error).foregroundStyle(RecallPalette.danger).font(.callout) }
             HStack {
-                Spacer(); Button("取消") { dismiss() }.disabled(saving)
+                Spacer(); Button(RecallLocalization.text("取消")) { dismiss() }.disabled(saving)
                 Button(saving ? "保存中…" : "保存计划") {
                     saving = true
                     Task {

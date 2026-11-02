@@ -46,7 +46,7 @@ enum SummaryAccuracyVerification {
     static func captureDeduplicationAndFastWrite() async throws {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-accuracy-" + UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let screen = (0..<8).map { "Atlas 第 \($0) 行：分页边界验证记录与结果" }.joined(separator: "\n")
         let first = CaptureRecord(eventTemplate: .workCheckpoint, createdAt: .now, sourceAppName: "合成", sourceBundleIdentifier: "example.a",
             contentHash: "h1", ocrText: screen)
@@ -65,7 +65,7 @@ enum SummaryAccuracyVerification {
         try expect(!different, "不同内容被误判为重复")
         try expect(!expired, "超出时间窗口仍判为重复")
         // The fast write path must leave the saved state decodable and complete.
-        let reopened = try FileMemoryStore(storage: storage)
+        let reopened = try verificationStore(storage: storage)
         let ids = await reopened.snapshot().captures.map(\.id)
         try expect(ids == [first.id], "快速写入路径没有保存记录")
     }
@@ -120,7 +120,7 @@ extension SummaryAccuracyVerification {
         let item = output.summary.items.first
         try expect(item?.knowledge?.topic == "Atlas 分页" && item?.knowledge?.kind == .matter && item?.knowledge?.ownedByUser == true,
             "每日回顾没有保存主题、类型和归属")
-        let reopened = try FileMemoryStore(storage: f.storage)
+        let reopened = try verificationStore(storage: f.storage)
         let saved = await reopened.snapshot().dailySummaries.first?.items.first
         try expect(saved?.knowledge?.topic == "Atlas 分页" && saved?.knowledge?.quotes.isEmpty == false, "结构化理解没有随回顾保存并读回")
         try expect(DirectDailyReviewEngine.cleanTopic("工作") == nil && DirectDailyReviewEngine.cleanTopic("发布流程页面改版") == "发布流程页面改版", "泛称主题没有被拒绝")
@@ -152,7 +152,7 @@ extension SummaryAccuracyVerification {
     static func dailyReviewsDriveTheMemoryTabs() async throws {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-daily-driven-" + UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: .now)
         var records: [CaptureRecord] = []
@@ -227,7 +227,7 @@ extension SummaryAccuracyVerification {
         state.memoryKnowledge = knowledge
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(state).write(to: storage.stateURL)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         try await store.organizeMemory(force: true)
         let rebuilt = await store.snapshot().memoryKnowledge
         try expect(rebuilt.organizationVersion == MemoryKnowledgeEngine.organizationVersion, "旧账本没有升级到新的整理版本")
@@ -257,7 +257,7 @@ extension SummaryAccuracyVerification {
         let text = "[聊天·对方] 一篇关于分页边界的文章说明了很多通用的做法和注意事项，这些内容并不是本人的表述。\n[聊天·自己] [内容·资料] 分页边界的通用做法与注意事项整理，转发自他人。"
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-overclaim-" + UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let now = Date.now
         try await store.addCapture(CaptureRecord(eventTemplate: .workCheckpoint, createdAt: now.addingTimeInterval(-5), sourceAppName: "Chrome",
             sourceBundleIdentifier: "example.chrome", contentHash: UUID().uuidString, ocrText: text, textOrigin: .screenOCR))
@@ -290,7 +290,7 @@ extension SummaryAccuracyVerification {
     static func unmarkedScreenWorkIsTheUsers() async throws {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-screen-" + UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let now = Date.now
         try await store.addCapture(CaptureRecord(eventTemplate: .workCheckpoint, createdAt: now.addingTimeInterval(-5), sourceAppName: "Orca",
             sourceBundleIdentifier: "example.orca", contentHash: UUID().uuidString,
@@ -307,7 +307,7 @@ extension SummaryAccuracyVerification {
     static func templatesSeparateTopicsByCategory() async throws {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-template-" + UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: .now)
         let rows: [(String, String?)] = [("发布流程页面改版", "work"), ("成都马拉松半马记录", "personal"), ("英语口语练习", "learning"), ("未能判断的事情", nil)]
@@ -378,7 +378,7 @@ extension SummaryAccuracyVerification {
         }
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(state).write(to: storage.stateURL)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         try await store.organizeMemory()
         let begin = Date.now
         let current = await store.isMemoryLedgerCurrent()
@@ -407,7 +407,7 @@ extension SummaryAccuracyVerification {
         // A topic named in the question is found by its identifying words, and its first and latest states both come back.
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-topic-q-" + UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: .now)
         var records: [CaptureRecord] = []
@@ -441,7 +441,7 @@ extension SummaryAccuracyVerification {
     static func regeneratingEveryDayKeepsOldVersions() async throws {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-regen-" + UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: .now)
         var days: [Date] = []

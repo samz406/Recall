@@ -34,8 +34,12 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
     public var provider: LLMProviderKind
     public var baseURLString: String
     public var model: String
-    /// 项目所有者明确选择的本机普通文本凭据，仅持久化在用户 Application Support 配置中。
+    /// Transient request/editor or legacy migration value. Never encoded in state.
     public var apiKey: String
+    public var connectionID: UUID
+    public var credentialReference: String?
+    public var credentialRevision: Int
+    public var hasCredential: Bool { !apiKey.isEmpty || credentialReference != nil }
     public var anthropicVersion: String
     public var maxOutputTokens: Int
 
@@ -51,6 +55,9 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
         self.baseURLString = baseURLString
         self.model = model
         self.apiKey = apiKey
+        self.connectionID = UUID()
+        self.credentialReference = apiKey.isEmpty ? nil : self.connectionID.uuidString
+        self.credentialRevision = 0
         self.anthropicVersion = anthropicVersion
         self.maxOutputTokens = maxOutputTokens
     }
@@ -62,7 +69,7 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case provider, baseURLString, model, apiKey, anthropicVersion, maxOutputTokens
+        case provider, baseURLString, model, apiKey, anthropicVersion, maxOutputTokens, connectionID, credentialReference, credentialRevision
     }
 
     public init(from decoder: Decoder) throws {
@@ -72,9 +79,20 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
         baseURLString = try container.decodeIfPresent(String.self, forKey: .baseURLString) ?? decodedProvider.defaultBaseURL
         model = try container.decodeIfPresent(String.self, forKey: .model) ?? decodedProvider.defaultModel
         apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
+        connectionID = try container.decodeIfPresent(UUID.self, forKey: .connectionID) ?? UUID()
+        credentialReference = try container.decodeIfPresent(String.self, forKey: .credentialReference)
+        credentialRevision = try container.decodeIfPresent(Int.self, forKey: .credentialRevision) ?? 0
         anthropicVersion = try container.decodeIfPresent(String.self, forKey: .anthropicVersion) ?? "2023-06-01"
         maxOutputTokens = try container.decodeIfPresent(Int.self, forKey: .maxOutputTokens) ?? 1_000
     }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(provider, forKey: .provider); try c.encode(baseURLString, forKey: .baseURLString)
+        try c.encode(model, forKey: .model); try c.encode(anthropicVersion, forKey: .anthropicVersion)
+        try c.encode(maxOutputTokens, forKey: .maxOutputTokens); try c.encode(connectionID, forKey: .connectionID)
+        try c.encodeIfPresent(credentialReference, forKey: .credentialReference); try c.encode(credentialRevision, forKey: .credentialRevision)
+    }
+
 }
 
 public enum LLMRequestPurpose: Equatable, Sendable {
@@ -374,7 +392,7 @@ public struct CompatibleLLM: LLMResponding {
             model: configuration.model,
             maxTokens: outputLimit(for: request),
             temperature: 0.2,
-            system: systemInstruction(for: request),
+            system: systemInstruction(for: request) + RecallLocalization.languageInstruction(for: request),
             messages: anthropicMessages(for: request),
             outputConfig: lowEffort ? .init(effort: "low") : nil,
             thinking: disableThinking ? .init(type: "disabled") : nil
@@ -520,7 +538,7 @@ public struct CompatibleLLM: LLMResponding {
     }
 
     private func openAIMessages(for request: LLMRequest) -> [OpenAIRequest.Message] {
-        var messages = [OpenAIRequest.Message(role: "system", content: systemInstruction(for: request))]
+        var messages = [OpenAIRequest.Message(role: "system", content: systemInstruction(for: request) + RecallLocalization.languageInstruction(for: request))]
         messages += (request.purpose == .chat ? request.recentMessages : []).compactMap { message in
             switch message.role {
             case .user: OpenAIRequest.Message(role: "user", content: message.content)

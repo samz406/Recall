@@ -112,7 +112,7 @@ struct RecallTaskStatusView: View {
                 Text(task.kind + " · " + task.target).font(.subheadline.weight(.medium))
                 Text(task.phase).font(.callout).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
                 if let detail = task.detail, !detail.isEmpty {
-                    DisclosureGroup("处理详情") {
+                    DisclosureGroup(RecallLocalization.text("处理详情")) {
                         Text(detail).font(.caption).foregroundStyle(RecallPalette.secondary)
                             .fixedSize(horizontal: false, vertical: true).textSelection(.enabled).padding(.top, 4)
                     }.font(.caption).foregroundStyle(RecallPalette.secondary)
@@ -123,7 +123,7 @@ struct RecallTaskStatusView: View {
                 Button(task.isCancelling ? "取消中…" : "取消", action: cancel).disabled(task.isCancelling)
             }
             if !task.isRunning, model.taskRetryActions[task.id] != nil {
-                Button("重试") { model.retryTask(task.id) }
+                Button(RecallLocalization.text("重试")) { model.retryTask(task.id) }
                     .disabled(model.isGeneratingDailySummary || model.isGeneratingWeeklyReview || model.generatingTopicID != nil)
             }
         }.padding(16).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 12))
@@ -146,20 +146,20 @@ struct RecallTaskHistory: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("最近的处理结果").font(.headline)
+                Text(RecallLocalization.text("最近的处理结果")).font(.headline)
                 Spacer()
-                Button("反馈记录") { model.showsSummaryFeedbackHistory = true }
+                Button(RecallLocalization.text("反馈记录")) { model.showsSummaryFeedbackHistory = true }
             }
-            Text("保留本次打开应用后的任务；切换页面不会中断生成。")
+            Text(RecallLocalization.text("保留本次打开应用后的任务；切换页面不会中断生成。"))
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if model.tasks.isEmpty { Text("暂时没有任务").foregroundStyle(RecallPalette.secondary) }
+                    if model.tasks.isEmpty { Text(RecallLocalization.text("暂时没有任务")).foregroundStyle(RecallPalette.secondary) }
                     ForEach(model.tasks) { task in
                         VStack(alignment: .leading, spacing: 8) {
                             RecallTaskStatusView(task: task)
                             if let target = task.destination {
-                                Button("查看结果") { model.destination = target }
+                                Button(RecallLocalization.text("查看结果")) { model.destination = target }
                             }
                         }
                     }
@@ -176,21 +176,21 @@ struct RecallSourcesView: View {
     let ids: [UUID]
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            RecallPageHeader(title: "内容依据", subtitle: title) { Button("完成") { dismiss() } }
+            RecallPageHeader(title: "内容依据", subtitle: title) { Button(RecallLocalization.text("完成")) { dismiss() } }
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     let sources = model.state.captures.filter { ids.contains($0.id) }
-                    if sources.isEmpty { Text("来源已删除或不再可用。") }
+                    if sources.isEmpty { Text(RecallLocalization.text("来源已删除或不再可用。")) }
                     ForEach(sources) { source in
                         VStack(alignment: .leading, spacing: 10) {
                             Text((source.sourceAppName ?? "记录") + " · " + source.createdAt.formatted()).font(.caption).foregroundStyle(RecallPalette.secondary)
                             Text(source.ocrText).font(RecallTypography.body).textSelection(.enabled)
                             HStack {
-                                Button("在时间线定位") { dismiss(); model.destination = .record(source.id) }
+                                Button(RecallLocalization.text("在时间线定位")) { dismiss(); model.destination = .record(source.id) }
                                 Menu("更正这条记录") {
-                                    Button("不是我说的") { model.correctMatter(MatterCorrection(evidenceIDs: [source.id], kind: .notMine)); dismiss() }
-                                    Button("内容不准确") { model.correctMatter(MatterCorrection(evidenceIDs: [source.id], kind: .inaccurate)); dismiss() }
+                                    Button(RecallLocalization.text("不是我说的")) { model.correctMatter(MatterCorrection(evidenceIDs: [source.id], kind: .notMine)); dismiss() }
+                                    Button(RecallLocalization.text("内容不准确")) { model.correctMatter(MatterCorrection(evidenceIDs: [source.id], kind: .inaccurate)); dismiss() }
                                 }
                             }
                         }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
@@ -241,21 +241,21 @@ struct GlobalMemorySearchSheet: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text("搜索记忆").font(.title2.bold()); Spacer(); Button("完成") { dismiss() } }
-            TextField("关键词、主题或人名", text: $query).textFieldStyle(.roundedBorder).focused($queryFocused)
+            HStack { Text(RecallLocalization.text("搜索记忆")).font(.title2.bold()); Spacer(); Button(RecallLocalization.text("完成")) { dismiss() } }
+            TextField(RecallLocalization.text("关键词、主题或人名"), text: $query).textFieldStyle(.roundedBorder).focused($queryFocused)
             HStack {
-                Picker("来源", selection: $app) {
-                    Text("全部应用").tag("")
+                Picker(RecallLocalization.text("来源"), selection: $app) {
+                    Text(RecallLocalization.text("全部应用")).tag("")
                     ForEach(Array(Set(model.state.captures.compactMap(\.sourceAppName))).sorted(), id: \.self) { Text($0).tag($0) }
                 }.frame(maxWidth: 220)
-                Picker("主题", selection: $topicID) {
-                    Text("全部主题").tag("")
+                Picker(RecallLocalization.text("主题"), selection: $topicID) {
+                    Text(RecallLocalization.text("全部主题")).tag("")
                     ForEach(model.matterFiles) { Text($0.title).tag($0.id) }
                 }.frame(maxWidth: 240)
                 Spacer()
             }
             HStack {
-                Toggle("限定日期", isOn: $usesDates)
+                Toggle(RecallLocalization.text("限定日期"), isOn: $usesDates)
                 if usesDates {
                     DatePicker("从", selection: $start, displayedComponents: .date).labelsHidden()
                     DatePicker("到", selection: $end, in: start..., displayedComponents: .date).labelsHidden()
@@ -265,8 +265,8 @@ struct GlobalMemorySearchSheet: View {
             if building { ProgressView("正在准备本地搜索…") }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if !building && !query.isEmpty && hits.isEmpty { Text("没有匹配内容，可以换一个词或扩大范围。") }
-                    if query.isEmpty && topicID.isEmpty && app.isEmpty && !usesDates { Text("搜索记录、主题、每日回顾、周期回顾、提醒与长期记忆。支持多个关键词组合；全程本地检索。") }
+                    if !building && !query.isEmpty && hits.isEmpty { Text(RecallLocalization.text("没有匹配内容，可以换一个词或扩大范围。")) }
+                    if query.isEmpty && topicID.isEmpty && app.isEmpty && !usesDates { Text(RecallLocalization.text("搜索记录、主题、每日回顾、周期回顾、提醒与长期记忆。支持多个关键词组合；全程本地检索。")) }
                     ForEach(hits) { hit in
                         Button {
                             model.destination = hit.destination; dismiss()
@@ -281,7 +281,7 @@ struct GlobalMemorySearchSheet: View {
                     }
                 }.padding(.vertical, 8)
             }.clipped()
-            Text("最多显示 50 项；缩小关键词、日期或来源可继续定位。")
+            Text(RecallLocalization.text("最多显示 50 项；缩小关键词、日期或来源可继续定位。"))
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
         }.padding(24).frame(minWidth: 720, idealWidth: 820, minHeight: 540, idealHeight: 670)
             .onAppear { queryFocused = true }

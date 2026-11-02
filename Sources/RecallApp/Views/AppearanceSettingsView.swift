@@ -5,16 +5,16 @@ struct AppearanceSettingsView: View {
     private var selection: RecallAppearance { RecallAppearance(rawValue: rawAppearance) ?? .system }
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            Text("外观").font(.headline).foregroundStyle(RecallPalette.accent)
+            Text(RecallLocalization.text("外观")).font(.headline).foregroundStyle(RecallPalette.accent)
             VStack(alignment: .leading, spacing: 6) {
-                Text("界面主题").font(.system(size: 18, weight: .semibold))
-                Text("选择 Recall 的显示外观。").font(.subheadline).foregroundStyle(RecallPalette.secondary)
+                Text(RecallLocalization.text("界面主题")).font(.system(size: 18, weight: .semibold))
+                Text(RecallLocalization.text("选择 Recall 的显示外观。")).font(.subheadline).foregroundStyle(RecallPalette.secondary)
             }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 16) { themeCards(minimumWidth: 138) }
                 VStack(spacing: 8) { themeCards(minimumWidth: 0, compactRows: true) }
             }
-            Label("跟随系统时，Recall 会随 macOS 的外观设置自动切换。", systemImage: "info.circle")
+            Label(RecallLocalization.text("跟随系统时，Recall 会随 macOS 的外观设置自动切换。"), systemImage: "info.circle")
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }.recallSurface(padding: 28)

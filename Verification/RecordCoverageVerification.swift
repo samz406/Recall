@@ -46,7 +46,7 @@ enum RecordCoverageVerification {
             "未标角色的有效记录没有进入模型整理与独立核对流程")
         let root = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: root.rootURL) }
-        let store = try FileMemoryStore(storage: root)
+        let store = try verificationStore(storage: root)
         try await store.addCapture(record); try await store.organizeMemory(force: true)
         let indexed = await store.snapshot()
         let claim = indexed.memoryKnowledge.claims.first { $0.kind == .reference }!

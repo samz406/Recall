@@ -83,7 +83,7 @@ enum ReviewFlowVerification {
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(legacy).write(to: storage.stateURL, options: .atomic)
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         try await store.organizeMemory(force: true)
         let rebuilt = await store.snapshot()
         try expect(rebuilt.memoryKnowledge.organizationVersion == MemoryKnowledgeEngine.organizationVersion
@@ -92,12 +92,12 @@ enum ReviewFlowVerification {
         try expect(!rebuilt.messages.contains { $0.id == staleAnswer.id } && rebuilt.messages.contains { $0.id == goodAnswer.id },
             "重新整理没有撤回错误主题的派生结论，或误删了有效结论")
         try expect(rebuilt.captures.map(\.ocrText) == legacy.captures.map(\.ocrText), "重新整理改写了原始证据")
-        let reopened = try FileMemoryStore(storage: storage)
+        let reopened = try verificationStore(storage: storage)
         let reopenedState = await reopened.snapshot()
         try expect(MatterMemoryEngine().files(in: reopenedState).count == 1, "重启又读回了旧错误主题")
         legacy.memoryKnowledgeSettings.automaticOrganization = true
         try encoder.encode(legacy).write(to: storage.stateURL, options: .atomic)
-        let migrated = try FileMemoryStore(storage: storage)
+        let migrated = try verificationStore(storage: storage)
         let migratedState = await migrated.snapshot()
         try expect(migratedState.memoryKnowledge.organizationVersion == MemoryKnowledgeEngine.organizationVersion
             && !migratedState.messages.contains { $0.id == staleAnswer.id }

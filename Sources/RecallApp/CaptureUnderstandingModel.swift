@@ -69,7 +69,7 @@ extension RecallAppModel {
                     let store = self.store
                     do {
                         let outcome = try await store.processCaptureUnderstandingPage(job,
-                            responder: CompatibleLLM(configuration: config, apiKey: config.apiKey),
+                            responder: (try ModelResponderFactory.make(configuration: config)),
                             configuration: config, privacy: snapshot.privacy, onRepair: { issue in
                                 await self.updateTask(taskID, phase: "正在修正记录理解", detail: issue.explanation + "；自动修正一次后重新核对。")
                             })

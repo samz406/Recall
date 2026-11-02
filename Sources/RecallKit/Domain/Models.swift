@@ -154,6 +154,7 @@ public struct EventRule: Identifiable, Codable, Hashable, Sendable {
 
 public enum CaptureTextOrigin: String, Codable, Sendable {
     case userInput
+    case importedText
     case screenOCR
 }
 
@@ -177,6 +178,9 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
     public var memoryDirective: MemoryDirective?
     public var isMemoryEvidenceArchive: Bool?
     public var correctedText: String?
+    public var sourceMessages: [SourceMessage]? = nil
+    public var importMetadata: TextImportMetadata? = nil
+    public var meetingSessionID: UUID? = nil
     public var recognition: CaptureRecognition?
     public var understanding: CaptureUnderstanding?
 
@@ -246,6 +250,7 @@ public struct ConversationMessage: Identifiable, Codable, Hashable, Sendable {
     public var content: String
     public var createdAt: Date
     public var citations: [UUID]
+    public var sourceVersions: [String: String]? = nil
     public var helpful: Bool? = nil
 
     public init(id: UUID = UUID(), role: ChatRole, content: String, createdAt: Date = .now, citations: [UUID] = []) {
@@ -258,6 +263,7 @@ public struct ConversationMessage: Identifiable, Codable, Hashable, Sendable {
 }
 
 public enum ReminderStatus: String, Codable, Sendable {
+    case planned
     case proposed
     case scheduled
     case snoozed
@@ -436,6 +442,8 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
     public var snoozeCount: Int
     /// Stable terminal timestamp; rescans and metadata updates must not move history to today.
     public var closedAt: Date?
+    public var plannedForDay: LocalDay? = nil
+    public var acceptedAt: Date? = nil
     public var analysis: ReminderAnalysis? = nil
 
     public init(

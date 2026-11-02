@@ -20,7 +20,7 @@ public extension FileMemoryStore {
                                     responder: any LLMResponding, now: Date = .now,
                                     progress: @escaping @Sendable (ReminderDiscoveryProgress) async -> Void = { _ in }) async throws -> ReminderDiscoveryRun {
         let config = state.llmConfiguration
-        guard state.privacy.cloudUseEnabled, config.provider != .localOnly, !config.apiKey.isEmpty,
+        guard state.privacy.cloudUseEnabled, config.provider != .localOnly, config.hasCredential,
               !automatic || state.reminderLearningProfile.automaticDiscovery == true else { throw ReminderDiscoveryError.unavailable }
         let privacy = state.privacy, engine = ModelReminderDiscovery()
         let plan = engine.plan(in: state, force: force, now: now)

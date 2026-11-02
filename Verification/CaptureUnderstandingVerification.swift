@@ -27,7 +27,7 @@ enum CaptureUnderstandingVerification {
     }
     private static func fixture(_ text: String = "[聊天·自己] 我会在明天补充 Atlas 导出分页测试并提交评审。") async throws -> Fixture {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-understanding-" + UUID().uuidString))
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let source = CaptureRecord(eventTemplate: .workCheckpoint, sourceAppName: "合成测试聊天",
             sourceBundleIdentifier: "example.synthetic-chat", windowTitle: "Atlas 会话", contentHash: UUID().uuidString,
             ocrText: text, textOrigin: .screenOCR)
@@ -183,7 +183,7 @@ enum CaptureUnderstandingVerification {
     private static func durabilityAndRetry() async throws {
         let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
         let (first, _) = try await claim(f)
-        let reopened = try FileMemoryStore(storage: f.storage)
+        let reopened = try verificationStore(storage: f.storage)
         try await reopened.recoverCaptureUnderstandingJobs()
         let recovered = await reopened.snapshot()
         try expect(recovered.understandingJobs[0].state == .queued && recovered.understandingJobs[0].lease == nil, "退出重启后任务无法恢复")
@@ -206,7 +206,7 @@ enum CaptureUnderstandingVerification {
         try await f.store.finishCaptureUnderstandingPage(job, result: result, configuration: f.config, privacy: f.privacy)
         var state = await f.store.snapshot()
         try expect(state.captures[0].understanding == nil && state.understandingJobs[0].nextPage == 1, "半份结果提前公开或断点未持久化")
-        let reopened = try FileMemoryStore(storage: f.storage)
+        let reopened = try verificationStore(storage: f.storage)
         let next = try await reopened.claimCaptureUnderstanding()
         try expect(next?.nextPage == 1, "重启后重复从首段处理")
         var changed = f.config; changed.model = "other-test-model"

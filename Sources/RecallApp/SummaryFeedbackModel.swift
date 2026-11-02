@@ -26,7 +26,7 @@ extension RecallAppModel {
                 do {
                     let snapshot = await self.store.snapshot()
                     let config = snapshot.llmConfiguration
-                    let available = snapshot.privacy.cloudUseEnabled && config.provider != .localOnly && !config.apiKey.isEmpty
+                    let available = snapshot.privacy.cloudUseEnabled && config.provider != .localOnly && config.hasCredential
                     guard let job = try await self.store.claimSummaryFeedback(modelAvailable: available) else {
                         self.state = await self.store.snapshot(); break
                     }
@@ -36,7 +36,7 @@ extension RecallAppModel {
                     do {
                         let working = await store.snapshot()
                         let plan = try await SummaryFeedbackEngine().resolve(job, in: working,
-                            responder: CompatibleLLM(configuration: config, apiKey: config.apiKey), beforeCall: { sources in
+                            responder: (try ModelResponderFactory.make(configuration: config)), beforeCall: { sources in
                                 try await store.validateSummaryFeedbackJob(job, configuration: config, privacy: snapshot.privacy, extraSources: sources)
                             })
                         self.updateTask(taskID, phase: "保存核对结果")

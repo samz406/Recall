@@ -170,15 +170,17 @@ public enum CaptureUnderstandingEngine {
     /// All characters are partitioned, including tails of long documents. No prefix sampling.
     public static func blocks(for capture: CaptureRecord, contextOnly: Bool = false) -> [UnderstandingBlock] {
         var result: [UnderstandingBlock] = []
-        for (lineIndex, raw) in capture.ocrText.components(separatedBy: .newlines).enumerated() {
+        for (lineIndex, raw) in (capture.correctedText ?? capture.ocrText).components(separatedBy: .newlines).enumerated() {
             let line = PrivacyEngine().redact(raw).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty else { continue }
             let speaker: UnderstandingSpeaker
-            if line.hasPrefix("[聊天·自己]") { speaker = .user }
+            if let message = capture.sourceMessages?.first(where: { $0.text == raw }) { speaker = message.speaker }
+            else if capture.textOrigin == .importedText { speaker = .unknown }
+            else if line.hasPrefix("[聊天·自己]") { speaker = .user }
             else if line.hasPrefix("[聊天·对方]") { speaker = .other }
             else if line.hasPrefix("[聊天·角色未知]") { speaker = .unknown }
             else { speaker = capture.textOrigin == .userInput ? .user : .unknown }
-            let reference = ["[内容·资料]", "[内容·附件]", "[内容·系统]", "[内容·片段]"].contains(where: line.contains)
+            let reference = capture.textOrigin == .importedText || ["[内容·资料]", "[内容·附件]", "[内容·系统]", "[内容·片段]"].contains(where: line.contains)
             let confidence = capture.recognition?.lines.filter { line.contains($0.text) }.compactMap(\.confidence).min()
             let characters = Array(line)
             for start in stride(from: 0, to: characters.count, by: 800) {

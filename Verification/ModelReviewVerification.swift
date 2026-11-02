@@ -75,7 +75,7 @@ enum ModelReviewVerification {
     }
     static func fixture(count: Int = 1, raw: Bool = false, text: String? = nil) async throws -> Fixture {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-model-review-" + UUID().uuidString))
-        let store = try FileMemoryStore(storage: storage)
+        let store = try verificationStore(storage: storage)
         let now = Date.now
         var records: [CaptureRecord] = []
         for i in 0..<count {
@@ -232,7 +232,7 @@ enum ModelReviewVerification {
         let template = ReviewTemplate(kind: .personal)
         let weekly = result.weeklyReport(period: f.period, template: template, scope: ReviewScope(), in: state)
         _ = try await f.store.commitWeeklyReport(weekly)
-        let reopened = try FileMemoryStore(storage: f.storage); let saved = await reopened.snapshot()
+        let reopened = try verificationStore(storage: f.storage); let saved = await reopened.snapshot()
         try expect(saved.topicReviews.count == 1 && saved.weeklyReports.first?.modelCoverage != nil && saved.weeklyReports.first?.digestRows.allSatisfy { !$0.isExtractive } == true, "正式回顾混入本地摘录或未保存生成元数据")
         guard let deleted = try await reopened.moveCapturesToRecentlyDeleted(ids: [f.records[0].id], reason: .noLongerNeeded, suppressSimilar: false) else { throw Failure(message: "来源删除未生效") }
         let removed = await reopened.snapshot()

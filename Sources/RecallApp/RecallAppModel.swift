@@ -124,7 +124,7 @@ final class RecallAppModel: ObservableObject {
             self.diagnosticLog = RecallDiagnosticLogStore(storage: storage)
             self.diagnosticEntries = diagnosticLog.entries
             let startupRead = Date.now
-            self.store = try FileMemoryStore(storage: storage, deferMaintenance: true)
+            self.store = try FileMemoryStore(storage: storage, deferMaintenance: true, credentials: previewState == nil ? KeychainCredentialStore.shared : InMemoryCredentialStore())
             self.pipeline = CapturePipeline(store: store, storage: storage)
             self.assistant = MemoryAssistant(store: store)
             if let previewState {
@@ -1066,7 +1066,7 @@ final class RecallAppModel: ObservableObject {
         if !announce { return }
         guard reminderDiscoveryTask == nil else { return }
         let config = state.llmConfiguration
-        guard state.privacy.cloudUseEnabled, config.provider != .localOnly, !config.apiKey.isEmpty else {
+        guard state.privacy.cloudUseEnabled, config.provider != .localOnly, config.hasCredential else {
             if announce {
                 let message = ReminderDiscoveryError.unavailable.localizedDescription
                 reminderDiscoveryStatus = .unavailable(message); noticeMessage = message
@@ -1088,7 +1088,7 @@ final class RecallAppModel: ObservableObject {
             }
             do {
                 let result = try await store.discoverRemindersUsingModel(force: force, automatic: false,
-                    responder: responder ?? CompatibleLLM(configuration: config, apiKey: config.apiKey), progress: { [weak self] value in
+                    responder: responder ?? (try ModelResponderFactory.make(configuration: config)), progress: { [weak self] value in
                         await self?.updateReminderDiscovery(value, runID: runID, taskID: taskID)
                     })
                 try Task.checkCancellation()
@@ -1614,14 +1614,8 @@ final class RecallAppModel: ObservableObject {
     }
 
     func dailySummaryResponder() -> (any LLMResponding)? {
-        let configuration = state.llmConfiguration
-        let apiKey = configuration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard state.privacy.cloudUseEnabled,
-              configuration.provider != .localOnly,
-              !apiKey.isEmpty else {
-            return nil
-        }
-        return CompatibleLLM(configuration: configuration, apiKey: apiKey)
+        guard state.privacy.cloudUseEnabled, state.llmConfiguration.provider != .localOnly else { return nil }
+        return try? ModelResponderFactory.make(configuration: state.llmConfiguration)
     }
 
     private func armDailySummaryTimer() {

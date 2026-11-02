@@ -177,7 +177,7 @@ enum DirectDailyReviewVerification {
         catch is LLMResponseFailure { }
         let before = await f.store.snapshot()
         try expect(!before.dailyReviewCheckpoints.isEmpty && before.dailySummaries.contains { $0.id == old.id }, "分组未保存断点或先删除旧稿")
-        let reopened = try FileMemoryStore(storage: f.storage), model = Model()
+        let reopened = try verificationStore(storage: f.storage), model = Model()
         let output = try await generate(f, model: model, store: reopened, limits: DailyReviewLimits(inputBytes: 18_000))
         let calls = await model.log()
         try expect(output.metrics.cacheHits > 0 && calls.count == 1, "重启重试又重新请求已完成的分组")
@@ -188,7 +188,7 @@ enum DirectDailyReviewVerification {
         for i in checkpoints.indices { checkpoints[i]["createdAt"] = ISO8601DateFormatter().string(from: Date.now.addingTimeInterval(-8 * 86_400)) }
         archive["dailyReviewCheckpoints"] = checkpoints
         try JSONSerialization.data(withJSONObject: archive).write(to: f.storage.stateURL)
-        let expired = try FileMemoryStore(storage: f.storage), fresh = Model()
+        let expired = try verificationStore(storage: f.storage), fresh = Model()
         let regenerated = try await generate(f, model: fresh, store: expired, limits: DailyReviewLimits(inputBytes: 18_000))
         try expect(regenerated.metrics.cacheHits == 0 && regenerated.metrics.modelCalls > 1, "过期检查点仍被复用")
     }

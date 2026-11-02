@@ -39,7 +39,7 @@ enum StartupLoadingVerification {
         let f = try fixture(count: 1_200)
         defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
         let start = Date.now
-        let store = try FileMemoryStore(storage: f.storage, deferMaintenance: true)
+        let store = try verificationStore(storage: f.storage, deferMaintenance: true)
         let state = await store.snapshot(), dirty = await store.memoryIndexNeedsRebuild()
         let elapsed = Int(Date.now.timeIntervalSince(start) * 1_000)
         try expect(state.captures.count == 1_200 && state.dailySummaries.count == 20
@@ -53,7 +53,7 @@ enum StartupLoadingVerification {
     static func idleRecoveryDoesNotRewriteArchive() async throws {
         let f = try fixture()
         defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
-        let store = try FileMemoryStore(storage: f.storage, deferMaintenance: true)
+        let store = try verificationStore(storage: f.storage, deferMaintenance: true)
         try await store.recoverCaptureUnderstandingJobs()
         try await store.recoverSummaryFeedbackJobs()
         let disk = try Data(contentsOf: f.storage.stateURL), state = await store.snapshot()
@@ -68,14 +68,14 @@ enum StartupLoadingVerification {
         f.state.dailySummaries[1].sourceCaptureIDs = [UUID()]
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(f.state).write(to: f.storage.stateURL)
-        let store = try FileMemoryStore(storage: f.storage, deferMaintenance: true), state = await store.snapshot()
+        let store = try verificationStore(storage: f.storage, deferMaintenance: true), state = await store.snapshot()
         try expect(state.dailySummaries.count == 1 && state.dailySummaries[0].id == f.state.dailySummaries[2].id,
             "快速首屏显示了来源已删除或已排除的回顾")
     }
     static func maintenanceRunsAfterSnapshot() async throws {
         let f = try fixture()
         defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
-        let store = try FileMemoryStore(storage: f.storage, deferMaintenance: true)
+        let store = try verificationStore(storage: f.storage, deferMaintenance: true)
         let before = await store.snapshot()
         try await store.organizeMemory(force: true)
         let after = await store.snapshot(), dirty = await store.memoryIndexNeedsRebuild()
@@ -91,7 +91,7 @@ enum StartupLoadingVerification {
         f.state.understandingJobs = [job]
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(f.state).write(to: f.storage.stateURL)
-        let store = try FileMemoryStore(storage: f.storage, deferMaintenance: true)
+        let store = try verificationStore(storage: f.storage, deferMaintenance: true)
         let first = await store.snapshot()
         try expect(first.dailySummaries.count == 3 && first.understandingJobs[0].state == .processing, "首屏前已提前运行恢复维护")
         try await store.recoverCaptureUnderstandingJobs()
