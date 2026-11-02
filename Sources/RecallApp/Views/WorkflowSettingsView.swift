@@ -19,6 +19,7 @@ struct WorkflowSettingsView: View {
     @State private var through = Date.now
     @State private var reviews = true
     @State private var allowedApp = ""
+    @State private var showsAdvanced = false
     @State private var confirmMCP = false
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -34,8 +35,9 @@ struct WorkflowSettingsView: View {
             languageSection
             shortcutSection
             MeetingMomentsSection()
-            identitySection
-            mcpSection
+            DisclosureGroup(w("高级：聊天身份与 Agent 访问", "Advanced: chat identity & agent access"), isExpanded: $showsAdvanced) {
+                VStack(spacing: 18) { identitySection; mcpSection }.padding(.top, 14)
+            }.font(.headline)
         }
     }
     private var languageSection: some View {

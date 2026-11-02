@@ -22,7 +22,7 @@ enum CaptureUnderstandingVerification {
         let storage: RecallStorage
         let store: FileMemoryStore
         let source: CaptureRecord
-        let config = LLMConfiguration(provider: .openAICompatible, apiKey: "verification-placeholder")
+        var config = LLMConfiguration(provider: .openAICompatible, apiKey: "verification-placeholder")
         let privacy = PrivacySettings(cloudUseEnabled: true)
     }
     private static func fixture(_ text: String = "[聊天·自己] 我会在明天补充 Atlas 导出分页测试并提交评审。") async throws -> Fixture {
@@ -31,9 +31,10 @@ enum CaptureUnderstandingVerification {
         let source = CaptureRecord(eventTemplate: .workCheckpoint, sourceAppName: "合成测试聊天",
             sourceBundleIdentifier: "example.synthetic-chat", windowTitle: "Atlas 会话", contentHash: UUID().uuidString,
             ocrText: text, textOrigin: .screenOCR)
-        let f = Fixture(storage: storage, store: store, source: source)
+        var f = Fixture(storage: storage, store: store, source: source)
         try await store.addCapture(source)
         try await store.updatePrivacy(f.privacy); try await store.updateLLMConfiguration(f.config)
+        f.config = await store.snapshot().llmConfiguration
         var settings = CaptureUnderstandingSettings(); settings.enabled = true
         settings.enabledSince = source.createdAt.addingTimeInterval(-1)
         try await store.updateCaptureUnderstandingSettings(settings)
@@ -250,7 +251,7 @@ enum CaptureUnderstandingVerification {
         var duplicate = f.source; duplicate.id = UUID(); duplicate.createdAt = f.source.createdAt.addingTimeInterval(1)
         try await f.store.addCapture(duplicate)
         _ = try await f.store.enqueueCaptureUnderstanding(captureID: duplicate.id)
-        let repeated = Fixture(storage: f.storage, store: f.store, source: duplicate)
+        let repeated = Fixture(storage: f.storage, store: f.store, source: duplicate, config: f.config)
         let updated = try await finish(repeated) { [fact($0)] }
         let deduplicated = MatterMemoryEngine().files(in: updated)
         try expect(deduplicated.count == 1 && deduplicated[0].events.count == 1 && Set(deduplicated[0].evidenceIDs) == [source.id, duplicate.id],

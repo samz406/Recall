@@ -11,7 +11,7 @@ enum SummaryFeedbackVerification {
         let source: CaptureRecord
         let other: CaptureRecord
         let summary: DailySummary
-        let config = LLMConfiguration(provider: .openAICompatible, apiKey: "verification-placeholder")
+        var config = LLMConfiguration(provider: .openAICompatible, apiKey: "verification-placeholder")
         let privacy = PrivacySettings(cloudUseEnabled: true)
     }
     private struct Responder: LLMResponding {
@@ -42,9 +42,10 @@ enum SummaryFeedbackVerification {
         let items = [DailySummaryItem(section: .progress, title: "Atlas 导出修复已上线", detail: "导出修复完成。", evidenceIDs: [source.id]),
                      DailySummaryItem(section: .progress, title: "发票下载通过空值测试", evidenceIDs: [other.id])]
         let summary = DailySummary(day: .now, content: DailySummaryItemParser.markdown(from: items), sourceCaptureIDs: [source.id, other.id], todos: [], generationKind: .cloud, items: items)
-        let result = Fixture(store: store, storage: storage, source: source, other: other, summary: summary)
+        var result = Fixture(store: store, storage: storage, source: source, other: other, summary: summary)
         try await store.addCapture(source); try await store.addCapture(other)
         try await store.updatePrivacy(result.privacy); try await store.updateLLMConfiguration(result.config)
+        result.config = await store.snapshot().llmConfiguration
         try await store.upsertDailySummary(summary)
         return result
     }

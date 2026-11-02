@@ -44,6 +44,8 @@ enum InternationalWorkflowVerification {
         print("PASS: 8 international workflow suites, including 100 English ownership/state cases; credentials, migration recovery, Today, imports, source identity, exports, MCP revocation, preflight and isolated samples")
     }
     static func credentialsAndRecovery() async throws {
+        let redacted = PrivacyEngine().redact("api_key: synthetic-example-secret\nAuthorization: Bearer synthetic-header-secret\nsk-proj-synthetic0123456789abcdef")
+        try expect(!redacted.contains("synthetic-example-secret") && !redacted.contains("synthetic-header-secret") && !redacted.contains("sk-proj-"), "Credential-like captured text was not redacted")
         let storage = try storage(); defer { try? FileManager.default.removeItem(at: storage.rootURL) }
         let config = LLMConfiguration(baseURLString: "https://model.invalid/v1", model: "synthetic", apiKey: "synthetic-migration-secret")
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
