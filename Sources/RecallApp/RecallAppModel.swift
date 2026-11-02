@@ -93,7 +93,7 @@ final class RecallAppModel: ObservableObject {
     private var chatTask: Task<Void, Never>?
     private var chatRequestID = UUID()
     @Published var noticeMessage: String?
-    @Published private(set) var deletionUndoNotice: RecentlyDeletedMemory?
+    @Published var deletionUndoNotice: RecentlyDeletedMemory?
     @Published private(set) var enterKeyMonitorStatus: GlobalEnterKeyRecorderStatus = .disabled
     @Published private(set) var diagnosticEntries: [RecallDiagnosticEntry]
     @Published private(set) var reminderDeliveryStates: [UUID: ReminderDeliveryState] = [:]

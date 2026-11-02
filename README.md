@@ -8,7 +8,7 @@ Recall shows where yesterday's work stopped, what to pick up today, and which sa
 
 It keeps work you chose to save: not passive always-on screen recording (Limitless, Microsoft Recall), and not a generic second-brain notes app.
 
-The app interface is Simplified Chinese.
+Core workflows support English and Simplified Chinese. See [workflow guide](docs/work-ledger-usage.md).
 
 ## Quick start
 
@@ -56,7 +56,7 @@ Open **问一问**. Each answer cites local records, and you can open those sour
 - **Local-first.** Screenshots, OCR, the SQLite index, and chat history stay in `~/Library/Application Support/Recall/`. Search and storage work offline. You can pause capture, stop saving original screenshots, and exclude apps by bundle ID.
 - **Explicit trigger.** A record starts when you trigger it. Continuous screenshots, scheduled screenshots, audio recording, and automatic message collection stay off. Enter-key capture in other apps stays off until you enable it, can be paused, and does not run while Recall is frontmost.
 - **Deletable and traceable.** Delete a record and restore it from **最近删除** for 7 days, or clear local memory. Reviews and reminders that depended on a deleted record are removed with it. Answers keep their sources.
-- **Cloud is opt-in.** Connect an OpenAI-compatible or Anthropic-compatible API with your own key, or leave cloud text off. The key is plain text in the local `recall-state.json`, not in the Keychain. It is not written to logs or committed to this repository. A reminder is scheduled only after you confirm it. Recall does not send messages, create calendar events, or edit your files.
+- **Cloud is opt-in.** Connect an OpenAI-compatible or Anthropic-compatible API with your own key, or leave cloud text off. The key is stored in the macOS Keychain, not in `recall-state.json`. It is not written to logs or committed to this repository. A reminder is scheduled only after you confirm it. Recall does not send messages, create calendar events, or edit your files.
 
 The full boundary is in [Privacy design](docs/PRIVACY.md).
 
@@ -64,7 +64,6 @@ The full boundary is in [Privacy design](docs/PRIVACY.md).
 
 Planned, and not in this tree yet:
 
-- A real system-wide shortcut for recording
 - Optional vector search
 - End-to-end encrypted sync
 - Finer exclusion of sensitive pages
