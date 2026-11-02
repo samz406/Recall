@@ -9,6 +9,7 @@ struct FirstMomentView: View {
     @State private var step = 0
     @State private var source: CaptureRecord?
     private let records = DemoWorkspace.records()
+    init(sampleMode: Bool = false) { _sample = State(initialValue: sampleMode) }
     private func t(_ zh: String, _ en: String) -> String { RecallLocalization.both(zh, en) }
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {

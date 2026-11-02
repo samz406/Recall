@@ -3659,6 +3659,9 @@ private struct PrivacyAndModelView: View {
 extension RecallRootView {
     @MainActor static func previewPage(_ name: String) -> AnyView {
         switch name {
+        case "preferences": AnyView(PrivacyAndModelView(initialCategory: "使用偏好"))
+        case "first-moment": AnyView(FirstMomentView())
+        case "sample": AnyView(FirstMomentView(sampleMode: true))
         case "navigation": AnyView(RecallNavigationPreview())
         case "daily", "daily-long": AnyView(DailySummariesView())
         case "topics", "period", "period-stale", "knowledge", "knowledge-empty": AnyView(MatterWorkspaceView(continueChat: { _ in }))

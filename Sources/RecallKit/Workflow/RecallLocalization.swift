@@ -29,6 +29,16 @@ public enum RecallLocalization {
         return "\nOutput human-readable titles, details and overview in " + (outputCode == "en" ? "English" : "Simplified Chinese") + ". Never translate quotes, IDs, enum values or the JSON schema. Use complete concise titles, never truncate mid-sentence."
     }
     private static let english: [String: String] = [
+        "使用偏好": "Preferences",
+        "删除凭据": "Delete credential",
+        "识别文本已脱敏": "Recognized text is redacted",
+        "内容摘要": "Summary",
+        "完整识别文本": "Full recognized text",
+        "原始截图": "Original screenshot",
+        "以下为当时保存的识别文本，仅覆盖截图中的可见内容，可能包含识别误差。": "Text saved from the visible area of that screenshot. OCR may contain errors.",
+        "基于你的本地记忆，回答带来源": "Answers grounded in your saved memory",
+        "手动深查允许参与的原始记录；每日回顾中的明确行动会自动进入待确认": "Manually scan eligible records. Explicit actions from Daily Review already appear in To confirm.",
+
         "记忆": "Memory",
         "每日回顾": "Daily Review",
         "问一问": "Ask Recall",

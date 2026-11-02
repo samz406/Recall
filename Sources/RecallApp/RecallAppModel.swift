@@ -30,6 +30,7 @@ final class RecallAppModel: ObservableObject {
             }
         }
     }
+    let isPreview: Bool
     let globalShortcuts = GlobalShortcutService()
     var shortcutConfigurationID: String?
     @Published var credentialMaintenanceWarning: String?
@@ -123,6 +124,7 @@ final class RecallAppModel: ObservableObject {
     private var appActiveObserver: NSObjectProtocol?
 
     init(previewState: RecallState? = nil) {
+        self.isPreview = previewState != nil
         do {
             let storage: RecallStorage
             if previewState == nil { storage = try RecallStorage() }

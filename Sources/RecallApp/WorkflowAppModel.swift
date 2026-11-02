@@ -6,7 +6,7 @@ import RecallKit
 
 extension RecallAppModel {
     func configureShortcuts() {
-        guard !isLoadingSavedState else { return }
+        guard !isLoadingSavedState, !isPreview else { return }
         let record = GlobalShortcutBinding.load("record", fallback: .record), ask = GlobalShortcutBinding.load("ask", fallback: .ask)
         let identity = "\(record)\(ask)"
         guard shortcutConfigurationID != identity else { return }; shortcutConfigurationID = identity

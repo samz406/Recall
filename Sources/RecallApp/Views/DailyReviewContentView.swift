@@ -93,7 +93,7 @@ struct DailyReviewContentView: View {
     }
     @ViewBuilder private func itemStatus(_ item: DailySummaryItem) -> some View {
         if let status = item.knowledge?.status, let label = statusLabel(status) {
-            RecallStatusBadge(title: label, warning: status == "blocked").fixedSize()
+            RecallStatusBadge(title: RecallLocalization.text(label), warning: status == "blocked").fixedSize()
         }
     }
 }
