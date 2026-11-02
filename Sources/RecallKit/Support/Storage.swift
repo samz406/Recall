@@ -472,10 +472,14 @@ public actor FileMemoryStore {
         let before = state
         var config = configuration
         guard let origin = LLMConfiguration.credentialOrigin(config.baseURLString) else { throw LLMError.invalidBaseURL }
-        let oldKey = try credentials.read(config.connectionID)
+        var candidateCredentialID: UUID?
         if !config.apiKey.isEmpty {
-            try credentials.write(config.apiKey, id: config.connectionID)
-            config.credentialReference = config.connectionID.uuidString
+            // Never overwrite the currently referenced Key. A failed state write, even with
+            // a failed cleanup, cannot bind the new service's Key to the previous connection.
+            let id = UUID()
+            try credentials.write(config.apiKey, id: id)
+            candidateCredentialID = id
+            config.credentialReference = id.uuidString
             config.credentialRevision = max(config.credentialRevision, state.llmConfiguration.credentialRevision) + 1
         } else if config.hasCredential && origin != LLMConfiguration.credentialOrigin(state.llmConfiguration.baseURLString) {
             throw CredentialError.endpointChanged
@@ -485,8 +489,12 @@ public actor FileMemoryStore {
         do { try persistReviewState() }
         catch {
             state = before
-            if let oldKey { try? credentials.write(oldKey, id: config.connectionID) } else { try? credentials.delete(config.connectionID) }
+            if let candidateCredentialID { try? credentials.delete(candidateCredentialID) }
             throw error
+        }
+        if candidateCredentialID != nil, before.llmConfiguration.hasCredential,
+           before.llmConfiguration.credentialID != config.credentialID {
+            try? credentials.delete(before.llmConfiguration.credentialID)
         }
     }
     static func scrubLegacyBackups(in root: URL) throws {

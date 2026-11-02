@@ -40,6 +40,8 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
     public var credentialReference: String?
     public var credentialRevision: Int
     public var hasCredential: Bool { !apiKey.isEmpty || credentialReference != nil }
+    /// A replaceable secret reference keeps the connection identity stable and failed writes isolated.
+    public var credentialID: UUID { credentialReference.flatMap(UUID.init(uuidString:)) ?? connectionID }
     public var anthropicVersion: String
     public var maxOutputTokens: Int
 

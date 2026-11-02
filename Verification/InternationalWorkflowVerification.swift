@@ -21,6 +21,12 @@ private final class RecoverableCredentials: CredentialStore, @unchecked Sendable
         return CapturePayload(imageData: nil, sourceAppName: target.appName, sourceBundleIdentifier: target.bundleIdentifier, windowTitle: "Atlas")
     }
 }
+private final class CleanupFailureCredentials: CredentialStore, @unchecked Sendable {
+    let memory = InMemoryCredentialStore()
+    func read(_ id: UUID) throws -> String? { try memory.read(id) }
+    func write(_ value: String, id: UUID) throws { try memory.write(value, id: id) }
+    func delete(_ id: UUID) throws { throw CredentialError.accessDenied }
+}
 enum InternationalWorkflowVerification {
     static func expect(_ value: Bool, _ message: String) throws {
         if !value { throw VerificationError.failed(message) }
@@ -34,6 +40,7 @@ enum InternationalWorkflowVerification {
     }
     static func run() async throws {
         try await credentialsAndRecovery()
+        try await credentialReplacementFailure()
         try await plannedActions()
         try await importsAndIdentity()
         try evidenceExportAndRoutes()
@@ -89,6 +96,32 @@ enum InternationalWorkflowVerification {
         try expect(try credentials.read(config.connectionID) == nil, "Delete credential did not remove Keychain item")
         let latest = await restarted.snapshot()
         try expect(!latest.llmConfiguration.hasCredential, "Delete retained credential state")
+    }
+    static func credentialReplacementFailure() async throws {
+        let storage = try storage()
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let credentials = CleanupFailureCredentials()
+        let store = try FileMemoryStore(storage: storage, deferMaintenance: true, credentials: credentials)
+        try await store.updateLLMConfiguration(LLMConfiguration(baseURLString: "https://old.invalid/v1", apiKey: "synthetic-old-key"))
+        let before = await store.snapshot()
+        var replacement = before.llmConfiguration
+        replacement.baseURLString = "https://new.invalid/v1"; replacement.apiKey = "synthetic-new-key"
+        let original = storage.rootURL.appendingPathComponent("preserved-state.json")
+        try FileManager.default.moveItem(at: storage.stateURL, to: original)
+        defer {
+            try? FileManager.default.removeItem(at: storage.stateURL)
+            try? FileManager.default.moveItem(at: original, to: storage.stateURL)
+        }
+        try FileManager.default.createDirectory(at: storage.stateURL, withIntermediateDirectories: false)
+        do {
+            try await store.updateLLMConfiguration(replacement)
+            throw VerificationError.failed("A failed configuration write was accepted")
+        } catch let failure as VerificationError { throw failure }
+        catch { }
+        let after = await store.snapshot()
+        try expect(after.llmConfiguration == before.llmConfiguration, "Failed save changed the connection")
+        try expect(try credentials.read(before.llmConfiguration.credentialID) == "synthetic-old-key", "Failed save or failed cleanup replaced the old connection's credential")
+        _ = try await store.modelResponder()
     }
     static func plannedActions() async throws {
         let storage = try storage(); defer { try? FileManager.default.removeItem(at: storage.rootURL) }

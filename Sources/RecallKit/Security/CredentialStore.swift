@@ -61,7 +61,7 @@ public enum ModelResponderFactory {
     public static func make(configuration: LLMConfiguration, credentials: any CredentialStore = KeychainCredentialStore.shared) throws -> CompatibleLLM {
         guard configuration.hasCredential else { throw CredentialError.unavailable }
         guard LLMConfiguration.credentialOrigin(configuration.baseURLString) != nil else { throw LLMError.invalidBaseURL }
-        let key = configuration.apiKey.isEmpty ? try credentials.read(configuration.connectionID) : configuration.apiKey
+        let key = configuration.apiKey.isEmpty ? try credentials.read(configuration.credentialID) : configuration.apiKey
         guard let key, !key.isEmpty else { throw CredentialError.unavailable }
         return CompatibleLLM(configuration: configuration, apiKey: key)
     }
@@ -84,12 +84,12 @@ extension FileMemoryStore {
     public func deleteModelCredential() throws {
         let before = state
         let config = state.llmConfiguration
-        let key = try credentials.read(config.connectionID)
-        try credentials.delete(config.connectionID)
+        let key = try credentials.read(config.credentialID)
+        try credentials.delete(config.credentialID)
         state.llmConfiguration.credentialReference = nil; state.llmConfiguration.apiKey = ""
         state.llmConfiguration.credentialRevision += 1
         reconcileDailyReviewCheckpoints()
         do { try persistReviewState() }
-        catch { state = before; if let key { try? credentials.write(key, id: config.connectionID) }; throw error }
+        catch { state = before; if let key { try? credentials.write(key, id: config.credentialID) }; throw error }
     }
 }
