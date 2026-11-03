@@ -26,8 +26,8 @@ public struct DailyKnowledgeEngine: Sendable {
     /// An entry stays while at least one cited screenshot is still valid. Deleted or corrected
     /// screenshots are removed from its evidence. If the only first-person quote is gone, the entry
     /// is kept as a clue (not the user's own matter) instead of disappearing.
-    func entries(in state: RecallState) -> [Entry] {
-        let captures = state.correctedForAnalysis().captures
+    func entries(in state: RecallState, alreadyCorrected: Bool = false) -> [Entry] {
+        let captures = (alreadyCorrected ? state : state.correctedForAnalysis()).captures
             .filter { !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }
         let live = Set(captures.map(\.id))
         let recordedAt = Dictionary(uniqueKeysWithValues: captures.map { ($0.id, $0.createdAt) })
@@ -102,13 +102,13 @@ public struct DailyKnowledgeEngine: Sendable {
 
     /// Own matters grouped by topic, each day's item becoming one event. A later day's state replaces
     /// the earlier one in the topic's timeline order; nothing is merged away.
-    public func matterFiles(in state: RecallState) -> [MatterFile] {
+    public func matterFiles(in state: RecallState, alreadyCorrected: Bool = false) -> [MatterFile] {
         var groups: [String: (name: String, events: [MatterEvent])] = [:]
-        for entry in entries(in: state) where entry.knowledge.kind == .matter && entry.knowledge.ownedByUser {
+        let recordedAt = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
+        for entry in entries(in: state, alreadyCorrected: alreadyCorrected) where entry.knowledge.kind == .matter && entry.knowledge.ownedByUser {
             guard let topic = entry.knowledge.topic, !Self.topicKey(topic).isEmpty else { continue }
             let key = "topic:" + Self.topicKey(topic)
-            let captures = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
-            let earliest = entry.sources.compactMap { captures[$0] }.min()
+            let earliest = entry.sources.compactMap { recordedAt[$0] }.min()
             var event = MatterEvent(id: Self.eventID(entry, key: key), title: topic,
                 detail: entry.item.detail.isEmpty ? entry.item.title : entry.item.title + "：" + entry.item.detail,
                 recordedAt: earliest ?? entry.summary.day, eventAt: earliest, status: Self.status(entry.knowledge.status),
@@ -129,14 +129,14 @@ public struct DailyKnowledgeEngine: Sendable {
     }
 
     /// Material the user read or received. Kept as references: it cannot become a personal fact.
-    public func referenceFiles(in state: RecallState) -> [MatterFile] {
+    public func referenceFiles(in state: RecallState, alreadyCorrected: Bool = false) -> [MatterFile] {
         var groups: [String: (name: String, events: [MatterEvent])] = [:]
-        for entry in entries(in: state) where entry.knowledge.kind == .reference || !entry.knowledge.ownedByUser
+        let recordedAt = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
+        for entry in entries(in: state, alreadyCorrected: alreadyCorrected) where entry.knowledge.kind == .reference || !entry.knowledge.ownedByUser
             && entry.knowledge.kind == .matter {
             let name = entry.knowledge.topic ?? entry.item.title
             let key = "reference:" + Self.topicKey(name)
-            let captures = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
-            let earliest = entry.sources.compactMap { captures[$0] }.min()
+            let earliest = entry.sources.compactMap { recordedAt[$0] }.min()
             var event = MatterEvent(id: Self.eventID(entry, key: key), title: name,
                 detail: entry.item.detail.isEmpty ? entry.item.title : entry.item.title + "：" + entry.item.detail,
                 recordedAt: earliest ?? entry.summary.day, eventAt: earliest, status: .explored, evidenceIDs: entry.sources)
@@ -182,11 +182,11 @@ public struct DailyKnowledgeEngine: Sendable {
 
     /// Topics whose name the question mentions. Matching uses the topic's identifying words, not the whole question,
     /// so "后台理解流程" reaches the topic "Recall 后台理解流程" and a bare word like "进展" reaches nothing.
-    public func topics(matching question: String, in state: RecallState, limit: Int = 3) -> [MatterFile] {
+    public func topics(matching question: String, in state: RecallState, limit: Int = 3, alreadyCorrected: Bool = false) -> [MatterFile] {
         let wanted = Set(QuestionTerms.topicTerms(question).filter { $0.count >= 2 })
         guard !wanted.isEmpty else { return [] }
         let asked = question.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-        let scored = matterFiles(in: state).compactMap { file -> (MatterFile, Int)? in
+        let scored = matterFiles(in: state, alreadyCorrected: alreadyCorrected).compactMap { file -> (MatterFile, Int)? in
             let name = file.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             var score = 0
             if asked.contains(name) { score += 100 }

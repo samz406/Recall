@@ -1353,11 +1353,16 @@ private struct MarkdownParagraphText: View {
 private struct ThinkingCard: View {
     @EnvironmentObject private var model: RecallAppModel
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: model.chatEvidenceCount == nil ? "magnifyingglass" : "checkmark.circle").foregroundStyle(RecallPalette.accent)
-            Text(model.chatEvidenceCount.map { RecallLocalization.both("已检索记忆（\($0) 条） → 整理回答中…", "Found \($0) sources · Writing an answer…") } ?? RecallLocalization.both("正在检索记忆…", "Searching your memory…")).font(.callout).foregroundStyle(RecallPalette.secondary)
-            Button(RecallLocalization.text("停止")) { model.stopChat() }
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: model.chatEvidenceCount == nil ? "magnifyingglass" : "checkmark.circle").foregroundStyle(RecallPalette.accent)
+                Text(model.chatEvidenceCount.map { RecallLocalization.both("已检索记忆（\($0) 条） → 整理回答中…", "Found \($0) sources · Writing an answer…") } ?? RecallLocalization.both("正在检索记忆…", "Searching your memory…")).font(.callout).foregroundStyle(RecallPalette.secondary)
+                Button(RecallLocalization.text("停止")) { model.stopChat() }
+                Spacer(minLength: 0)
+            }
+            if !model.typingMessageContent.isEmpty {
+                MarkdownParagraphText(markdown: model.typingMessageContent)
+            }
         }.padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
     }
 }

@@ -54,11 +54,14 @@ public extension CaptureRecord {
 
 extension CaptureRecord {
     func scopingUnderstanding(to allowedSourceIDs: Set<UUID>) -> CaptureRecord {
-        var copy = self
-        if let result = understanding, result.processorVersion != CaptureUnderstandingEngine.version
-            || result.sourceVersions.isEmpty || !Set(result.sourceVersions.keys).isSubset(of: allowedSourceIDs) {
-            copy.understanding = nil
+        guard let result = understanding else { return self }
+        if result.processorVersion == CaptureUnderstandingEngine.version,
+           !result.sourceVersions.isEmpty,
+           Set(result.sourceVersions.keys).isSubset(of: allowedSourceIDs) {
+            return self
         }
+        var copy = self
+        copy.understanding = nil
         return copy
     }
 }

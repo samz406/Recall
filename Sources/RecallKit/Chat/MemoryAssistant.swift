@@ -29,7 +29,11 @@ public final class MemoryAssistant {
         scope: MemoryQueryScope = .all,
         onUserMessageSaved: (@MainActor @Sendable () async -> Void)? = nil,
         onRetrievalWarning: (@MainActor @Sendable () -> Void)? = nil,
-        onEvidenceReady: (@MainActor @Sendable (Int) -> Void)? = nil
+        onEvidenceReady: (@MainActor @Sendable (Int) -> Void)? = nil,
+        model: (any LLMResponding)? = nil,
+        onPartial: (@MainActor @Sendable (String) -> Void)? = nil,
+        onStep: (@MainActor @Sendable (String, Int) -> Void)? = nil,
+        limits: AskLimits = .standard
     ) async throws -> ConversationMessage {
         try Task.checkCancellation()
         if ChatCommand.parse(question) == .clear {
@@ -61,10 +65,19 @@ public final class MemoryAssistant {
             return answer
             }
         }
-        try await store.organizeMemoryIfNeeded()
-        let fullState = (await store.snapshot()).correctedForAnalysis()
+        let clock = ContinuousClock()
+        let analysisStarted = clock.now
+        let textIndex = await store.captureTextIndex()
+        let fullState = await store.preparedForChat()
+        onStep?("analysis", Self.milliseconds(from: analysisStarted, clock: clock))
         var state = scope.applying(to: fullState)
         state.messages.removeAll { $0.id == userMessage.id }
+        if let answer = try await cloudAgentAnswer(
+            question: question, conversationID: conversation.id, scope: scope,
+            fullState: fullState, state: state, originalState: originalState, textIndex: textIndex,
+            model: model, limits: limits, onPartial: onPartial, onStep: onStep, onRetrievalWarning: onRetrievalWarning, onEvidenceReady: onEvidenceReady
+        ) { return answer }
+        let retrievalStarted = clock.now
 
         let resolvedQuestion = retrievalText(for: question, history: state.messages)
         let retrievalText: String
@@ -101,8 +114,30 @@ public final class MemoryAssistant {
         // 多日问题必须先看到范围内的全部候选，再做按天覆盖；若提前截断，
         // 高频的今天记录仍会把较早日期挤出候选集。范围外的截图已经在上面排除。
         let searchLimit = timeRange == nil ? 64 : max(searchableEvidence.count, 1)
-        let results = searchEngine.search(query, in: searchableEvidence, limit: searchLimit)
-        let indexedIDs = timeRange == nil ? await store.indexedCaptureIDs(matching: retrievalText, limit: 8) : []
+        // 截图文字在保存时已经写入词条索引。有索引时只取出命中的记录，不再逐条读全文。
+        let results: [MemorySearchResult]
+        let indexedIDs: [UUID]
+        if let textIndex, !query.text.isEmpty {
+            let derived = summaryEvidence + episodeEvidence + (timeRange == nil ? durableMemoryEvidence : [])
+            let derivedResults = searchEngine.search(query, in: derived, limit: searchLimit)
+            let terms = QuestionTerms.topicTerms(query.text)
+            let matchLimit = timeRange == nil ? 80 : 400
+            let ids = textIndex.ids(matching: terms, start: timeRange?.startDate, end: timeRange?.endDate, limit: matchLimit)
+            let allowedByID = Dictionary(uniqueKeysWithValues: recordsAllowedInChat.map { ($0.id, $0) })
+            let candidates = ids.compactMap { allowedByID[$0] }
+            let captureResults = searchEngine.search(query, in: candidates, limit: searchLimit)
+            var best: [UUID: MemorySearchResult] = [:]
+            for result in derivedResults + captureResults {
+                if best[result.capture.id]?.score ?? -1 < result.score { best[result.capture.id] = result }
+            }
+            results = best.values.sorted { lhs, rhs in
+                lhs.score == rhs.score ? lhs.capture.createdAt > rhs.capture.createdAt : lhs.score > rhs.score
+            }.prefix(searchLimit).map { $0 }
+            indexedIDs = []
+        } else {
+            results = searchEngine.search(query, in: searchableEvidence, limit: searchLimit)
+            indexedIDs = timeRange == nil ? await store.indexedCaptureIDs(matching: retrievalText, limit: 8) : []
+        }
         let indexed = indexedIDs.compactMap { id in recordsAllowedInChat.first(where: { $0.id == id }) }
         var seen: Set<UUID> = []
         let relevantResults = timeRange != nil && intent != .overview
@@ -118,17 +153,21 @@ public final class MemoryAssistant {
             MemoryEvidenceSelector().select(ranked, question: retrievalText, limit: 12)
         }
         let annotated = retrieved.map { annotateForChat($0, originals: originalState) }
+        let textMatchIDs: (([String], Date?, Date?) -> [UUID])? = textIndex.map { index in
+            { terms, start, end in index.ids(matching: terms, start: start, end: end, limit: 40) }
+        }
         var retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: annotated,
-            conversationID: conversation.id, limit: contextManager.maxEvidenceRecords, trustLedger: true)
+            conversationID: conversation.id, limit: contextManager.maxEvidenceRecords, trustLedger: true, alreadyCorrected: true, textMatchIDs: textMatchIDs)
+        onStep?("retrieval", Self.milliseconds(from: retrievalStarted, clock: clock))
         onEvidenceReady?(retrieval.evidence.count)
         if retrieval.needsSemanticLookup, state.privacy.cloudUseEnabled,
            state.llmConfiguration.provider != .localOnly, state.llmConfiguration.hasCredential {
             do {
                 let responder = (try await store.modelResponder())
-                let ids = try await MemorySemanticLookup().topics(for: retrievalText, in: state, responder: responder)
+                let ids = try await MemorySemanticLookup().topics(for: retrievalText, in: state, responder: responder, knowledge: state.memoryKnowledge, alreadyCorrected: true)
                 if !ids.isEmpty {
                     retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: annotated,
-                        conversationID: conversation.id, limit: contextManager.maxEvidenceRecords, resolvedEntityIDs: ids, trustLedger: true)
+                        conversationID: conversation.id, limit: contextManager.maxEvidenceRecords, resolvedEntityIDs: ids, trustLedger: true, alreadyCorrected: true, textMatchIDs: textMatchIDs)
                     onEvidenceReady?(retrieval.evidence.count)
                 }
             } catch is CancellationError { throw CancellationError() }
@@ -190,7 +229,10 @@ public final class MemoryAssistant {
                 supplementaryContext: request.supplementaryContext.map(privacyEngine.redact),
                 recentMessages: safeRecentMessages
             )
-            let cloudAnswer = try await (try await store.modelResponder()).answerCancellably(to: cloudRequest)
+            let modelStarted = clock.now
+            let responder = if let model { model } else { try await store.modelResponder() }
+            let cloudAnswer = try await responder.answerCancellably(to: cloudRequest)
+            onStep?("model", Self.milliseconds(from: modelStarted, clock: clock))
             // 已传入证据时，不能接受模型仍声称“记忆为空”的幻觉式回答。
             // 此时保留本地可追溯摘要，确保用户至少得到真实的时间线内容。
             response = !safeContext.isEmpty && claimsEvidenceIsEmpty(cloudAnswer.content)
@@ -208,7 +250,7 @@ public final class MemoryAssistant {
         let usedSourceIDs = Set(plan.evidence.flatMap { retrieval.sourceIDs[$0.id] ?? [$0.id] } + retrieval.preferenceSourceIDs)
         let legacyIDs = Set(state.dailySummaries.filter { $0.sourceCaptureIDs.isEmpty }.map(\.id)).intersection(usedSourceIDs)
         guard legacyIDs.isSubset(of: Set(latestState.dailySummaries.map(\.id))) else { throw LLMError.serviceError("历史回顾已更新，请重新提问。") }
-        let currentSources = Dictionary(uniqueKeysWithValues: latestState.correctedForAnalysis().captures.map { ($0.id, $0) })
+        let currentSources = latestState.analysisCaptures(for: usedSourceIDs)
         let changedSource = state.captures.contains { source in
             guard usedSourceIDs.contains(source.id) else { return false }
             guard let current = currentSources[source.id] else { return true }
@@ -229,6 +271,83 @@ public final class MemoryAssistant {
         try Task.checkCancellation()
         try await store.addMessage(assistantMessage, inConversation: conversation.id)
         return assistantMessage
+    }
+
+    private func cloudAgentAnswer(
+        question: String,
+        conversationID: UUID,
+        scope: MemoryQueryScope,
+        fullState: RecallState,
+        state: RecallState,
+        originalState: RecallState,
+        textIndex: CaptureTextIndex?,
+        model: (any LLMResponding)?,
+        limits: AskLimits,
+        onPartial: (@MainActor @Sendable (String) -> Void)?,
+        onStep: (@MainActor @Sendable (String, Int) -> Void)?,
+        onRetrievalWarning: (@MainActor @Sendable () -> Void)?,
+        onEvidenceReady: (@MainActor @Sendable (Int) -> Void)?
+    ) async throws -> ConversationMessage? {
+        let live = await store.snapshot()
+        guard live.privacy.cloudUseEnabled, live.llmConfiguration.provider != .localOnly,
+              model != nil || live.llmConfiguration.hasCredential else { return nil }
+        guard live.privacy.excludedBundleIdentifiers == originalState.privacy.excludedBundleIdentifiers,
+              live.memoryKnowledgeSettings == originalState.memoryKnowledgeSettings,
+              Set(originalState.captures.map(\.id)).isSubset(of: Set(live.captures.map(\.id))),
+              live.matterCorrections.map(\.id) == originalState.matterCorrections.map(\.id),
+              SummaryFeedbackLearning.revision(in: live) == SummaryFeedbackLearning.revision(in: originalState),
+              live.memoryKnowledge.suppressedKeys == originalState.memoryKnowledge.suppressedKeys else {
+            throw LLMError.serviceError("记忆或隐私设置已更新，请重新提问。")
+        }
+        guard live.llmConfiguration == originalState.llmConfiguration else { throw CredentialError.unavailable }
+        let outcome: AskTranscript
+        do {
+            let responder = if let model { model } else { try await store.modelResponder() }
+            outcome = try await AskAgent.answer(
+                question: question, state: fullState, scope: scope, textIndex: textIndex, responder: responder,
+                limits: limits, onPartial: onPartial, onStep: onStep
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            onRetrievalWarning?()
+            return nil
+        }
+        onEvidenceReady?(outcome.citations.count)
+        let latestState = await store.snapshot()
+        guard latestState.llmConfiguration == originalState.llmConfiguration,
+              latestState.matterCorrections.map(\.id) == originalState.matterCorrections.map(\.id),
+              SummaryFeedbackLearning.revision(in: latestState) == SummaryFeedbackLearning.revision(in: originalState),
+              Set(state.captures.map(\.id)).isSubset(of: Set(latestState.captures.map(\.id))) else {
+            throw LLMError.serviceError("记忆已更正或删除，请重新提问以使用最新内容。")
+        }
+        let usedSourceIDs = Set(outcome.inspectedSourceIDs)
+        let legacyIDs = Set(state.dailySummaries.filter { $0.sourceCaptureIDs.isEmpty }.map(\.id)).intersection(usedSourceIDs)
+        guard legacyIDs.isSubset(of: Set(latestState.dailySummaries.map(\.id))) else { throw LLMError.serviceError("历史回顾已更新，请重新提问。") }
+        let currentSources = latestState.analysisCaptures(for: usedSourceIDs)
+        let changedSource = state.captures.contains { source in
+            guard usedSourceIDs.contains(source.id) else { return false }
+            guard let current = currentSources[source.id] else { return true }
+            return MemoryKnowledgeEngine.version(of: source, corrections: state.matterCorrections)
+                != MemoryKnowledgeEngine.version(of: current, corrections: latestState.matterCorrections)
+        }
+        let personalBefore = fullState.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }
+        let personalAfter = latestState.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }
+        guard !changedSource, state.memoryKnowledgeSettings == latestState.memoryKnowledgeSettings,
+              Set(personalBefore.map(\.id)) == Set(personalAfter.map(\.id)),
+              state.memoryKnowledge.suppressedKeys == latestState.memoryKnowledge.suppressedKeys else {
+            throw LLMError.serviceError("记忆或约定已更新，请重新提问以使用最新内容。")
+        }
+        guard await store.conversationSnapshot().id == conversationID else { throw CancellationError() }
+        let message = ConversationMessage(role: .assistant, content: ChatResponseFormatter().format(outcome.content), citations: outcome.citations.memoryUnique())
+        try Task.checkCancellation()
+        try await store.addMessage(message, inConversation: conversationID)
+        return message
+    }
+
+    private static func milliseconds(from start: ContinuousClock.Instant, clock: ContinuousClock) -> Int {
+        let parts = start.duration(to: clock.now).components
+        return Int(truncatingIfNeeded: parts.seconds * 1_000 + parts.attoseconds / 1_000_000_000_000_000)
     }
 
     /// Date and correction notes are for the model. Only the records that will actually be sent are copied.

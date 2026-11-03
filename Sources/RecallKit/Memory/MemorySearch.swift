@@ -211,10 +211,7 @@ public struct MemorySearchEngine: Sendable {
                 guard hasTimeWindow else { return nil }
                 matches = []
             } else {
-                let searchable = [capture.ocrText, capture.summary ?? "", capture.sourceAppName ?? "", capture.windowTitle ?? "", capture.tags.joined(separator: " ")]
-                    .joined(separator: " ")
-                    .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-                matches = terms.filter { searchable.contains($0) }
+                matches = terms.filter { term in fieldContains(term, in: capture) }
                 guard !matches.isEmpty || hasTimeWindow else { return nil }
             }
             let recency = max(0, 1 - Date.now.timeIntervalSince(capture.createdAt) / (60 * 60 * 24 * 30))
@@ -234,6 +231,15 @@ public struct MemorySearchEngine: Sendable {
         }
         .prefix(limit)
         .map { $0 }
+    }
+
+    /// Match each field in place. Folding the whole OCR text allocated a second copy of every screenshot.
+    private func fieldContains(_ term: String, in capture: CaptureRecord) -> Bool {
+        func contains(_ value: String?) -> Bool {
+            value?.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        }
+        return contains(capture.ocrText) || contains(capture.summary) || contains(capture.sourceAppName)
+            || contains(capture.windowTitle) || capture.tags.contains { contains($0) }
     }
 
     private func normalizedTerms(from text: String) -> [String] {

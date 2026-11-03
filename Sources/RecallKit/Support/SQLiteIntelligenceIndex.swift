@@ -22,6 +22,8 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
     private let lock = NSLock()
     private let encoder: JSONEncoder
     private var indexedRows: [String: [String: String]] = [:]
+    /// Digest of the saved text already written to `capture_terms`, so a later save can skip unchanged screenshots.
+    private var termDigests: [String: String] = [:]
 
     public init(databaseURL: URL) throws {
         encoder = JSONEncoder()
@@ -40,6 +42,7 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
             try execute("PRAGMA synchronous=NORMAL;")
             try execute("PRAGMA foreign_keys=ON;")
             try createSchema()
+            termDigests = try loadTermDigests()
         } catch {
             sqlite3_close(pointer)
             database = nil
@@ -62,12 +65,19 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
         try executeUnlocked("BEGIN IMMEDIATE;")
         do {
             if force {
-                for table in ["captures_fts", "episodes_fts", "episodes", "project_states", "user_memories", "insights", "insight_feedback", "learned_routines"] {
+                for table in ["captures_fts", "episodes_fts", "episodes", "project_states", "user_memories", "insights", "insight_feedback", "learned_routines", "capture_terms", "capture_term_state"] {
                     try executeUnlocked("DELETE FROM \(table);")
                 }
                 indexedRows = [:]
+                termDigests = [:]
             }
-            try removeMissing("captures_fts", column: "capture_id", ids: Set(state.captures.map { $0.id.uuidString }))
+            let captureIDs = Set(state.captures.map { $0.id.uuidString })
+            for id in Set(termDigests.keys).subtracting(captureIDs) {
+                try insert("DELETE FROM capture_terms WHERE capture_id = ?;", [.text(id)])
+                try insert("DELETE FROM capture_term_state WHERE capture_id = ?;", [.text(id)])
+                termDigests.removeValue(forKey: id)
+            }
+            try removeMissing("captures_fts", column: "capture_id", ids: captureIDs)
             try removeMissing("episodes", column: "id", ids: Set(state.episodes.map { $0.id.uuidString }))
             try removeMissing("project_states", column: "project_key", ids: Set(state.projects.map(\.projectKey)))
             try removeMissing("user_memories", column: "id", ids: Set(state.userMemories.map { $0.id.uuidString }))
@@ -75,11 +85,16 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
             try removeMissing("insight_feedback", column: "id", ids: Set(state.insightFeedback.map { $0.id.uuidString }))
             try removeMissing("learned_routines", column: "id", ids: Set(state.learnedRoutines.map { $0.id.uuidString }))
             for capture in state.captures {
-                guard try changed("captures_fts", column: "capture_id", id: capture.id.uuidString, payload: json(capture)) else { continue }
-                try insert(
-                    "INSERT INTO captures_fts(capture_id, content, app_name, window_title, tags) VALUES (?, ?, ?, ?, ?);",
-                    [.text(capture.id.uuidString), .text(capture.ocrText), .text(capture.sourceAppName ?? ""), .text(capture.windowTitle ?? ""), .text(capture.tags.joined(separator: " "))]
-                )
+                let id = capture.id.uuidString
+                if try changed("captures_fts", column: "capture_id", id: id, payload: json(capture)) {
+                    try insert(
+                        "INSERT INTO captures_fts(capture_id, content, app_name, window_title, tags) VALUES (?, ?, ?, ?, ?);",
+                        [.text(id), .text(capture.ocrText), .text(capture.sourceAppName ?? ""), .text(capture.windowTitle ?? ""), .text(capture.tags.joined(separator: " "))]
+                    )
+                    try writeTerms(for: capture)
+                } else if termDigests[id] == nil {
+                    try writeTerms(for: capture)
+                }
             }
             for episode in state.episodes {
                 guard try changed("episodes", column: "id", id: episode.id.uuidString, payload: json(episode)) else { continue }
@@ -183,6 +198,127 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
         }
         return ids
     }
+}
+
+/// Saved-text lookup. Built when a screenshot's text is stored, then reused by 问一问.
+public struct CaptureTextIndex: Sendable {
+    private let index: SQLiteIntelligenceIndex
+    init(index: SQLiteIntelligenceIndex) { self.index = index }
+    public func ids(matching terms: [String], start: Date? = nil, end: Date? = nil, limit: Int = 80) -> [UUID] {
+        (try? index.captureIDs(matchingTerms: terms, start: start, end: end, limit: limit)) ?? []
+    }
+}
+
+extension SQLiteIntelligenceIndex {
+    /// Capture IDs whose saved text contains the question terms. The terms were stored when the text was saved.
+    public func captureIDs(matchingTerms terms: [String], start: Date? = nil, end: Date? = nil, limit: Int = 80) throws -> [UUID] {
+        let lookup = QuestionTerms.termLookup(terms)
+        guard !lookup.groups.isEmpty || !lookup.words.isEmpty else { return [] }
+        let startValue = start?.timeIntervalSince1970
+        let endValue = end?.timeIntervalSince1970
+        lock.lock()
+        defer { lock.unlock() }
+        var matched: [String: Double] = [:]
+        func absorb(_ rows: [String: Double]) {
+            for (id, created) in rows { matched[id] = created }
+        }
+        for group in lookup.groups {
+            absorb(try intersectTerms(group, start: startValue, end: endValue))
+        }
+        for word in lookup.words {
+            absorb(try posting(word, start: startValue, end: endValue))
+        }
+        return matched.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+            .prefix(max(limit, 1))
+            .compactMap { UUID(uuidString: $0.key) }
+    }
+
+    private func writeTerms(for capture: CaptureRecord) throws {
+        let id = capture.id.uuidString
+        let searchable = [capture.correctedText ?? capture.ocrText, capture.summary ?? "", capture.sourceAppName ?? "", capture.windowTitle ?? "", capture.tags.joined(separator: " ")]
+            .joined(separator: " ")
+        let digest = CaptureUnderstandingEngine.digest(searchable)
+        guard termDigests[id] != digest else { return }
+        try insert("DELETE FROM capture_terms WHERE capture_id = ?;", [.text(id)])
+        let created = capture.createdAt.timeIntervalSince1970
+        let terms = QuestionTerms.documentTerms(searchable)
+        if !terms.isEmpty {
+            guard let database else { throw SQLiteIntelligenceError.open("database closed") }
+            var statement: OpaquePointer?
+            let sql = "INSERT OR REPLACE INTO capture_terms(term, capture_id, created_at) VALUES (?, ?, ?);"
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+                throw SQLiteIntelligenceError.prepare(String(cString: sqlite3_errmsg(database)))
+            }
+            defer { sqlite3_finalize(statement) }
+            for term in terms {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                bind(.text(term), to: statement, at: 1)
+                bind(.text(id), to: statement, at: 2)
+                bind(.double(created), to: statement, at: 3)
+                guard sqlite3_step(statement) == SQLITE_DONE else {
+                    throw SQLiteIntelligenceError.execute(String(cString: sqlite3_errmsg(database)))
+                }
+            }
+        }
+        try insert(
+            "INSERT OR REPLACE INTO capture_term_state(capture_id, digest) VALUES (?, ?);",
+            [.text(id), .text(digest)]
+        )
+        termDigests[id] = digest
+    }
+
+    private func posting(_ term: String, start: Double?, end: Double?) throws -> [String: Double] {
+        var sql = "SELECT capture_id, created_at FROM capture_terms WHERE term = ?"
+        var values: [SQLiteValue] = [.text(term)]
+        if let start { sql += " AND created_at >= ?"; values.append(.double(start)) }
+        if let end { sql += " AND created_at <= ?"; values.append(.double(end)) }
+        sql += " ORDER BY created_at DESC LIMIT 4000;"
+        return try rows(sql, values)
+    }
+
+    private func intersectTerms(_ terms: [String], start: Double?, end: Double?) throws -> [String: Double] {
+        guard let first = terms.first else { return [:] }
+        var current = try posting(first, start: start, end: end)
+        for term in terms.dropFirst() {
+            guard !current.isEmpty else { break }
+            let next = try posting(term, start: start, end: end)
+            current = current.filter { next[$0.key] != nil }
+        }
+        return current
+    }
+
+    private func rows(_ sql: String, _ values: [SQLiteValue]) throws -> [String: Double] {
+        guard let database else { return [:] }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw SQLiteIntelligenceError.prepare(String(cString: sqlite3_errmsg(database)))
+        }
+        defer { sqlite3_finalize(statement) }
+        for (offset, value) in values.enumerated() { bind(value, to: statement, at: Int32(offset + 1)) }
+        var result: [String: Double] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let text = sqlite3_column_text(statement, 0) else { continue }
+            result[String(cString: text)] = sqlite3_column_double(statement, 1)
+        }
+        return result
+    }
+
+    private func loadTermDigests() throws -> [String: String] {
+        guard let database else { return [:] }
+        var statement: OpaquePointer?
+        let sql = "SELECT capture_id, digest FROM capture_term_state;"
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw SQLiteIntelligenceError.prepare(String(cString: sqlite3_errmsg(database)))
+        }
+        defer { sqlite3_finalize(statement) }
+        var result: [String: String] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let id = sqlite3_column_text(statement, 0), let digest = sqlite3_column_text(statement, 1) else { continue }
+            result[String(cString: id)] = String(cString: digest)
+        }
+        return result
+    }
 
     private func createSchema() throws {
         try execute("""
@@ -194,6 +330,9 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
         CREATE TABLE IF NOT EXISTS insights(id TEXT PRIMARY KEY, day REAL, kind TEXT, title TEXT, detail TEXT, confidence REAL, score REAL, payload TEXT);
         CREATE TABLE IF NOT EXISTS insight_feedback(id TEXT PRIMARY KEY, insight_id TEXT, kind TEXT, rating TEXT, created_at REAL);
         CREATE TABLE IF NOT EXISTS learned_routines(id TEXT PRIMARY KEY, routine_key TEXT UNIQUE, status TEXT, title TEXT, payload TEXT, updated_at REAL);
+        CREATE TABLE IF NOT EXISTS capture_terms(term TEXT NOT NULL, capture_id TEXT NOT NULL, created_at REAL NOT NULL, PRIMARY KEY(term, capture_id));
+        CREATE INDEX IF NOT EXISTS capture_terms_lookup ON capture_terms(term, created_at);
+        CREATE TABLE IF NOT EXISTS capture_term_state(capture_id TEXT PRIMARY KEY, digest TEXT NOT NULL);
         """)
     }
 

@@ -32,6 +32,7 @@ enum KnowledgeProjectionVerification {
         try discoveryStartsAtFourteenDays()
         try interfaceKeysAreTranslated()
         try currentLedgerRetrievalSkipsReencoding()
+        try askSearchSkipsRepeatedArchiveWalks()
         print("PASS: knowledge projection keeps partial days, surviving evidence, unknown speakers, the matter ledger and the shorter discovery window")
     }
     static func partialDaysStayInTopics() throws {
@@ -145,10 +146,32 @@ enum KnowledgeProjectionVerification {
         try expect(state.memoryKnowledge.ledgerInputStamp == MemoryKnowledgeEngine.inputStamp(for: state), "整理后的账本戳应与当前记录一致")
         let clock = ContinuousClock()
         let started = clock.now
-        let plan = MemoryRetrievalEngine().plan(question: "账单导出后来怎样了", state: state, fallback: [], trustLedger: true)
+        let plan = MemoryRetrievalEngine().plan(question: "账单导出后来怎样了", state: state, fallback: [], trustLedger: true, alreadyCorrected: true)
         let elapsed = started.duration(to: clock.now)
         try expect(elapsed < .milliseconds(500), "账本已最新时，问一问不应重新编码全部截图")
         try expect(plan.evidence.contains { $0.ocrText.contains("账单导出") }, "跳过整库对账后仍应取回相关记录")
+    }
+    static func askSearchSkipsRepeatedArchiveWalks() throws {
+        let now = Date.now
+        let captures = (0..<800).map { index in
+            capture(String(repeating: "分页边界 \(index) ", count: 30), at: now.addingTimeInterval(-Double(index) * 60), title: "其他窗口")
+        }
+        var summary = review(day: now, evidence: [captures[0].id], topic: "账单导出", quotes: [
+            DailyLedgerQuote(text: "账单导出已核对分页边界。", sourceIDs: [captures[0].id], speaker: "user")
+        ])
+        summary.ledger += (0..<160).map { index in
+            DailyMatterLedgerEntry(topic: "其他事项\(index)", kind: .matter, status: "progressed", section: "progress",
+                title: "其他事项\(index)", detail: "细节", ownedByUser: true, quotes: [], evidenceIDs: [captures[0].id], occurredAt: now)
+        }
+        let state = RecallState(captures: captures, dailySummaries: [summary])
+        let clock = ContinuousClock()
+        let started = clock.now
+        let topics = DailyKnowledgeEngine().topics(matching: "账单导出后来怎样了", in: state, alreadyCorrected: true)
+        try expect(started.duration(to: clock.now) < .milliseconds(400), "按主题找记录不应为每一行重建全部截图索引")
+        try expect(topics.contains { $0.title == "账单导出" }, "大量账本行里仍应命中被问到的主题")
+        let typed = capture("Run Brew Cleanup now", at: now, title: "终端")
+        let found = MemorySearchEngine().search(MemorySearchQuery(text: "brew cleanup"), in: captures + [typed], limit: 5)
+        try expect(found.contains { $0.capture.id == typed.id }, "大小写不同的关键词仍应命中")
     }
     static func interfaceKeysAreTranslated() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()

@@ -1005,13 +1005,24 @@ final class RecallAppModel: ObservableObject {
                 } onEvidenceReady: { [weak self] count in
                     guard let self, self.chatRequestID == requestID else { return }
                     self.chatEvidenceCount = count
+                } onPartial: { [weak self] text in
+                    guard let self, self.chatRequestID == requestID else { return }
+                    self.typingMessageContent = text
+                } onStep: { [weak self] name, ms in
+                    self?.recordDiagnostic(.info, source: "Chat", message: "问一问耗时", metadata: ["step": name, "ms": "\(ms)"])
                 }
                 let snapshot = await store.snapshot()
                 guard !Task.isCancelled, chatRequestID == requestID else { return }
+                let streamed = !typingMessageContent.isEmpty
                 isThinking = false
-                if answer.role == .assistant { typingMessageID = answer.id }
                 state = snapshot
-                if answer.role == .assistant { await revealAssistantMessage(answer) }
+                if answer.role == .assistant, streamed {
+                    typingMessageID = nil
+                    typingMessageContent = ""
+                } else if answer.role == .assistant {
+                    typingMessageID = answer.id
+                    await revealAssistantMessage(answer)
+                }
                 if chatRequestID == requestID { chatTask = nil }
             } catch is CancellationError {
                 guard chatRequestID == requestID else { return }

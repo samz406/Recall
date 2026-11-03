@@ -349,7 +349,7 @@ public extension RecallState {
         var result = self
         let invalid = Set(matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
         let usable = Set(captures.filter { !privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id)).subtracting(invalid)
-        result.captures = captures.map { SummaryFeedbackLearning.adjusted($0, in: self).scopingUnderstanding(to: usable) }
+        result.captures = captures.map { applyingAnalysisEdits($0, usable: usable) }
         let touched = Set(matterCorrections.flatMap(\.evidenceIDs))
         if !matterCorrections.isEmpty {
             let cutoff = matterCorrections.map(\.createdAt).max() ?? .distantPast
@@ -365,19 +365,6 @@ public extension RecallState {
         result.dailySummaries.removeAll { summary in
             matterCorrections.contains { correction in
                 correction.createdAt >= summary.createdAt && !Set(summary.sourceCaptureIDs).isDisjoint(with: correction.evidenceIDs)
-            }
-        }
-        for i in result.captures.indices {
-            let corrections = matterCorrections.filter { $0.evidenceIDs.contains(result.captures[i].id) }
-            if let eventDate = corrections.last(where: { $0.kind == .eventDate })?.eventAt {
-                result.captures[i].createdAt = eventDate
-            }
-            if let completed = corrections.last(where: { $0.kind == .completed }) {
-                result.captures[i].ocrText = "[聊天·自己] 我已完成：" + (completed.text.isEmpty ? "此条记录关联的事项" : completed.text)
-                result.captures[i].summary = result.captures[i].ocrText
-            }
-            if let separated = corrections.last(where: { $0.kind == .separate }), !separated.text.isEmpty {
-                result.captures[i].windowTitle = separated.text
             }
         }
         for i in result.episodes.indices {
@@ -397,6 +384,34 @@ public extension RecallState {
                 result.episodes[i].nextAction = nil
                 result.episodes[i].outcome = "用户已标记完成：" + result.episodes[i].projectName
             }
+        }
+        return result
+    }
+
+    /// The same per-record overlay `correctedForAnalysis` applies, for the few captures a question actually used.
+    func analysisCaptures(for ids: Set<UUID>) -> [UUID: CaptureRecord] {
+        guard !ids.isEmpty else { return [:] }
+        let invalid = Set(matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
+        let usable = Set(captures.filter { !privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id)).subtracting(invalid)
+        var prepared: [UUID: CaptureRecord] = [:]
+        for capture in captures where ids.contains(capture.id) && !invalid.contains(capture.id) {
+            prepared[capture.id] = applyingAnalysisEdits(capture, usable: usable)
+        }
+        return prepared
+    }
+
+    private func applyingAnalysisEdits(_ capture: CaptureRecord, usable: Set<UUID>) -> CaptureRecord {
+        var result = SummaryFeedbackLearning.adjusted(capture, in: self).scopingUnderstanding(to: usable)
+        let corrections = matterCorrections.filter { $0.evidenceIDs.contains(capture.id) }
+        if let eventDate = corrections.last(where: { $0.kind == .eventDate })?.eventAt {
+            result.createdAt = eventDate
+        }
+        if let completed = corrections.last(where: { $0.kind == .completed }) {
+            result.ocrText = "[聊天·自己] 我已完成：" + (completed.text.isEmpty ? "此条记录关联的事项" : completed.text)
+            result.summary = result.ocrText
+        }
+        if let separated = corrections.last(where: { $0.kind == .separate }), !separated.text.isEmpty {
+            result.windowTitle = separated.text
         }
         return result
     }

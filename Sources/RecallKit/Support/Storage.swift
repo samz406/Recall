@@ -253,6 +253,8 @@ public actor FileMemoryStore {
     private var conversationID = UUID()
     private let intelligenceIndex: SQLiteIntelligenceIndex?
     private var indexNeedsRebuild = false
+    /// Corrected copy reused by 问一问 until a memory write. Chat messages do not clear it.
+    private var chatAnalysis: RecallState?
     private var startupMaintenancePending = false
 
     public init() throws {
@@ -453,9 +455,39 @@ public actor FileMemoryStore {
 
     func markStartupMaintenanceComplete() { startupMaintenancePending = false }
 
+    /// Analysis view of the current memory. Recomputed after a memory write, not after each question.
+    /// Messages are copied from the live session so a new question does not rebuild the ledger.
+    public func preparedForChat() -> RecallState {
+        var prepared: RecallState
+        if let chatAnalysis {
+            prepared = chatAnalysis
+        } else {
+            prepared = state.correctedForAnalysis()
+            chatAnalysis = prepared
+        }
+        prepared.messages = state.messages
+        prepared.conversationSummary = state.conversationSummary
+        prepared.conversationSummaryCoveredMessageCount = state.conversationSummaryCoveredMessageCount
+        prepared.llmConfiguration = state.llmConfiguration
+        prepared.privacy = state.privacy
+        guard !state.matterCorrections.isEmpty else { return prepared }
+        let cutoff = state.matterCorrections.map(\.createdAt).max() ?? .distantPast
+        let before = prepared.messages.count
+        prepared.messages.removeAll { $0.createdAt <= cutoff }
+        let removed = before - prepared.messages.count
+        prepared.conversationSummaryCoveredMessageCount = max(0, (prepared.conversationSummaryCoveredMessageCount ?? 0) - removed)
+        return prepared
+    }
+
     public func indexedCaptureIDs(matching query: String, limit: Int = 12) -> [UUID] {
         guard !indexNeedsRebuild else { return [] }
         return (try? intelligenceIndex?.searchCaptureIDs(matching: query, limit: limit)) ?? []
+    }
+
+    /// Term index written when the screenshot text was saved. Nil when that index cannot be used yet.
+    public func captureTextIndex() -> CaptureTextIndex? {
+        guard let intelligenceIndex, !indexNeedsRebuild else { return nil }
+        return CaptureTextIndex(index: intelligenceIndex)
     }
 
     public func updateRules(_ rules: [EventRule]) throws {
@@ -1150,7 +1182,7 @@ public actor FileMemoryStore {
         if let expectedID, expectedID != conversationID { throw CancellationError() }
         state.conversationSummary = summary
         state.conversationSummaryCoveredMessageCount = coveredMessageCount
-        try persist()
+        try persistReviewState(invalidateAnalysis: false)
     }
 
     public func addCapture(_ capture: CaptureRecord) throws {
@@ -1163,6 +1195,7 @@ public actor FileMemoryStore {
     /// understanding stay valid. The whole-archive reconciliation in `persist()` runs on the
     /// maintenance cycle (`organizeMemory`) instead of blocking every recording.
     private func persistAppended() throws {
+        chatAnalysis = nil
         guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
         try Self.write(state, encoder: encoder, to: storage.stateURL)
         do {
@@ -1230,13 +1263,13 @@ public actor FileMemoryStore {
             })
         }
         state.messages.append(message)
-        do { try persist() } catch { state = before; throw error }
+        do { try persistReviewState(invalidateAnalysis: false) } catch { state = before; throw error }
     }
 
     public func rateMessage(id: UUID, helpful: Bool?) throws {
         guard let index = state.messages.firstIndex(where: { $0.id == id && $0.role == .assistant }) else { return }
         let previous = state
-        do { state.messages[index].helpful = helpful; try persistReviewState() }
+        do { state.messages[index].helpful = helpful; try persistReviewState(invalidateAnalysis: false) }
         catch { state = previous; throw error }
     }
 
@@ -1393,6 +1426,7 @@ public actor FileMemoryStore {
     }
 
     func persist(preservingReviewsFrom previous: RecallState? = nil) throws {
+        chatAnalysis = nil
         guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
         reconcileDailyReviewCheckpoints()
         let liveIDs = Set(state.captures.map(\.id))
@@ -1431,7 +1465,8 @@ public actor FileMemoryStore {
 
     /// Only review-owned fields changed. Full reconciliation/index maintenance follows
     /// on the existing maintenance cycle; queries use their memory fallback meanwhile.
-    func persistReviewState(indexChanged: Bool = false) throws {
+    func persistReviewState(indexChanged: Bool = false, invalidateAnalysis: Bool = true) throws {
+        if invalidateAnalysis { chatAnalysis = nil }
         guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
         try Task.checkCancellation()
         try Self.write(state, encoder: encoder, to: storage.stateURL)

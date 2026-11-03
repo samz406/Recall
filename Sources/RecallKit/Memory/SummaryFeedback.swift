@@ -252,8 +252,11 @@ public enum SummaryFeedbackLearning {
     public static func adjusted(_ source: CaptureRecord, in state: RecallState) -> CaptureRecord {
         var result = source
         if let text = source.correctedText { result.ocrText = text; result.summary = nil; result.recognition = nil }
-        for entry in state.summaryFeedback where entry.state == .applied {
-            guard entry.sourceVersions[source.id] == rawVersion(source) else { continue }
+        // rawVersion JSON-encodes the screenshot. Only captures named by applied feedback need it, and only once.
+        let relevant = state.summaryFeedback.filter { $0.state == .applied && $0.sourceVersions[source.id] != nil }
+        guard !relevant.isEmpty else { return result }
+        let version = rawVersion(source)
+        for entry in relevant where entry.sourceVersions[source.id] == version {
             for change in entry.resolution?.corrections ?? [] where change.sourceID == source.id {
                 guard !change.originalQuote.isEmpty, result.ocrText.components(separatedBy: change.originalQuote).count == 2 else { continue }
                 result.ocrText = result.ocrText.replacingOccurrences(of: change.originalQuote, with: change.correctedQuote)

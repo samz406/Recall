@@ -14,8 +14,9 @@ public struct MemoryRetrievalPlan: Sendable {
 public struct MemoryRetrievalEngine: Sendable {
     public init() {}
     public func plan(question: String, state: RecallState, fallback: [CaptureRecord], conversationID: UUID? = nil,
-                     limit: Int = 14, now: Date = .now, resolvedEntityIDs: Set<String> = [], trustLedger: Bool = false) -> MemoryRetrievalPlan {
-        let safe = state.correctedForAnalysis()
+                     limit: Int = 14, now: Date = .now, resolvedEntityIDs: Set<String> = [], trustLedger: Bool = false,
+                     alreadyCorrected: Bool = false, textMatchIDs: (([String], Date?, Date?) -> [UUID])? = nil) -> MemoryRetrievalPlan {
+        let safe = alreadyCorrected ? state : state.correctedForAnalysis()
         let participating = safe.captures.filter { record in
             let participates = state.rules.first(where: { $0.template == record.eventTemplate })?.participatesInChat ?? true
             return participates && !state.privacy.excludedBundleIdentifiers.contains(record.sourceBundleIdentifier ?? "")
@@ -23,9 +24,9 @@ public struct MemoryRetrievalEngine: Sendable {
         let allowedIDs = Set(participating.map(\.id))
         let allowed = participating.map { $0.scopingUnderstanding(to: allowedIDs) }
         let restrictedUnderstandingIDs = Set(zip(participating, allowed).filter { $0.0.understanding != nil && $0.1.understanding == nil }.map { $0.0.id })
-        // Ask already refreshed the ledger. Reconciling again re-encodes every capture before the first token of the answer.
+        // Ask uses the ledger from the last maintenance pass. Reconciling here re-encodes every capture before the answer.
         let stored = state.memoryKnowledge
-        let ledger = trustLedger && stored.updatedAt != nil && stored.organizationVersion == MemoryKnowledgeEngine.organizationVersion
+        let ledger = trustLedger && stored.updatedAt != nil
             ? stored
             : MemoryKnowledgeEngine().reconcile(state)
         let active = ledger.claims.filter { claim in
@@ -68,7 +69,7 @@ public struct MemoryRetrievalEngine: Sendable {
         }
         // Topics named in the question come first: their whole timeline (first and latest state included) is
         // the answer's backbone, ahead of anything a keyword happened to hit.
-        let namedTopics = DailyKnowledgeEngine().topics(matching: question, in: state)
+        let namedTopics = DailyKnowledgeEngine().topics(matching: question, in: state, alreadyCorrected: alreadyCorrected)
         var selected: [MemoryClaim] = []
         if let time, intent == .overview {
             let calendar = Calendar.current
@@ -123,8 +124,17 @@ public struct MemoryRetrievalEngine: Sendable {
                 ([entity.name] + entity.aliases).contains { record.ocrText.localizedCaseInsensitiveContains($0) }
             }
         }
-        let expanded = aliasText.isEmpty ? [] : MemorySearchEngine().search(MemorySearchQuery(text: aliasText,
-            startDate: time?.startDate, endDate: time?.endDate), in: allowed, limit: 24).map(\.capture).filter(mentionsEntity)
+        let expanded: [CaptureRecord]
+        if aliasText.isEmpty {
+            expanded = []
+        } else if let textMatchIDs {
+            let matched = Set(textMatchIDs(QuestionTerms.topicTerms(aliasText), time?.startDate, time?.endDate))
+            let byID = Dictionary(uniqueKeysWithValues: allowed.map { ($0.id, $0) })
+            expanded = matched.compactMap { byID[$0] }.filter(mentionsEntity).sorted { $0.createdAt > $1.createdAt }.prefix(24).map { $0 }
+        } else {
+            expanded = MemorySearchEngine().search(MemorySearchQuery(text: aliasText,
+                startDate: time?.startDate, endDate: time?.endDate), in: allowed, limit: 24).map(\.capture).filter(mentionsEntity)
+        }
         var raw = allowed.filter { sourceAnchorIDs.contains($0.id) } + expanded + fallback
         var seen = Set(evidence.map(\.id))
         raw = raw.filter { record in

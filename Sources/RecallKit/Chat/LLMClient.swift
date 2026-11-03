@@ -117,7 +117,7 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
 }
 
 public enum LLMRequestPurpose: Equatable, Sendable {
-    case chat, dailySummary, reviewSynthesis, reviewAudit, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup, summaryFeedback, summaryFeedbackAudit, captureUnderstanding, captureUnderstandingAudit, reminderDiscovery, reminderDiscoveryAudit
+    case chat, chatPlanning, dailySummary, reviewSynthesis, reviewAudit, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup, summaryFeedback, summaryFeedbackAudit, captureUnderstanding, captureUnderstandingAudit, reminderDiscovery, reminderDiscoveryAudit
 }
 
 public struct LLMRequest: Sendable {
@@ -237,6 +237,41 @@ public enum LLMError: LocalizedError {
 
 public protocol LLMResponding: Sendable {
     func answer(to request: LLMRequest) async throws -> LLMAnswer
+    func answerStream(to request: LLMRequest, onText: @escaping @Sendable (String) async -> Void) async throws -> LLMAnswer
+}
+
+public extension LLMResponding {
+    func answerStream(to request: LLMRequest, onText: @escaping @Sendable (String) async -> Void) async throws -> LLMAnswer {
+        let answer = try await answer(to: request)
+        if !answer.content.isEmpty { await onText(answer.content) }
+        return answer
+    }
+}
+
+/// Parses one server-sent line from an OpenAI-compatible or Anthropic-compatible stream.
+/// Returns true when the stream has finished. A normal JSON completion is accepted by the caller.
+public enum ModelStreamDecoder {
+    @discardableResult
+    public static func consume(_ line: String, into text: inout String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("data:") else { return false }
+        let payload = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
+        if payload == "[DONE]" { return true }
+        guard let data = payload.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        if let choices = json["choices"] as? [[String: Any]] {
+            let choice = choices.first
+            if let delta = choice?["delta"] as? [String: Any], let piece = delta["content"] as? String {
+                text += piece
+            } else if let message = choice?["message"] as? [String: Any], let piece = message["content"] as? String {
+                text += piece
+            }
+        } else if let delta = json["delta"] as? [String: Any], let piece = delta["text"] as? String {
+            text += piece
+        }
+        let kind = json["type"] as? String
+        return kind == "message_stop" || kind == "message_delta" && (json["delta"] as? [String: Any])?["stop_reason"] != nil
+    }
 }
 
 public struct ConversationContextPlan: Sendable, Equatable {
@@ -376,13 +411,28 @@ public struct CompatibleLLM: LLMResponding {
         }
     }
 
-    private func openAIAnswer(to request: LLMRequest) async throws -> LLMAnswer {
+    public func answerStream(to request: LLMRequest, onText: @escaping @Sendable (String) async -> Void) async throws -> LLMAnswer {
+        try Task.checkCancellation()
+        switch configuration.provider {
+        case .openAICompatible:
+            return try await openAIAnswer(to: request, onText: onText)
+        case .anthropicCompatible:
+            return try await anthropicAnswer(to: request, onText: onText)
+        case .localOnly:
+            let answer = try await ExtractiveMemoryResponder().answer(to: request)
+            if !answer.content.isEmpty { await onText(answer.content) }
+            return answer
+        }
+    }
+
+    private func openAIAnswer(to request: LLMRequest, onText: (@Sendable (String) async -> Void)? = nil) async throws -> LLMAnswer {
         let endpoint = try endpoint(for: .openAICompatible)
         let body = OpenAIRequest(
             model: configuration.model,
             messages: openAIMessages(for: request),
             temperature: 0.2,
-            maxTokens: outputLimit(for: request)
+            maxTokens: outputLimit(for: request),
+            stream: onText == nil ? nil : true
         )
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
@@ -390,12 +440,16 @@ public struct CompatibleLLM: LLMResponding {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = try JSONEncoder().encode(body)
         if [.dailySummary, .reviewSynthesis, .reviewAudit, .captureUnderstanding, .captureUnderstandingAudit, .reminderDiscovery, .reminderDiscoveryAudit].contains(request.purpose) { urlRequest.timeoutInterval = 180 }
+        if let onText {
+            let content = try await readEventStream(urlRequest, outputLimit: body.maxTokens, onText: onText)
+            return LLMAnswer(content: content, citedCaptureIDs: request.context.map(\.id))
+        }
         let data = try await perform(urlRequest, outputLimit: body.maxTokens)
         let content = try ModelResponseDecoding.text(from: data, provider: configuration.provider, outputLimit: body.maxTokens, requiresCompleteOutput: request.purpose != .chat)
         return LLMAnswer(content: content, citedCaptureIDs: request.context.map(\.id))
     }
 
-    private func anthropicAnswer(to request: LLMRequest) async throws -> LLMAnswer {
+    private func anthropicAnswer(to request: LLMRequest, onText: (@Sendable (String) async -> Void)? = nil) async throws -> LLMAnswer {
         let endpoint = try endpoint(for: .anthropicCompatible)
         // Hidden reasoning is counted in max_tokens and dominates latency for structured tasks:
         // a 93 KB review took 28 s with DeepSeek thinking and 5 s without; MiniMax at default effort
@@ -405,16 +459,17 @@ public struct CompatibleLLM: LLMResponding {
         let host = endpoint.host?.lowercased() ?? ""
         let miniMax = usesMiniMaxAuthenticationFallback(for: endpoint)
         let disableThinking = structured && (host == "api.deepseek.com" || host.hasSuffix(".deepseek.com"))
-        return try await anthropicAnswer(to: request, endpoint: endpoint, lowEffort: structured && miniMax, disableThinking: disableThinking)
+        return try await anthropicAnswer(to: request, endpoint: endpoint, lowEffort: structured && miniMax, disableThinking: disableThinking, onText: onText)
     }
 
-    private func anthropicAnswer(to request: LLMRequest, endpoint: URL, lowEffort: Bool, disableThinking: Bool) async throws -> LLMAnswer {
+    private func anthropicAnswer(to request: LLMRequest, endpoint: URL, lowEffort: Bool, disableThinking: Bool, onText: (@Sendable (String) async -> Void)? = nil) async throws -> LLMAnswer {
         let body = AnthropicRequest(
             model: configuration.model,
             maxTokens: outputLimit(for: request),
             temperature: 0.2,
             system: systemInstruction(for: request) + RecallLocalization.languageInstruction(for: request),
             messages: anthropicMessages(for: request),
+            stream: onText == nil ? nil : true,
             outputConfig: lowEffort ? .init(effort: "low") : nil,
             thinking: disableThinking ? .init(type: "disabled") : nil
         )
@@ -431,9 +486,52 @@ public struct CompatibleLLM: LLMResponding {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = try JSONEncoder().encode(body)
         if [.dailySummary, .reviewSynthesis, .reviewAudit, .captureUnderstanding, .captureUnderstandingAudit, .reminderDiscovery, .reminderDiscoveryAudit].contains(request.purpose) { urlRequest.timeoutInterval = 180 }
+        if let onText {
+            let content = try await readEventStream(urlRequest, outputLimit: body.maxTokens, onText: onText)
+            return LLMAnswer(content: content, citedCaptureIDs: request.context.map(\.id))
+        }
         let data = try await perform(urlRequest, outputLimit: body.maxTokens)
         let content = try ModelResponseDecoding.text(from: data, provider: configuration.provider, outputLimit: body.maxTokens, requiresCompleteOutput: request.purpose != .chat)
         return LLMAnswer(content: content, citedCaptureIDs: request.context.map(\.id))
+    }
+
+    private func readEventStream(_ request: URLRequest, outputLimit: Int, onText: @Sendable (String) async -> Void) async throws -> String {
+        try Task.checkCancellation()
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await session.bytes(for: request)
+        } catch {
+            if ModelCallCancellation.isCancellation(error) { throw CancellationError() }
+            throw error
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw LLMResponseFailure(reason: .invalidFormat, provider: configuration.provider, outputLimit: outputLimit)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            var data = Data()
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count >= 8_192 { break }
+            }
+            throw ModelResponseDecoding.httpFailure(data, status: http.statusCode, provider: configuration.provider, outputLimit: outputLimit)
+        }
+        var text = ""
+        var raw = Data()
+        for try await line in bytes.lines {
+            try Task.checkCancellation()
+            if raw.count < 65_536 { raw.append(contentsOf: Data((line + "\n").utf8)) }
+            let finished = ModelStreamDecoder.consume(line, into: &text)
+            if !text.isEmpty { await onText(text) }
+            if finished || text.count >= 32_000 { break }
+        }
+        if text.isEmpty, !raw.isEmpty {
+            let decoded = try ModelResponseDecoding.text(from: raw, provider: configuration.provider, outputLimit: outputLimit, requiresCompleteOutput: false)
+            if !decoded.isEmpty { await onText(decoded) }
+            return decoded
+        }
+        guard !text.isEmpty else { throw LLMError.invalidResponse }
+        return text
     }
 
     private func outputLimit(for request: LLMRequest) -> Int {
@@ -509,6 +607,7 @@ public struct CompatibleLLM: LLMResponding {
             case .reminderDiscoveryAudit: role = "独立核对提醒的角色、对象、状态、条件和真实期限"
             case .summaryFeedback: role = "按用户反馈提出有限的回顾修订"
             case .summaryFeedbackAudit: role = "独立核验回顾反馈修订"
+            case .chatPlanning: role = "决定要读取哪些本地记忆，或在材料足够时直接回答"
             default: role = "根据模板整理周回顾正文"
             }
             let evidence: String
@@ -594,9 +693,10 @@ private struct OpenAIRequest: Encodable {
     let messages: [Message]
     let temperature: Double
     let maxTokens: Int
+    var stream: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
-        case model, messages, temperature
+        case model, messages, temperature, stream
         case maxTokens = "max_tokens"
     }
 }
@@ -612,6 +712,7 @@ private struct AnthropicRequest: Encodable {
     let temperature: Double
     let system: String
     let messages: [Message]
+    var stream: Bool? = nil
     var outputConfig: OutputConfig? = nil
 
     var thinking: Thinking? = nil
@@ -620,7 +721,7 @@ private struct AnthropicRequest: Encodable {
     struct Thinking: Encodable { let type: String }
 
     enum CodingKeys: String, CodingKey {
-        case model, temperature, system, messages
+        case model, temperature, system, messages, stream
         case outputConfig = "output_config", thinking
         case maxTokens = "max_tokens"
     }

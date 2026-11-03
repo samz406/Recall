@@ -52,4 +52,66 @@ public enum QuestionTerms {
     private static func isHan(_ c: Character) -> Bool {
         c.unicodeScalars.allSatisfy { (0x3400...0x4DBF).contains($0.value) || (0x4E00...0x9FFF).contains($0.value) || (0xF900...0xFAFF).contains($0.value) || (0x20000...0x2FA1F).contains($0.value) }
     }
+
+    static func isIndexedTerm(_ term: String) -> Bool {
+        term.count > 1 && !stopWords.contains(term) && !pieceStopwords.contains(term)
+    }
+
+    /// Words and two-character pieces written when a capture is saved. Questions look these up
+    /// instead of reading every saved text again.
+    public static func documentTerms(_ text: String) -> [String] {
+        let folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        var seen = Set<String>()
+        var terms: [String] = []
+        func add(_ term: String) {
+            guard isIndexedTerm(term), seen.insert(term).inserted else { return }
+            terms.append(term)
+        }
+        for token in folded.split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
+            let word = String(token)
+            if word.contains(where: isHan) {
+                let chars = Array(word)
+                if chars.count <= 12 { add(word) }
+                for pair in pairs(in: chars) { add(pair) }
+            } else if word.count <= 40 { add(word) }
+        }
+        return terms
+    }
+
+    /// How a question's topic terms hit the saved-text index. Each group is a phrase that must
+    /// occur together; groups and whole words are combined by union.
+    public static func termLookup(_ terms: [String]) -> (groups: [[String]], words: [String]) {
+        let phrases = terms.filter { $0.count >= 4 && $0.contains(where: isHan) }
+        let words = terms.filter { !$0.contains(where: isHan) && isIndexedTerm($0) }
+        if phrases.isEmpty && words.isEmpty {
+            let pairs = terms.filter { $0.count == 2 && $0.allSatisfy(isHan) && isIndexedTerm($0) }
+            return (pairs.map { [$0] }, [])
+        }
+        var groups: [[String]] = []
+        for phrase in phrases {
+            let chars = Array(phrase)
+            if chars.count <= 4 {
+                let keys = pairs(in: chars)
+                if !keys.isEmpty { groups.append(keys) }
+            } else {
+                let last = min(chars.count - 4, 5)
+                for offset in 0...last {
+                    let keys = pairs(in: Array(chars[offset..<(offset + 4)]))
+                    if !keys.isEmpty { groups.append(keys) }
+                }
+            }
+        }
+        return (groups, words)
+    }
+
+    private static func pairs(in chars: [Character]) -> [String] {
+        guard chars.count > 1 else { return [] }
+        var result: [String] = []
+        for index in 0..<(chars.count - 1) {
+            let pair = String(chars[index...index + 1])
+            guard pair.allSatisfy(isHan), isIndexedTerm(pair) else { continue }
+            result.append(pair)
+        }
+        return result
+    }
 }

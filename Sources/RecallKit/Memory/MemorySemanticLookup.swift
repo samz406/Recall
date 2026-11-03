@@ -6,9 +6,9 @@ public struct MemorySemanticLookup: Sendable {
     private struct Topic: Codable { var id: String; var name: String; var aliases: [String] }
     private struct Selection: Decodable { var topicIDs: [String] }
     public init() {}
-    public func topics(for question: String, in state: RecallState, responder: any LLMResponding) async throws -> Set<String> {
+    public func topics(for question: String, in state: RecallState, responder: any LLMResponding, knowledge: MemoryKnowledge? = nil, alreadyCorrected: Bool = false) async throws -> Set<String> {
         guard state.privacy.cloudUseEnabled else { return [] }
-        let safe = state.correctedForAnalysis()
+        let safe = alreadyCorrected ? state : state.correctedForAnalysis()
         let allowed = Set(safe.captures.filter { record in
             let participates = state.rules.first(where: { $0.template == record.eventTemplate })?.participatesInChat ?? true
             return participates && !state.privacy.excludedBundleIdentifiers.contains(record.sourceBundleIdentifier ?? "")
@@ -16,7 +16,12 @@ public struct MemorySemanticLookup: Sendable {
         let restricted = Set(safe.captures.filter { source in
             allowed.contains(source.id) && source.understanding != nil && source.scopingUnderstanding(to: allowed).understanding == nil
         }.map(\.id))
-        let ledger = MemoryKnowledgeEngine().reconcile(state)
+        let ledger: MemoryKnowledge
+        if let knowledge, knowledge.updatedAt != nil, knowledge.organizationVersion == MemoryKnowledgeEngine.organizationVersion {
+            ledger = knowledge
+        } else {
+            ledger = MemoryKnowledgeEngine().reconcile(state)
+        }
         let disabled = Set(ledger.claims.filter { MemoryLibraryCategory.all.includes($0.kind) && !state.memoryKnowledgeSettings.references($0) }.flatMap(\.sourceIDs))
         let intent = MemoryQuestionIntent(question: question)
         let dates = Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id, $0.createdAt) })

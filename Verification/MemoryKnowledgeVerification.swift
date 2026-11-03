@@ -275,5 +275,16 @@ enum MemoryKnowledgeVerification {
         try expect(try index.searchCaptureIDs(matching: "UniqueMemoryAfter") == [record.id], "增量修改未写入新全文索引")
         state.captures = []; try index.synchronize(with: state)
         try expect(try index.searchCaptureIDs(matching: "UniqueMemoryAfter").isEmpty, "增量删除残留索引")
+        let saved = capture("账单导出的分页边界已经核对。")
+        let unrelated = capture("今天只写了天气。", title: "天气")
+        state.captures = [saved, unrelated]
+        try index.synchronize(with: state)
+        let found = try index.captureIDs(matchingTerms: QuestionTerms.topicTerms("账单导出后来怎样了"), limit: 10)
+        try expect(found.contains(saved.id) && !found.contains(unrelated.id), "保存时写入的文字索引应直接命中")
+        state.captures[0].ocrText = "木刻练习完成了第一张。"
+        state.captures[0].windowTitle = "木刻"
+        try index.synchronize(with: state)
+        try expect(try index.captureIDs(matchingTerms: QuestionTerms.topicTerms("账单导出"), limit: 10).isEmpty, "原文改掉后旧词条仍能命中")
+        try expect(try index.captureIDs(matchingTerms: QuestionTerms.topicTerms("木刻练习"), limit: 10) == [saved.id], "原文更新后新词条未写入")
     }
 }

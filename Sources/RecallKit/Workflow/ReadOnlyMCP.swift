@@ -65,17 +65,17 @@ public final class ReadOnlyMCPServer {
                     guard !query.isEmpty else { return rpcError(-32602, "A query is required") }
                     let found = records.filter { ($0.correctedText ?? $0.ocrText).localizedCaseInsensitiveContains(query) }
                         .sorted { $0.createdAt > $1.createdAt }.prefix(limit)
-                    text = found.map { "id: \($0.id.uuidString) | \(ISO8601DateFormatter().string(from: $0.createdAt)) | \($0.sourceAppName ?? "Record")\n" + PrivacyEngine().redact($0.correctedText ?? $0.ocrText).prefix(1000) }.joined(separator: "\n\n")
+                    text = found.map { MemoryReadText.searchRecord($0) }.joined(separator: "\n\n")
                     let matchingReviews = allowedReviews.filter { $0.items.contains { ($0.title + " " + $0.detail).localizedCaseInsensitiveContains(query) } }.prefix(limit)
                     if !matchingReviews.isEmpty { text += "\n\nDaily review IDs:\n" + matchingReviews.map { $0.id.uuidString + " | " + ISO8601DateFormatter().string(from: $0.day) }.joined(separator: "\n") }
                 case "get_record_excerpt":
                     guard let raw = args["id"] as? String, let id = UUID(uuidString: raw), let record = records.first(where: { $0.id == id }) else { throw WorkflowError.denied }
-                    text = "id: \(id.uuidString)\n" + PrivacyEngine().redact(record.correctedText ?? record.ocrText).prefix(4000)
+                    text = MemoryReadText.excerpt(record)
                 case "get_daily_review":
                     guard grant.allowReviews, let raw = args["id"] as? String, let id = UUID(uuidString: raw),
                           let review = allowedReviews.first(where: { $0.id == id }), !review.sourceCaptureIDs.isEmpty,
                           Set(review.sourceCaptureIDs).isSubset(of: ids), review.day >= Calendar.current.startOfDay(for: grant.from), review.day <= grant.through else { throw WorkflowError.denied }
-                    text = PrivacyEngine().redact(DailySummaryItemParser.markdown(from: review.items)).prefix(8000).description
+                    text = MemoryReadText.review(review)
                 default: return rpcError(-32602, "Unknown or disallowed tool")
                 }
                 result = ["content": [["type": "text", "text": text.isEmpty ? "No matching authorized records." : text]], "isError": false]
