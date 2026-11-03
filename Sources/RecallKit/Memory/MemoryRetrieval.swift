@@ -49,12 +49,18 @@ public struct MemoryRetrievalEngine: Sendable {
         for entity in entities { terms.formUnion(MatterMemoryEngine.subjectTerms(entity.name)) }
         let matchingGroups = state.topicGroups.filter { question.localizedCaseInsensitiveContains($0.title) || resolvedEntityIDs.contains($0.id) }
         let entityIDs = Set(entities.map(\.id) + matchingGroups.flatMap(\.memberIDs))
+        // Filtering and sorting ask for the same relevance repeatedly. Fold/scan each
+        // claim once per plan, without caching across questions or privacy snapshots.
+        var relevanceScores: [UUID: Int] = [:]
         func relevance(_ claim: MemoryClaim) -> Int {
+            if let score = relevanceScores[claim.id] { return score }
             let text = claim.title + " " + claim.content
             let count = terms.filter { text.localizedCaseInsensitiveContains($0) }.count
             let entity = entityIDs.contains(claim.subjectID) ? 40 : 0
             let purpose = intent == .solution && claim.kind == .experience ? 12 : 0
-            return count * 4 + entity + purpose
+            let score = count * 4 + entity + purpose
+            relevanceScores[claim.id] = score
+            return score
         }
         let candidates = active.filter { claim in
             if claim.kind.isPersonal && !MemoryPersonalization.applies(claim, question: question, entities: entityIDs, conversationID: conversationID) { return false }

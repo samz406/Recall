@@ -36,6 +36,9 @@ enum ChatSourceIndexVerification {
         var long = records[0]; long.summary = String(repeating: "长标题", count: 10_000)
         let bounded = try ChatSourceIndex(captures: [long]).page(citations: [long.id])
         try expect(bounded.rows[0].title.count <= 97 && index.record(id: ids[0])?.ocrText == records[0].ocrText, "列表标题不受限或改写了原始证据")
+        var corrected = records[0]; corrected.summary = nil; corrected.windowTitle = nil; corrected.correctedText = "用户修正后的来源标题"
+        let correctedPage = try ChatSourceIndex(captures: [corrected]).page(citations: [corrected.id])
+        try expect(correctedPage.rows[0].title == "用户修正后的来源标题", "来源预览仍使用更正前的 OCR")
     }
     private static func largeArchive() throws {
         let records = Self.records(6_351), started = Date.now

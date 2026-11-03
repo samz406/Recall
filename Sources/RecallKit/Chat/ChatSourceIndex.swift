@@ -12,7 +12,7 @@ public struct ChatSourceRow: Identifiable, Sendable, Equatable {
         app = Self.bounded(record.sourceAppName ?? "", limit: 64)
         let choices = [record.understanding?.facts.first?.subject, record.summary, record.windowTitle]
         let savedTitle = choices.compactMap { $0 }.first { !$0.prefix(128).allSatisfy(\.isWhitespace) }
-        let opening = String(record.ocrText.prefix(384)).split(whereSeparator: \.isNewline).first.map(String.init)
+        let opening = String((record.correctedText ?? record.ocrText).prefix(384)).split(whereSeparator: \.isNewline).first.map(String.init)
         title = Self.bounded(savedTitle ?? opening ?? "", limit: 96)
     }
     private static func bounded(_ text: String, limit: Int) -> String {
