@@ -21,8 +21,15 @@
 
 ## 验证
 
+功能代码 `cd0079634c5aa13b0c757ada6e641cb064701914` 的 [macOS CI 41575557226](https://github.com/samz406/Recall/actions/runs/41575557226) 两个任务均为 success；之后仅补充本验收文档。[PR #77](https://github.com/samz406/Recall/pull/77)。
+
+| 工具链 | 编译 | 集成与提醒专项 | 原生布局与交互 | 图标 |
+| --- | --- | --- | --- | --- |
+| Swift 6.3.3 / Xcode 26.6 | 通过 | 272 项结束检查，含 18 组提醒场景 | 108 张预览及原生入口回归通过 | 不透明与 11 尺寸检查、现代 Assets.car 编译通过 |
+| Swift 6.0.3 / Xcode 16.2 | 通过 | 272 项结束检查，含 18 组提醒场景 | 108 张预览及原生入口回归通过 | 不透明与 11 尺寸检查、旧版 ICNS 回退通过 |
+
 - 本地：ICNS 11 个表示尺寸检查、主体 alpha=255、PNG 格式检查、Shell 语法、`git diff --check`。
-- macOS CI：待执行 `swift build --jobs 1`、`swift run RecallVerifier`、原生布局与入口验证，以及图标编译/像素验证。
+- macOS CI：实际执行 `swift build --jobs 1`、`swift run RecallVerifier`、`swift run RecallApp --layout-previews`、图标编译/像素验证，均通过。本地没有 Swift，未将 CI 结果写成本机运行结果。
 - 合成模型回归覆盖新增四组场景：格式修复、混合无效行隔离、部分审阅、持久化后增量重试。也覆盖同截图中有效与无效条目并存、重复截图、伪造期限、取消、隐私变化和保存回滚。
 - 未执行真实模型准确率评测、用户账户采集或系统 Dock 的人工验收。发布后需在真实 Mac 重启 Recall，确认“继续发现”和 Dock 外观；无需删除用户数据、清缓存或重置系统权限。
 
