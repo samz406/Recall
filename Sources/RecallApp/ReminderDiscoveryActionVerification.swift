@@ -14,6 +14,16 @@ extension RecallLayoutPreviews {
         }
     }
     private enum DiscoveryActionFailure: Error { case failed(String) }
+    private actor UncertainReminderModel: LLMResponding {
+        func answer(to request: LLMRequest) async throws -> LLMAnswer {
+            let input = try JSONSerialization.jsonObject(with: Data(request.context[0].ocrText.utf8)) as! [String: Any]
+            let sources = input["sources"] as! [[String: Any]]
+            let blocks = sources.flatMap { $0["blocks"] as! [[String: Any]] }.filter { $0["contextOnly"] as? Bool != true }
+            let object: [String: Any] = ["actions": [], "resolutions": [],
+                "coverage": blocks.map { ["blockID": $0["id"]!, "disposition": "uncertain"] }]
+            return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self), citedCaptureIDs: [])
+        }
+    }
     @MainActor static func verifyReminderDiscoveryActions() async throws {
         let source = CaptureRecord(eventTemplate: .manualMoment, createdAt: Date(timeIntervalSince1970: floor(Date.now.timeIntervalSince1970)), sourceAppName: "合成聊天",
             contentHash: "synthetic-action", ocrText: "[聊天·自己] 我会整理合成验收清单。")
@@ -41,7 +51,13 @@ extension RecallLayoutPreviews {
               model.state.reminders[0].scheduledAt == nil else {
             throw DiscoveryActionFailure.failed("停止没有取消模型请求或误安排通知")
         }
-        print("PASS: native reminder-discovery entry points report model failure, cancel promptly and preserve unconfirmed reminders without notifications")
+        model.discoverReminders(force: false, responder: UncertainReminderModel())
+        try await waitForDiscovery(model)
+        guard case .partial = model.reminderDiscoveryStatus, model.noticeMessage?.contains("尚未核对完整") == true,
+              model.state.reminders == [prior], model.state.reminderDiscoveryCheckpoint.processedCaptureHashes.isEmpty else {
+            throw DiscoveryActionFailure.failed("不确定结果被显示为没有待办，或不能继续核对")
+        }
+        print("PASS: native reminder-discovery entry points distinguish partial results, model failure and cancellation, preserving unconfirmed reminders without notifications")
     }
     @MainActor private static func waitForDiscovery(_ model: RecallAppModel) async throws {
         for _ in 0..<400 {

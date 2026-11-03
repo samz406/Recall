@@ -1,12 +1,16 @@
 import Foundation
 
 public enum ReminderDiscoveryError: LocalizedError, Equatable {
-    case unavailable, changed, invalid
+    case unavailable, changed, invalid, malformed, evidence, incomplete
+    var canRetryValidation: Bool { [.invalid, .malformed, .evidence, .incomplete].contains(self) }
     public var errorDescription: String? {
         switch self {
         case .unavailable: "请先连接模型，并允许使用脱敏文本。已有提醒保持不变。"
         case .changed: "记录、模型或参与设置已变化，本次分析已停止。可以重新发现待办。"
         case .invalid: "模型结果未通过来源、角色或完整性核对。已有提醒保留，可以重试。"
+        case .malformed: "模型没有返回可读取的待办结果，重试一次后仍未恢复。已有提醒未改动。"
+        case .evidence: "本次候选没有可核实的原文依据，未添加提醒。已有提醒保留，可以重试。"
+        case .incomplete: "模型未完成本段记录的核对，未将它标记为已检查。已有提醒保留，可以继续。"
         }
     }
 }
@@ -31,7 +35,7 @@ public struct ReminderDiscoveryProgress: Sendable {
 
 /// Local code selects inputs and validates provenance; the model decides semantics.
 public struct ModelReminderDiscovery: Sendable {
-    public static let version = 4
+    public static let version = 5
     public init() {}
     public struct Plan: Sendable {
         public var groups: [[CaptureRecord]]
@@ -112,6 +116,7 @@ public struct ModelReminderDiscovery: Sendable {
     private struct Resolution: Codable { var reminderID: UUID; var status: String; var evidence: [UnderstandingEvidence] }
     private struct Coverage: Codable { var blockID: String; var disposition: String }
     private struct Draft: Codable { var actions: [Action]; var resolutions: [Resolution]; var coverage: [Coverage] }
+    private struct CheckedDraft { var draft: Draft; var needsRepair: Bool }
     private struct Audit: Codable { var actionIDs: [String]; var reminderIDs: [UUID]; var checkedBlockIDs: [String]; var missedBlockIDs: [String] }
     private static func json<T: Encodable>(_ object: T) throws -> String {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; encoder.dateEncodingStrategy = .iso8601
@@ -119,7 +124,7 @@ public struct ModelReminderDiscovery: Sendable {
     }
     private static func decode<T: Decodable>(_ type: T.Type, _ text: String) throws -> T {
         guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start <= end,
-              let object = try? JSONDecoder().decode(type, from: Data(text[start...end].utf8)) else { throw ReminderDiscoveryError.invalid }
+              let object = try? JSONDecoder().decode(type, from: Data(text[start...end].utf8)) else { throw ReminderDiscoveryError.malformed }
         return object
     }
 
@@ -127,18 +132,19 @@ public struct ModelReminderDiscovery: Sendable {
                         beforeCall: @Sendable () async throws -> Void = {},
                         progress: @Sendable (String) async -> Void = { _ in }) async throws -> Result {
         let privacy = PrivacyEngine()
-        var seen = Set<String>()
+        var seen: [String: UUID] = [:], representatives: [UUID: UUID] = [:]
         let unique = captures.filter {
             let key = [$0.sourceBundleIdentifier ?? $0.sourceAppName ?? "", $0.windowTitle ?? "",
                 String(Calendar.current.startOfDay(for: $0.createdAt).timeIntervalSince1970), $0.textOrigin?.rawValue ?? "",
                 privacy.redact($0.ocrText)].joined(separator: "\u{1f}")
-            return seen.insert(key).inserted
+            if let first = seen[key] { representatives[$0.id] = first; return false }
+            seen[key] = $0.id; return true
         }
         let neighbours = contextSources(for: captures, in: state)
         let allSources = unique + neighbours
         var pages: [[UnderstandingBlock]] = [], page: [UnderstandingBlock] = [], size = 0
         for block in unique.flatMap({ CaptureUnderstandingEngine.blocks(for: $0) }) {
-            if !page.isEmpty && (size + block.text.count > 12_000 || page.count >= 48) {
+            if !page.isEmpty && (size + block.text.count > 8_000 || page.count >= 24) {
                 pages.append(page); page = []; size = 0
             }
             page.append(block); size += block.text.count
@@ -232,6 +238,7 @@ public struct ModelReminderDiscovery: Sendable {
                 }
             }
         }
+        for (duplicate, first) in representatives where uncertain.contains(first) { uncertain.insert(duplicate) }
         return Result(candidates: candidates.filter { resolutions[$0.id] == nil }, resolutions: resolutions, uncertainSourceIDs: uncertain, resolutionEvidence: resolutionEvidence)
     }
 
@@ -244,7 +251,7 @@ public struct ModelReminderDiscovery: Sendable {
         逐项判断是谁说的、谁负责、对象是什么、是否已做完、是否有条件、期限到底指什么。资料、文章观点、AI建议、示例、错误提示、发布日期、提交记录、界面文字不能变成待办。用户发给AI的操作要求是AI负责的工作，不是用户承诺；不能把“你帮我提交代码”变成用户待办。
         commitment 仅用于本人明确承诺；request 仅用于对方明确向当前用户提出的请求，不能把对方说“我要做”或第三方请求当成用户任务。角色 unknown 不猜成 user。request 不代表用户已经答应。
         检查完整对话及后续完成/取消证据，不从“没有后续截图”推断未完成。不同应用或会话不能靠相似措辞合并；会话标题和采集时间不足以证明是同一次事情。
-        仅保留 owner=user、status=pending、没有未满足条件的完整行动。title 是完整短句，概括动作和具体对象（5–100字），detail 补充必要背景（4–600字），不可重复标题、输出残句或“这个需要处理”。
+        仅保留 owner=user、status=pending、没有未满足条件的完整行动。title 是完整短句，概括动作和具体对象（5–100字）。detail 仅补充额外背景（最多600字），没有补充内容就用空字符串，不重复标题。不可输出残句或“这个需要处理”。
         deadline 只逐字保留原文真正的期限，包含证据；消息时间、文章发布日期、提交时间不是截止时间。不补09:00，不推测日期，没有则null。recurrence: none/daily/weekly/monthly，必须有原文依据。
         existingID 只在证据明确指向 pending 中同一事项同一次发生时填其原UUID，否则null。resolutions 仅关闭 pending 中明确完成、取消或原本不是用户行动的事项；status: completed/cancelled/notAction。不能因本段未提到它就关闭。
         handled 是已经安排或处理过的事项，同一次发生不要重新提出；已忽略的相同事项不要换个标题重新推荐。明确的新一次发生才可创建新候选。不可修改 handled。
@@ -255,36 +262,144 @@ public struct ModelReminderDiscovery: Sendable {
             do {
                 try Task.checkCancellation(); try await beforeCall()
                 let answer = try await responder.answerCancellably(to: LLMRequest(question: instruction + (attempt == 0 ? "" : "\n上次结果未通过核对。重新检查格式、证据、角色及所有主片段的覆盖，不得放宽标准。"), context: [context], purpose: .reminderDiscovery, outputTokenLimit: attempt == 0 ? 6_000 : 8_000))
-                let draft = try Self.decode(Draft.self, answer.content)
-                try validate(draft, input: input, primary: primary)
+                let checked = try prepare(answer.content, input: input, primary: primary)
+                if checked.needsRepair && attempt == 0 { throw ReminderDiscoveryError.incomplete }
+                let draft = checked.draft
                 guard !draft.actions.isEmpty || !draft.resolutions.isEmpty else { return draft }
                 await progress("核对角色、状态与原文依据")
                 try Task.checkCancellation(); try await beforeCall()
                 let auditPrompt = """
                 独立核对待办草稿，不接受第一轮的解释。核对原文：用户是否真正负责、行动是否具体、对方请求是否针对当前用户、是否仍未完成、条件是否被遗漏。文章/AI建议/引用/发布日期/系统提示不能成为任务。request不是用户已承诺。
-                关闭项必须有同一事项同一次发生的明确后续证据；其他人的完成、不相关会话、采集时间不能证明关闭。期限和周期必须有原文。title/detail必须完整且不重复。handled中的同一次事项不能换个标题重新提出。允许否决全部。
+                关闭项必须有同一事项同一次发生的明确后续证据；其他人的完成、不相关会话、采集时间不能证明关闭。期限和周期必须有原文。title须是完整行动；detail可为空，非空时不能重复标题。handled中的同一次事项不能换个标题重新提出。允许否决全部。
                 对所有主block复核，漏掉的重要可执行事项返回missedBlockIDs；checkedBlockIDs返回全部主ID。仅返回通过的草稿ID，不生成新ID。
                 JSON：{"actionIDs":[],"reminderIDs":[],"checkedBlockIDs":[],"missedBlockIDs":[]}。草稿：
                 \(try Self.json(draft))
                 """
                 let response = try await responder.answerCancellably(to: LLMRequest(question: auditPrompt, context: [context], purpose: .reminderDiscoveryAudit, outputTokenLimit: 4_000))
                 let audit = try Self.decode(Audit.self, response.content), ids = Set(primary.map(\.id))
-                guard Set(audit.checkedBlockIDs) == ids, audit.checkedBlockIDs.count == ids.count, audit.missedBlockIDs.isEmpty,
-                      Set(audit.actionIDs).count == audit.actionIDs.count, Set(audit.reminderIDs).count == audit.reminderIDs.count,
+                guard Set(audit.checkedBlockIDs).isSubset(of: ids), Set(audit.missedBlockIDs).isSubset(of: ids),
                       Set(audit.actionIDs).isSubset(of: Set(draft.actions.map(\.id))),
-                      Set(audit.reminderIDs).isSubset(of: Set(draft.resolutions.map(\.reminderID))) else { throw ReminderDiscoveryError.invalid }
-                return Draft(actions: draft.actions.filter { audit.actionIDs.contains($0.id) },
-                    resolutions: draft.resolutions.filter { audit.reminderIDs.contains($0.reminderID) }, coverage: draft.coverage)
+                      Set(audit.reminderIDs).isSubset(of: Set(draft.resolutions.map(\.reminderID))) else { throw ReminderDiscoveryError.incomplete }
+                let unchecked = ids.subtracting(audit.checkedBlockIDs).union(audit.missedBlockIDs)
+                if !unchecked.isEmpty && attempt == 0 { throw ReminderDiscoveryError.incomplete }
+                guard unchecked != ids else { throw ReminderDiscoveryError.incomplete }
+                func checkedEvidence(_ evidence: [UnderstandingEvidence]) -> Bool {
+                    Set(evidence.map(\.blockID)).isDisjoint(with: unchecked)
+                }
+                return Draft(actions: draft.actions.filter { audit.actionIDs.contains($0.id) && checkedEvidence($0.evidence) },
+                    resolutions: draft.resolutions.filter { audit.reminderIDs.contains($0.reminderID) && checkedEvidence($0.evidence) },
+                    coverage: draft.coverage.map { item in unchecked.contains(item.blockID) ? Coverage(blockID: item.blockID, disposition: "uncertain") : item })
             } catch {
                 if ModelCallCancellation.isCancellation(error) { throw CancellationError() }
-                let repairable = (error as? ReminderDiscoveryError) == .invalid
+                let repairable = (error as? ReminderDiscoveryError)?.canRetryValidation == true
                     || (error as? LLMResponseFailure).map { [.truncated, .reasoningOnly].contains($0.reason) } == true
                 guard attempt == 0 && repairable else { throw error }
-                await progress("结果未通过核对，正在重试一次")
+                await progress("正在修正本段结果（仅重试一次）")
             }
         }
         throw ReminderDiscoveryError.invalid
     }
+    /// Repair presentation differences; isolate unsupported rows without inventing evidence.
+    private func prepare(_ text: String, input: Input, primary: [UnderstandingBlock]) throws -> CheckedDraft {
+        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start <= end,
+              let object = try? JSONSerialization.jsonObject(with: Data(text[start...end].utf8)) as? [String: Any],
+              let rawActions = object["actions"] as? [Any], let rawCoverage = object["coverage"] as? [Any],
+              rawActions.count <= 32, rawCoverage.count <= 96 else { throw ReminderDiscoveryError.malformed }
+        guard object["resolutions"] == nil || object["resolutions"] is NSNull || object["resolutions"] is [Any] else { throw ReminderDiscoveryError.malformed }
+        let rawResolutions = object["resolutions"] as? [Any] ?? []
+        guard rawResolutions.count <= 60 else { throw ReminderDiscoveryError.malformed }
+        let primaryIDs = Set(primary.map(\.id))
+        let blocks = Dictionary(uniqueKeysWithValues: input.sources.flatMap(\.blocks).map { ($0.id, $0) })
+        var dispositions: [String: String] = [:], uncertain = Set<String>(), needsRepair = false, rejected = 0
+        for raw in rawCoverage {
+            guard let data = try? JSONSerialization.data(withJSONObject: raw, options: [.fragmentsAllowed]),
+                  let item = try? JSONDecoder().decode(Coverage.self, from: data), primaryIDs.contains(item.blockID),
+                  ["action", "resolution", "background", "noise", "uncertain"].contains(item.disposition) else { needsRepair = true; continue }
+            if let prior = dispositions[item.blockID], prior != item.disposition { uncertain.insert(item.blockID) }
+            else { dispositions[item.blockID] = item.disposition }
+        }
+        // An absent coverage report is never recorded as a successful empty result.
+        guard !dispositions.isEmpty else { throw ReminderDiscoveryError.incomplete }
+        let missing = primaryIDs.subtracting(dispositions.keys)
+        uncertain.formUnion(missing); needsRepair = needsRepair || !missing.isEmpty
+        func reject(_ raw: Any) {
+            rejected += 1; needsRepair = true
+            let row = raw as? [String: Any]
+            let references = (row?["evidence"] as? [[String: Any]] ?? []).compactMap { $0["blockID"] as? String }
+            let known = primaryIDs.intersection(references)
+            uncertain.formUnion(known.isEmpty ? primaryIDs : known)
+        }
+        func normalize(_ proofs: [UnderstandingEvidence]) -> [UnderstandingEvidence] {
+            proofs.map { item in
+                guard let block = blocks[item.blockID], let quote = Self.originalQuote(item.quote, in: block.text) else { return item }
+                return UnderstandingEvidence(blockID: item.blockID, quote: quote)
+            }
+        }
+        func rowData(_ raw: Any) -> Data? { try? JSONSerialization.data(withJSONObject: raw, options: [.fragmentsAllowed]) }
+        func coverage(for proofs: [UnderstandingEvidence], disposition: String) -> [Coverage] {
+            let ids = Set(proofs.map(\.blockID))
+            return primary.map { Coverage(blockID: $0.id, disposition: ids.contains($0.id) ? disposition : "background") }
+        }
+        var actions: [Action] = [], resolutions: [Resolution] = []
+        var conflictingActions = Set<String>(), conflictingResolutions = Set<UUID>()
+        for raw in rawActions {
+            var row = raw as? [String: Any] ?? [:]
+            if row["recurrence"] == nil || row["recurrence"] is NSNull { row["recurrence"] = "none" }
+            if row["detail"] == nil || row["detail"] is NSNull { row["detail"] = "" }
+            guard let data = rowData(row), var action = try? JSONDecoder().decode(Action.self, from: data) else { reject(raw); continue }
+            action.title = action.title.replacingOccurrences(of: "**", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            action.detail = action.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            if action.detail == action.title { action.detail = "" }
+            action.evidence = normalize(action.evidence)
+            if var deadline = action.deadline { deadline.evidence = normalize([deadline.evidence])[0]; action.deadline = deadline }
+            do { try validate(Draft(actions: [action], resolutions: [], coverage: coverage(for: action.evidence, disposition: "action")), input: input, primary: primary) }
+            catch { reject(raw); continue }
+            if conflictingActions.contains(action.id) { reject(raw); continue }
+            if let old = actions.first(where: { $0.id == action.id }) {
+                if try Self.json(old) != Self.json(action) {
+                    uncertain.formUnion(old.evidence.map(\.blockID)); actions.removeAll { $0.id == action.id }
+                    conflictingActions.insert(action.id); reject(raw)
+                }
+            } else { actions.append(action) }
+        }
+        for raw in rawResolutions {
+            guard let data = rowData(raw), var resolution = try? JSONDecoder().decode(Resolution.self, from: data) else { reject(raw); continue }
+            resolution.evidence = normalize(resolution.evidence)
+            do { try validate(Draft(actions: [], resolutions: [resolution], coverage: coverage(for: resolution.evidence, disposition: "resolution")), input: input, primary: primary) }
+            catch { reject(raw); continue }
+            if conflictingResolutions.contains(resolution.reminderID) { reject(raw); continue }
+            if let old = resolutions.first(where: { $0.reminderID == resolution.reminderID }) {
+                if try Self.json(old) != Self.json(resolution) {
+                    uncertain.formUnion(old.evidence.map(\.blockID)); resolutions.removeAll { $0.reminderID == resolution.reminderID }
+                    conflictingResolutions.insert(resolution.reminderID); reject(raw)
+                }
+            } else { resolutions.append(resolution) }
+        }
+        guard rejected == 0 || !actions.isEmpty || !resolutions.isEmpty else { throw ReminderDiscoveryError.evidence }
+        let actionBlocks = Set(actions.flatMap { $0.evidence.map(\.blockID) }), resolutionBlocks = Set(resolutions.flatMap { $0.evidence.map(\.blockID) })
+        let repairedCoverage = primary.map { block -> Coverage in
+            let disposition = dispositions[block.id] ?? "uncertain"
+            let unsupported = (disposition == "action" && !actionBlocks.contains(block.id)) || (disposition == "resolution" && !resolutionBlocks.contains(block.id))
+            return Coverage(blockID: block.id, disposition: uncertain.contains(block.id) || unsupported ? "uncertain" : disposition)
+        }
+        return CheckedDraft(draft: Draft(actions: actions, resolutions: resolutions, coverage: repairedCoverage), needsRepair: needsRepair)
+    }
+
+    /// Only whitespace differences in a unique match within the named block can be repaired.
+    private static func originalQuote(_ quote: String, in text: String) -> String? {
+        guard !quote.isEmpty else { return nil }
+        if text.contains(quote) { return quote }
+        let needle = quote.filter { !$0.isWhitespace }
+        guard needle.count >= 2 else { return nil }
+        let positions = text.indices.filter { !text[$0].isWhitespace }
+        let compact = String(positions.map { text[$0] })
+        guard let match = compact.range(of: needle),
+              compact.range(of: needle, range: compact.index(after: match.lowerBound)..<compact.endIndex) == nil else { return nil }
+        let first = compact.distance(from: compact.startIndex, to: match.lowerBound)
+        let last = compact.distance(from: compact.startIndex, to: match.upperBound) - 1
+        return String(text[positions[first]...positions[last]])
+    }
+
     private func validate(_ draft: Draft, input: Input, primary: [UnderstandingBlock]) throws {
         let blocks = Dictionary(uniqueKeysWithValues: input.sources.flatMap(\.blocks).map { ($0.id, $0) })
         let primaryIDs = Set(primary.map(\.id)), known = Set(input.pending.map(\.id))
@@ -298,8 +413,8 @@ public struct ModelReminderDiscovery: Sendable {
               Set(draft.coverage.map(\.blockID)) == primaryIDs, draft.coverage.count == primaryIDs.count,
               draft.coverage.allSatisfy({ ["action","resolution","background","noise","uncertain"].contains($0.disposition) }) else { throw ReminderDiscoveryError.invalid }
         for action in draft.actions {
-            guard !action.id.isEmpty, (5...100).contains(action.title.count), (4...600).contains(action.detail.count),
-                  action.title != action.detail, !action.title.contains("**"), !action.title.contains("\n"),
+            guard !action.id.isEmpty, (5...100).contains(action.title.count), action.detail.count <= 600,
+                  !action.title.contains("**"), !action.title.contains("\n"),
                   action.existingID.map(known.contains) ?? true, proof(action.evidence) else { throw ReminderDiscoveryError.invalid }
             if let deadline = action.deadline {
                 guard !deadline.text.isEmpty, deadline.text.count <= 120, deadline.evidence.quote.contains(deadline.text),

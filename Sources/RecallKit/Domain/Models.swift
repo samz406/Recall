@@ -324,6 +324,7 @@ public struct ReminderDiscoveryCheckpoint: Codable, Hashable, Sendable {
     public var unchangedRecordCount: Int? = nil
     public var lastAttemptAt: Date? = nil
     public var failureReason: String? = nil
+    public var unconfirmedRecordCount: Int? = nil
 
     public init(
         processedCaptureHashes: [String: String] = [:],

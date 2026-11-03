@@ -24,6 +24,9 @@ jobs:
           test "$(sips -g pixelWidth Resources/AppIcon.icns | awk '/pixelWidth/ {print $2}')" = "1024"
           test "$(sips -g pixelHeight Resources/AppIcon.icns | awk '/pixelHeight/ {print $2}')" = "1024"
           bash -n scripts/run-app.sh
+          bash -n scripts/compile-app-icon.sh
+          swift scripts/verify-app-icon.swift "$PWD"
+          bash scripts/compile-app-icon.sh /tmp/recall-icon-resources
       - name: Build
         run: swift build --jobs 1
       - name: Run integration verifier
@@ -53,6 +56,10 @@ jobs:
           swift --version
       - name: Build with the Swift 6.0 toolchain
         run: swift build --jobs 1
+      - name: Verify legacy icon compatibility
+        run: |
+          swift scripts/verify-app-icon.swift "$PWD"
+          bash scripts/compile-app-icon.sh /tmp/recall-compat-icon-resources
       - name: Run integration verifier
         run: swift run RecallVerifier
       - name: Render native page layouts with Xcode 16.2

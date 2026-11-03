@@ -7,7 +7,7 @@ enum ReminderDiscoveryStatus: Equatable {
     case idle
     case searching(eligibleRecordCount: Int, analyzingRecordCount: Int)
     case completed(eligibleRecordCount: Int, analyzedRecordCount: Int, discoveredCount: Int, completedAt: Date)
-    case unavailable(String), failed(String), cancelled(String)
+    case unavailable(String), failed(String), cancelled(String), partial(String)
 }
 
 extension Notification.Name {
@@ -1150,7 +1150,11 @@ final class RecallAppModel: ObservableObject {
                 reminderDiscoveryStatus = .completed(eligibleRecordCount: result.eligibleRecords, analyzedRecordCount: result.analyzedRecords,
                     discoveredCount: result.added, completedAt: .now)
                 let message: String
-                if result.eligibleRecords == 0 { message = "当前没有允许参与分析的记录，可检查记录规则与来源设置。" }
+                if result.unconfirmedRecords > 0 {
+                    message = "已保存通过核对的结果，新增 \(result.added) 项待确认；\(result.unconfirmedRecords) 条记录尚未核对完整，可以继续发现。"
+                    reminderDiscoveryStatus = .partial(message)
+                }
+                else if result.eligibleRecords == 0 { message = "当前没有允许参与分析的记录，可检查记录规则与来源设置。" }
                 else if result.analyzedRecords == 0 { message = "没有新增或变化的记录，已保留上次分析结果。" }
                 else { message = result.added > 0 ? "新增 \(result.added) 项待确认" : "模型已核对本次记录，没有新的待办。" }
                 finishTask(taskID, state: .succeeded, message: message)

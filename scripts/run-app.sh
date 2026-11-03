@@ -34,6 +34,7 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$EXECUTABLE" "$CONTENTS/MacOS/RecallApp"
 cp "$ICON_SOURCE" "$CONTENTS/Resources/AppIcon.icns"
+bash "$ROOT_DIR/scripts/compile-app-icon.sh" "$CONTENTS/Resources"
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -69,6 +70,10 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+if [[ -s "$CONTENTS/Resources/Assets.car" ]]; then
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleIconName string AppIcon' "$CONTENTS/Info.plist"
+fi
 
 /usr/bin/plutil -lint "$CONTENTS/Info.plist" >/dev/null
 # ScreenCaptureKit, TCC and UserNotifications associate consent with the app's
