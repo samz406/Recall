@@ -66,25 +66,22 @@ public final class MemoryAssistant {
         var state = scope.applying(to: fullState)
         state.messages.removeAll { $0.id == userMessage.id }
 
-        let recordsAllowedInChat = state.captures.filter { capture in
-            let participates = state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
-            return participates && !state.privacy.excludedBundleIdentifiers.contains(capture.sourceBundleIdentifier ?? "")
-        }.map { capture in
-            var copy = capture
-            let originalDate = originalState.captures.first { $0.id == capture.id }?.createdAt ?? capture.createdAt
-            let explicitDate = originalState.matterCorrections.last { $0.kind == .eventDate && $0.evidenceIDs.contains(capture.id) }?.eventAt
-            let dateNote = explicitDate.map { "用户确认发生时间：\($0.formatted())" } ?? "实际发生时间未确认，不能把记录时间当作发生时间。"
-            let correctionNote = SummaryFeedbackLearning.adjusted(capture, in: originalState).ocrText != (originalState.captures.first { $0.id == capture.id }?.ocrText ?? capture.ocrText) ? "含用户反馈更正；原始截图文字仍保留在时间线。\n" : ""
-            copy.ocrText = correctionNote + "记录时间：\(originalDate.formatted())；\(dateNote)\n" + copy.ocrText
-            return copy
-        }
         let resolvedQuestion = retrievalText(for: question, history: state.messages)
         let retrievalText: String
         if let days = scope.recentDays, timeRangeResolver.resolve(resolvedQuestion) == nil {
             retrievalText = "最近\(max(1, days))天，" + resolvedQuestion
         } else { retrievalText = resolvedQuestion }
         let timeRange = timeRangeResolver.resolve(retrievalText)
-        let allowedIDs = Set(recordsAllowedInChat.map(\.id))
+        let intent = MemoryQuestionIntent(question: question)
+        let participating = state.captures.filter { capture in
+            let participates = state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
+            return participates && !state.privacy.excludedBundleIdentifiers.contains(capture.sourceBundleIdentifier ?? "")
+        }
+        let recordsAllowedInChat = participating.filter { capture in
+            guard let timeRange else { return true }
+            return capture.createdAt >= timeRange.startDate && capture.createdAt <= timeRange.endDate
+        }
+        let allowedIDs = Set(participating.map(\.id))
         let summaryEvidence = state.dailySummaries.filter {
             ($0.sourceCaptureIDs.isEmpty && state.matterCorrections.isEmpty) || (!$0.sourceCaptureIDs.isEmpty && Set($0.sourceCaptureIDs).isSubset(of: allowedIDs))
         }.map(makeSearchableEvidence)
@@ -95,19 +92,19 @@ public final class MemoryAssistant {
             }
             .map(makeSearchableEvidence)
         let searchableEvidence = recordsAllowedInChat + summaryEvidence + episodeEvidence + (timeRange == nil ? durableMemoryEvidence : [])
+        // 多日概览靠日期覆盖，不靠“总结本周”这类词去扫每张截图的全文。
         let query = MemorySearchQuery(
-            text: retrievalText,
+            text: timeRange != nil && intent == .overview ? "" : retrievalText,
             startDate: timeRange?.startDate,
             endDate: timeRange?.endDate
         )
         // 多日问题必须先看到范围内的全部候选，再做按天覆盖；若提前截断，
-        // 高频的今天记录仍会把较早日期挤出候选集。
+        // 高频的今天记录仍会把较早日期挤出候选集。范围外的截图已经在上面排除。
         let searchLimit = timeRange == nil ? 64 : max(searchableEvidence.count, 1)
         let results = searchEngine.search(query, in: searchableEvidence, limit: searchLimit)
         let indexedIDs = timeRange == nil ? await store.indexedCaptureIDs(matching: retrievalText, limit: 8) : []
         let indexed = indexedIDs.compactMap { id in recordsAllowedInChat.first(where: { $0.id == id }) }
         var seen: Set<UUID> = []
-        let intent = MemoryQuestionIntent(question: question)
         let relevantResults = timeRange != nil && intent != .overview
             ? results.filter { !$0.matchedTerms.isEmpty }
             : results
@@ -120,22 +117,24 @@ public final class MemoryAssistant {
         } else {
             MemoryEvidenceSelector().select(ranked, question: retrievalText, limit: 12)
         }
-        var retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: retrieved,
-            conversationID: conversation.id, limit: contextManager.maxEvidenceRecords)
+        let annotated = retrieved.map { annotateForChat($0, originals: originalState) }
+        var retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: annotated,
+            conversationID: conversation.id, limit: contextManager.maxEvidenceRecords, trustLedger: true)
+        onEvidenceReady?(retrieval.evidence.count)
         if retrieval.needsSemanticLookup, state.privacy.cloudUseEnabled,
            state.llmConfiguration.provider != .localOnly, state.llmConfiguration.hasCredential {
             do {
                 let responder = (try await store.modelResponder())
                 let ids = try await MemorySemanticLookup().topics(for: retrievalText, in: state, responder: responder)
                 if !ids.isEmpty {
-                    retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: retrieved,
-                        conversationID: conversation.id, limit: contextManager.maxEvidenceRecords, resolvedEntityIDs: ids)
+                    retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: annotated,
+                        conversationID: conversation.id, limit: contextManager.maxEvidenceRecords, resolvedEntityIDs: ids, trustLedger: true)
+                    onEvidenceReady?(retrieval.evidence.count)
                 }
             } catch is CancellationError { throw CancellationError() }
             catch { onRetrievalWarning?() }
         }
         let selectedEvidence = retrieval.evidence
-        onEvidenceReady?(selectedEvidence.count)
         let plan = contextManager.plan(
             history: state.messages,
             existingSummary: state.conversationSummary,
@@ -221,7 +220,7 @@ public final class MemoryAssistant {
         guard !changedSource, state.memoryKnowledgeSettings == latestState.memoryKnowledgeSettings,
               Set(personalBefore.map(\.id)) == Set(personalAfter.map(\.id)),
               state.memoryKnowledge.suppressedKeys == latestState.memoryKnowledge.suppressedKeys,
-              MemoryKnowledgeEngine().sourcesUsable(Set(retrieval.preferenceSourceIDs), in: latestState) else {
+              MemoryKnowledgeEngine().sourcesUsable(Set(retrieval.preferenceSourceIDs), in: latestState, knowledge: latestState.memoryKnowledge) else {
             throw LLMError.serviceError("记忆或约定已更新，请重新提问以使用最新内容。")
         }
         let formattedContent = ChatResponseFormatter().format(response.content)
@@ -230,6 +229,19 @@ public final class MemoryAssistant {
         try Task.checkCancellation()
         try await store.addMessage(assistantMessage, inConversation: conversation.id)
         return assistantMessage
+    }
+
+    /// Date and correction notes are for the model. Only the records that will actually be sent are copied.
+    private func annotateForChat(_ capture: CaptureRecord, originals: RecallState) -> CaptureRecord {
+        guard originals.captures.contains(where: { $0.id == capture.id }) else { return capture }
+        var copy = capture
+        let originalDate = originals.captures.first { $0.id == capture.id }?.createdAt ?? capture.createdAt
+        let explicitDate = originals.matterCorrections.last { $0.kind == .eventDate && $0.evidenceIDs.contains(capture.id) }?.eventAt
+        let dateNote = explicitDate.map { "用户确认发生时间：\($0.formatted())" } ?? "实际发生时间未确认，不能把记录时间当作发生时间。"
+        let originalText = originals.captures.first { $0.id == capture.id }?.ocrText ?? capture.ocrText
+        let correctionNote = SummaryFeedbackLearning.adjusted(capture, in: originals).ocrText != originalText ? "含用户反馈更正；原始截图文字仍保留在时间线。\n" : ""
+        copy.ocrText = correctionNote + "记录时间：\(originalDate.formatted())；\(dateNote)\n" + copy.ocrText
+        return copy
     }
 
     private func retrievalText(for question: String, history: [ConversationMessage]) -> String {

@@ -12,14 +12,16 @@ extension FileMemoryStore {
         } catch { state = previous; throw error }
     }
 
-    /// Whether the saved ledger still matches the captures and daily reviews it was derived from. Cheap
-    /// compared with a full reconcile: one pass over ids and versions that are already stored.
+    /// Whether the saved ledger still matches the captures and daily reviews it was derived from.
+    /// A stored stamp answers this without re-encoding every screenshot. Ledgers saved before the stamp
+    /// fall back to the per-capture version check once, then the stamp is recorded.
     public func isMemoryLedgerCurrent() -> Bool {
         let knowledge = state.memoryKnowledge
-        guard knowledge.updatedAt != nil, knowledge.organizationVersion == MemoryKnowledgeEngine.organizationVersion,
-              knowledge.dailyFingerprint == DailyKnowledgeEngine().fingerprint(in: state.correctedForAnalysis()) else { return false }
-        // Versions hash each capture's text and corrections, so an edit, correction, deletion or new capture all show.
-        // The ledger stores them for the same filtered set it reconciles.
+        guard knowledge.updatedAt != nil, knowledge.organizationVersion == MemoryKnowledgeEngine.organizationVersion else { return false }
+        let stamp = MemoryKnowledgeEngine.inputStamp(for: state)
+        if knowledge.ledgerInputStamp == stamp { return true }
+        guard knowledge.ledgerInputStamp == nil else { return false }
+        guard knowledge.dailyFingerprint == DailyKnowledgeEngine().fingerprint(in: state.correctedForAnalysis()) else { return false }
         var safe = state.correctedForAnalysis()
         safe.captures.removeAll { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }
         guard safe.captures.count == knowledge.sourceVersions.count else { return false }
@@ -28,7 +30,14 @@ extension FileMemoryStore {
 
     /// Chat only needs the ledger to be current. Reconciling scans every capture, so it runs when something changed.
     public func organizeMemoryIfNeeded() throws {
-        guard !isMemoryLedgerCurrent() else { return }
+        let stamp = MemoryKnowledgeEngine.inputStamp(for: state)
+        let knowledge = state.memoryKnowledge
+        if knowledge.updatedAt != nil, knowledge.organizationVersion == MemoryKnowledgeEngine.organizationVersion, knowledge.ledgerInputStamp == stamp { return }
+        if knowledge.ledgerInputStamp == nil, isMemoryLedgerCurrent() {
+            state.memoryKnowledge.ledgerInputStamp = stamp
+            try persist()
+            return
+        }
         try organizeMemory()
     }
 

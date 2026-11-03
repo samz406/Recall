@@ -14,7 +14,7 @@ public struct MemoryRetrievalPlan: Sendable {
 public struct MemoryRetrievalEngine: Sendable {
     public init() {}
     public func plan(question: String, state: RecallState, fallback: [CaptureRecord], conversationID: UUID? = nil,
-                     limit: Int = 14, now: Date = .now, resolvedEntityIDs: Set<String> = []) -> MemoryRetrievalPlan {
+                     limit: Int = 14, now: Date = .now, resolvedEntityIDs: Set<String> = [], trustLedger: Bool = false) -> MemoryRetrievalPlan {
         let safe = state.correctedForAnalysis()
         let participating = safe.captures.filter { record in
             let participates = state.rules.first(where: { $0.template == record.eventTemplate })?.participatesInChat ?? true
@@ -23,7 +23,11 @@ public struct MemoryRetrievalEngine: Sendable {
         let allowedIDs = Set(participating.map(\.id))
         let allowed = participating.map { $0.scopingUnderstanding(to: allowedIDs) }
         let restrictedUnderstandingIDs = Set(zip(participating, allowed).filter { $0.0.understanding != nil && $0.1.understanding == nil }.map { $0.0.id })
-        let ledger = MemoryKnowledgeEngine().reconcile(state)
+        // Ask already refreshed the ledger. Reconciling again re-encodes every capture before the first token of the answer.
+        let stored = state.memoryKnowledge
+        let ledger = trustLedger && stored.updatedAt != nil && stored.organizationVersion == MemoryKnowledgeEngine.organizationVersion
+            ? stored
+            : MemoryKnowledgeEngine().reconcile(state)
         let active = ledger.claims.filter { claim in
             ledger.organizationVersion == MemoryKnowledgeEngine.organizationVersion
                 && (!MemoryLibraryCategory.all.includes(claim.kind) || state.memoryKnowledgeSettings.references(claim))

@@ -206,11 +206,17 @@ public struct MemorySearchEngine: Sendable {
         let hasTimeWindow = query.startDate != nil || query.endDate != nil
         return captures.compactMap { capture in
             guard matchesFilters(capture, query: query) else { return nil }
-            let searchable = [capture.ocrText, capture.summary ?? "", capture.sourceAppName ?? "", capture.windowTitle ?? "", capture.tags.joined(separator: " ")]
-                .joined(separator: " ")
-                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            let matches = terms.filter { searchable.contains($0) }
-            guard terms.isEmpty || !matches.isEmpty || hasTimeWindow else { return nil }
+            let matches: [String]
+            if terms.isEmpty {
+                guard hasTimeWindow else { return nil }
+                matches = []
+            } else {
+                let searchable = [capture.ocrText, capture.summary ?? "", capture.sourceAppName ?? "", capture.windowTitle ?? "", capture.tags.joined(separator: " ")]
+                    .joined(separator: " ")
+                    .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                matches = terms.filter { searchable.contains($0) }
+                guard !matches.isEmpty || hasTimeWindow else { return nil }
+            }
             let recency = max(0, 1 - Date.now.timeIntervalSince(capture.createdAt) / (60 * 60 * 24 * 30))
             let coverage: Double
             if terms.isEmpty {

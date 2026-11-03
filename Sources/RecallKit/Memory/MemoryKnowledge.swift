@@ -186,6 +186,9 @@ public struct MemoryKnowledge: Codable, Sendable {
     public var organizationVersion: Int?
     /// Digest of the structured daily reviews this ledger was derived from.
     public var dailyFingerprint: String?
+    /// Cheap identity of the captures, corrections and daily reviews this ledger was built from.
+    /// Chat compares this instead of re-encoding every screenshot on each question.
+    public var ledgerInputStamp: String?
     public var pendingScreenshotDeletions: [String] = []
     public init() {}
 }
@@ -312,6 +315,7 @@ public struct MemoryKnowledgeEngine: Sendable {
 
     /// One source ledger for reviews, chat, and the topic browser. Explicit deletion is reconciled even while paused.
     public func reconcile(_ state: RecallState, force: Bool = false, now: Date = .now, allowNew: Bool = true) -> MemoryKnowledge {
+        let stamp = Self.inputStamp(for: state)
         var result = state.memoryKnowledge
         let daily = DailyKnowledgeEngine()
         var safe = state.correctedForAnalysis()
@@ -339,6 +343,7 @@ public struct MemoryKnowledgeEngine: Sendable {
                 return entity.sourceIDs.isEmpty ? nil : entity
             }
             result.dependencies = dependencies(in: state, claims: result.claims)
+            if !changed { result.ledgerInputStamp = stamp }
             return result
         }
         var candidates: [MemoryClaim] = []
@@ -584,8 +589,58 @@ public struct MemoryKnowledgeEngine: Sendable {
         }
         result.sourceVersions = versions; result.updatedAt = now; result.organizationVersion = Self.organizationVersion
         result.dailyFingerprint = dailyFingerprint
+        result.ledgerInputStamp = stamp
         result.dependencies = dependencies(in: state, claims: result.claims)
         return result
+    }
+
+    /// Identity of the inputs `reconcile` reads. Hashes the short fields already stored on each capture
+    /// (content hash, corrections, understanding facts, daily-review text) and does not re-encode screenshot OCR.
+    public static func inputStamp(for state: RecallState) -> String {
+        var hasher = SHA256()
+        func feed(_ text: String) { hasher.update(data: Data(text.utf8)); hasher.update(data: Data([0x1F])) }
+        feed(String(organizationVersion))
+        feed(state.memoryKnowledgeSettings.automaticOrganization ? "1" : "0")
+        feed(state.privacy.excludedBundleIdentifiers.sorted().joined(separator: "\u{1}"))
+        for capture in state.captures.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+            feed(capture.id.uuidString)
+            feed(capture.contentHash)
+            feed(String(capture.ocrText.utf8.count))
+            feed(String(capture.createdAt.timeIntervalSince1970))
+            feed(capture.windowTitle ?? "")
+            feed(capture.textOrigin?.rawValue ?? "")
+            feed(capture.sourceBundleIdentifier ?? "")
+            feed(capture.correctedText ?? "")
+            feed(capture.isMemoryEvidenceArchive == true ? "1" : "0")
+            if let note = capture.manualMatter { feed(note.title); feed(note.detail); feed(note.status.rawValue); feed(String(note.eventAt.timeIntervalSince1970)) }
+            if let directive = capture.memoryDirective { feed(directive.content); feed(directive.key); feed(directive.scope.rawValue); feed(directive.scopeID ?? "") }
+            if let understanding = capture.understanding {
+                feed(String(understanding.processorVersion))
+                for fact in understanding.facts { feed(fact.id); feed(fact.subject); feed(fact.detail); feed(fact.status.rawValue); feed(fact.speaker.rawValue) }
+            }
+            for message in capture.sourceMessages ?? [] { feed(message.speaker.rawValue); feed(String(message.text.utf8.count)) }
+        }
+        for correction in state.matterCorrections.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+            feed(correction.id.uuidString); feed(correction.kind.rawValue); feed(correction.text)
+            feed(correction.evidenceIDs.map(\.uuidString).joined(separator: ","))
+            feed(correction.eventAt.map { String($0.timeIntervalSince1970) } ?? "")
+        }
+        for entry in state.summaryFeedback.sorted(by: { $0.id.uuidString < $1.id.uuidString }) where entry.state == .applied {
+            feed(entry.id.uuidString); feed(entry.text)
+            for change in entry.resolution?.corrections ?? [] { feed(change.originalQuote); feed(change.correctedQuote); feed(change.sourceID.uuidString) }
+        }
+        for summary in state.dailySummaries.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+            feed(summary.id.uuidString); feed(String(summary.day.timeIntervalSince1970))
+            for item in summary.items {
+                feed(item.title); feed(item.detail)
+                feed(item.knowledge?.quotes.joined(separator: "\n") ?? "")
+                feed(item.knowledge?.topic ?? "")
+            }
+            for row in summary.ledger {
+                feed(row.title); feed(row.detail); feed(row.topic ?? ""); feed(row.quotes.map(\.text).joined(separator: "\n"))
+            }
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     public func dependencies(in state: RecallState, claims: [MemoryClaim]) -> [MemoryDependency] {

@@ -31,6 +31,7 @@ enum KnowledgeProjectionVerification {
         try periodNamesMissingDays()
         try discoveryStartsAtFourteenDays()
         try interfaceKeysAreTranslated()
+        try currentLedgerRetrievalSkipsReencoding()
         print("PASS: knowledge projection keeps partial days, surviving evidence, unknown speakers, the matter ledger and the shorter discovery window")
     }
     static func partialDaysStayInTopics() throws {
@@ -127,6 +128,27 @@ enum KnowledgeProjectionVerification {
         let plan = ModelReminderDiscovery().plan(in: state, force: true, now: now)
         let ids = Set(plan.groups.flatMap { $0.map(\.id) })
         try expect(ids.contains(recent.id) && !ids.contains(older.id) && plan.earlierEligibleCount >= 1 && plan.horizonDays == 14, "第一次发现待办只扫最近 14 天，并留下更早的记录")
+    }
+    static func currentLedgerRetrievalSkipsReencoding() throws {
+        let now = Date.now
+        var state = RecallState(captures: (0..<400).map { index in
+            CaptureRecord(eventTemplate: .workCheckpoint, createdAt: now.addingTimeInterval(-Double(index) * 3_600),
+                sourceAppName: "合成", sourceBundleIdentifier: "example.synthetic", windowTitle: "账单导出", contentHash: "hash-\(index)",
+                ocrText: String(repeating: "账单导出的分页边界已经核对。\(index) ", count: 120), textOrigin: .screenOCR)
+        })
+        let stamp = MemoryKnowledgeEngine.inputStamp(for: state)
+        try expect(stamp == MemoryKnowledgeEngine.inputStamp(for: state), "同样的记录应得到稳定的账本戳")
+        state.captures[0].contentHash += "-edited"
+        try expect(MemoryKnowledgeEngine.inputStamp(for: state) != stamp, "记录变化后账本戳应失效")
+        state.captures[0].contentHash = "hash-0"
+        state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state, force: true)
+        try expect(state.memoryKnowledge.ledgerInputStamp == MemoryKnowledgeEngine.inputStamp(for: state), "整理后的账本戳应与当前记录一致")
+        let clock = ContinuousClock()
+        let started = clock.now
+        let plan = MemoryRetrievalEngine().plan(question: "账单导出后来怎样了", state: state, fallback: [], trustLedger: true)
+        let elapsed = started.duration(to: clock.now)
+        try expect(elapsed < .milliseconds(500), "账本已最新时，问一问不应重新编码全部截图")
+        try expect(plan.evidence.contains { $0.ocrText.contains("账单导出") }, "跳过整库对账后仍应取回相关记录")
     }
     static func interfaceKeysAreTranslated() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
