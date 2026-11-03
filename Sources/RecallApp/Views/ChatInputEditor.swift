@@ -80,9 +80,9 @@ private final class RecallInputTextView: NSTextView {
 
 extension RecallChatInput {
     @MainActor static func verifyKeyboardBehavior() async throws {
-        final class Probe { var text = "首行"; var height: CGFloat = 44; var sends = 0 }
+        final class Probe { var text = "首行"; var height: CGFloat = 44; var sends = 0; var escapes = 0 }
         let probe = Probe()
-        let input = RecallChatInput(text: Binding(get: { probe.text }, set: { probe.text = $0 }), height: Binding(get: { probe.height }, set: { probe.height = $0 }), onFocus: { _ in }, onSubmit: { probe.sends += 1 }, onTab: { false }, onEscape: {})
+        let input = RecallChatInput(text: Binding(get: { probe.text }, set: { probe.text = $0 }), height: Binding(get: { probe.height }, set: { probe.height = $0 }), onFocus: { _ in }, onSubmit: { probe.sends += 1 }, onTab: { false }, onEscape: { probe.escapes += 1 })
         let coordinator = input.makeCoordinator()
         let scroll = input.makeScroll(coordinator: coordinator)
         let editor = scroll.documentView as! RecallInputTextView
@@ -103,12 +103,14 @@ extension RecallChatInput {
         guard probe.sends == 1 else { throw KeyboardFailure.contract }
         editor.setMarkedText("中文组词", selectedRange: NSRange(location: 0, length: 2), replacementRange: NSRange(location: NSNotFound, length: 0))
         guard !coordinator.textView(editor, doCommandBy: #selector(NSResponder.insertNewline(_:))), probe.sends == 1 else { throw KeyboardFailure.contract }
+        guard !coordinator.textView(editor, doCommandBy: #selector(NSResponder.cancelOperation(_:))), probe.escapes == 0 else { throw KeyboardFailure.contract }
         editor.unmarkText()
+        guard coordinator.textView(editor, doCommandBy: #selector(NSResponder.cancelOperation(_:))), probe.escapes == 1 else { throw KeyboardFailure.contract }
         editor.string = String(repeating: "这是一段用于验证自动增高的合成文字。", count: 20)
         coordinator.measure(editor)
         try await Task.sleep(for: .milliseconds(20))
         guard probe.height > 44 && probe.height <= 180 else { throw KeyboardFailure.contract }
-        print("PASS: native chat input Shift-Return inserts newline, Return sends, IME composition does not send, multiline content grows within its limit")
+        print("PASS: native chat input Shift-Return, Return, Escape routing, IME composition protection and bounded multiline growth")
     }
     private enum KeyboardFailure: Error { case contract }
 }

@@ -1083,6 +1083,9 @@ private struct ChatView: View {
                 .zIndex(1)
             }
         }
+        .onExitCommand {
+            if model.isThinking || model.typingMessageID != nil { model.stopChat() }
+        }
     }
 
     private var chatHeader: some View {
@@ -1259,7 +1262,6 @@ private struct RecallMessageCard: View {
     let displayedContent: String
     let isTyping: Bool
     var userMaxWidth: CGFloat = ChatLayout.readingWidth * 0.7
-    private var sources: [CaptureRecord] { model.state.captures.filter { message.citations.contains($0.id) } }
     var body: some View {
         Group {
             if message.role == .system {
@@ -1276,15 +1278,9 @@ private struct RecallMessageCard: View {
                 VStack(alignment: .leading, spacing: 12) {
                     MarkdownParagraphText(markdown: isTyping ? displayedContent : ChatResponseFormatter().format(displayedContent))
                     if isTyping {
-                        RoundedRectangle(cornerRadius: 1).fill(RecallPalette.accent).frame(width: 2, height: 16)
-                        Button(RecallLocalization.text("停止")) { model.stopChat() }.font(.caption)
+                        ChatThinkingWave()
                     } else {
-                        if !sources.isEmpty {
-                            ViewThatFits(in: .horizontal) {
-                                HStack(spacing: 8) { sourceLabels }
-                                VStack(alignment: .leading, spacing: 8) { sourceLabels }
-                            }
-                        }
+                        ChatAnswerSources(workspace: model.chatSources, citations: message.citations)
                         HStack(spacing: 14) {
                             Button(RecallLocalization.text("复制")) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.content, forType: .string) }
                             Menu {
@@ -1303,17 +1299,6 @@ private struct RecallMessageCard: View {
                             .background(RecallPalette.accent, in: RoundedRectangle(cornerRadius: 8)).offset(x: -ChatLayout.avatarGutter)
                     }
             }
-        }
-    }
-    @ViewBuilder private var sourceLabels: some View {
-        ForEach(Array(sources.prefix(2))) { source in
-            Button { model.sourceToOpen = source } label: {
-                Label((source.sourceAppName ?? "时间线") + " · " + source.createdAt.formatted(.dateTime.month().day().hour().minute()), systemImage: "paperclip")
-                    .font(.caption).lineLimit(1).padding(.horizontal, 8).padding(.vertical, 4).background(RecallPalette.border.opacity(0.25), in: Capsule())
-            }.buttonStyle(.plain).foregroundStyle(RecallPalette.secondary)
-        }
-        if sources.count > 2 {
-            Menu("另有 \(sources.count - 2) 条来源") { ForEach(Array(sources.dropFirst(2))) { source in Button(CapturePresentation(capture: source).title) { model.sourceToOpen = source } } }.font(.caption)
         }
     }
 }
@@ -1356,8 +1341,9 @@ private struct ThinkingCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Image(systemName: model.chatEvidenceCount == nil ? "magnifyingglass" : "checkmark.circle").foregroundStyle(RecallPalette.accent)
-                Text(model.chatEvidenceCount.map { RecallLocalization.both("已检索记忆（\($0) 条） → 整理回答中…", "Found \($0) sources · Writing an answer…") } ?? RecallLocalization.both("正在检索记忆…", "Searching your memory…")).font(.callout).foregroundStyle(RecallPalette.secondary)
-                Button(RecallLocalization.text("停止")) { model.stopChat() }
+                Text(model.chatEvidenceCount.map { RecallLocalization.both("已检索记忆（\($0) 条）· 正在整理回答", "Found \($0) sources · Writing an answer") } ?? RecallLocalization.both("正在检索记忆", "Searching your memory"))
+                    .font(.callout).foregroundStyle(RecallPalette.secondary)
+                ChatThinkingWave()
                 Spacer(minLength: 0)
             }
             if !model.typingMessageContent.isEmpty {
@@ -1397,7 +1383,10 @@ private struct ChatComposer: View {
                 }, onTab: {
                     guard let command = commandSuggestions.first else { return false }
                     insertCommand(command); return true
-                }, onEscape: { dismissedCommandQuery = question })
+                }, onEscape: {
+                    if !commandSuggestions.isEmpty { dismissedCommandQuery = question }
+                    else if isSending { model.stopChat() }
+                })
                     .frame(height: editorHeight)
                 if question.isEmpty {
                     Text(RecallLocalization.text("向 Recall 提问…")).font(.system(size: 16)).foregroundStyle(RecallPalette.secondary).allowsHitTesting(false)
@@ -1441,8 +1430,8 @@ private struct ChatComposer: View {
             ProgressView().controlSize(.small)
                 .frame(width: 32, height: 32)
                 .background(RecallPalette.selected, in: Circle())
-                .accessibilityLabel("正在回答，暂时无法发送")
-                .help(RecallLocalization.text("正在回答；可以在回答下方停止"))
+                .accessibilityLabel(RecallLocalization.both("正在回答，按 Esc 停止", "Answering. Press Escape to stop."))
+                .help(RecallLocalization.both("正在回答；按 Esc 停止", "Answering · Press Esc to stop"))
         } else {
             Button(action: submit) {
                 Image(systemName: "arrow.up")
@@ -1531,6 +1520,7 @@ extension RecallRootView {
         case "model-editor": AnyView(ModelConnectionEditorSheet(configuration: LLMConfiguration(provider: .anthropicCompatible, baseURLString: "https://model.example.invalid/anthropic", model: "Example-Flash", apiKey: "synthetic-layout-credential"), savedKeyExists: true, onSave: { _, _ in }))
         case "model-editor-new": AnyView(ModelConnectionEditorSheet(configuration: LLMConfiguration(), savedKeyExists: false, onSave: { _, _ in }))
         case "model-editor-success", "model-editor-failure": AnyView(ModelConnectionStatusPreview(fails: name.hasSuffix("failure")))
+        case "chat-sources": AnyView(ChatSourcesPreview())
         default: AnyView(ChatView())
         }
     }
