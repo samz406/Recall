@@ -92,7 +92,7 @@ struct RecallVerifier {
                 try await verifyLiveAnthropicCompatibility()
                 print("PASS: RecallVerifier completed 269 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 268 integration checks.")
+                print("PASS: RecallVerifier completed 272 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)

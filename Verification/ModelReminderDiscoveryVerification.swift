@@ -22,13 +22,16 @@ enum ModelReminderDiscoveryVerification {
             let sources = input["sources"] as! [[String: Any]]
             let primary = sources.flatMap { $0["blocks"] as! [[String: Any]] }.filter { $0["contextOnly"] as? Bool != true }
             let pending = input["pending"] as! [[String: Any]]
-            let object: [String: Any]
+            var object: [String: Any]
             if request.purpose == .reminderDiscoveryAudit {
                 let raw = request.question.components(separatedBy: "草稿：\n").last!
                 let draft = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as! [String: Any]
                 object = ["actionIDs": mode == "reject" ? [] : (draft["actions"] as! [[String: Any]]).map { $0["id"]! },
                     "reminderIDs": (draft["resolutions"] as! [[String: Any]]).map { $0["reminderID"]! },
                     "checkedBlockIDs": primary.map { $0["id"]! }, "missedBlockIDs": []]
+                if mode == "format" { object["checkedBlockIDs"] = primary.map { $0["id"]! } + primary.prefix(1).map { $0["id"]! } }
+                if mode == "audit-partial" { object["checkedBlockIDs"] = primary.dropLast().map { $0["id"]! } }
+                if mode == "audit-empty" { object["checkedBlockIDs"] = [String]() }
             } else {
                 guard request.purpose == .reminderDiscovery else { throw Failure(errorDescription: "提醒误用逐条整理请求") }
                 var actions: [[String: Any]] = [], resolutions: [[String: Any]] = []
@@ -49,6 +52,15 @@ enum ModelReminderDiscoveryVerification {
                         if mode == "date" || mode == "invent-date" {
                             action["deadline"] = ["text":"2026年11月2日","evidence":["blockID":id,"quote":mode == "date" ? "2026年11月2日":"伪造2026年11月2日"]]
                         }
+                        if mode == "format" {
+                            action["title"] = "**整理合成项目验收清单**"; action["detail"] = "整理合成项目验收清单"
+                            action.removeValue(forKey: "recurrence")
+                            action["evidence"] = [["blockID": id, "quote": "我会 整理 验收清单"]]
+                        }
+                        if text.contains("错误样例") && ["mixed", "mixed-malformed"].contains(mode) {
+                            if mode == "mixed" { action["evidence"] = [["blockID": id, "quote": "这段原文不存在"]] }
+                            else { action["owner"] = "unsupported-role" }
+                        }
                         actions.append(action); used.insert(id)
                     }
                 }
@@ -57,6 +69,8 @@ enum ModelReminderDiscoveryVerification {
                     return ["blockID":id,"disposition": mode == "uncertain" ? "uncertain" : (used.contains(id) ? "action":(resolved.contains(id) ? "resolution":"background"))]
                 }
                 object = ["actions": mode == "uncertain" ? []:actions,"resolutions":resolutions,"coverage":mode == "coverage" ? []:coverage]
+                if mode == "format" { object["coverage"] = coverage + Array(coverage.prefix(1)) }
+                if mode == "missing-one" { object["coverage"] = Array(coverage.dropLast()) }
             }
             if request.purpose == .reminderDiscoveryAudit { try await onAudit?() }
             return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self), citedCaptureIDs: [])
@@ -82,7 +96,8 @@ enum ModelReminderDiscoveryVerification {
         try deadlines(); try await stateReconciliation(); try await failureAndCancellation()
         try await incremental(); try await partialResume(); try await optIn(); try await changedSources()
         try await privacy(); try legacy(); try await persistenceFailure()
-        print("PASS: 14 model-reminder scenarios (semantic requests, roles, evidence audit, true deadlines, closure, deduplication, cancellation, resume, privacy, source races and rollback)")
+        try await formattingRepair(); try await isolatedInvalidRows(); try await incompleteAudit(); try await uncertainResume()
+        print("PASS: 18 model-reminder scenarios (semantic requests, roles, evidence audit, true deadlines, closure, deduplication, cancellation, resume, privacy, source races, rollback, format repair, partial validation and uncertain retry)")
     }
     static func semanticPath() async throws {
         let source = record("[聊天·自己] 我会整理验收清单"), model = Model()
@@ -130,6 +145,61 @@ enum ModelReminderDiscoveryVerification {
             catch is ReminderDiscoveryError {}
             let calls = await model.log(); try check(calls.count == 2, "格式/证据失败应只修正一次")
         }
+    }
+    static func formattingRepair() async throws {
+        let source = record("[聊天·自己] 我会整理验收清单"), model = Model("format")
+        let result = try await ModelReminderDiscovery().analyze([source], in: state([source]), responder: model)
+        let calls = await model.log()
+        try check(result.candidates.count == 1 && calls.count == 2, "可确定修复的格式问题仍触发整批重试")
+        try check(result.candidates[0].title == "整理合成项目验收清单" && result.candidates[0].detail.isEmpty,
+            "Markdown标题或重复正文未被修复")
+        try check(result.candidates[0].analysis?.evidence.first?.quote == "我会整理验收清单", "引用未还原成逐字原文")
+    }
+    static func isolatedInvalidRows() async throws {
+        let good = record("[聊天·自己] 我会整理验收清单"), bad = record("[聊天·自己] 我会整理验收清单，错误样例")
+        var duplicate = bad; duplicate.id = UUID()
+        for mode in ["mixed", "mixed-malformed"] {
+            let sources = [good, bad, duplicate], model = Model(mode)
+            let result = try await ModelReminderDiscovery().analyze(sources, in: state(sources), responder: model)
+            let calls = await model.log()
+            try check(result.candidates.count == 1 && result.candidates[0].sourceCaptureIDs == [good.id], "坏条目使有效行动丢失或进入提醒")
+            try check(result.uncertainSourceIDs == Set([bad.id, duplicate.id]), "坏条目或重复截图被误记为核对通过")
+            try check(calls.count == 3, "条目修复应有界重试并对保留项独立核对")
+        }
+        let shared = record("[聊天·自己] 我会整理验收清单\n[聊天·自己] 我会整理验收清单，错误样例")
+        let (memory, storage) = try store(state([shared])); defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let run = try await memory.discoverRemindersUsingModel(responder: Model("mixed"))
+        let saved = await memory.snapshot()
+        try check(run.added == 1 && run.unconfirmedRecords == 1 && saved.reminders.count == 1,
+            "同一截图中有效行动随坏条目一起被丢掉")
+    }
+    static func incompleteAudit() async throws {
+        let good = record("[聊天·自己] 我会整理验收清单"), other = record("[聊天·自己] 我会整理验收清单，另一份清单")
+        let records = [good, other], engine = ModelReminderDiscovery()
+        let result = try await engine.analyze(records, in: state(records), responder: Model("audit-partial"))
+        try check(result.candidates.count == 1 && result.candidates[0].sourceCaptureIDs == [good.id]
+            && result.uncertainSourceIDs == Set([other.id]), "未审阅的条目被加入提醒或丢掉已审阅条目")
+        do {
+            _ = try await engine.analyze([good], in: state([good]), responder: Model("audit-empty"))
+            throw Failure(errorDescription: "审阅完全缺失却成功")
+        } catch ReminderDiscoveryError.incomplete {}
+    }
+    static func uncertainResume() async throws {
+        let good = record("[聊天·自己] 我会整理验收清单"), bad = record("[聊天·自己] 我会整理验收清单，错误样例")
+        let (memory, storage) = try store(state([good, bad])); defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let run = try await memory.discoverRemindersUsingModel(responder: Model("mixed"))
+        let partial = await memory.snapshot()
+        try check(run.unconfirmedRecords == 1 && partial.reminderDiscoveryCheckpoint.processedCaptureHashes.keys.contains(good.id.uuidString)
+            && partial.reminderDiscoveryCheckpoint.processedCaptureHashes[bad.id.uuidString] == nil, "部分结果推进了未核对记录的检查点")
+        let reopened = try verificationStore(storage: storage), retry = Model()
+        let next = try await reopened.discoverRemindersUsingModel(responder: retry)
+        let calls = await retry.log(), final = await reopened.snapshot()
+        let input = try JSONSerialization.jsonObject(with: Data(calls[0].context[0].ocrText.utf8)) as! [String: Any]
+        let sourceIDs = (input["sources"] as! [[String: Any]]).compactMap { $0["id"] as? String }
+        try check(next.analyzedRecords == 1 && next.unconfirmedRecords == 0 && sourceIDs == [bad.id.uuidString], "重试未只处理剩余记录")
+        try check(final.reminderDiscoveryCheckpoint.unconfirmedRecordCount == 0, "重试成功后仍残留部分完成状态")
+        let missing = try await ModelReminderDiscovery().analyze([good, bad], in: state([good, bad]), responder: Model("missing-one"))
+        try check(missing.uncertainSourceIDs.contains(bad.id), "覆盖缺项未标记为待核对")
     }
     static func deadlines() throws {
         let source = record("合成时间", origin: .userInput), ocr = record("合成旧聊天")

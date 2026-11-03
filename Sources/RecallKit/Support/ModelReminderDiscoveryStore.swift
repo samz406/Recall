@@ -6,6 +6,7 @@ public struct ReminderDiscoveryRun: Sendable {
     public var added: Int
     public var excludedRecords: Int
     public var unchangedRecords: Int
+    public var unconfirmedRecords: Int = 0
 }
 
 public extension FileMemoryStore {
@@ -25,7 +26,7 @@ public extension FileMemoryStore {
         let privacy = state.privacy, engine = ModelReminderDiscovery()
         let plan = engine.plan(in: state, force: force, now: now)
         let startedAt = Date.now, runKnownIDs = Set(state.reminders.map(\.id))
-        var completed = 0, added = 0
+        var completed = 0, added = 0, unconfirmed = 0
         do {
             for group in plan.groups {
                 try Task.checkCancellation()
@@ -50,7 +51,12 @@ public extension FileMemoryStore {
                 do {
                     var checkpoint = state.reminderDiscoveryCheckpoint
                     if checkpoint.extractorVersion != ModelReminderDiscovery.version { checkpoint.processedCaptureHashes = [:] }
-                    for id in ids { checkpoint.processedCaptureHashes[id.uuidString] = plan.versions[id.uuidString] }
+                    for id in ids {
+                        // An uncertain retry must also invalidate a formerly successful hash.
+                        checkpoint.processedCaptureHashes[id.uuidString] = result.uncertainSourceIDs.contains(id) ? nil : plan.versions[id.uuidString]
+                    }
+                    unconfirmed += ids.intersection(result.uncertainSourceIDs).count
+                    checkpoint.unconfirmedRecordCount = unconfirmed
                     checkpoint.extractorVersion = ModelReminderDiscovery.version
                     checkpoint.lastRunAt = .now; checkpoint.lastAttemptAt = .now; checkpoint.failureReason = nil
                     checkpoint.excludedRecordCount = plan.excludedCount; checkpoint.unchangedRecordCount = plan.unchangedCount
@@ -82,7 +88,8 @@ public extension FileMemoryStore {
                     }
                     _ = try applyReminderDiscovery(candidates: candidates, checkpoint: checkpoint,
                         revalidatedSourceIDs: ids.subtracting(result.uncertainSourceIDs), startedAt: startedAt,
-                        runKnownIDs: runKnownIDs, eligibleCount: plan.eligibleCount, additionalSourceVersions: contextVersions)
+                        runKnownIDs: runKnownIDs, eligibleCount: plan.eligibleCount,
+                        additionalSourceVersions: versions.filter { UUID(uuidString: $0.key).map(inputIDs.contains) == true })
                     added = state.reminderDiscoveryCheckpoint.discoveredCount
                 } catch { state = before; throw error }
                 completed += group.count
@@ -97,10 +104,11 @@ public extension FileMemoryStore {
                 state.reminderDiscoveryCheckpoint.eligibleRecordCount = plan.eligibleCount
                 state.reminderDiscoveryCheckpoint.excludedRecordCount = plan.excludedCount
                 state.reminderDiscoveryCheckpoint.unchangedRecordCount = plan.unchangedCount
+                state.reminderDiscoveryCheckpoint.unconfirmedRecordCount = 0
                 do { try persist() } catch { state = before; throw error }
             }
             return ReminderDiscoveryRun(eligibleRecords: plan.eligibleCount, analyzedRecords: completed, added: added,
-                excludedRecords: plan.excludedCount, unchangedRecords: plan.unchangedCount)
+                excludedRecords: plan.excludedCount, unchangedRecords: plan.unchangedCount, unconfirmedRecords: unconfirmed)
         } catch {
             let safeReason = ModelCallCancellation.isCancellation(error) ? "本次已停止，已完成的分析已保存。"
                 : ((error as? ReminderDiscoveryError)?.errorDescription ?? "本次模型分析未完成，已有提醒和已完成进度已保留。")
