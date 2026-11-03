@@ -21,7 +21,15 @@ struct ChatThinkingWave: View {
             }
         }
     }
-    static func heights(phase: Double) -> [Double] {
-        (0..<5).map { index in 4 + 9 * (sin(phase * 4 - Double(index) * 0.7) + 1) / 2 }
+    nonisolated static func heights(phase: Double) -> [Double] {
+        var result: [Double] = []
+        for index in 0..<5 {
+            let offset: Double = Double(index) * 0.7
+            let angle: Double = phase * 4.0 - offset
+            let oscillation: Double = sin(angle)
+            let height: Double = 4.0 + 9.0 * (oscillation + 1.0) / 2.0
+            result.append(height)
+        }
+        return result
     }
 }
