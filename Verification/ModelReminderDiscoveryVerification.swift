@@ -10,17 +10,23 @@ enum ModelReminderDiscoveryVerification {
     actor Model: LLMResponding {
         var mode: String
         var requests: [LLMRequest] = []
+        var firstGroupSource: String?
         let onAudit: (@Sendable () async throws -> Void)?
         init(_ mode: String = "valid", onAudit: (@Sendable () async throws -> Void)? = nil) { self.mode = mode; self.onAudit = onAudit }
         func log() -> [LLMRequest] { requests }
         func answer(to request: LLMRequest) async throws -> LLMAnswer {
             requests.append(request)
-            if mode == "network" || (mode == "second-group" && requests.count >= 3) { throw URLError(.notConnectedToInternet) }
+            if mode == "network" { throw URLError(.notConnectedToInternet) }
             if mode == "slow" { try await Task.sleep(for: .seconds(30)) }
             if mode == "malformed" { return LLMAnswer(content: "{broken", citedCaptureIDs: []) }
             let input = try JSONSerialization.jsonObject(with: Data(request.context[0].ocrText.utf8)) as! [String: Any]
             let sources = input["sources"] as! [[String: Any]]
             let primary = sources.flatMap { $0["blocks"] as! [[String: Any]] }.filter { $0["contextOnly"] as? Bool != true }
+            if mode == "second-group", let blockID = primary.first?["id"] as? String {
+                let sourceID = String(blockID.prefix(36))
+                if let firstGroupSource, firstGroupSource != sourceID { throw URLError(.notConnectedToInternet) }
+                firstGroupSource = sourceID
+            }
             let pending = input["pending"] as! [[String: Any]]
             var object: [String: Any]
             if request.purpose == .reminderDiscoveryAudit {
