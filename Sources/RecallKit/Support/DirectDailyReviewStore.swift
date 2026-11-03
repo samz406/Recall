@@ -138,9 +138,6 @@ extension FileMemoryStore {
         guard let id = state.pendingDailyReviewMaintenance.first else { return }
         state.pendingDailyReviewMaintenance.removeFirst()
         guard let summary = state.dailySummaries.first(where: { $0.id == id }) else { return }
-        let consolidation = PersonalIntelligenceEngine().consolidate(day: summary.day, records: state.captures,
-            existingEpisodes: state.episodes, previousProjects: state.projects, existingMemories: state.userMemories,
-            previousInsights: state.insights, feedback: state.insightFeedback, existingRoutines: state.learnedRoutines)
-        applyIntelligenceState(consolidation, for: summary.day)
+        projectDayFromMatters(summary.day)
     }
 }

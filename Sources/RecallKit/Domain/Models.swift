@@ -325,6 +325,9 @@ public struct ReminderDiscoveryCheckpoint: Codable, Hashable, Sendable {
     public var lastAttemptAt: Date? = nil
     public var failureReason: String? = nil
     public var unconfirmedRecordCount: Int? = nil
+    /// How far back the last manual scan reached. Nil means the next run starts at 14 days.
+    public var scanHorizonDays: Int? = nil
+    public var earlierEligibleCount: Int? = nil
 
     public init(
         processedCaptureHashes: [String: String] = [:],

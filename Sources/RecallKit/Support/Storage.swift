@@ -750,6 +750,35 @@ public actor FileMemoryStore {
         do { try Task.checkCancellation(); try persist() } catch { state = before; throw error }
     }
 
+    /// Updates one day's episodes and the projects touched that day. Other days' projects, user memories and routines stay.
+    func projectDayFromMatters(_ day: Date) {
+        let calendar = Calendar.current
+        let files = MatterMemoryEngine().sourceFiles(in: state)
+        let sources = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
+        let episodes: [WorkEpisode] = files.flatMap { file in
+            file.events.filter { calendar.isDate($0.date, inSameDayAs: day) }.map { event in
+                WorkEpisode(id: event.id, day: day, startedAt: event.date, endedAt: event.date,
+                    projectKey: file.id, projectName: file.title, title: file.title, intent: file.title,
+                    action: event.detail, outcome: event.resultStatus == .completed || event.status == .completed ? event.detail : nil,
+                    nextAction: event.nextAction, status: event.status, importance: event.status == .blocked ? 0.9 : 0.8,
+                    confidence: 0.8, sourceApps: event.evidenceIDs.compactMap { sources[$0]?.sourceAppName }.memoryUnique(), evidenceIDs: event.evidenceIDs)
+            }
+        }
+        state.episodes.removeAll { calendar.isDate($0.day, inSameDayAs: day) }
+        state.episodes.append(contentsOf: episodes)
+        state.episodes.sort { $0.startedAt > $1.startedAt }
+        for file in files where file.events.contains(where: { calendar.isDate($0.date, inSameDayAs: day) }) {
+            let project = ProjectState(projectKey: file.id, displayName: file.title, currentState: file.latest.detail,
+                nextAction: file.latest.nextAction, blockers: file.latest.status == .blocked ? [file.latest.detail] : [],
+                evidenceIDs: file.evidenceIDs, confidence: 0.8, lastActiveAt: file.latest.date)
+            if let index = state.projects.firstIndex(where: { $0.projectKey == project.projectKey }) {
+                state.projects[index] = project
+            } else {
+                state.projects.append(project)
+            }
+        }
+    }
+
     func applyIntelligenceState(_ consolidation: IntelligenceConsolidation, for day: Date) {
         let calendar = Calendar.current
         state.episodes.removeAll { calendar.isDate($0.day, inSameDayAs: day) }
@@ -892,6 +921,7 @@ public actor FileMemoryStore {
         state.insights.removeAll { insight in removedInsights.contains(where: { $0.id == insight.id }) }
         state.insightFeedback.removeAll { removedInsightIDs.contains($0.insightID) }
         state.learnedRoutines.removeAll { routine in removedRoutines.contains(where: { $0.id == routine.id }) }
+        for day in days { projectDayFromMatters(day) }
         for id in actualIDs { state.reminderDiscoveryCheckpoint.processedCaptureHashes.removeValue(forKey: id.uuidString) }
         state.conversationSummary = nil
         state.conversationSummaryCoveredMessageCount = 0

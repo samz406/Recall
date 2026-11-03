@@ -86,6 +86,8 @@ public struct MatterEvent: Identifiable, Sendable {
     public var status: WorkEpisodeStatus
     public var evidenceIDs: [UUID]
     public var nextAction: String?
+    /// Verbatim source quotes. Empty for events that were not projected from a daily review.
+    public var quotes: [String] = []
     public var sequence: Int = 0
     public var resultStatus: WorkEpisodeStatus? = nil
     public var isReference = false
@@ -160,14 +162,56 @@ public struct MatterMemoryEngine: Sendable {
     public init() {}
 
     public func files(in state: RecallState, calendar: Calendar = .current) -> [MatterFile] {
-        // Topics come from what the model understood of each whole day. The pattern-based extractor
-        // can neither tell whose words OCR text is nor name a matter, so it only serves archives that
-        // have no structured daily review yet.
+        MemoryTopicGroup.applying(state.topicGroups, to: MemoryKnowledgeEngine().files(in: state) ?? sourceFiles(in: state, calendar: calendar))
+    }
+
+    /// Structured days contribute review matters. Days without a review keep observed evidence.
+    /// A handwritten note is included on every day, and the same topic is not counted twice on one day.
+    func sourceFiles(in state: RecallState, calendar: Calendar = .current) -> [MatterFile] {
         let daily = DailyKnowledgeEngine()
-        if daily.hasStructuredReviews(in: state) {
-            return MemoryTopicGroup.applying(state.topicGroups, to: daily.matterFiles(in: state))
+        let structured = daily.structuredDays(in: state, calendar: calendar)
+        let captures = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
+        func manual(_ event: MatterEvent) -> Bool {
+            event.evidenceIDs.contains { id in captures[id]?.textOrigin == .userInput && captures[id]?.manualMatter != nil }
         }
-        return MemoryTopicGroup.applying(state.topicGroups, to: MemoryKnowledgeEngine().files(in: state) ?? observedFiles(in: state, calendar: calendar))
+        var buckets: [String: (title: String, events: [MatterEvent])] = [:]
+        func add(_ file: MatterFile, fromReview: Bool) {
+            let key = DailyKnowledgeEngine.topicKey(file.title)
+            guard !key.isEmpty else { return }
+            var bucket = buckets[key] ?? (file.title, [])
+            if fromReview { bucket.title = file.title }
+            for event in file.events {
+                let day = calendar.startOfDay(for: event.date)
+                if !fromReview && !manual(event) && structured.contains(day) { continue }
+                // A review already accounts for this topic today. Later handwritten notes the same day stay, so a newer classification is kept.
+                if !fromReview && manual(event) && bucket.events.contains(where: { calendar.isDate($0.date, inSameDayAs: day) && !manual($0) }) { continue }
+                bucket.events.append(event)
+            }
+            if !bucket.events.isEmpty { buckets[key] = bucket }
+        }
+        for file in daily.matterFiles(in: state) { add(file, fromReview: true) }
+        for file in observedFiles(in: state, calendar: calendar) { add(file, fromReview: false) }
+        return buckets.map { key, value in
+            let ordered = value.events.sorted {
+                if $0.date != $1.date { return $0.date < $1.date }
+                if $0.recordedAt != $1.recordedAt { return $0.recordedAt < $1.recordedAt }
+                return $0.sequence == $1.sequence ? $0.id.uuidString < $1.id.uuidString : $0.sequence < $1.sequence
+            }
+            return MatterFile(id: "topic:" + key, title: value.title, events: ordered)
+        }.sorted { $0.latest.date == $1.latest.date ? $0.id < $1.id : $0.latest.date > $1.latest.date }
+    }
+
+    func sourceReferences(in state: RecallState, calendar: Calendar = .current) -> [MatterFile] {
+        let daily = DailyKnowledgeEngine()
+        let structured = daily.structuredDays(in: state, calendar: calendar)
+        let fromReview = daily.referenceFiles(in: state)
+        let legacy = MemoryReferenceEngine().files(in: state, excluding: Set(fromReview.flatMap(\.evidenceIDs)))
+        let older = legacy.compactMap { file -> MatterFile? in
+            let events = file.events.filter { !structured.contains(calendar.startOfDay(for: $0.date)) }
+            guard !events.isEmpty else { return nil }
+            return MatterFile(id: file.id, title: file.title, events: events)
+        }
+        return fromReview + older
     }
 
     func observedFiles(in state: RecallState, calendar: Calendar = .current) -> [MatterFile] {

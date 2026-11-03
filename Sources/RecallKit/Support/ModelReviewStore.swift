@@ -120,10 +120,17 @@ extension FileMemoryStore {
     public func commitModelDailySummary(_ summary: DailySummary, expected: RecallState, period: ReviewPeriod) throws {
         try Task.checkCancellation()
         try validateModelReview(expected, period: period)
-        let consolidation = PersonalIntelligenceEngine().consolidate(day: summary.day, records: state.captures,
-            existingEpisodes: state.episodes, previousProjects: state.projects, existingMemories: state.userMemories,
-            previousInsights: state.insights, feedback: state.insightFeedback, existingRoutines: state.learnedRoutines)
-        try commitDailySummary(summary, consolidation: consolidation)
+        let before = state
+        state.dailySummaries.removeAll { Calendar.current.isDate($0.day, inSameDayAs: summary.day) }
+        var saved = summary
+        if let old = before.dailySummaries.first(where: { Calendar.current.isDate($0.day, inSameDayAs: summary.day) }) {
+            saved.versions = Array(([DailyReviewVersion(summary: old)] + (old.versions ?? [])).prefix(8))
+            saved.sourceCaptureIDs = Array(Set(saved.sourceCaptureIDs + (saved.versions ?? []).flatMap(\.sourceIDs)))
+        }
+        state.dailySummaries.append(saved)
+        state.dailySummaries.sort { $0.day > $1.day }
+        projectDayFromMatters(saved.day)
+        do { try Task.checkCancellation(); try persist() } catch { state = before; throw error }
     }
     public func stopLegacyReviewRefinement(_ report: WeeklyReport, schedule: ReviewSchedule) throws {
         guard let i = state.weeklyReports.firstIndex(where: { $0.id == report.id }), state.reviewSchedules.contains(schedule) else { return }

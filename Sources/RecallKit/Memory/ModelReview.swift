@@ -60,6 +60,8 @@ public struct ModelReviewItem: Codable, Hashable, Sendable {
 public struct ModelReviewResult: Sendable {
     public var overview: String
     public var items: [ModelReviewItem]
+    /// Attributable matters beyond the highlight list. Empty when the model only returned highlights.
+    public var ledger: [ModelReviewItem] = []
     public var facts: [ModelReviewFact]
     public var sourceVersions: [UUID: String]
     public var coverage: ModelReviewCoverage

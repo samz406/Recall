@@ -55,6 +55,9 @@ struct ReminderDiscoveryStatusView: View {
                 Text("\(checkpoint.excludedRecordCount ?? 0) 条因来源或参与设置未纳入")
                 Text("新增 \(checkpoint.discoveredCount) 项待确认；忽略和已处理结果继续生效")
                 Button(RecallLocalization.text("手动深查")) { model.proposeReminders() }
+                if (checkpoint.earlierEligibleCount ?? 0) > 0 {
+                    Button(RecallLocalization.text("继续扫更早记录")) { model.discoverReminders(force: false, extendEarlier: true) }
+                }
             }.menuStyle(.borderlessButton).fixedSize().foregroundStyle(RecallPalette.accent)
             if let count = checkpoint.unconfirmedRecordCount, count > 0 {
                 Text("\(count) 条记录尚未核对完整")

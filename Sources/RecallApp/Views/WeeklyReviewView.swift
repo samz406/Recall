@@ -285,6 +285,12 @@ struct WeeklyReviewView: View {
         VStack(alignment: .leading, spacing: 10) {
             Label(report.displayName, systemImage: report.template.kind.symbol).font(.title2.weight(.semibold))
             Text(report.period.label).font(.callout.monospacedDigit()).foregroundStyle(RecallPalette.secondary)
+            let gaps = PeriodReviewFromDaily.gaps(in: model.state, period: report.period)
+            Text(gaps.headline).font(.caption).foregroundStyle(RecallPalette.secondary)
+            if gaps.hasMissingRecords {
+                Button(RecallLocalization.text("补生成这几天")) { model.backfillDailyReviews(gaps.missingRecordedDays) }
+                    .buttonStyle(.bordered).controlSize(.small).disabled(model.isGeneratingDailySummary)
+            }
             if report.isReadable {
                 Text("\(report.digestRows.count) 项重点 · 涵盖 \(report.coveredDayCount) 个记录日" + (report.editedMarkdown == nil ? "" : " · 已编辑"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)

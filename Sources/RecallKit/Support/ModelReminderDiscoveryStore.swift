@@ -17,36 +17,39 @@ public extension FileMemoryStore {
     }
 
     /// Successful groups advance the checkpoint; failed groups never remove earlier candidates.
-    func discoverRemindersUsingModel(force: Bool = false, automatic: Bool = false,
+    func discoverRemindersUsingModel(force: Bool = false, automatic: Bool = false, extendEarlier: Bool = false,
                                     responder: any LLMResponding, now: Date = .now,
                                     progress: @escaping @Sendable (ReminderDiscoveryProgress) async -> Void = { _ in }) async throws -> ReminderDiscoveryRun {
         let config = state.llmConfiguration
         guard state.privacy.cloudUseEnabled, config.provider != .localOnly, config.hasCredential,
               !automatic || state.reminderLearningProfile.automaticDiscovery == true else { throw ReminderDiscoveryError.unavailable }
         let privacy = state.privacy, engine = ModelReminderDiscovery()
-        let plan = engine.plan(in: state, force: force, now: now)
+        let prepared = engine.prepare(state)
+        let currentHorizon = state.reminderDiscoveryCheckpoint.scanHorizonDays ?? ModelReminderDiscovery.initialHorizonDays
+        let horizon = extendEarlier ? (currentHorizon <= ModelReminderDiscovery.initialHorizonDays ? ModelReminderDiscovery.extendedHorizonDays : 10_000) : currentHorizon
+        let plan = engine.plan(in: state, prepared: prepared, force: force, now: now, horizonDays: horizon)
         let startedAt = Date.now, runKnownIDs = Set(state.reminders.map(\.id))
         var completed = 0, added = 0, unconfirmed = 0
         do {
             for group in plan.groups {
                 try Task.checkCancellation()
                 let ids = Set(group.map(\.id))
-                let context = engine.contextSources(for: group, in: state)
+                let context = engine.contextSources(for: group, prepared: prepared)
                 let pendingIDs = Set(state.reminders.filter { $0.status == .proposed && $0.origin == .discovered }.flatMap(\.sourceCaptureIDs))
-                let pendingSources = state.correctedForAnalysis().captures.filter { pendingIDs.contains($0.id) && ModelReminderDiscovery.eligible($0, in: state) }
+                let pendingSources = prepared.safe.captures.filter { pendingIDs.contains($0.id) && prepared.eligible.contains($0.id) }
                 let contextVersions = Dictionary((context + pendingSources).map { ($0.id.uuidString, MemoryKnowledgeEngine.version(of: $0)) }, uniquingKeysWith: { first, _ in first })
                 let inputIDs = ids.union(context.map(\.id)).union(pendingSources.map(\.id))
                 let versions = plan.versions.merging(contextVersions) { _, current in current }
-                try validateReminderModelInput(inputIDs, versions: versions, configuration: config, privacy: privacy, automatic: automatic)
-                let snapshot = state.correctedForAnalysis(), done = completed
-                let result = try await engine.analyze(group, in: snapshot, responder: responder, beforeCall: {
+                try validateReminderModelInput(inputIDs, prepared: prepared, configuration: config, privacy: privacy, automatic: automatic)
+                let done = completed
+                let result = try await engine.analyze(group, in: state, prepared: prepared, responder: responder, beforeCall: {
                     try Task.checkCancellation()
-                    try await self.validateReminderModelInput(inputIDs, versions: versions, configuration: config, privacy: privacy, automatic: automatic)
+                    try await self.validateReminderModelInput(inputIDs, prepared: prepared, configuration: config, privacy: privacy, automatic: automatic)
                 }, progress: { phase in
                     await progress(ReminderDiscoveryProgress(completedRecords: done, totalRecords: plan.recordCount, phase: phase))
                 })
                 try Task.checkCancellation()
-                try validateReminderModelInput(inputIDs, versions: versions, configuration: config, privacy: privacy, automatic: automatic)
+                try validateReminderModelInput(inputIDs, prepared: prepared, configuration: config, privacy: privacy, automatic: automatic)
                 let before = state
                 do {
                     var checkpoint = state.reminderDiscoveryCheckpoint
@@ -61,7 +64,9 @@ public extension FileMemoryStore {
                     checkpoint.lastRunAt = .now; checkpoint.lastAttemptAt = .now; checkpoint.failureReason = nil
                     checkpoint.excludedRecordCount = plan.excludedCount; checkpoint.unchangedRecordCount = plan.unchangedCount
                     checkpoint.analyzedRecordCount = completed + group.count
-                    let safe = state.correctedForAnalysis()
+                    checkpoint.scanHorizonDays = plan.horizonDays
+                    checkpoint.earlierEligibleCount = plan.earlierEligibleCount
+                    let safe = prepared.safe
                     for (id, status) in result.resolutions {
                         guard let i = state.reminders.firstIndex(where: {
                             $0.id == id && $0.status == .proposed && $0.origin == .discovered && $0.analysis?.dailyReview == nil && $0.updatedAt <= startedAt
@@ -105,6 +110,8 @@ public extension FileMemoryStore {
                 state.reminderDiscoveryCheckpoint.excludedRecordCount = plan.excludedCount
                 state.reminderDiscoveryCheckpoint.unchangedRecordCount = plan.unchangedCount
                 state.reminderDiscoveryCheckpoint.unconfirmedRecordCount = 0
+                state.reminderDiscoveryCheckpoint.scanHorizonDays = plan.horizonDays
+                state.reminderDiscoveryCheckpoint.earlierEligibleCount = plan.earlierEligibleCount
                 do { try persist() } catch { state = before; throw error }
             }
             return ReminderDiscoveryRun(eligibleRecords: plan.eligibleCount, analyzedRecords: completed, added: added,
@@ -120,13 +127,14 @@ public extension FileMemoryStore {
         }
     }
 
-    private func validateReminderModelInput(_ ids: Set<UUID>, versions: [String: String], configuration: LLMConfiguration,
+    private func validateReminderModelInput(_ ids: Set<UUID>, prepared: ModelReminderDiscovery.Prepared, configuration: LLMConfiguration,
                                             privacy: PrivacySettings, automatic: Bool) throws {
         guard state.privacy == privacy, state.privacy.cloudUseEnabled, state.llmConfiguration == configuration,
+              state.matterCorrections == prepared.corrections,
               !automatic || state.reminderLearningProfile.automaticDiscovery == true else { throw ReminderDiscoveryError.changed }
-        let current = state.correctedForAnalysis().captures.filter { ids.contains($0.id) }
+        let current = state.captures.filter { ids.contains($0.id) }
         guard current.count == ids.count, current.allSatisfy({
-            ModelReminderDiscovery.eligible($0, in: state) && versions[$0.id.uuidString] == MemoryKnowledgeEngine.version(of: $0)
+            ModelReminderDiscovery.eligible($0, in: state) && prepared.contentHashes[$0.id] == $0.contentHash
         }) else { throw ReminderDiscoveryError.changed }
     }
 }

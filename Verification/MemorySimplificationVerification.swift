@@ -28,7 +28,7 @@ enum MemorySimplificationVerification {
         func note(_ title: String, _ detail: String, _ category: ReviewCategory = .unclassified) throws -> CaptureRecord {
             try ManualMatterNote(title: title, detail: detail, status: .progressed, eventAt: start.addingTimeInterval(60), reviewCategory: category).capture(recordedAt: start.addingTimeInterval(60))
         }
-        let records = [try note("Atlas 发布流程页面改版", "发布历史布局已调整，生产发布尚未进行。"),
+        let records = [try note("Atlas 发布流程页面改版", "发布历史布局已调整，生产发布尚未进行。", .work),
                        try note("家庭植物观察", "和家人观察院中叶片，记录了颜色的变化。"),
                        try note("木刻基础练习", "完成第一张木刻练习，尚未开始第二张。")]
         let state = RecallState(captures: records), period = ReviewPeriod(start: start, end: now)
@@ -39,7 +39,7 @@ enum MemorySimplificationVerification {
         try expect(all.sourceIDs == Set(records.map(\.id)), "普通回顾不能要求选择主题或只读取当天")
         try expect(work.sourceIDs == [records[0].id] && study.sourceIDs == [records[2].id], "工作/学习模板应自动找到适用内容并隔离生活")
         for title in ["页面改版讨论覆盖布局、发布历史与资产变动", "流程页左侧导航样式与状态图标调整讨论", "流程页改版讨论聚焦当前步骤状态与图标"] {
-            try expect(ReviewCategoryIndex.inferredCategory(title: title, details: []) == .work, "同一次页面设计的不同表述不应因分类差异阻止归并")
+            try expect(ReviewCategoryIndex.inferredCategory(title: title, details: []) == .unclassified, "拿不准的主题不再靠页面、代码或接口等词猜成工作")
         }
         let files = engine.topics(in: state), index = ReviewWorkspaceIndex(state: state, topics: files)
         try expect(index.preview(in: period, kind: .work, scope: ReviewScope()).eligibleTopicCount == work.items.count, "生成按钮预览与实际自动分类必须一致")

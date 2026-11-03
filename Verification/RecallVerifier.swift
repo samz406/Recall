@@ -14,6 +14,7 @@ struct RecallVerifier {
             try await PageExperienceVerification.run()
             try await StartupLoadingVerification.run()
             try await DirectDailyReviewVerification.run()
+            try KnowledgeProjectionVerification.run()
             try await SummaryAccuracyVerification.run()
             try await ReviewCapacityVerification.run()
             try await ReviewCancellationVerification.run()

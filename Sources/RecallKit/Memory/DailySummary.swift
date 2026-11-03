@@ -401,6 +401,48 @@ public enum DailyItemKind: String, Codable, CaseIterable, Sendable {
     case matter, preference, agreement, person, reference
 }
 
+/// One attributable matter kept beside the short highlight list. Topics, long-term memory and period
+/// reviews read this list; the review page still shows only the selected highlights.
+public struct DailyLedgerQuote: Codable, Hashable, Sendable {
+    public var text: String
+    public var sourceIDs: [UUID]
+    public var speaker: String
+    public init(text: String, sourceIDs: [UUID], speaker: String) {
+        self.text = text
+        self.sourceIDs = sourceIDs
+        self.speaker = speaker
+    }
+}
+
+public struct DailyMatterLedgerEntry: Identifiable, Codable, Hashable, Sendable {
+    public var id: UUID
+    public var topic: String?
+    public var kind: DailyItemKind
+    public var status: String
+    public var section: String
+    public var title: String
+    public var detail: String
+    public var ownedByUser: Bool
+    public var quotes: [DailyLedgerQuote]
+    public var evidenceIDs: [UUID]
+    public var occurredAt: Date?
+    public var category: String?
+    public init(id: UUID = UUID(), topic: String?, kind: DailyItemKind, status: String, section: String, title: String, detail: String, ownedByUser: Bool, quotes: [DailyLedgerQuote], evidenceIDs: [UUID], occurredAt: Date?, category: String? = nil) {
+        self.id = id
+        self.topic = topic
+        self.kind = kind
+        self.status = status
+        self.section = section
+        self.title = title
+        self.detail = detail
+        self.ownedByUser = ownedByUser
+        self.quotes = quotes
+        self.evidenceIDs = evidenceIDs
+        self.occurredAt = occurredAt
+        self.category = category
+    }
+}
+
 public struct DailyItemKnowledge: Codable, Hashable, Sendable {
     /// Optional for old reports. Only the daily model may link an existing reminder.
     public var reminderID: UUID? = nil
@@ -776,6 +818,8 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
     public var briefing: DailyBriefing?
     /// 结构化展示与条目级删除的数据源。Markdown 仅作为兼容与导出格式保留。
     public var items: [DailySummaryItem]
+    /// 当天全部可接续事项。旧回顾没有这份列表时为空，读取方改用精选条目。
+    public var ledger: [DailyMatterLedgerEntry] = []
     public var formatVersion: Int? = 2
     public var versions: [DailyReviewVersion]? = nil
     public var modelCoverage: ModelReviewCoverage? = nil
@@ -812,10 +856,11 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
             )
             : persistedItems
         self.items = DailySummaryItemParser.sanitized(resolvedItems)
+        self.ledger = []
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, day, createdAt, content, sourceCaptureIDs, todos, generationKind, briefing, items, formatVersion, versions, modelCoverage, modelOverview
+        case id, day, createdAt, content, sourceCaptureIDs, todos, generationKind, briefing, items, ledger, formatVersion, versions, modelCoverage, modelOverview
     }
 
     public init(from decoder: Decoder) throws {
@@ -845,6 +890,7 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
             )
             : persistedItems
         items = modelCoverage == nil ? DailySummaryItemParser.sanitized(decodedItems) : DailySummaryItemParser.modelValidated(decodedItems)
+        ledger = try container.decodeIfPresent([DailyMatterLedgerEntry].self, forKey: .ledger) ?? []
     }
 }
 
@@ -903,8 +949,8 @@ public struct DailySummaryGeneration: Sendable {
     }
 }
 
-/// Legacy excerpt generator retained for old storage/tools. New formal reviews use ModelReviewEngine.
-/// 为兼容工具准备本地证据；本地摘录不再作为应用正式回顾的回退结果。
+/// Kept so existing verifier fixtures can still exercise the old excerpt path. The app does not call it.
+/// Formal daily reviews are produced by DirectDailyReviewEngine.
 /// 调用方必须自行确认用户已启用云端文本使用；本类型不会读取截图或写入持久化存储。
 public struct DailySummaryGenerator: Sendable {
     public let maxRecords: Int

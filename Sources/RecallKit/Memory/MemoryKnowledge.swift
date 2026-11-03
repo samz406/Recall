@@ -203,9 +203,9 @@ public struct MemoryKnowledgeSettings: Codable, Hashable, Sendable {
 }
 
 public struct MemoryKnowledgeEngine: Sendable {
-    /// 5: topics, references and observed preferences are derived from the structured daily reviews;
-    /// the per-paragraph reference threads of earlier versions are rebuilt away.
-    public static let organizationVersion = 5
+    /// 6: one activation rule at merge time. Durable wording only shortens the day requirement,
+    /// people expire, and days without a structured review stay in the topic list.
+    public static let organizationVersion = 6
     static func withdrawnSourceIDs(from previous: MemoryKnowledge, to current: MemoryKnowledge) -> Set<UUID> {
         let states = Dictionary(uniqueKeysWithValues: current.claims.map { ($0.id, $0.state) })
         return Set(previous.claims.filter { $0.state == .active && states[$0.id] != .active }.flatMap(\.sourceIDs))
@@ -363,9 +363,9 @@ public struct MemoryKnowledgeEngine: Sendable {
         let understoodFacts = Dictionary(safe.captures.compactMap(\.understanding).flatMap(\.facts).map { ($0.eventID, $0) }, uniquingKeysWith: { first, next in
             var merged = first; merged.evidence = Array(Set(first.evidence + next.evidence)).sorted { $0.blockID == $1.blockID ? $0.quote < $1.quote : $0.blockID < $1.blockID }; return merged
         })
-        let structured = daily.hasStructuredReviews(in: safe)
-        let files = structured ? daily.matterFiles(in: safe) : MatterMemoryEngine().observedFiles(in: safe)
-        let references = structured ? daily.referenceFiles(in: safe) : MemoryReferenceEngine().files(in: safe, excluding: Set(files.flatMap(\.evidenceIDs)))
+        let structuredDays = daily.structuredDays(in: safe)
+        let files = MatterMemoryEngine().sourceFiles(in: safe)
+        let references = MatterMemoryEngine().sourceReferences(in: safe)
         let contextEntities = (files + references).map { file in
             MemoryEntity(id: file.id, name: file.title, aliases: result.entities.first { $0.id == file.id }?.aliases ?? [], kind: "topic", sourceIDs: file.evidenceIDs)
         } + result.entities.filter { $0.id.hasPrefix("context:") }
@@ -379,7 +379,11 @@ public struct MemoryKnowledgeEngine: Sendable {
             for event in file.events {
                 let evidence = event.evidenceIDs.compactMap { sourceID -> MemoryEvidence? in
                     guard let source = sources[sourceID] else { return nil }
-                    if structured {
+                    if !event.quotes.isEmpty {
+                        let quote = event.quotes.first { source.ocrText.contains($0) } ?? event.quotes[0]
+                        return proof(source, quote: quote, ordinal: event.sequence, speaker: "每日回顾（本人事项）", eventAt: event.eventAt)
+                    }
+                    if structuredDays.contains(Calendar.current.startOfDay(for: event.date)) {
                         return proof(source, quote: event.detail, ordinal: event.sequence, speaker: "每日回顾（本人事项）", eventAt: event.eventAt)
                     }
                     if let fact = understoodFacts[event.id],
@@ -406,7 +410,13 @@ public struct MemoryKnowledgeEngine: Sendable {
             for event in file.events {
                 let evidence = event.evidenceIDs.compactMap { id -> MemoryEvidence? in
                     guard let source = sources[id] else { return nil }
-                    if structured { return proof(source, quote: event.detail, ordinal: event.sequence, speaker: "每日回顾（资料，非本人事项）", eventAt: nil) }
+                    if !event.quotes.isEmpty {
+                        let quote = event.quotes.first { source.ocrText.contains($0) } ?? event.quotes[0]
+                        return proof(source, quote: quote, ordinal: event.sequence, speaker: "每日回顾（资料，非本人事项）", eventAt: nil)
+                    }
+                    if structuredDays.contains(Calendar.current.startOfDay(for: event.date)) {
+                        return proof(source, quote: event.detail, ordinal: event.sequence, speaker: "每日回顾（资料，非本人事项）", eventAt: nil)
+                    }
                     if let fact = understoodFacts[event.id],
                        let quoted = fact.evidence.first(where: { $0.blockID.hasPrefix(id.uuidString) }) {
                         return proof(source, quote: quoted.quote, ordinal: event.sequence,
@@ -441,7 +451,7 @@ public struct MemoryKnowledgeEngine: Sendable {
                 else if directive.kind == .person { candidates[candidates.count - 1].subjectID = "person-record:" + source.id.uuidString }
                 continue
             }
-            for segment in RecordedText.segments(in: source) where segment.speaker == .user && !structured {
+            for segment in RecordedText.segments(in: source) where segment.speaker == .user && !structuredDays.contains(Calendar.current.startOfDay(for: source.createdAt)) {
                 if let normalized = source.understanding,
                    !normalized.facts.contains(where: { $0.isPersonalEvent && $0.evidence.contains(where: { $0.quote.contains(segment.text) }) }) { continue }
                 let text = segment.text
@@ -461,28 +471,7 @@ public struct MemoryKnowledgeEngine: Sendable {
                 if let name = MemoryDirective.personName(in: text) { candidates[candidates.count - 1].subjectID = "person:" + MemoryDirective.normalized(name) }
             }
         }
-        if structured { candidates += daily.personalClaims(in: safe, now: now) }
-        // Incoming requests are candidates for the user to arrange, never confirmed personal commitments.
-        let actions = ReminderExtractor().candidates(from: safe.captures.filter { $0.memoryDirective == nil }, existing: [])
-        for action in actions {
-            let evidence = action.sourceCaptureIDs.compactMap { id -> MemoryEvidence? in
-                guard let source = sources[id] else { return nil }
-                if let fact = source.understanding?.facts.first(where: { $0.isUserAction && $0.subject == action.title }),
-                   let quote = fact.evidence.first(where: { $0.blockID.hasPrefix(id.uuidString) }) {
-                    return proof(source, quote: quote.quote, ordinal: 0, speaker: "本人明确承诺")
-                }
-                guard let segment = RecordedText.segments(in: source).first(where: {
-                    $0.text.localizedCaseInsensitiveContains(action.title) || action.title.localizedCaseInsensitiveContains($0.text)
-                }) else { return nil }
-                let speaker = segment.speaker == .user ? "自己" : "对方向本人提出的请求"
-                return proof(source, quote: segment.text, ordinal: segment.ordinal, speaker: speaker)
-            }
-            var proposed = claim(key: "action:" + action.semanticKey, subject: "action:" + action.semanticKey,
-                title: action.title, content: evidence.map(\.quote).joined(separator: "\n"), kind: .action,
-                evidence: evidence, status: .pending)
-            proposed.state = .tentative
-            candidates.append(proposed)
-        }
+        if !structuredDays.isEmpty { candidates += daily.personalClaims(in: safe, now: now) }
         // Repeated observations are one assertion with more sources, never independent confirmations.
         let grouped = Dictionary(grouping: candidates, by: \.key)
         var merged: [MemoryClaim] = grouped.values.compactMap { values in
@@ -498,13 +487,16 @@ public struct MemoryKnowledgeEngine: Sendable {
                     guard let source = sources[evidence.captureID], let title = source.windowTitle, !title.isEmpty else { return nil }
                     return (source.sourceBundleIdentifier ?? "") + ":" + title
                 })
-                let authored = Set(first.evidence.filter { sources[$0.captureID]?.textOrigin == .userInput }.map(\.captureID))
-                let corroborated = days.count >= 2 && (contexts.count >= 2 || authored.count >= 2)
-                let stable = MemoryPersonalization.isStable(first.content, kind: first.kind) || corroborated
-                first.state = stable ? .active : .tentative
-                if first.kind != .person {
-                    first.validUntil = Calendar.current.date(byAdding: .day, value: first.kind == .goal ? 30 : 180, to: first.updatedAt)
+                let handwritten = first.evidence.contains { sources[$0.captureID]?.textOrigin == .userInput }
+                let spoken = handwritten || first.evidence.contains { evidence in
+                    ["自己", "用户更正", "本人明确要求", "本人明确承诺", "每日回顾（本人表述）", "每日回顾（本人事项）"].contains(evidence.speaker)
+                        || evidence.speaker.contains("本人")
                 }
+                let text = ([first.content] + first.evidence.map(\.quote)).joined(separator: "\n")
+                let durable = MemoryPersonalization.durableCue(text)
+                let active = handwritten || (days.count >= 2 && contexts.count >= 2) || (durable && spoken && days.count >= 1 && contexts.count >= 1)
+                first.state = active ? .active : .tentative
+                first.validUntil = Calendar.current.date(byAdding: .day, value: first.kind == .goal ? 30 : 180, to: first.updatedAt)
             }
             if let until = first.validUntil, until <= now { first.state = .expired }
             let old = result.claims.first { $0.id == first.id } ?? result.claims.first {

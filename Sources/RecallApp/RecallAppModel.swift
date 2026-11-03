@@ -380,48 +380,25 @@ final class RecallAppModel: ObservableObject {
             } }
             return
         }
-        let requestState = state
         let scheduledTrigger = schedule?.effectiveTrigger(at: .now)
         weeklyReviewStatusID = taskID
         weeklyReviewTask = Task {
             defer { isGeneratingWeeklyReview = false; weeklyReviewTask = nil; weeklyReviewStatusID = nil; processNextDailySummary() }
             do {
                 let modelStore = store
-                let chosen = scope.useSelectedTopics ? Set(matterFiles.filter { scope.topicIDs.contains(WeeklyReviewEngine.topicID(for: $0)) }.flatMap(\.evidenceIDs)) : nil
-                let hidden = Set(matterFiles.filter { file in
-                    guard let category = requestState.reviewCategories[WeeklyReviewEngine.topicID(for: file)] else { return false }
-                    return template.kind.requiresWorkScope ? [.personal, .learning].contains(category) : (template.kind == .learning && [.work, .personal].contains(category))
-                }.flatMap(\.evidenceIDs))
-                let scopedIDs = Set(ModelReviewEvidence.records(in: requestState, period: period, sourceIDs: chosen).filter { record in
-                    if hidden.contains(record.id) { return false }
-                    guard let category = record.manualMatter?.reviewCategory else { return true }
-                    return template.kind.requiresWorkScope ? ![.personal, .learning].contains(category) : (template.kind != .learning || ![.work, .personal].contains(category))
-                }.map(\.id))
-                // Prefer the structured daily reviews: one call over already verified conclusions. Without
-                // them (older archives) keep the per-record path, which needs full understanding first.
                 let dailyState = await modelStore.snapshot()
-                // With structured daily reviews the period review is built only from them. Falling back to
-                // per-record understanding would show an unrelated failure and cost hundreds of model calls.
-                let fromDaily = period.isValid && DailyKnowledgeEngine().hasStructuredReviews(in: dailyState)
-                    && !scope.useSelectedTopics
-                let snapshot: RecallState
-                let result: ModelReviewResult
-                if fromDaily {
-                    snapshot = dailyState; state = snapshot
-                    let generated = try await PeriodReviewFromDaily().generate(in: snapshot, period: period, template: template,
-                        beforeCall: { try await modelStore.validateDailyDerivedReview(snapshot) },
-                        onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder)
-                    result = generated.draft
-                    recordDiagnostic(.info, source: "WeeklyReview", message: "周期回顾处理统计", metadata: generated.metrics.diagnosticMetadata)
-                } else {
-                    snapshot = try await modelStore.prepareModelReview(period: period, sourceIDs: scopedIDs,
-                        responder: responder, expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
-                        onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) })
-                    state = snapshot
-                    result = try await ModelReviewEngine().generate(in: snapshot, period: period, template: template, sourceIDs: scopedIDs,
-                        beforeCall: { try await modelStore.validateModelReview(snapshot, period: period, sourceIDs: scopedIDs) },
-                        onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder)
-                }
+                let gaps = PeriodReviewFromDaily.gaps(in: dailyState, period: period)
+                guard gaps.reviewedDayCount > 0 else { throw WeeklyReviewError.noDailyReviews }
+                let topicKeys: Set<String>? = scope.useSelectedTopics
+                    ? Set(matterFiles.filter { scope.topicIDs.contains(WeeklyReviewEngine.topicID(for: $0)) }.map { DailyKnowledgeEngine.topicKey($0.title) })
+                    : nil
+                let snapshot = dailyState
+                state = snapshot
+                let generated = try await PeriodReviewFromDaily().generate(in: snapshot, period: period, template: template, topicKeys: topicKeys,
+                    beforeCall: { try await modelStore.validateDailyDerivedReview(snapshot) },
+                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder)
+                let result = generated.draft
+                recordDiagnostic(.info, source: "WeeklyReview", message: "周期回顾处理统计", metadata: generated.metrics.diagnosticMetadata)
                 try Task.checkCancellation()
                 guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
                 var report = result.weeklyReport(period: period, template: template, scope: scope, in: snapshot)
@@ -468,7 +445,8 @@ final class RecallAppModel: ObservableObject {
         let snapshot = await store.snapshot()
         guard let report = snapshot.weeklyReports.first(where: { $0.id == id && $0.isReadable }),
               WeeklyReviewEngine.sourcesUnchanged(report, in: snapshot) else { return nil }
-        return report.markdown
+        let gaps = PeriodReviewFromDaily.gaps(in: snapshot, period: report.period)
+        return gaps.headline + "\n\n" + report.markdown
     }
 
     func logWeeklyExportFailure(_ error: Error) { recordError(error, source: "WeeklyReview", message: "导出一周回顾失败") }
@@ -1114,7 +1092,7 @@ final class RecallAppModel: ObservableObject {
     }
 
     /// Raw OCR discovery is a manual deep scan. Automatic updates only reuse saved daily reviews.
-    func discoverReminders(force: Bool, announce: Bool = true, responder: (any LLMResponding)? = nil) {
+    func discoverReminders(force: Bool, announce: Bool = true, extendEarlier: Bool = false, responder: (any LLMResponding)? = nil) {
         // Automatic triggers only project saved daily reviews; raw OCR analysis is explicitly manual.
         if !announce { return }
         guard reminderDiscoveryTask == nil else { return }
@@ -1140,7 +1118,7 @@ final class RecallAppModel: ObservableObject {
                 }
             }
             do {
-                let result = try await store.discoverRemindersUsingModel(force: force, automatic: false,
+                let result = try await store.discoverRemindersUsingModel(force: force, automatic: false, extendEarlier: extendEarlier,
                     responder: responder ?? (try ModelResponderFactory.make(configuration: config)), progress: { [weak self] value in
                         await self?.updateReminderDiscovery(value, runID: runID, taskID: taskID)
                     })
@@ -1489,6 +1467,20 @@ final class RecallAppModel: ObservableObject {
     func generateDailyReview(on day: Date) {
         guard day <= Date.now else { return }
         generateDailySummary(for: day, reason: .manual)
+    }
+    /// Generates structured daily reviews for days that have records but no review yet. Oldest day first.
+    func backfillDailyReviews(_ days: [Date]) {
+        let calendar = Calendar.current
+        let ordered = Array(Set(days.map { calendar.startOfDay(for: $0) })).filter { $0 <= Date.now }.sorted()
+        guard let first = ordered.first else { return }
+        guard state.privacy.cloudUseEnabled else { noticeMessage = "请先允许发送脱敏文本，再补生成这些天的每日回顾。"; return }
+        dailyReviewBackfillPausedUntil = nil
+        for day in ordered.dropFirst() where !pendingDailySummaries.contains(where: { calendar.isDate($0.day, inSameDayAs: day) }) {
+            pendingDailySummaries.append((day, .manual))
+        }
+        pendingDailySummaries.sort { $0.day < $1.day }
+        noticeMessage = "将依次补生成 \(ordered.count) 天的每日回顾；已有版本会保留。"
+        generateDailySummary(for: first, reason: .manual)
     }
     func cancelDailyReview() {
         guard let id = dailyReviewStatusID, requestTaskCancellation(id) else { return }

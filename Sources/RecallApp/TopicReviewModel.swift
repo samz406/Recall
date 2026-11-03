@@ -15,49 +15,28 @@ extension RecallAppModel {
         let ids = Set(file.evidenceIDs)
         let dates = state.captures.filter { ids.contains($0.id) }.map(\.createdAt)
         guard let start = dates.min() else { finishTask(taskID, state: .failed, message: "来源已变化，请更新主题"); return }
-        let period = ReviewPeriod(start: start, end: .now)
         let modelStore = store
-        let requestState = state
         generatingTopicID = file.id
         topicReviewStatusID = taskID
         topicReviewTask = Task {
             defer { generatingTopicID = nil; topicReviewTask = nil; topicReviewStatusID = nil; processNextDailySummary() }
             do {
                 let current = await modelStore.snapshot()
-                let dailyKey = file.id.hasPrefix("topic:") ? Set([file.id.dropFirst("topic:".count).description]) : nil
-                let result: ModelReviewResult
-                let prepared: RecallState
-                let target: MatterFile
-                if DailyKnowledgeEngine().hasStructuredReviews(in: current), let dailyKey,
-                   let daily = DailyKnowledgeEngine().matterFiles(in: current).first(where: { $0.id == file.id }) {
-                    // The topic's own timeline, built from daily reviews: one call, no per-record preparation.
-                    prepared = current; target = daily; state = prepared
-                    let span = ReviewPeriod(start: Calendar.current.startOfDay(for: daily.events.map(\.date).min() ?? start),
-                        end: .now.addingTimeInterval(1))
-                    result = try await PeriodReviewFromDaily().generate(in: prepared, period: span, template: nil, topic: file.title,
-                        topicKeys: dailyKey, beforeCall: { try await modelStore.validateDailyDerivedReview(current) },
-                        onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder).draft
-                    try Task.checkCancellation()
-                    guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
-                    try await modelStore.validateDailyDerivedReview(current)
-                } else {
-                    prepared = try await modelStore.prepareModelReview(period: period, sourceIDs: ids, responder: responder,
-                        expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
-                        onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) })
-                    state = prepared
-                    let work = Task.detached(priority: .utility) { MatterMemoryEngine().files(in: prepared) }
-                    let refreshed = await withTaskCancellationHandler(operation: { await work.value }, onCancel: { work.cancel() })
-                    try Task.checkCancellation()
-                    guard let found = refreshed.first(where: { $0.id == file.id })
-                        ?? refreshed.first(where: { Set($0.evidenceIDs) == ids }) else { throw ModelReviewError.changed }
-                    target = found
-                    result = try await ModelReviewEngine().generate(in: prepared, period: period, topic: target.title, sourceIDs: ids,
-                        beforeCall: { try await modelStore.validateModelReview(prepared, period: period, sourceIDs: ids) },
-                        onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder)
-                    try Task.checkCancellation()
-                    guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
-                    try await modelStore.validateModelReview(prepared, period: period, sourceIDs: ids)
+                let dailyKey = Set([DailyKnowledgeEngine.topicKey(file.title)])
+                guard let daily = DailyKnowledgeEngine().matterFiles(in: current).first(where: { DailyKnowledgeEngine.topicKey($0.title) == DailyKnowledgeEngine.topicKey(file.title) }) else {
+                    throw WeeklyReviewError.noDailyReviews
                 }
+                let prepared = current
+                let target = daily
+                state = prepared
+                let span = ReviewPeriod(start: Calendar.current.startOfDay(for: daily.events.map(\.date).min() ?? start),
+                    end: .now.addingTimeInterval(1))
+                let result = try await PeriodReviewFromDaily().generate(in: prepared, period: span, template: nil, topic: file.title,
+                    topicKeys: dailyKey, beforeCall: { try await modelStore.validateDailyDerivedReview(current) },
+                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder).draft
+                try Task.checkCancellation()
+                guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
+                try await modelStore.validateDailyDerivedReview(current)
                 try await modelStore.commitTopicReview(TopicModelReview(topicID: target.id, result: result))
                 state = await modelStore.snapshot()
                 rebuildMatterFiles()

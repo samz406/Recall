@@ -5,11 +5,13 @@ import RecallKit
 struct DailyReviewContentView: View {
     @EnvironmentObject private var model: RecallAppModel
     let summary: DailySummary
+    @State private var evidence: DailySummaryItem?
+    @State private var expanded: Set<String> = []
     private var items: [DailySummaryItem] {
         let live = Set(model.state.captures.map(\.id))
         let presented = summary.modelCoverage == nil ? DailySummaryItemParser.sanitized(summary.items) : DailySummaryItemParser.modelValidated(summary.items)
         return presented.filter { item in
-            guard Set(item.evidenceIDs).isSubset(of: live) else { return false }
+            guard item.evidenceIDs.contains(where: live.contains) else { return false }
             if item.section == .actions,
                let reminder = model.reminder(for: item.title, sourceIDs: item.evidenceIDs, candidateID: item.actionCandidateID),
                [.completed, .cancelled, .dismissed].contains(reminder.status) { return false }
@@ -30,11 +32,16 @@ struct DailyReviewContentView: View {
             ForEach(DailySummarySection.displaySections) { section in
                 let sectionRows = rows.filter { $0.section == section }
                 if !sectionRows.isEmpty {
+                    let shown = visible(sectionRows, section: section)
                     VStack(alignment: .leading, spacing: 18) {
                         sectionHeading(section)
                         VStack(alignment: .leading, spacing: 22) {
-                            ForEach(sectionRows) { item in itemRow(item) }
+                            ForEach(shown) { item in itemRow(item) }
                         }.padding(.leading, 28)
+                        if sectionRows.count > shown.count {
+                            Button(RecallLocalization.text("展开其余")) { expanded.insert(section.rawValue) }
+                                .buttonStyle(.borderless).font(.caption)
+                        }
                     }
                 }
             }
@@ -48,6 +55,10 @@ struct DailyReviewContentView: View {
                     }
                 }.font(.callout).foregroundStyle(RecallPalette.secondary)
             }
+        }
+        .sheet(item: $evidence) { item in
+            RecallSourcesView(title: item.title, ids: item.evidenceIDs.filter { id in model.state.captures.contains { $0.id == id } })
+                .environmentObject(model)
         }
     }
     private func sectionHeading(_ section: DailySummarySection) -> some View {
@@ -85,7 +96,19 @@ struct DailyReviewContentView: View {
                     Button(RecallLocalization.text("已完成")) { model.completeSummaryAction(item, summary: summary) }
                 }.buttonStyle(.borderless).font(.caption).padding(.top, 2)
             }
+            HStack(spacing: 16) {
+                Button(RecallLocalization.text("依据")) { evidence = item }
+                Menu(RecallLocalization.text("纠正归属")) {
+                    Button(RecallLocalization.text("不是我说的")) { model.correctMatter(MatterCorrection(evidenceIDs: item.evidenceIDs, kind: .notMine)) }
+                    Button(RecallLocalization.text("内容不准确")) { model.correctMatter(MatterCorrection(evidenceIDs: item.evidenceIDs, kind: .inaccurate)) }
+                }
+            }.buttonStyle(.borderless).font(.caption).padding(.top, 2)
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func visible(_ rows: [DailySummaryItem], section: DailySummarySection) -> [DailySummaryItem] {
+        if expanded.contains(section.rawValue) { return rows }
+        let limit = section == .progress ? 5 : section == .insights ? 2 : rows.count
+        return Array(rows.prefix(limit))
     }
     private func itemTitle(_ title: String) -> some View {
         Text(title).font(.system(size: 15, weight: .semibold)).lineSpacing(3)

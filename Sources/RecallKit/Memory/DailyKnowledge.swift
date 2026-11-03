@@ -16,20 +16,66 @@ public struct DailyKnowledgeEngine: Sendable {
         var sources: [UUID]
     }
 
-    /// Entries whose sources are all still live and not excluded. Deleting a screenshot removes the
-    /// entries built from it, so a topic never outlives its evidence.
+    /// Days that already have a structured review. Other days keep the older observed-file path.
+    public func structuredDays(in state: RecallState, calendar: Calendar = .current) -> Set<Date> {
+        Set(state.dailySummaries.filter { summary in
+            !summary.ledger.isEmpty || summary.items.contains { $0.knowledge != nil }
+        }.map { calendar.startOfDay(for: $0.day) })
+    }
+
+    /// An entry stays while at least one cited screenshot is still valid. Deleted or corrected
+    /// screenshots are removed from its evidence. If the only first-person quote is gone, the entry
+    /// is kept as a clue (not the user's own matter) instead of disappearing.
     func entries(in state: RecallState) -> [Entry] {
-        let live = Set(state.correctedForAnalysis().captures
-            .filter { !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id))
+        let captures = state.correctedForAnalysis().captures
+            .filter { !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }
+        let live = Set(captures.map(\.id))
+        let recordedAt = Dictionary(uniqueKeysWithValues: captures.map { ($0.id, $0.createdAt) })
         let invalid = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
         return state.dailySummaries.flatMap { summary -> [Entry] in
-            summary.items.compactMap { item in
+            if !summary.ledger.isEmpty {
+                return summary.ledger.compactMap { row in
+                    makeEntry(summary: summary, id: row.id, section: row.section, title: row.title, detail: row.detail,
+                        topic: row.topic, kind: row.kind, status: row.status, owned: row.ownedByUser, category: row.category,
+                        quotes: row.quotes, evidenceIDs: row.evidenceIDs, live: live, invalid: invalid, recordedAt: recordedAt)
+                }
+            }
+            return summary.items.compactMap { item in
                 guard let knowledge = item.knowledge else { return nil }
-                let sources = item.evidenceIDs.filter { live.contains($0) && !invalid.contains($0) }
-                guard !sources.isEmpty, sources.count == item.evidenceIDs.count else { return nil }
-                return Entry(summary: summary, item: item, knowledge: knowledge, sources: sources)
+                let quotes = knowledge.quotes.map { DailyLedgerQuote(text: $0, sourceIDs: item.evidenceIDs, speaker: knowledge.ownedByUser ? "user" : "unknown") }
+                return makeEntry(summary: summary, id: item.id, section: item.section.rawValue, title: item.title, detail: item.detail,
+                    topic: knowledge.topic, kind: knowledge.kind, status: knowledge.status, owned: knowledge.ownedByUser, category: knowledge.category,
+                    quotes: quotes, evidenceIDs: item.evidenceIDs, live: live, invalid: invalid, recordedAt: recordedAt,
+                    reminderID: knowledge.reminderID, explicitCommitment: knowledge.explicitCommitment, condition: knowledge.condition, sourceVersions: knowledge.sourceVersions)
             }
         }
+    }
+
+    private func makeEntry(summary: DailySummary, id: UUID, section: String, title: String, detail: String,
+                           topic: String?, kind: DailyItemKind, status: String, owned: Bool, category: String?,
+                           quotes: [DailyLedgerQuote], evidenceIDs: [UUID], live: Set<UUID>, invalid: Set<UUID>,
+                           recordedAt: [UUID: Date], reminderID: UUID? = nil, explicitCommitment: Bool? = nil,
+                           condition: String? = nil, sourceVersions: [String: String]? = nil) -> Entry? {
+        let sources = evidenceIDs.filter { live.contains($0) && !invalid.contains($0) }
+        guard !sources.isEmpty else { return nil }
+        let sourceSet = Set(sources)
+        let userQuotes = quotes.filter { $0.speaker == "user" && !$0.sourceIDs.isEmpty }
+        var keptKind = kind
+        var keptOwned = owned
+        if keptOwned && !userQuotes.isEmpty && !userQuotes.contains(where: { !$0.sourceIDs.filter(sourceSet.contains).isEmpty }) {
+            keptOwned = false
+            if keptKind != .reference { keptKind = .reference }
+        }
+        let keptQuotes = quotes.filter { $0.sourceIDs.isEmpty || !$0.sourceIDs.filter(sourceSet.contains).isEmpty }.map(\.text)
+        var knowledge = DailyItemKnowledge(topic: topic, kind: keptKind, status: status, ownedByUser: keptOwned,
+            quotes: keptQuotes.isEmpty ? quotes.map(\.text) : keptQuotes, category: category)
+        knowledge.reminderID = reminderID
+        knowledge.explicitCommitment = explicitCommitment
+        knowledge.condition = condition
+        knowledge.sourceVersions = sourceVersions
+        let sectionValue = DailySummarySection(rawValue: section) ?? .progress
+        let item = DailySummaryItem(id: id, section: sectionValue, title: title, detail: detail, evidenceIDs: sources, knowledge: knowledge)
+        return Entry(summary: summary, item: item, knowledge: knowledge, sources: sources)
     }
 
     /// Changes when any structured daily item (or the evidence it depends on) changes.
@@ -61,12 +107,14 @@ public struct DailyKnowledgeEngine: Sendable {
         for entry in entries(in: state) where entry.knowledge.kind == .matter && entry.knowledge.ownedByUser {
             guard let topic = entry.knowledge.topic, !Self.topicKey(topic).isEmpty else { continue }
             let key = "topic:" + Self.topicKey(topic)
-            let day = entry.summary.day
+            let captures = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
+            let earliest = entry.sources.compactMap { captures[$0] }.min()
             var event = MatterEvent(id: Self.eventID(entry, key: key), title: topic,
                 detail: entry.item.detail.isEmpty ? entry.item.title : entry.item.title + "：" + entry.item.detail,
-                recordedAt: day, eventAt: nil, status: Self.status(entry.knowledge.status),
+                recordedAt: earliest ?? entry.summary.day, eventAt: earliest, status: Self.status(entry.knowledge.status),
                 evidenceIDs: entry.sources.sorted { $0.uuidString < $1.uuidString },
                 nextAction: entry.item.section.canonical == .actions ? entry.item.title : nil)
+            event.quotes = entry.knowledge.quotes
             event.sequence = 0
             var current = groups[key] ?? (topic, [])
             // The latest name wins as the display title.
@@ -75,7 +123,7 @@ public struct DailyKnowledgeEngine: Sendable {
             groups[key] = current
         }
         return groups.map { key, value in
-            let ordered = value.events.sorted { $0.date == $1.date ? $0.id.uuidString < $1.id.uuidString : $0.date < $1.date }
+            let ordered = value.events.sorted { $0.date == $1.date ? $0.recordedAt == $1.recordedAt ? $0.id.uuidString < $1.id.uuidString : $0.recordedAt < $1.recordedAt : $0.date < $1.date }
             return MatterFile(id: key, title: value.name, events: ordered)
         }.sorted { $0.latest.date == $1.latest.date ? $0.id < $1.id : $0.latest.date > $1.latest.date }
     }
@@ -87,9 +135,12 @@ public struct DailyKnowledgeEngine: Sendable {
             && entry.knowledge.kind == .matter {
             let name = entry.knowledge.topic ?? entry.item.title
             let key = "reference:" + Self.topicKey(name)
+            let captures = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
+            let earliest = entry.sources.compactMap { captures[$0] }.min()
             var event = MatterEvent(id: Self.eventID(entry, key: key), title: name,
                 detail: entry.item.detail.isEmpty ? entry.item.title : entry.item.title + "：" + entry.item.detail,
-                recordedAt: entry.summary.day, status: .explored, evidenceIDs: entry.sources)
+                recordedAt: earliest ?? entry.summary.day, eventAt: earliest, status: .explored, evidenceIDs: entry.sources)
+            event.quotes = entry.knowledge.quotes
             event.isReference = true
             groups[key, default: (name, [])].events.append(event)
         }
@@ -117,12 +168,13 @@ public struct DailyKnowledgeEngine: Sendable {
             }
             let days = Set(entries.map { Calendar.current.startOfDay(for: $0.summary.day) })
             let identifier = MemoryKnowledgeEngine.id("daily:" + key)
+            let quote = last.knowledge.quotes.first ?? (last.item.detail.isEmpty ? last.item.title : last.item.detail)
             var claim = MemoryClaim(id: identifier, key: identifier.uuidString, subjectID: "user",
-                title: first.item.title, content: last.item.detail.isEmpty ? last.item.title : last.item.detail, kind: kind,
-                state: days.count >= 2 ? .active : .tentative, scope: .global, scopeID: nil, evidence: evidence,
+                title: first.item.title, content: quote, kind: kind,
+                state: .tentative, scope: .global, scopeID: nil, evidence: evidence,
                 dependencies: [], supersedes: [], status: nil, resultStatus: nil, nextAction: nil,
-                validFrom: first.summary.day, validUntil: nil, updatedAt: last.summary.day, explicit: false)
-            if kind != .person { claim.validUntil = Calendar.current.date(byAdding: .day, value: 180, to: last.summary.day) }
+                validFrom: first.summary.day, validUntil: Calendar.current.date(byAdding: .day, value: kind == .goal ? 30 : 180, to: last.summary.day),
+                updatedAt: last.summary.day, explicit: false)
             if let until = claim.validUntil, until <= now { claim.state = .expired }
             return claim
         }.sorted { $0.updatedAt > $1.updatedAt }

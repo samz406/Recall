@@ -31,6 +31,22 @@ public extension ModelReviewResult {
             todos: actions, generationKind: .cloud, items: values)
         report.modelCoverage = coverage; report.modelOverview = overview
         report.items = DailySummaryItemParser.modelValidated(values); report.todos = actions
+        let ledgerSource = ledger.isEmpty ? items : ledger
+        report.ledger = ledgerSource.compactMap { item in
+            guard let kind = item.kind.flatMap(DailyItemKind.init(rawValue:)) else { return nil }
+            let related = facts.filter { item.factIDs.contains($0.id) }
+            let quotes = related.map { fact in
+                let speaker: String
+                if fact.attribution.contains("speaker=user") { speaker = "user" }
+                else if fact.attribution.contains("speaker=other") { speaker = "other" }
+                else { speaker = "unknown" }
+                return DailyLedgerQuote(text: fact.quotes.first ?? fact.detail, sourceIDs: fact.sourceIDs, speaker: speaker)
+            }
+            let ids = sourceIDs(for: item)
+            return DailyMatterLedgerEntry(topic: item.topic, kind: kind, status: item.status ?? "unknown", section: item.section,
+                title: item.title, detail: item.detail, ownedByUser: item.ownedByUser ?? false, quotes: quotes, evidenceIDs: ids,
+                occurredAt: related.map(\.recordedAt).min(), category: item.category)
+        }
         return report
     }
     func weeklyReport(period: ReviewPeriod, template: ReviewTemplate, scope: ReviewScope, in state: RecallState, now: Date = .now) -> WeeklyReport {

@@ -24,11 +24,9 @@ public enum MemoryPersonalization {
     public static func isTemporary(_ text: String) -> Bool {
         ["这次", "本次", "今天", "明天", "这周", "本周", "这月", "本月", "暂时", "目前", "近期", "这个版本", "这一版", "这个页面先"].contains(where: text.contains)
     }
-    static func isStable(_ text: String, kind: MemoryClaimKind) -> Bool {
-        if kind == .person { return true }
-        if kind == .goal { return ["长期目标", "我的目标", "我要成为", "未来一年", "接下来一年"].contains(where: text.contains) }
-        if kind == .habit { return ["我通常", "我习惯", "我每天", "我每周"].contains(where: text.contains) }
-        return ["一直", "一贯", "长期", "以后", "今后", "老规矩", "通常"].contains(where: text.contains)
+    /// These words only shorten how many days a personal claim needs. They do not make one sentence active by themselves.
+    static func durableCue(_ text: String) -> Bool {
+        ["一直", "一贯", "长期", "以后", "今后", "老规矩", "通常"].contains(where: text.contains)
     }
     static func inferredScope(_ text: String) -> MemoryScope {
         if ["工作周报", "工作总结", "工作中", "工作时"].contains(where: text.contains) { return .work }

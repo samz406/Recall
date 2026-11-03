@@ -443,11 +443,7 @@ public struct WeeklyReviewEngine: Sendable {
                 } else { files.append(MatterFile(id: key, title: pair.0, events: [event])) }
             }
         }
-        if DailyKnowledgeEngine().hasStructuredReviews(in: input) {
-            files += DailyKnowledgeEngine().referenceFiles(in: input)
-        } else {
-            files += MemoryReferenceEngine().files(in: input, excluding: Set(files.flatMap(\.evidenceIDs)))
-        }
+        files += MatterMemoryEngine().sourceReferences(in: input)
         for i in files.indices {
             files[i].events.sort { $0.date == $1.date ? $0.sequence < $1.sequence : $0.date < $1.date }
             // Scope/category settings must not retain a deleted person's name or original

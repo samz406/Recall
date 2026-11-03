@@ -11,6 +11,41 @@ public struct PeriodReviewFromDaily: Sendable {
         var id: String; var date: String; var topic: String?; var category: String?; var kind: String; var status: String
         var title: String; var detail: String; var quotes: [String]
     }
+    public struct DayGaps: Sendable {
+        public var reviewedDayCount: Int
+        public var spanDayCount: Int
+        public var missingRecordedDays: [Date]
+        public var headline: String
+        public var hasMissingRecords: Bool { !missingRecordedDays.isEmpty }
+    }
+
+    /// Days in the period that have records but no structured daily review.
+    public static func gaps(in state: RecallState, period: ReviewPeriod, now: Date = .now) -> DayGaps {
+        let calendar = period.calendar
+        let start = calendar.startOfDay(for: period.start)
+        let end = min(period.end, calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now)) ?? now)
+        var span: [Date] = []
+        var day = start
+        while day < end && span.count < 31 {
+            span.append(day)
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+            day = next
+        }
+        let reviewed = Set(DailyKnowledgeEngine().structuredDays(in: state, calendar: calendar))
+        let recorded = Set(ModelReviewEvidence.records(in: state, period: period).map { calendar.startOfDay(for: $0.createdAt) })
+        let reviewedCount = span.filter { reviewed.contains($0) }.count
+        let missing = span.filter { recorded.contains($0) && !reviewed.contains($0) }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "M/d"
+        let label = span.count == 7 ? "本周" : "本期"
+        var headline = "\(label) \(reviewedCount)/\(max(span.count, 1)) 天有回顾"
+        if !missing.isEmpty {
+            headline += "；" + missing.map { formatter.string(from: $0) }.joined(separator: "、") + "未生成"
+        }
+        return DayGaps(reviewedDayCount: reviewedCount, spanDayCount: span.count, missingRecordedDays: missing, headline: headline)
+    }
+
     public struct Prepared: Sendable {
         var rows: [Row]
         var entries: [String: DailyKnowledgeEngine.Entry]

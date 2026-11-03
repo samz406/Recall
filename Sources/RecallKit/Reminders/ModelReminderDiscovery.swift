@@ -36,13 +36,35 @@ public struct ReminderDiscoveryProgress: Sendable {
 /// Local code selects inputs and validates provenance; the model decides semantics.
 public struct ModelReminderDiscovery: Sendable {
     public static let version = 5
+    public static let initialHorizonDays = 14
+    public static let extendedHorizonDays = 90
     public init() {}
+    public struct Prepared: Sendable {
+        var safe: RecallState
+        var memoryVersions: [String: String]
+        var understandingVersions: [UUID: String]
+        var eligible: Set<UUID>
+        var contentHashes: [UUID: String]
+        var corrections: [MatterCorrection]
+    }
+    public func prepare(_ state: RecallState) -> Prepared {
+        let safe = state.correctedForAnalysis()
+        return Prepared(
+            safe: safe,
+            memoryVersions: Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id.uuidString, MemoryKnowledgeEngine.version(of: $0)) }),
+            understandingVersions: Dictionary(uniqueKeysWithValues: safe.captures.map { ($0.id, CaptureUnderstandingEngine.sourceVersion($0, in: state)) }),
+            eligible: Set(safe.captures.filter { Self.eligible($0, in: state) }.map(\.id)),
+            contentHashes: Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.contentHash) }),
+            corrections: state.matterCorrections)
+    }
     public struct Plan: Sendable {
         public var groups: [[CaptureRecord]]
         public var eligibleCount: Int
         public var excludedCount: Int
         public var unchangedCount: Int
         public var versions: [String: String]
+        public var earlierEligibleCount: Int
+        public var horizonDays: Int
         public var recordCount: Int { groups.reduce(0) { $0 + $1.count } }
     }
     public struct Result: Sendable {
@@ -56,12 +78,18 @@ public struct ModelReminderDiscovery: Sendable {
             && state.rules.contains { $0.template == capture.eventTemplate && $0.participatesInReminders }
             && state.reminderLearningProfile.permitsReminderDiscovery(from: capture)
     }
-    public func plan(in state: RecallState, force: Bool, now: Date = .now) -> Plan {
-        let safe = state.correctedForAnalysis()
+    public func plan(in state: RecallState, force: Bool, now: Date = .now, horizonDays: Int? = nil) -> Plan {
+        plan(in: state, prepared: prepare(state), force: force, now: now, horizonDays: horizonDays)
+    }
+    func plan(in state: RecallState, prepared: Prepared, force: Bool, now: Date = .now, horizonDays: Int? = nil) -> Plan {
+        let safe = prepared.safe
+        let horizon = max(horizonDays ?? state.reminderDiscoveryCheckpoint.scanHorizonDays ?? Self.initialHorizonDays, Self.initialHorizonDays)
         let pending = Set(state.reminders.filter { $0.status == .proposed && $0.origin == .discovered }.flatMap(\.sourceCaptureIDs))
-        let inRange = safe.captures.filter { $0.createdAt >= now.addingTimeInterval(-90 * 86_400) || pending.contains($0.id) }
-        let allowed = inRange.filter { Self.eligible($0, in: state) }.sorted { $0.createdAt < $1.createdAt }
-        let versions = Dictionary(uniqueKeysWithValues: allowed.map { ($0.id.uuidString, MemoryKnowledgeEngine.version(of: $0)) })
+        let cutoff = now.addingTimeInterval(-Double(horizon) * 86_400)
+        let inRange = safe.captures.filter { $0.createdAt >= cutoff || pending.contains($0.id) }
+        let allowed = inRange.filter { prepared.eligible.contains($0.id) }.sorted { $0.createdAt < $1.createdAt }
+        let earlier = safe.captures.filter { prepared.eligible.contains($0.id) && $0.createdAt < cutoff && !pending.contains($0.id) }.count
+        let versions = prepared.memoryVersions.filter { id, _ in allowed.contains { $0.id.uuidString == id } }
         let checkpoint = state.reminderDiscoveryCheckpoint
         let changed = Set(allowed.filter {
             checkpoint.extractorVersion != Self.version || checkpoint.processedCaptureHashes[$0.id.uuidString] != versions[$0.id.uuidString]
@@ -76,13 +104,17 @@ public struct ModelReminderDiscovery: Sendable {
         }
         if !group.isEmpty { groups.append(group) }
         return Plan(groups: groups, eligibleCount: allowed.count, excludedCount: inRange.count - allowed.count,
-            unchangedCount: allowed.count - selected.count, versions: versions)
+            unchangedCount: allowed.count - selected.count, versions: versions, earlierEligibleCount: earlier, horizonDays: horizon)
     }
 
     /// Shared full messages establish adjacency; a generic app/window title alone never does.
     public func contextSources(for captures: [CaptureRecord], in state: RecallState) -> [CaptureRecord] {
+        let prepared = prepare(state)
+        return contextSources(for: captures, prepared: prepared)
+    }
+    func contextSources(for captures: [CaptureRecord], prepared: Prepared) -> [CaptureRecord] {
         let ids = Set(captures.map(\.id))
-        let possible = state.correctedForAnalysis().captures.filter { !ids.contains($0.id) && Self.eligible($0, in: state) }
+        let possible = prepared.safe.captures.filter { !ids.contains($0.id) && prepared.eligible.contains($0.id) }
         var found: [CaptureRecord] = [], seen = Set<UUID>(), budget = 6_000
         for capture in captures {
             let anchors = Set(CaptureUnderstandingEngine.blocks(for: capture).filter { $0.speaker != .unknown && $0.text.count >= 20 }.map(\.text))
@@ -128,9 +160,10 @@ public struct ModelReminderDiscovery: Sendable {
         return object
     }
 
-    public func analyze(_ captures: [CaptureRecord], in state: RecallState, responder: any LLMResponding,
+    public func analyze(_ captures: [CaptureRecord], in state: RecallState, prepared incoming: Prepared? = nil, responder: any LLMResponding,
                         beforeCall: @Sendable () async throws -> Void = {},
                         progress: @Sendable (String) async -> Void = { _ in }) async throws -> Result {
+        let prepared = incoming ?? prepare(state)
         let privacy = PrivacyEngine()
         var seen: [String: UUID] = [:], representatives: [UUID: UUID] = [:]
         let unique = captures.filter {
@@ -140,11 +173,27 @@ public struct ModelReminderDiscovery: Sendable {
             if let first = seen[key] { representatives[$0.id] = first; return false }
             seen[key] = $0.id; return true
         }
-        let neighbours = contextSources(for: captures, in: state)
+        let neighbours = contextSources(for: captures, prepared: prepared)
         let allSources = unique + neighbours
+        var firstLine: [String: String] = [:], extraSources: [String: [UUID]] = [:]
+        var primaryBlocks: [UnderstandingBlock] = []
+        for capture in unique {
+            let scope = (capture.sourceBundleIdentifier ?? capture.sourceAppName ?? "") + "|" + (capture.windowTitle ?? "")
+            for block in CaptureUnderstandingEngine.blocks(for: capture) {
+                if capture.textOrigin != .userInput, block.text.count >= 12 {
+                    let key = scope + "\u{1}" + block.text
+                    if let first = firstLine[key] {
+                        extraSources[first, default: []].append(capture.id)
+                        continue
+                    }
+                    firstLine[key] = block.id
+                }
+                primaryBlocks.append(block)
+            }
+        }
         var pages: [[UnderstandingBlock]] = [], page: [UnderstandingBlock] = [], size = 0
-        for block in unique.flatMap({ CaptureUnderstandingEngine.blocks(for: $0) }) {
-            if !page.isEmpty && (size + block.text.count > 8_000 || page.count >= 24) {
+        for block in primaryBlocks {
+            if !page.isEmpty && (size + block.text.count > 8_000 || page.count >= 96) {
                 pages.append(page); page = []; size = 0
             }
             page.append(block); size += block.text.count
@@ -152,7 +201,7 @@ public struct ModelReminderDiscovery: Sendable {
         if !page.isEmpty { pages.append(page) }
         var candidates: [ReminderCandidate] = [], resolutions: [UUID: ReminderStatus] = [:], uncertain = Set<UUID>()
         var resolutionEvidence: [UUID: [UnderstandingEvidence]] = [:]
-        let permitted = Set(state.correctedForAnalysis().captures.filter { Self.eligible($0, in: state) }.map(\.id))
+        let permitted = prepared.eligible
         let initialPending = state.reminders.filter {
             $0.status == .proposed && $0.origin == .discovered && !$0.sourceCaptureIDs.isEmpty
                 && Set($0.sourceCaptureIDs).isSubset(of: permitted)
@@ -165,7 +214,11 @@ public struct ModelReminderDiscovery: Sendable {
             let sourceIDs = Set(blocks.compactMap { UUID(uuidString: String($0.id.prefix(36))) })
             var factBudget = 3_000
             let sources = allSources.filter { sourceIDs.contains($0.id) }.map { capture -> Source in
-                let ready = capture.understanding.flatMap { CaptureUnderstandingEngine.isCurrent($0, in: state) && Set($0.sourceVersions.keys).isSubset(of: permitted) ? $0 : nil }
+                let ready = capture.understanding.flatMap { result -> CaptureUnderstanding? in
+                    guard result.processorVersion == CaptureUnderstandingEngine.version, !result.sourceVersions.isEmpty,
+                          result.sourceVersions.allSatisfy({ id, signature in permitted.contains(id) && prepared.understandingVersions[id] == signature }) else { return nil }
+                    return result
+                }
                 let facts = (ready?.facts ?? []).filter { fact in
                     guard fact.evidence.allSatisfy({ proof in blocks.contains { $0.id == proof.blockID } }),
                           let cost = try? Self.json(fact).count, cost <= factBudget else { return false }
@@ -214,7 +267,10 @@ public struct ModelReminderDiscovery: Sendable {
                 let proofs = action.evidence.compactMap { byID[$0.blockID] }
                 let speaker: UnderstandingSpeaker = action.kind == .commitment ? .user : .other
                 guard proofs.contains(where: { $0.speaker == speaker && !$0.isReference && ($0.confidence ?? 1) >= 0.5 }) else { continue }
-                let ids = Array(Set(action.evidence.compactMap { UUID(uuidString: String($0.blockID.prefix(36))) })).sorted { $0.uuidString < $1.uuidString }
+                let ids = Array(Set(action.evidence.flatMap { evidence -> [UUID] in
+                    guard let id = UUID(uuidString: String(evidence.blockID.prefix(36))) else { return [] }
+                    return [id] + (extraSources[evidence.blockID] ?? [])
+                })).sorted { $0.uuidString < $1.uuidString }
                 let old = (initialPending + candidates).first { $0.id == action.existingID }
                 let dateSource = action.deadline.flatMap { UUID(uuidString: String($0.evidence.blockID.prefix(36))) }.flatMap { bySource[$0] }
                 let dueAt = action.deadline.flatMap { time in dateSource.flatMap { ReminderDeadlineResolver.resolve(time.text, source: $0) } }
@@ -239,6 +295,9 @@ public struct ModelReminderDiscovery: Sendable {
             }
         }
         for (duplicate, first) in representatives where uncertain.contains(first) { uncertain.insert(duplicate) }
+        for (blockID, sources) in extraSources {
+            if let capture = UUID(uuidString: String(blockID.prefix(36))), uncertain.contains(capture) { uncertain.formUnion(sources) }
+        }
         return Result(candidates: candidates.filter { resolutions[$0.id] == nil }, resolutions: resolutions, uncertainSourceIDs: uncertain, resolutionEvidence: resolutionEvidence)
     }
 
