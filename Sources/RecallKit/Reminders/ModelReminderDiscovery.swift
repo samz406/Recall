@@ -251,7 +251,7 @@ public struct ModelReminderDiscovery: Sendable {
         逐项判断是谁说的、谁负责、对象是什么、是否已做完、是否有条件、期限到底指什么。资料、文章观点、AI建议、示例、错误提示、发布日期、提交记录、界面文字不能变成待办。用户发给AI的操作要求是AI负责的工作，不是用户承诺；不能把“你帮我提交代码”变成用户待办。
         commitment 仅用于本人明确承诺；request 仅用于对方明确向当前用户提出的请求，不能把对方说“我要做”或第三方请求当成用户任务。角色 unknown 不猜成 user。request 不代表用户已经答应。
         检查完整对话及后续完成/取消证据，不从“没有后续截图”推断未完成。不同应用或会话不能靠相似措辞合并；会话标题和采集时间不足以证明是同一次事情。
-        仅保留 owner=user、status=pending、没有未满足条件的完整行动。title 是完整短句，概括动作和具体对象（5–100字），detail 补充必要背景（4–600字），不可重复标题、输出残句或“这个需要处理”。
+        仅保留 owner=user、status=pending、没有未满足条件的完整行动。title 是完整短句，概括动作和具体对象（5–100字）。detail 仅补充额外背景（最多600字），没有补充内容就用空字符串，不重复标题。不可输出残句或“这个需要处理”。
         deadline 只逐字保留原文真正的期限，包含证据；消息时间、文章发布日期、提交时间不是截止时间。不补09:00，不推测日期，没有则null。recurrence: none/daily/weekly/monthly，必须有原文依据。
         existingID 只在证据明确指向 pending 中同一事项同一次发生时填其原UUID，否则null。resolutions 仅关闭 pending 中明确完成、取消或原本不是用户行动的事项；status: completed/cancelled/notAction。不能因本段未提到它就关闭。
         handled 是已经安排或处理过的事项，同一次发生不要重新提出；已忽略的相同事项不要换个标题重新推荐。明确的新一次发生才可创建新候选。不可修改 handled。
@@ -270,7 +270,7 @@ public struct ModelReminderDiscovery: Sendable {
                 try Task.checkCancellation(); try await beforeCall()
                 let auditPrompt = """
                 独立核对待办草稿，不接受第一轮的解释。核对原文：用户是否真正负责、行动是否具体、对方请求是否针对当前用户、是否仍未完成、条件是否被遗漏。文章/AI建议/引用/发布日期/系统提示不能成为任务。request不是用户已承诺。
-                关闭项必须有同一事项同一次发生的明确后续证据；其他人的完成、不相关会话、采集时间不能证明关闭。期限和周期必须有原文。title/detail必须完整且不重复。handled中的同一次事项不能换个标题重新提出。允许否决全部。
+                关闭项必须有同一事项同一次发生的明确后续证据；其他人的完成、不相关会话、采集时间不能证明关闭。期限和周期必须有原文。title须是完整行动；detail可为空，非空时不能重复标题。handled中的同一次事项不能换个标题重新提出。允许否决全部。
                 对所有主block复核，漏掉的重要可执行事项返回missedBlockIDs；checkedBlockIDs返回全部主ID。仅返回通过的草稿ID，不生成新ID。
                 JSON：{"actionIDs":[],"reminderIDs":[],"checkedBlockIDs":[],"missedBlockIDs":[]}。草稿：
                 \(try Self.json(draft))
@@ -345,6 +345,7 @@ public struct ModelReminderDiscovery: Sendable {
         for raw in rawActions {
             var row = raw as? [String: Any] ?? [:]
             if row["recurrence"] == nil || row["recurrence"] is NSNull { row["recurrence"] = "none" }
+            if row["detail"] == nil || row["detail"] is NSNull { row["detail"] = "" }
             guard let data = rowData(row), var action = try? JSONDecoder().decode(Action.self, from: data) else { reject(raw); continue }
             action.title = action.title.replacingOccurrences(of: "**", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
             action.detail = action.detail.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -6,7 +6,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR="${1:?Usage: compile-app-icon.sh OUTPUT_DIR}"
 mkdir -p "$OUTPUT_DIR"
 cp "$ROOT_DIR/Resources/AppIcon.icns" "$OUTPUT_DIR/AppIcon.icns"
-XCODE_MAJOR="$(xcodebuild -version 2>/dev/null | awk '/^Xcode / {split($2, version, "."); print version[1]}')"
+XCODE_INFO="$(xcodebuild -version 2>/dev/null || true)"
+XCODE_MAJOR="$(awk '/^Xcode / {split($2, version, "."); print version[1]}' <<< "$XCODE_INFO")"
 if [[ -z "$XCODE_MAJOR" || "$XCODE_MAJOR" -lt 26 ]]; then
     echo "Using legacy ICNS icon (Xcode 26+ enables the system-masked icon)."
     exit 0
