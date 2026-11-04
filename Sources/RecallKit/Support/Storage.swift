@@ -338,6 +338,7 @@ public actor FileMemoryStore {
             }
             state = restoredState
         } else {
+            guard ArchiveReliability.backups(storage).isEmpty else { throw ArchiveReliabilityError.missingPrimary }
             state = RecallState()
             try Self.write(state, encoder: encoder, to: storage.stateURL, requireMissing: true)
         }

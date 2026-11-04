@@ -3,9 +3,11 @@ import CryptoKit
 import Darwin
 
 public enum ArchiveReliabilityError: LocalizedError {
-    case busy, changedExternally, invalidBackup, unsupportedVersion
+    case busy, changedExternally, invalidBackup, invalidArchive, missingPrimary, unsupportedVersion
     public var errorDescription: String? {
         switch self {
+        case .invalidArchive: RecallLocalization.both("本地档案结构不完整，原始文件已保留。", "The local archive is incomplete. The original file is preserved.")
+        case .missingPrimary: RecallLocalization.both("原始档案缺失，请从已校验的备份恢复。", "The primary archive is missing. Restore a verified backup.")
         case .busy: RecallLocalization.both("记忆库正被另一项操作使用，请稍后重试。", "The archive is busy. Please retry shortly.")
         case .changedExternally: RecallLocalization.both("记忆库已被其他进程修改。请重新打开应用，以免覆盖新记录。", "Another process changed the archive. Reopen Recall to avoid overwriting newer records.")
         case .invalidBackup: RecallLocalization.both("备份校验失败，原始文件未修改。", "Backup validation failed. The original file was not changed.")
@@ -31,6 +33,8 @@ public enum ArchiveReliability {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         let state = try decoder.decode(RecallState.self, from: data)
         guard (1...2).contains(state.schemaVersion) else { throw ArchiveReliabilityError.unsupportedVersion }
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard object?["captures"] is [Any] else { throw ArchiveReliabilityError.invalidArchive }
         return state
     }
     static func directory(_ storage: RecallStorage) -> URL { storage.rootURL.appendingPathComponent("Recovery", isDirectory: true) }

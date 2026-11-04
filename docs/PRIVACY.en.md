@@ -33,3 +33,11 @@ There is no network listener, write tool, screenshot tool or credential tool. Se
 The sample uses synthetic in-memory records and prebuilt answers, never your private archive, a live model, real notifications or personalisation. Diagnostic logs contain safe operation states, error categories and counts. They exclude OCR, conversations, screenshots and credentials.
 
 Signing, downloadable installers and automatic updates are outside this development scope.
+
+## Archive reliability and retention
+
+Recall keeps one checksum-validated local mirror of the current state, without API keys or screenshot copies. A corrupt primary opens a recovery screen rather than blank memory. Recovery is explicit and isolates the damaged bytes first. The mirror is not version history or protection against loss of the whole disk. Managed legacy copies and damaged archives are removed when content is withdrawn; file cleanup failures are queued, visible and retried. Copies you make yourself, OS backups, clipboard and exported data remain outside that cleanup boundary.
+
+Ordinary text defaults to 90 days, screenshots to 7 days. Record management controls the periods. A record-detail switch can keep important text indefinitely without retaining its screenshots indefinitely. Explicit deletion overrides this switch.
+
+Cloud Ask drafts receive a separate bounded verification request using already authorised text. Unsupported claims are omitted independently; verification failures show source excerpts instead of unverified drafts. No usable evidence means a local explanation, not a model-created factual answer. Model and OCR accuracy remain imperfect.

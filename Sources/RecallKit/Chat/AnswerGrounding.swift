@@ -33,7 +33,7 @@ public struct AnswerGrounding: Sendable {
             let text = PrivacyEngine().redact(record.correctedText ?? record.ocrText)
             guard used < 24_000 else { return nil }
             var copy = record
-            copy.ocrText = "sourceID: \(record.id.uuidString)\n" + String(text.prefix(min(4_000, 24_000 - used)))
+            copy.ocrText = "sourceID: \(record.id.uuidString) | capturedAt: \(ISO8601DateFormatter().string(from: record.createdAt))\n" + String(text.prefix(min(4_000, 24_000 - used)))
             copy.imageRelativePath = nil; copy.manualMatter = nil
             used += copy.ocrText.count
             return copy
@@ -52,15 +52,27 @@ public struct AnswerGrounding: Sendable {
             let response = try await responder.answerCancellably(to: request)
             var body = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if body.hasPrefix("```") { body = body.replacingOccurrences(of: "```json", with: "").replacingOccurrences(of: "```", with: "") }
-            let audit = try JSONDecoder().decode(Audit.self, from: Data(body.utf8))
-            return validate(audit.claims, records: candidates, bindings: state.workflow.identityBindings)
+            let object = try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any]
+            guard let rows = object?["claims"] as? [Any] else { return fallback(records: candidates) }
+            let claims = rows.prefix(24).compactMap { row -> Claim? in
+                guard JSONSerialization.isValidJSONObject(row), let data = try? JSONSerialization.data(withJSONObject: row) else { return nil }
+                return try? JSONDecoder().decode(Claim.self, from: data)
+            }
+            var result = validate(claims, records: candidates, bindings: state.workflow.identityBindings)
+            let malformed = rows.count - claims.count
+            if malformed > 0 {
+                if result.rejectedCount == 0 { result.content += "\n\n" + RecallLocalization.both("部分结论依据不足，已省略。", "Some claims lacked support and were omitted.") }
+                result.rejectedCount += malformed
+            }
+            if records.count < candidates.count { result.content += "\n\n" + RecallLocalization.both("本次仅核对了部分记录，未覆盖的内容不作结论。", "Only part of the retrieved material was checked; no conclusions are made about the rest.") }
+            return result
         } catch is CancellationError { throw CancellationError() }
         catch { return fallback(records: candidates) }
     }
 
     public static func validate(_ claims: [Claim], records: [CaptureRecord], bindings: [IdentityBinding] = []) -> Result {
         let byID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
-        var accepted: [String] = [], sources: [UUID] = [], rejected = 0
+        var accepted: [String] = [], sources: [UUID] = [], rejected = max(0, claims.count - 24)
         for claim in claims.prefix(24) {
             let statement = claim.statement.trimmingCharacters(in: .whitespacesAndNewlines)
             let references = claim.evidence
@@ -75,13 +87,17 @@ public struct AnswerGrounding: Sendable {
                   }) else { rejected += 1; continue }
             let quotes = references.map(\.quote).joined(separator: "\n")
             let personal = claim.actor == "user" || statement.range(of: #"(?:你|本人|我(?:已|将|会|完成|负责)|\byou\b|\bI\s+(?:will|have|did))"#, options: [.regularExpression, .caseInsensitive]) != nil
-            if personal && !references.contains(where: { item in
+            if personal && !references.allSatisfy({ item in
                 guard let source = byID[item.sourceID] else { return false }
                 return SourceNormalizer.messages(for: source, bindings: bindings).contains { $0.speaker == .user && !$0.isReference && $0.text.contains(item.quote) }
             }) { rejected += 1; continue }
             // A successful sub-step cannot promote the entire task to complete, remove a condition, or invent a date.
             let uncertain = #"尚未|未完成|未上线|没有完成|还没|待确认|如果|若|等.*后|not yet|not completed|not deployed|\bif\b|pending|waiting"#
-            if claim.status == "completed", quotes.range(of: uncertain, options: [.regularExpression, .caseInsensitive]) != nil { rejected += 1; continue }
+            let assertsCompletion = claim.status == "completed" || statement.range(of: #"已完成|完成了|已经完成|already completed|has completed|have completed"#, options: [.regularExpression, .caseInsensitive]) != nil
+            if assertsCompletion, quotes.range(of: uncertain, options: [.regularExpression, .caseInsensitive]) != nil { rejected += 1; continue }
+            let condition = #"如果|若|等.*后|\bif\b|provided that|after approval"#
+            if claim.status == "pending", quotes.range(of: condition, options: [.regularExpression, .caseInsensitive]) != nil,
+               statement.range(of: condition, options: [.regularExpression, .caseInsensitive]) == nil { rejected += 1; continue }
             let assertedRelease = #"已上线|已发布|已部署|已经上线|already deployed|has been deployed|released to production"#
             if statement.range(of: assertedRelease, options: [.regularExpression, .caseInsensitive]) != nil,
                quotes.range(of: assertedRelease, options: [.regularExpression, .caseInsensitive]) == nil { rejected += 1; continue }

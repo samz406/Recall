@@ -25,6 +25,12 @@ enum MemoryReliabilityVerification {
         try await store.addCapture(source)
         let backups = ArchiveReliability.backups(storage)
         try expect(backups.count == 1 && backups[0].captureCount == 1, "A valid latest mirror was not created")
+        try FileManager.default.removeItem(at: storage.stateURL)
+        do { _ = try verificationStore(storage: storage); throw Failure(errorDescription: "Missing primary silently became blank memory") }
+        catch ArchiveReliabilityError.missingPrimary {}
+        try ArchiveReliability.restore(backups[0], storage: storage)
+        do { _ = try ArchiveReliability.decode(Data("{}".utf8)); throw Failure(errorDescription: "Incomplete JSON became blank memory") }
+        catch ArchiveReliabilityError.invalidArchive {}
         let damaged = Data("{broken-primary".utf8)
         try damaged.write(to: storage.stateURL, options: .atomic)
         do { _ = try verificationStore(storage: storage); throw Failure(errorDescription: "A corrupt archive was opened as blank memory") }
@@ -136,6 +142,9 @@ enum MemoryReliabilityVerification {
         var visibleDraft = false
         let answer = try await MemoryAssistant(store: store).ask("Atlas 是否上线", model: model, onPartial: { _ in visibleDraft = true })
         try expect(!answer.content.contains("Atlas 已上线") && answer.content.contains("尚未上线") && !visibleDraft, "Unverified completion was displayed")
+        let mixed = ReliabilityModel(source: source, mixedAudit: true)
+        let repaired = try await MemoryAssistant(store: store).ask("Atlas 是否上线", model: mixed)
+        try expect(repaired.content.contains("测试通过，尚未上线") && repaired.content.contains("已省略"), "One malformed audit row discarded valid claims")
         let badAudit = ReliabilityModel(source: source, invalidAudit: true)
         let fallback = try await MemoryAssistant(store: store).ask("Atlas 是否上线", model: badAudit)
         try expect(fallback.content.contains("原文") && fallback.content.contains("尚未上线"), "Invalid audit did not fall back to source excerpts")
@@ -154,15 +163,22 @@ enum MemoryReliabilityVerification {
 private actor ReliabilityModel: LLMResponding {
     let source: CaptureRecord
     let invalidAudit: Bool
+    let mixedAudit: Bool
     let revoke: FileMemoryStore?
     var calls = 0
-    init(source: CaptureRecord, invalidAudit: Bool = false, revoke: FileMemoryStore? = nil) { self.source = source; self.invalidAudit = invalidAudit; self.revoke = revoke }
+    init(source: CaptureRecord, invalidAudit: Bool = false, mixedAudit: Bool = false, revoke: FileMemoryStore? = nil) { self.source = source; self.invalidAudit = invalidAudit; self.mixedAudit = mixedAudit; self.revoke = revoke }
     func answer(to request: LLMRequest) async throws -> LLMAnswer {
         calls += 1
         if request.purpose == .answerVerification {
             if invalidAudit { return LLMAnswer(content: "not-json", citedCaptureIDs: []) }
             let claim = AnswerGrounding.Claim(statement: "Atlas 测试通过，尚未上线", actor: "user", evidence: [.init(sourceID: source.id, quote: source.ocrText)])
             let data = try JSONEncoder().encode(["claims": [claim]])
+            if mixedAudit {
+                var object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+                object["claims"] = (object["claims"] as! [Any]) + [["statement": "malformed", "evidence": [["sourceID": "not-a-uuid"]]]]
+                let mixed = try JSONSerialization.data(withJSONObject: object)
+                return LLMAnswer(content: String(decoding: mixed, as: UTF8.self), citedCaptureIDs: [])
+            }
             return LLMAnswer(content: String(decoding: data, as: UTF8.self), citedCaptureIDs: [])
         }
         if let revoke { try await revoke.updatePrivacy(PrivacySettings(cloudUseEnabled: false)) }

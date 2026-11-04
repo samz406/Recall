@@ -39,7 +39,8 @@ final class RecallStartupController: ObservableObject {
             failure = nil
         } catch {
             failure = error.localizedDescription
-            if let storage { backups = await Task.detached(priority: .utility) { ArchiveReliability.backups(storage) }.value }
+            if case ArchiveReliabilityError.unsupportedVersion = error { backups = [] }
+            else if let storage { backups = await Task.detached(priority: .utility) { ArchiveReliability.backups(storage) }.value }
         }
     }
     func restore(_ backup: ArchiveBackup) async {
