@@ -69,6 +69,9 @@ struct MemoryReadTools: Sendable {
         if let textIndex {
             chosen = textIndex.ids(matching: QuestionTerms.topicTerms(question), limit: limit).compactMap { byID[$0] }
         }
+        if chosen.isEmpty {
+            chosen = MemorySearchEngine().search(MemorySearchQuery(text: question), in: allowed, limit: limit).map(\.capture)
+        }
         var aliases: [UUID: [UUID]] = [:]
         if chosen.count < 4, let range = MemoryTimeRangeResolver().resolve(question, calendar: calendar) {
             let reviews = allowedReviews().filter { $0.day >= range.startDate && $0.day <= range.endDate }

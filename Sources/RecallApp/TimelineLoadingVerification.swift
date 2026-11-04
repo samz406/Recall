@@ -43,7 +43,7 @@ extension RecallLayoutPreviews {
         var corrected = retained; corrected[0].summary = "经过用户纠正的合成说明"
         workspace.update(captures: corrected); try await waitForTimeline(workspace)
         guard workspace.result.captures.first?.summary == corrected[0].summary else { throw TimelineLoadingFailure.failed("同 ID 更正未刷新") }
-        let model = RecallAppModel(previewState: RecallState())
+        let model = try RecallAppModel(previewState: RecallState())
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         model.state.captures = records
         try await waitForTimeline(model.timelineWorkspace)

@@ -334,6 +334,7 @@ struct PrivacyAndModelView: View {
                             } label: {
                                 HStack { Text(RecallLocalization.text("本地诊断")).fontWeight(.semibold); Spacer(); Text("当前 \(model.diagnosticEntries.count) 条").font(.caption).foregroundStyle(RecallPalette.secondary) }
                             }.recallSurface().id("本地诊断")
+                            LocalArchiveSafetyCard().environmentObject(model)
                             DisclosureGroup(RecallLocalization.text("最近删除与忽略规则"), isExpanded: $showsGovernance) { memoryGovernanceSection.padding(.top, 14) }.recallSurface()
                             HStack {
                                 VStack(alignment: .leading, spacing: 5) {
@@ -341,7 +342,7 @@ struct PrivacyAndModelView: View {
                                     Text(RecallLocalization.text("清空全部内容后无法恢复。")).font(.caption).foregroundStyle(RecallPalette.secondary)
                                 }
                                 Spacer()
-                                Button(RecallLocalization.text("删除全部本地记忆"), role: .destructive) { isConfirmingClearAll = true }
+                                Button(RecallLocalization.text("删除全部本地记忆"), role: .destructive) { isConfirmingClearAll = true }.disabled(model.isClearingAllData)
                             }.padding(16)
                         }.padding(.bottom, 24)
                         }

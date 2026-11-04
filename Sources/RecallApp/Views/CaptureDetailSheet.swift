@@ -54,6 +54,12 @@ struct CaptureDetailSheet: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
                     }
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle(RecallLocalization.both("长期保留这条文字记录", "Keep this text record"), isOn: Binding(
+                            get: { model.state.captures.first { $0.id == capture.id }?.keepTextIndefinitely == true },
+                            set: { model.setKeepText(capture.id, enabled: $0) }))
+                        Text(RecallLocalization.both("不受文字保留期限限制；截图仍按原期限清理。手动删除仍然有效。", "Exempt from text expiry. Screenshots still follow their retention period, and you can delete this record anytime.")).font(.caption).foregroundStyle(RecallPalette.secondary)
+                    }
                     CaptureUnderstandingDetailView(captureID: capture.id).environmentObject(model)
                     VStack(alignment: .leading, spacing: 10) {
                         Text(RecallLocalization.text("内容摘要")).font(.headline)

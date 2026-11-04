@@ -35,6 +35,10 @@ enum AskAgent {
         onStep: (@MainActor @Sendable (String, Int) -> Void)? = nil,
         now: Date = .now
     ) async throws -> AskTranscript {
+        let scoped = scope.applying(to: state)
+        guard !EvidenceAccess.records(scoped).filter({ record in scoped.rules.first { $0.template == record.eventTemplate }?.participatesInChat ?? true }).isEmpty else {
+            return AskTranscript(content: AnswerGrounding.noEvidence, citations: [], inspectedSourceIDs: [])
+        }
         let tools = MemoryReadTools(state: state, scope: scope, textIndex: textIndex)
         let snippets = tools.preliminary(question: question)
         var shown = snippets.map(\.record)
@@ -64,8 +68,9 @@ enum AskAgent {
             switch decision {
             case let .answer(text, citations):
                 let cleaned = sanitize(text, citations: citations, ordered: shown.map(\.id), allowed: allowed, aliases: aliases)
-                if let onPartial { await onPartial(cleaned.content) }
-                return AskTranscript(content: cleaned.content, citations: cleaned.citations, inspectedSourceIDs: inspected.memoryUnique())
+                let checked = try await AnswerGrounding.verify(draft: cleaned.content, question: question,
+                    sourceIDs: cleaned.citations.isEmpty ? inspected : cleaned.citations, state: scoped, responder: responder)
+                return AskTranscript(content: checked.content, citations: checked.sourceIDs, inspectedSourceIDs: inspected.memoryUnique())
             case let .calls(calls):
                 if usedCharacters >= limits.maxResultCharacters { forceAnswer = true; break }
                 let accepted = Array(calls.prefix(limits.maxCallsPerRound))
@@ -84,15 +89,14 @@ enum AskAgent {
         )
         let response: LLMAnswer
         do {
-            response = try await responder.answerStream(to: request) { text in
-                if let onPartial { await onPartial(text) }
-            }
+            response = try await responder.answerStream(to: request) { _ in }
         } catch is CancellationError { throw CancellationError() }
         catch { throw AskAgentError.fallback }
         await onStep?("answer", milliseconds(since: started))
         let cleaned = sanitize(response.content, citations: [], ordered: shown.map(\.id), allowed: allowed, aliases: aliases)
-        if let onPartial { await onPartial(cleaned.content) }
-        return AskTranscript(content: cleaned.content, citations: cleaned.citations, inspectedSourceIDs: inspected.memoryUnique())
+        let checked = try await AnswerGrounding.verify(draft: cleaned.content, question: question,
+            sourceIDs: cleaned.citations.isEmpty ? inspected : cleaned.citations, state: scoped, responder: responder)
+        return AskTranscript(content: checked.content, citations: checked.sourceIDs, inspectedSourceIDs: inspected.memoryUnique())
     }
 
     private static func run(

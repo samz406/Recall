@@ -13,6 +13,7 @@ struct RecallVerifier {
             try await DailyReviewReminderVerification.run()
             try await PageExperienceVerification.run()
             try await AskAgentVerification.run()
+            try await MemoryReliabilityVerification.run()
             try await ChatSourceIndexVerification.run()
             try await MemoryReminderActionsVerification.run()
             try await ReviewScheduleSaveVerification.run()
@@ -97,7 +98,7 @@ struct RecallVerifier {
                 try await verifyLiveAnthropicCompatibility()
                 print("PASS: RecallVerifier completed 269 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 281 integration checks.")
+                print("PASS: RecallVerifier completed 288 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -1847,6 +1848,7 @@ struct RecallVerifier {
         try await store.updatePrivacy(PrivacySettings(cloudUseEnabled: true))
         try await store.updateLLMConfiguration(LLMConfiguration(provider: .openAICompatible, apiKey: ""))
         let probe = ChatPersistenceProbe()
+        try await store.addCapture(makeCapture(text: "这条消息应立即显示的测试记录", app: "合成"))
 
         do {
             _ = try await MemoryAssistant(store: store).ask("这条消息应立即显示") {

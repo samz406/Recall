@@ -38,7 +38,7 @@ extension RecallLayoutPreviews {
         let firstPhase = ChatThinkingWave.heights(phase: 0), nextPhase = ChatThinkingWave.heights(phase: 0.2)
         guard firstPhase.count == 5, firstPhase != nextPhase,
               (firstPhase + nextPhase).allSatisfy({ $0.isFinite && (4...13).contains($0) }) else { throw ChatSourceFailure.failed("波形不是连续、有界的五段状态") }
-        let model = RecallAppModel(previewState: RecallState())
+        let model = try RecallAppModel(previewState: RecallState())
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         model.state = RecallState(captures: Array(records.suffix(452)))
         let host = NSHostingView(rootView: ChatSourcesPopover(workspace: model.chatSources, citations: ids, onOpen: { _ in })

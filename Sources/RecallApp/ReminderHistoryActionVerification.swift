@@ -4,7 +4,7 @@ import RecallKit
 extension RecallLayoutPreviews {
     @MainActor static func verifyReminderHistoryActions() async throws {
         let history = ReminderCandidate(title: "核对合成文档", detail: "合成 UI 操作验收", confidence: 1, status: .dismissed, origin: .manual)
-        let model = RecallAppModel(previewState: RecallState(reminders: [history]))
+        let model = try RecallAppModel(previewState: RecallState(reminders: [history]))
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         let stateURL = model.storage.stateURL, backup = stateURL.appendingPathExtension("backup")
         try FileManager.default.moveItem(at: stateURL, to: backup)

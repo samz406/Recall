@@ -36,6 +36,9 @@ final class RecallAppModel: ObservableObject {
     let captureFeedback = CaptureFeedbackPresenter()
     var shortcutConfigurationID: String?
     var isRecordingShortcut = false
+    @Published var archiveBackupPending = false
+    @Published var pendingFileCleanupCount = 0
+    @Published var isClearingAllData = false
     @Published var credentialMaintenanceWarning: String?
     @Published var shortcutsReady = false
     @Published var openAskRequested = false
@@ -134,12 +137,13 @@ final class RecallAppModel: ObservableObject {
     private var reminderActionObserver: NSObjectProtocol?
     private var appActiveObserver: NSObjectProtocol?
 
-    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil) {
+    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil, storageOverride: RecallStorage? = nil) throws {
         self.isPreview = previewState != nil
         self.reminderCreationScheduler = reminderCreationScheduler ?? LocalNotificationScheduler()
         do {
             let storage: RecallStorage
-            if previewState == nil { storage = try RecallStorage() }
+            if let storageOverride { storage = storageOverride }
+            else if previewState == nil { storage = try RecallStorage() }
             else { storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-layout-" + UUID().uuidString)) }
             if let previewState {
                 let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
@@ -217,7 +221,7 @@ final class RecallAppModel: ObservableObject {
                 try? notificationScheduler.configureReminderActions()
             }
         } catch {
-            fatalError("无法初始化本地记忆库：\(error.localizedDescription)")
+            throw error
         }
     }
 
@@ -338,7 +342,9 @@ final class RecallAppModel: ObservableObject {
     private func armRecentlyDeletedTimer() {
         recentlyDeletedTimer?.invalidate()
         recentlyDeletedTimer = nil
-        guard let expiry = state.recentlyDeletedMemories.map(\.expiresAt).min() else { return }
+        let expiry = state.recentlyDeletedMemories.map(\.expiresAt).min()
+        let pending = !(state.pendingFileDeletions ?? []).isEmpty || state.pendingRecoveryCleanup == true
+        guard let expiry = expiry ?? (pending ? Date.now : nil) else { return }
         let now = Date.now
         let nextAttempt = expiry <= now ? max(now, recentlyDeletedRetryAfter ?? now) : expiry
         recentlyDeletedTimer = Timer.scheduledTimer(withTimeInterval: max(1, nextAttempt.timeIntervalSince(now)), repeats: false) { [weak self] _ in
@@ -355,7 +361,15 @@ final class RecallAppModel: ObservableObject {
         }
         do {
             let count = try await store.purgeExpiredRecentlyDeleted()
-            recentlyDeletedRetryAfter = nil
+            let cleanup = try await store.retryPendingFileCleanup()
+            pendingFileCleanupCount = cleanup.pendingCount
+            if cleanup.pendingCount > 0 {
+                recentlyDeletedRetryAfter = Date.now.addingTimeInterval(60)
+                recordDiagnostic(.warning, source: "MemoryGovernance", message: "文件清理未完成，将自动重试", metadata: ["pendingCount": String(cleanup.pendingCount)])
+            }
+            archiveBackupPending = await store.backupPending
+            state = await store.snapshot()
+            if cleanup.pendingCount == 0 { recentlyDeletedRetryAfter = nil }
             if count > 0 {
                 state = await store.snapshot()
                 if let undo = deletionUndoNotice, undo.expiresAt <= .now { deletionUndoNotice = nil }
@@ -1792,17 +1806,29 @@ final class RecallAppModel: ObservableObject {
     }
 
     func clearAllData() {
-        let reminders = state.reminders
+        guard !isClearingAllData else { return }
+        isClearingAllData = true
+        stopChat()
+        cancelDailyReview()
+        cancelWeeklyReview()
+        cancelReminderDiscovery()
+        captureUnderstandingTask?.cancel()
+        summaryFeedbackTask?.cancel()
+        memoryMaintenanceTask?.cancel()
+        topicReviewTask?.cancel()
         Task {
+            defer { isClearingAllData = false }
             do {
-                notificationScheduler.cancelAll(reminders)
+                let reminders = state.reminders
                 try await store.clearAllMemoryData()
+                notificationScheduler.cancelAll(reminders)
+                await cleanupExpiredRecentlyDeleted()
                 await refresh()
                 deletionUndoNotice = nil
-                noticeMessage = "已删除全部本地记忆记录。"
-            } catch {
-                recordError(error, source: "Data", message: "清除本地数据失败")
-            }
+                noticeMessage = pendingFileCleanupCount == 0
+                    ? RecallLocalization.both("已删除全部本地记忆记录和应用管理的备份。", "Local memory and app-managed backups have been cleared.")
+                    : RecallLocalization.both("记忆已移除，仍有文件待清理。将自动重试，也可在设置中重试。", "Memory is removed. Some files still need cleanup; Recall will retry. You can also retry in Settings.")
+            } catch { recordError(error, source: "Data", message: "清除本地数据失败") }
         }
     }
 }

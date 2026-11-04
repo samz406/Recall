@@ -278,7 +278,8 @@ public final class CapturePipeline {
         record.meetingSessionID = meetingID
         record.sourceMessages = SourceNormalizer.messages(for: record, bindings: currentState.workflow.identityBindings)
         let latest = await store.snapshot()
-        guard privacyEngine.decision(for: payload.sourceBundleIdentifier, settings: latest.privacy).mayCapture,
+        guard latest.dataGeneration == currentState.dataGeneration,
+              privacyEngine.decision(for: payload.sourceBundleIdentifier, settings: latest.privacy).mayCapture,
               latest.rules.first(where: { $0.id == rule.id })?.isEnabled != false else {
             if let path = imageRelativePath { try? FileManager.default.removeItem(at: storage.rootURL.appendingPathComponent(path)) }
             throw CapturePipelineError.captureExcluded("采集设置已变化，未保存记录。")

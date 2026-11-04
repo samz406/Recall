@@ -82,7 +82,7 @@ enum RecallLayoutPreviews {
         try await verifyChatSources()
         try await verifyMemoryReminderActions()
         try await verifyReviewScheduleSave()
-        let model = RecallAppModel(previewState: try await fixture())
+        let model = try RecallAppModel(previewState: try await fixture())
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(10)) }
         let defaults = UserDefaults(suiteName: "im.recall.synthetic-layout")!
