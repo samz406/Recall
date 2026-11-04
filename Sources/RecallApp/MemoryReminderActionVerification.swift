@@ -50,7 +50,8 @@ extension RecallLayoutPreviews {
         guard model.experienceHint == nil else { throw MemoryReminderFailure.failed("点击后同一经验仍在其他主题显示") }
         try await waitForDismissal(model)
         let reopened = try FileMemoryStore(storage: model.storage, credentials: InMemoryCredentialStore())
-        guard hint.isDismissed(using: await reopened.snapshot().dismissedExperienceIDs), model.noticeMessage?.contains("已关闭") == true else {
+        guard hint.isDismissed(using: await reopened.snapshot().dismissedExperienceIDs),
+              model.noticeMessage == RecallLocalization.both("已关闭这条历史经验提示。", "This historical suggestion has been dismissed.") else {
             throw MemoryReminderFailure.failed("关闭状态没有保存或没有反馈")
         }
         // Make persistence fail, then ensure the optimistic removal returns instead of claiming success.
@@ -59,7 +60,8 @@ extension RecallLayoutPreviews {
         let backup = try blockStateFile(model.storage)
         model.dismissExperience(other)
         try await waitForDismissal(model)
-        guard !other.isDismissed(using: model.state.dismissedExperienceIDs), model.noticeMessage?.contains("未能保存") == true else {
+        guard !other.isDismissed(using: model.state.dismissedExperienceIDs),
+              model.noticeMessage == RecallLocalization.both("未能保存关闭操作，请重试。", "Unable to save the dismissal. Please try again.") else {
             throw MemoryReminderFailure.failed("失败的关闭操作没有回滚和提示")
         }
         try restoreStateFile(model.storage, backup: backup)
@@ -76,16 +78,18 @@ extension RecallLayoutPreviews {
         let model = RecallAppModel(previewState: RecallState(), reminderCreationScheduler: probe)
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         let store = model.store
+        var verifiedDraft = false
         probe.onRequest = {
             let current = await store.snapshot()
             guard current.reminders.count == 1, current.reminders[0].status == .proposed, current.reminders[0].detail == "完整的合成说明" else {
                 throw MemoryReminderFailure.failed("通知授权前没有先持久保存手动内容")
             }
+            verifiedDraft = true
         }
         let result = try await model.createReminder(title: "  核对合成验收  ", detail: "完整的合成说明", dueAt: .now.addingTimeInterval(86_400), recurrence: .weekly)
         let reopened = try FileMemoryStore(storage: model.storage, credentials: InMemoryCredentialStore()), persisted = await reopened.snapshot()
         let succeeds = permission == .allowed && !queueFails
-        guard persisted.reminders.count == 1, persisted.reminders[0].id == result.reminder.id,
+        guard verifiedDraft, persisted.reminders.count == 1, persisted.reminders[0].id == result.reminder.id,
               result.reminder.status == (succeeds ? .scheduled : .proposed), result.reminder.origin == .manual,
               result.reminder.recurrence == .weekly, result.reminder.title == "核对合成验收",
               result.reminder.sourceCaptureIDs.isEmpty, (result.notificationIssue == nil) == succeeds else {
