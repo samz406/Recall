@@ -10,18 +10,18 @@ extension RecallLayoutPreviews {
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(5)) }
         let revision = model.memoryWorkspace?.revision
-        let before = await model.store.snapshot()
+        // Compare the displayed snapshot to itself. The store's ISO-8601 decoder rounds
+        // synthetic subsecond dates; metadata saves must not replace the UI's capture array.
+        let before = model.state
         let plan = ReviewSchedule(template: ReviewTemplate(kind: .personal))
         let started = Date.now
         guard await model.saveReviewSchedule(plan) else { throw ScheduleSaveFailure.failed("页面保存计划失败") }
         let elapsed = Int(Date.now.timeIntervalSince(started) * 1_000)
-        guard !model.isBuildingMatters, model.memoryWorkspace?.revision == revision,
-              model.savingReviewScheduleIDs.isEmpty, !model.isGeneratingWeeklyReview,
-              model.state.captures == before.captures,
-              model.state.reviewSchedules.first?.id == plan.id,
-              model.diagnosticEntries.allSatisfy({ $0.level != .error }) else {
-            throw ScheduleSaveFailure.failed("保存仍触发了记忆整理、生成回顾、通知授权或遗留了保存状态")
-        }
+        guard !model.isBuildingMatters, model.memoryWorkspace?.revision == revision else { throw ScheduleSaveFailure.failed("保存重新整理了记忆投影") }
+        guard model.savingReviewScheduleIDs.isEmpty, !model.isGeneratingWeeklyReview else { throw ScheduleSaveFailure.failed("保存状态未解除或立即生成了回顾") }
+        guard model.state.captures == before.captures else { throw ScheduleSaveFailure.failed("元数据保存替换了界面上的原始记录") }
+        guard model.state.reviewSchedules.first?.id == plan.id else { throw ScheduleSaveFailure.failed("保存成功后页面没有计划") }
+        guard model.diagnosticEntries.allSatisfy({ $0.level != .error }) else { throw ScheduleSaveFailure.failed("未选通知仍请求权限或保存过程报错") }
         let reopened = try FileMemoryStore(storage: model.storage, deferMaintenance: true, credentials: InMemoryCredentialStore())
         guard await reopened.snapshot().reviewSchedules.first?.id == plan.id else { throw ScheduleSaveFailure.failed("页面显示保存但重启后计划丢失") }
 
