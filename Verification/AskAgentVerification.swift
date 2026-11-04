@@ -11,7 +11,7 @@ enum AskAgentVerification {
 
     static func run() async throws {
         try streamLines()
-        try await directAnswerKeepsOneRequest()
+        try await directAnswerIncludesVerification()
         try await toolsThenAnswerDropFakeCitations()
         try await unauthorizedReadsStayLocal()
         try await tooManyCallsForceAnAnswer()
@@ -39,7 +39,7 @@ enum AskAgentVerification {
         try expect(ModelStreamDecoder.consume(stop, into: &anthropic), "Anthropic 结束标记没有收束")
     }
 
-    private static func directAnswerKeepsOneRequest() async throws {
+    private static func directAnswerIncludesVerification() async throws {
         let (storage, store, capture) = try await fixture("AtlasScopeToken was saved")
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
         let before = await store.snapshot().memoryKnowledge.updatedAt
@@ -50,7 +50,7 @@ enum AskAgentVerification {
         var steps: [String] = []
         let answer = try await MemoryAssistant(store: store).ask("AtlasScopeToken", model: script, onStep: { name, _ in steps.append(name) })
         let purposes = await script.recorded().map(\.purpose)
-        try expect(purposes == [.chatPlanning, .answerVerification], "第一轮能回答时仍继续请求模型")
+        try expect(purposes == [.chatPlanning, .answerVerification], "直接回答应只增加一次事实核验")
         try expect(answer.content.contains("AtlasScopeToken") && answer.citations == [capture.id], "第一轮回答没有保留已出现的来源")
         let after = await store.snapshot().memoryKnowledge.updatedAt
         try expect(after == before, "提问重算了记忆账本")

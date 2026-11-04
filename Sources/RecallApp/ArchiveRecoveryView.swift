@@ -26,7 +26,7 @@ final class RecallStartupController: ObservableObject {
         defer { isWorking = false }
         await Task.yield()
         do {
-            if CommandLine.arguments.contains("--layout-previews") { model = try RecallAppModel(previewState: RecallState()); return }
+            if self.storage == nil && CommandLine.arguments.contains("--layout-previews") { model = try RecallAppModel(previewState: RecallState()); return }
             let storage = try self.storage ?? RecallStorage()
             self.storage = storage
             if !FileManager.default.fileExists(atPath: storage.stateURL.path) {
