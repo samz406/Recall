@@ -244,6 +244,7 @@ public enum RecallLocalization {
         "补充说明（可选）": "Additional details (optional)",
         "创建提醒": "Create reminder",
         "提醒来源": "Reminder sources",
+        "提醒时间": "Reminder time",
         "查看已保存记录": "View saved records",
         "仅在 Recall 不在前台时触发；不会拦截按键。需要输入监控、辅助功能和屏幕录制权限。": "Runs only outside Recall and does not consume keystrokes. Requires Input Monitoring, Accessibility and Screen Recording permissions.",
         "检查跨应用权限": "Check cross-app permissions",

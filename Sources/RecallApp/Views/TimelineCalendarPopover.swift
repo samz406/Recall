@@ -5,13 +5,16 @@ struct TimelineCalendarPopover: View {
     let selectedDay: Date
     /// Days before this one cannot be chosen (an end date cannot precede its start date).
     let earliestDay: Date?
+    /// Nil permits future dates, for reminder scheduling. Browsing still defaults to today.
+    let latestDay: Date?
     let selectDay: (Date) -> Void
     @State private var displayedMonth: Date
     @Environment(\.dismiss) private var dismiss
 
-    init(selectedDay: Date, earliestDay: Date? = nil, selectDay: @escaping (Date) -> Void) {
+    init(selectedDay: Date, earliestDay: Date? = nil, latestDay: Date? = .now, selectDay: @escaping (Date) -> Void) {
         self.selectedDay = selectedDay
         self.earliestDay = earliestDay.map { Calendar.current.startOfDay(for: $0) }
+        self.latestDay = latestDay.map { Calendar.current.startOfDay(for: $0) }
         self.selectDay = selectDay
         _displayedMonth = State(initialValue: Calendar.current.dateInterval(of: .month, for: selectedDay)?.start ?? selectedDay)
     }
@@ -30,7 +33,7 @@ struct TimelineCalendarPopover: View {
     }
     private var canMoveForward: Bool {
         guard let next = calendar.date(byAdding: .month, value: 1, to: displayedMonth) else { return false }
-        return next <= today
+        return latestDay.map { next <= $0 } ?? true
     }
     private var canMoveBack: Bool {
         guard let earliestDay else { return true }
@@ -92,7 +95,7 @@ struct TimelineCalendarPopover: View {
         let isSelected = calendar.isDate(day, inSameDayAs: selectedDay)
         let isToday = calendar.isDate(day, inSameDayAs: today)
         let isCurrentMonth = calendar.isDate(day, equalTo: displayedMonth, toGranularity: .month)
-        let isFuture = day > today
+        let isTooLate = latestDay.map { day > $0 } ?? false
         let isTooEarly = earliestDay.map { calendar.startOfDay(for: day) < $0 } ?? false
         return Button {
             selectDay(day)
@@ -101,7 +104,7 @@ struct TimelineCalendarPopover: View {
             Text("\(calendar.component(.day, from: day))")
                 .font(.system(size: 16, weight: .semibold))
                 .monospacedDigit()
-                .foregroundStyle(isSelected ? RecallPalette.onAccent : (isCurrentMonth && !isFuture && !isTooEarly ? RecallPalette.text : RecallPalette.secondary.opacity(0.6)))
+                .foregroundStyle(isSelected ? RecallPalette.onAccent : (isCurrentMonth && !isTooLate && !isTooEarly ? RecallPalette.text : RecallPalette.secondary.opacity(0.6)))
                 .frame(width: 34, height: 34)
                 .background(isSelected ? RecallPalette.accent : Color.clear, in: Circle())
                 .overlay {
@@ -113,7 +116,7 @@ struct TimelineCalendarPopover: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(isFuture || isTooEarly)
+        .disabled(isTooLate || isTooEarly)
         .accessibilityLabel(day.formatted(.dateTime.year().month().day().weekday(.wide)))
         .accessibilityValue(isSelected ? "已选择" : (isToday ? "今天" : ""))
         .help(day.formatted(date: .complete, time: .omitted))

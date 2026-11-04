@@ -14,6 +14,7 @@ struct RecallVerifier {
             try await PageExperienceVerification.run()
             try await AskAgentVerification.run()
             try await ChatSourceIndexVerification.run()
+            try await MemoryReminderActionsVerification.run()
             try await StartupLoadingVerification.run()
             try await DirectDailyReviewVerification.run()
             try KnowledgeProjectionVerification.run()
@@ -95,7 +96,7 @@ struct RecallVerifier {
                 try await verifyLiveAnthropicCompatibility()
                 print("PASS: RecallVerifier completed 269 checks, including live Anthropic compatibility.")
             } else {
-                print("PASS: RecallVerifier completed 275 integration checks.")
+                print("PASS: RecallVerifier completed 278 integration checks.")
             }
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)

@@ -90,6 +90,7 @@ final class RecallAppModel: ObservableObject {
     private var memoryMaintenanceTask: Task<Void, Never>?
     private var memoryMaintenanceAfter: Date = .distantPast
     @Published private(set) var matterBuildMessage: String?
+    @Published private(set) var dismissingExperienceIDs: Set<String> = []
     private var matterBuildTask: Task<Void, Never>?
     @Published var isRecording = false
     @Published var isThinking = false
@@ -116,6 +117,7 @@ final class RecallAppModel: ObservableObject {
     private var reminderDiscoveryTaskID: UUID?
     @Published private(set) var reminderDiscoveryProgress = ReminderDiscoveryProgress(completedRecords: 0, totalRecords: 0, phase: "准备记录")
     private let notificationScheduler = LocalNotificationScheduler()
+    private let reminderCreationScheduler: any ReminderCreationScheduling
     private let enterKeyRecorder = GlobalEnterKeyRecorder()
     private var dailySummaryTimer: Timer?
     private var recentlyDeletedTimer: Timer?
@@ -131,8 +133,9 @@ final class RecallAppModel: ObservableObject {
     private var reminderActionObserver: NSObjectProtocol?
     private var appActiveObserver: NSObjectProtocol?
 
-    init(previewState: RecallState? = nil) {
+    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil) {
         self.isPreview = previewState != nil
+        self.reminderCreationScheduler = reminderCreationScheduler ?? LocalNotificationScheduler()
         do {
             let storage: RecallStorage
             if previewState == nil { storage = try RecallStorage() }
@@ -605,7 +608,7 @@ final class RecallAppModel: ObservableObject {
         guard state.experienceHintsEnabled else { return nil }
         for file in matterFiles.filter({ $0.latest.status.isOpenMatter && !$0.needsStatusUpdate() }).prefix(3) {
             if let hint = MatterMemoryEngine().experiences(for: file, in: matterFiles)
-                .first(where: { !state.dismissedExperienceIDs.contains($0.id) }) { return hint }
+                .first(where: { !$0.isDismissed(using: state.dismissedExperienceIDs + Array(dismissingExperienceIDs)) }) { return hint }
         }
         return nil
     }
@@ -634,15 +637,24 @@ final class RecallAppModel: ObservableObject {
 
     func setExperienceHints(_ enabled: Bool) {
         Task {
-            do { try await store.setExperienceHints(enabled: enabled); await refresh() }
+            do { try await store.setExperienceHints(enabled: enabled); state.experienceHintsEnabled = enabled }
             catch { recordError(error, source: "Memory", message: "保存经验提示设置失败") }
         }
     }
 
-    func dismissExperience(_ id: String) {
+    func dismissExperience(_ hint: ExperienceHint) {
+        let id = hint.id
+        guard dismissingExperienceIDs.insert(id).inserted else { return }
         Task {
-            do { try await store.dismissExperience(id: id); await refresh() }
-            catch { recordError(error, source: "Memory", message: "关闭经验提示失败") }
+            defer { dismissingExperienceIDs.remove(id) }
+            do {
+                try await store.dismissExperience(id: id)
+                state.dismissedExperienceIDs = await store.snapshot().dismissedExperienceIDs
+                noticeMessage = RecallLocalization.both("已关闭这条历史经验提示。", "This historical suggestion has been dismissed.")
+            } catch {
+                noticeMessage = RecallLocalization.both("未能保存关闭操作，请重试。", "Unable to save the dismissal. Please try again.")
+                recordError(error, source: "Memory", message: "关闭经验提示失败")
+            }
         }
     }
 
@@ -1216,10 +1228,10 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
-    func createReminder(title: String, detail: String, dueAt: Date, recurrence: ReminderRecurrence) {
+    func createReminder(title: String, detail: String, dueAt: Date, recurrence: ReminderRecurrence) async throws -> ReminderCreationResult {
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanTitle.isEmpty, dueAt > .now else { return }
-        let reminder = ReminderCandidate(
+        guard !cleanTitle.isEmpty, dueAt > .now else { throw ReminderCreationError.invalidInput }
+        var reminder = ReminderCandidate(
             title: cleanTitle,
             detail: detail.trimmingCharacters(in: .whitespacesAndNewlines),
             dueAt: dueAt,
@@ -1234,7 +1246,41 @@ final class RecallAppModel: ObservableObject {
                     .filter { $0.isLetter || $0.isNumber }
             )
         )
-        approveReminder(reminder, dueAt: dueAt, recurrence: recurrence)
+        // Persist the user's text before asking macOS for notification permission.
+        // A denied or unavailable notification service must never lose the reminder.
+        do { try await store.updateReminder(reminder) }
+        catch {
+            recordError(error, source: "Reminders", message: "手动提醒保存失败")
+            throw ReminderCreationError.saveFailed
+        }
+        state = await store.snapshot()
+        do {
+            guard try await reminderCreationScheduler.requestAuthorization() else { throw ReminderNotificationError.authorizationRequired }
+            guard dueAt > .now else { throw ReminderCreationError.invalidInput }
+            reminder.status = .scheduled; reminder.scheduledAt = .now; reminder.updatedAt = .now
+            try await reminderCreationScheduler.schedule(reminder)
+            do {
+                var profile = await store.snapshot().reminderLearningProfile
+                profile.record(.confirmed(hour: Calendar.current.component(.hour, from: dueAt)), semanticKey: reminder.semanticKey)
+                try await store.updateReminder(reminder, learningProfile: profile)
+            }
+            catch { reminderCreationScheduler.cancel(reminder); throw ReminderCreationError.scheduleSaveFailed }
+            state = await store.snapshot()
+            let result = ReminderCreationResult(reminder: reminder, notificationIssue: nil)
+            noticeMessage = result.message
+            return result
+        } catch {
+            // The durable proposed record remains retryable under To confirm, with its date and text.
+            state = await store.snapshot()
+            guard let saved = state.reminders.first(where: { $0.id == reminder.id }) else { throw ReminderCreationError.saveFailed }
+            recordError(error, source: "Reminders", message: "手动提醒已保存，系统通知尚未安排")
+            let issue = (error as? ReminderNotificationError)?.errorDescription
+                ?? (error as? ReminderCreationError)?.errorDescription
+                ?? ReminderCreationError.scheduleSaveFailed.localizedDescription
+            let result = ReminderCreationResult(reminder: saved, notificationIssue: issue)
+            noticeMessage = result.message
+            return result
+        }
     }
 
     func dismissReminder(_ reminder: ReminderCandidate) {

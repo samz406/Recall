@@ -288,11 +288,6 @@ struct PrivacyAndModelView: View {
                         Button { settingsCategory = value } label: {
                             HStack(spacing: 8) {
                                 Text(RecallLocalization.text(value)).font(.system(size: 14, weight: settingsCategory == value ? .semibold : .regular))
-                                if value == "外观" {
-                                    Text(RecallLocalization.text("新")).font(.system(size: 9, weight: .semibold))
-                                        .foregroundStyle(RecallPalette.onAccent).padding(.horizontal, 5).padding(.vertical, 2)
-                                        .background(RecallPalette.accent, in: Capsule())
-                                }
                             }
                                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 11)
                                 .foregroundStyle(settingsCategory == value ? RecallPalette.accent : RecallPalette.text)

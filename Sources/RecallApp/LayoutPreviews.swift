@@ -35,7 +35,9 @@ enum RecallLayoutPreviews {
         state.messages = [ConversationMessage(role: .user, content: "我这周在 Atlas 上有什么进展？"),
                           ConversationMessage(role: .assistant, content: "Atlas 的页面方案已完成核对，生产发布仍待确认。\n\n可以先查看发布状态，再继续安排验收。", citations: [state.captures[0].id, state.captures[1].id]),
                           ConversationMessage(role: .user, content: "明白了")]
-        state.reminders = [ReminderCandidate(title: "核对 Atlas 发布状态", detail: "合成验收候选，不安排实际通知。", sourceCaptureIDs: [state.captures[0].id], confidence: 0.9)]
+        state.reminders = [ReminderCandidate(title: "核对 Atlas 发布状态", detail: "合成验收候选，不安排实际通知。", sourceCaptureIDs: [state.captures[0].id], confidence: 0.9),
+            ReminderCandidate(title: "整理每周阅读笔记", detail: "手动保存的合成提醒，包含完整补充说明。", dueAt: now.addingTimeInterval(86_400),
+                confidence: 1, status: .scheduled, origin: .manual, scheduledAt: now)]
         addHistory(to: &state, now: now)
         return state
     }
@@ -78,12 +80,13 @@ enum RecallLayoutPreviews {
         try await verifyReminderDiscoveryActions()
         try await verifyTimelineLoading()
         try await verifyChatSources()
+        try await verifyMemoryReminderActions()
         let model = RecallAppModel(previewState: try await fixture())
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(10)) }
         let defaults = UserDefaults(suiteName: "im.recall.synthetic-layout")!
         defer { defaults.removePersistentDomain(forName: "im.recall.synthetic-layout") }
-        let names = ["preferences", "first-moment", "sample", "daily", "daily-long", "topics", "period", "period-stale", "knowledge", "knowledge-empty", "rules", "reminders", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "chat-busy", "chat-sources", "navigation"]
+        let names = ["preferences", "first-moment", "sample", "daily", "daily-long", "topics", "period", "period-stale", "knowledge", "knowledge-empty", "rules", "reminders", "reminder-new", "reminder-calendar", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "chat-busy", "chat-sources", "navigation"]
         for mode in ["wide", "narrow", "dark", "english"] {
             UserDefaults.standard.set(mode == "english" ? "en" : "zh-Hans", forKey: RecallLocalization.languageKey)
             let width: CGFloat = mode == "narrow" ? 780 : 1050
