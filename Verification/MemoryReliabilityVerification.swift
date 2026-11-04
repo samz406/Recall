@@ -125,6 +125,7 @@ enum MemoryReliabilityVerification {
             .init(statement: "Atlas 将在 2028 年上线", evidence: [proof]),
             .init(statement: "Atlas 将在周五上线", evidence: [proof]),
             .init(statement: "Atlas 已发布", evidence: [.init(sourceID: source.id, quote: "Atlas 已发布")]),
+            .init(statement: "Atlas 测试通过", evidence: [.init(sourceID: source.id, quote: "。")]),
             .init(statement: "伪造来源", evidence: [.init(sourceID: UUID(), quote: source.ocrText)])
         ]
         for claim in bad {

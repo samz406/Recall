@@ -30,7 +30,7 @@ public struct AnswerGrounding: Sendable {
         guard !candidates.isEmpty else { return Result(content: noEvidence, sourceIDs: [], rejectedCount: 0) }
         let supplied = Dictionary(uniqueKeysWithValues: (materials ?? candidates).map { ($0.id, $0.ocrText) })
         var used = 0
-        let records = candidates.prefix(24).compactMap { record -> CaptureRecord? in
+        let records = candidates.filter { supplied[$0.id] != nil }.prefix(24).compactMap { record -> CaptureRecord? in
             let original = record.correctedText ?? record.ocrText
             guard let material = supplied[record.id] else { return nil }
             // Only re-send original lines already supplied to this answer. A verification call cannot
@@ -47,7 +47,7 @@ public struct AnswerGrounding: Sendable {
         guard !records.isEmpty else { return fallback(records: candidates) }
         let instruction = """
         核对回答草稿，仅保留原文确实支持的结论；不补充草稿未提出的新事实。
-        每项必须有 sourceID 和逐字 quote。引用必须取自给出的正文，不能引用 sourceID、记录时间或问题本身。
+        每项必须有 sourceID 和至少 8 字符的逐字 quote。引用必须取自给出的正文，不能引用 sourceID、记录时间或问题本身。
         逐项检查人名、责任主体、是否完成/上线、发生日期和条件；测试通过不等于上线，对方/未知/资料不等于本人行动。
         不支持的结论只移除该项，其余保留。推断用 kind=inference，不能当作确定事实。
         输出 {"claims":[{"statement":"核对后的完整结论","kind":"fact|inference","actor":"user|other|unknown","status":"completed|pending|inProgress|blocked|cancelled|unknown","evidence":[{"sourceID":"UUID","quote":"逐字原文"}]}]}。
@@ -90,7 +90,7 @@ public struct AnswerGrounding: Sendable {
                   references.allSatisfy({ item in
                       guard let source = byID[item.sourceID] else { return false }
                       let body = source.correctedText ?? source.ocrText
-                      return !item.quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && item.quote.count <= 1_500 && body.contains(item.quote)
+                      return item.quote.trimmingCharacters(in: .whitespacesAndNewlines).count >= 8 && item.quote.count <= 1_500 && body.contains(item.quote)
                   }) else { rejected += 1; continue }
             let quotes = references.map(\.quote).joined(separator: "\n")
             let personal = claim.actor == "user" || statement.range(of: #"(?:你|本人|我(?:已|将|会|完成|负责)|\byou\b|\bI\s+(?:will|have|did))"#, options: [.regularExpression, .caseInsensitive]) != nil
