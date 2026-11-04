@@ -273,6 +273,8 @@ final class RecallAppModel: ObservableObject {
             let before = await store.snapshot()
             try await store.organizeMemory(force: force)
             let paths = try await store.prune()
+            _ = try await store.queueOrphanScreenshots()
+            _ = try await store.retryPendingFileCleanup()
             var cleaned: [String] = []
             var failed = false
             for path in paths {
@@ -363,6 +365,7 @@ final class RecallAppModel: ObservableObject {
             armRecentlyDeletedTimer()
         }
         do {
+            _ = try await store.queueOrphanScreenshots()
             if await store.backupPending { try await store.retryArchiveBackup() }
             let count = try await store.purgeExpiredRecentlyDeleted()
             let cleanup = try await store.retryPendingFileCleanup()

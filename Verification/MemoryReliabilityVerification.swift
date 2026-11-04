@@ -81,6 +81,12 @@ enum MemoryReliabilityVerification {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: storage.screenshotsURL.path)
         let retry = try await reopened.retryPendingFileCleanup()
         try expect(retry.pendingCount == 0 && !FileManager.default.fileExists(atPath: storage.screenshotURL(relativePath: source.imageRelativePath!).path), "Durable cleanup queue did not retry after restart")
+        let orphan = try storage.saveScreenshot(Data("orphan".utf8), captureID: UUID())
+        try FileManager.default.setAttributes([.modificationDate: Date.now.addingTimeInterval(-3600)], ofItemAtPath: storage.screenshotURL(relativePath: orphan).path)
+        let inFlight = try storage.saveScreenshot(Data("in-flight".utf8), captureID: UUID())
+        try expect(try await reopened.queueOrphanScreenshots() == 1, "Orphan cleanup did not distinguish abandoned and in-flight images")
+        _ = try await reopened.retryPendingFileCleanup()
+        try expect(!FileManager.default.fileExists(atPath: storage.screenshotURL(relativePath: orphan).path) && FileManager.default.fileExists(atPath: storage.screenshotURL(relativePath: inFlight).path), "Orphan cleanup removed a fresh capture or left abandoned bytes")
     }
     static func conflictingWritersDoNotLoseRecords() async throws {
         let storage = try storage(); defer { try? FileManager.default.removeItem(at: storage.rootURL) }
@@ -145,6 +151,17 @@ enum MemoryReliabilityVerification {
         let mixed = ReliabilityModel(source: source, mixedAudit: true)
         let repaired = try await MemoryAssistant(store: store).ask("Atlas 是否上线", model: mixed)
         try expect(repaired.content.contains("测试通过，尚未上线") && repaired.content.contains("已省略"), "One malformed audit row discarded valid claims")
+        let offline = ReliabilityModel(source: source, auditFailure: true)
+        let offlineAnswer = try await MemoryAssistant(store: store).ask("Atlas 是否上线", model: offline)
+        try expect(offlineAnswer.content.contains("原文"), "Offline verification discarded retrievable evidence")
+        let delayed = ReliabilityModel(source: source, auditDelay: true)
+        let beforeCancel = await store.snapshot().messages.filter { $0.role == .assistant }.count
+        let task = Task { try await MemoryAssistant(store: store).ask("Atlas 是否上线", model: delayed) }
+        for _ in 0..<200 { if await delayed.calls >= 2 { break }; try await Task.sleep(for: .milliseconds(2)) }
+        task.cancel()
+        do { _ = try await task.value; throw Failure(errorDescription: "Cancelled verification still returned") }
+        catch is CancellationError {}
+        try expect(await store.snapshot().messages.filter { $0.role == .assistant }.count == beforeCancel, "Cancelled verification persisted an answer")
         let badAudit = ReliabilityModel(source: source, invalidAudit: true)
         let fallback = try await MemoryAssistant(store: store).ask("Atlas 是否上线", model: badAudit)
         try expect(fallback.content.contains("原文") && fallback.content.contains("尚未上线"), "Invalid audit did not fall back to source excerpts")
@@ -164,12 +181,16 @@ private actor ReliabilityModel: LLMResponding {
     let source: CaptureRecord
     let invalidAudit: Bool
     let mixedAudit: Bool
+    let auditFailure: Bool
+    let auditDelay: Bool
     let revoke: FileMemoryStore?
     var calls = 0
-    init(source: CaptureRecord, invalidAudit: Bool = false, mixedAudit: Bool = false, revoke: FileMemoryStore? = nil) { self.source = source; self.invalidAudit = invalidAudit; self.mixedAudit = mixedAudit; self.revoke = revoke }
+    init(source: CaptureRecord, invalidAudit: Bool = false, mixedAudit: Bool = false, auditFailure: Bool = false, auditDelay: Bool = false, revoke: FileMemoryStore? = nil) { self.source = source; self.invalidAudit = invalidAudit; self.mixedAudit = mixedAudit; self.auditFailure = auditFailure; self.auditDelay = auditDelay; self.revoke = revoke }
     func answer(to request: LLMRequest) async throws -> LLMAnswer {
         calls += 1
         if request.purpose == .answerVerification {
+            if auditFailure { throw URLError(.notConnectedToInternet) }
+            if auditDelay { try await Task.sleep(for: .seconds(30)) }
             if invalidAudit { return LLMAnswer(content: "not-json", citedCaptureIDs: []) }
             let claim = AnswerGrounding.Claim(statement: "Atlas 测试通过，尚未上线", actor: "user", evidence: [.init(sourceID: source.id, quote: source.ocrText)])
             let data = try JSONEncoder().encode(["claims": [claim]])

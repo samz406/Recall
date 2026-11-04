@@ -27,6 +27,33 @@ extension FileMemoryStore {
             return ((try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []).map { folder + "/" + $0.lastPathComponent }
         }
     }
+    /// A recording can fail before its JSON write. Discover its otherwise untracked image later.
+    /// The grace period protects captures currently between screenshot and OCR/persistence.
+    @discardableResult
+    public func queueOrphanScreenshots(now: Date = .now) throws -> Int {
+        let active = Set(state.captures.compactMap(\.imageRelativePath) + state.memoryKnowledge.pendingScreenshotDeletions)
+        let deleted = Set(state.recentlyDeletedMemories.flatMap(\.screenshotPaths).map { "Recently Deleted/Screenshots/" + URL(fileURLWithPath: $0).lastPathComponent })
+        let known = active.union(deleted).union(state.pendingFileDeletions ?? [])
+        var orphans: [String] = []
+        for folder in ["Screenshots", "Recently Deleted/Screenshots"] {
+            let parent = storage.rootURL.appendingPathComponent(folder)
+            guard FileManager.default.fileExists(atPath: parent.path) else { continue }
+            guard try parent.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else { continue }
+            for url in try FileManager.default.contentsOfDirectory(at: parent, includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]) {
+                let path = folder + "/" + url.lastPathComponent
+                guard url.pathExtension == "png", UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil, !known.contains(path) else { continue }
+                let attributes = try url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
+                guard attributes.isRegularFile == true, let modified = attributes.contentModificationDate,
+                      now.timeIntervalSince(modified) > 15 * 60 else { continue }
+                orphans.append(path)
+            }
+        }
+        guard !orphans.isEmpty else { return 0 }
+        let before = state
+        state.pendingFileDeletions = ((state.pendingFileDeletions ?? []) + orphans).memoryUnique()
+        do { try persistReviewState() } catch { state = before; throw error }
+        return orphans.count
+    }
     /// Persist the queue before deleting bytes. Every operation is idempotent after a crash/restart.
     @discardableResult
     public func retryPendingFileCleanup() throws -> FileCleanupResult {

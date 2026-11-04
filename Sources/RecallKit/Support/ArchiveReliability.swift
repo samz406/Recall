@@ -9,7 +9,7 @@ public enum ArchiveReliabilityError: LocalizedError {
         case .invalidArchive: RecallLocalization.both("本地档案结构不完整，原始文件已保留。", "The local archive is incomplete. The original file is preserved.")
         case .missingPrimary: RecallLocalization.both("原始档案缺失，请从已校验的备份恢复。", "The primary archive is missing. Restore a verified backup.")
         case .busy: RecallLocalization.both("记忆库正被另一项操作使用，请稍后重试。", "The archive is busy. Please retry shortly.")
-        case .changedExternally: RecallLocalization.both("记忆库已被其他进程修改。请重新打开应用，以免覆盖新记录。", "Another process changed the archive. Reopen Recall to avoid overwriting newer records.")
+        case .changedExternally: RecallLocalization.both("本地档案已发生变化。请重新打开应用，以免覆盖新记录。", "The archive changed outside this operation. Reopen Recall to avoid overwriting newer records.")
         case .invalidBackup: RecallLocalization.both("备份校验失败，原始文件未修改。", "Backup validation failed. The original file was not changed.")
         case .unsupportedVersion: RecallLocalization.both("此记忆库来自更新版本，请更新 Recall 后再打开。", "This archive requires a newer version of Recall.")
         }

@@ -1557,6 +1557,7 @@ public actor FileMemoryStore {
             committedState = state
         } catch {
             if let committedState { state = committedState }
+            if let lastDiskDigest { backupPending = !FileManager.default.fileExists(atPath: storage.rootURL.appendingPathComponent("Recovery/latest-" + lastDiskDigest + ".json").path) }
             chatAnalysis = nil; indexNeedsRebuild = true
             throw error
         }
