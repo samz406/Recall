@@ -432,7 +432,9 @@ public struct CompatibleLLM: LLMResponding {
             messages: openAIMessages(for: request),
             temperature: 0.2,
             maxTokens: outputLimit(for: request),
-            stream: onText == nil ? nil : true
+            stream: onText == nil ? nil : true,
+            // Planning only emits a short JSON decision; hidden reasoning just adds latency per round.
+            thinking: request.purpose == .chatPlanning && (endpoint.host?.lowercased().hasSuffix("deepseek.com") ?? false) ? .init(type: "disabled") : nil
         )
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
@@ -694,9 +696,12 @@ private struct OpenAIRequest: Encodable {
     let temperature: Double
     let maxTokens: Int
     var stream: Bool? = nil
+    var thinking: Thinking? = nil
+
+    struct Thinking: Encodable { let type: String }
 
     enum CodingKeys: String, CodingKey {
-        case model, messages, temperature, stream
+        case model, messages, temperature, stream, thinking
         case maxTokens = "max_tokens"
     }
 }

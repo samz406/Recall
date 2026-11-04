@@ -9,7 +9,7 @@ public struct AskLimits: Sendable {
     public var maxCallsPerRound: Int
     public var maxResultCharacters: Int
     public static let standard = AskLimits()
-    public init(maxRounds: Int = 4, maxCallsPerRound: Int = 6, maxResultCharacters: Int = 40_000) {
+    public init(maxRounds: Int = 2, maxCallsPerRound: Int = 6, maxResultCharacters: Int = 24_000) {
         self.maxRounds = maxRounds
         self.maxCallsPerRound = maxCallsPerRound
         self.maxResultCharacters = maxResultCharacters
