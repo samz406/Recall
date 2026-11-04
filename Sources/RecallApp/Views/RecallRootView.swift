@@ -1513,6 +1513,7 @@ extension RecallRootView {
         case "reminders": AnyView(RemindersView())
         case "reminder-new": AnyView(NewReminderSheet(preferredHour: 9, onCreate: { _, _, _, _ in }))
         case "reminder-calendar": AnyView(ReminderCalendarPreview())
+        case "review-schedule", "review-schedule-saving": AnyView(ReviewScheduleEditor(schedule: ReviewSchedule(template: ReviewTemplate(kind: .personal)), previewSaving: name.hasSuffix("saving")))
         case "reminder-history", "reminder-history-empty": AnyView(RemindersView(initialTab: 2))
         case "reminder-history-hover": AnyView(RemindersView(initialTab: 2, previewHistoryHover: true))
         case "timeline": AnyView(TimelineView())

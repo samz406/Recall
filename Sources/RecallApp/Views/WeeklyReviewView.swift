@@ -648,7 +648,7 @@ private struct ReviewSchedulesSheet: View {
                                 Spacer()
                                 Button(RecallLocalization.text("删除计划"), role: .destructive) { Task { await model.deleteReviewSchedule(value.id) } }
                             }
-                        }.padding(18).reviewSurface()
+                        }.padding(18).reviewSurface().disabled(model.savingReviewScheduleIDs.contains(value.id))
                     }
                 }
             }.clipped()
@@ -659,13 +659,17 @@ private struct ReviewSchedulesSheet: View {
     private func weekday(_ value: Int) -> String { ["", "周日", "周一", "周二", "周三", "周四", "周五", "周六"][min(max(value, 1), 7)] }
 }
 
-private struct ReviewScheduleEditor: View {
+struct ReviewScheduleEditor: View {
     @EnvironmentObject private var model: RecallAppModel
     @Environment(\.dismiss) private var dismiss
     @State var schedule: ReviewSchedule
     @State private var showsAdvanced = false
     @State private var error: String?
     @State private var saving = false
+    init(schedule: ReviewSchedule, previewSaving: Bool = false) {
+        _schedule = State(initialValue: schedule)
+        _saving = State(initialValue: previewSaving)
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text(RecallLocalization.text("安排一份定时回顾")).font(.title2.bold())
@@ -720,16 +724,25 @@ private struct ReviewScheduleEditor: View {
             if let error { Text(error).foregroundStyle(RecallPalette.danger).font(.callout) }
             HStack {
                 Spacer(); Button(RecallLocalization.text("取消")) { dismiss() }.disabled(saving)
-                Button(saving ? "保存中…" : "保存计划") {
+                Button {
+                    guard !saving else { return }
+                    let submitted = schedule
                     saving = true
-                    Task {
-                        schedule.useModel = true
-                        if await model.saveReviewSchedule(schedule) { dismiss() }
-                        else { error = "保存失败，请检查时间与模板设置后重试。" }
-                        saving = false
+                    error = nil
+                    Task { @MainActor in
+                        defer { saving = false }
+                        await Task.yield()
+                        var value = submitted; value.useModel = true
+                        if await model.saveReviewSchedule(value) { dismiss() }
+                        else { error = model.weeklyReviewMessage ?? RecallLocalization.both("保存失败，请重试。", "Unable to save. Please retry.") }
+                    }
+                } label: {
+                    HStack(spacing: 7) {
+                        if saving { ProgressView().controlSize(.small) }
+                        Text(RecallLocalization.both(saving ? "保存中…" : "保存计划", saving ? "Saving…" : "Save schedule"))
                     }
                 }.buttonStyle(.borderedProminent).disabled(!schedule.isValid || saving)
             }
-        }.padding(28).frame(width: 620).interactiveDismissDisabled(saving)
+        }.disabled(saving).padding(28).frame(width: 620).interactiveDismissDisabled(saving)
     }
 }
