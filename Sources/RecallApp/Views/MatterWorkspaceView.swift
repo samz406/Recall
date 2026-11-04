@@ -96,7 +96,7 @@ struct MatterWorkspaceView: View {
                                     .foregroundStyle(RecallPalette.secondary)
                                 HStack {
                                     Button(RecallLocalization.text("查看当时记录")) { source = model.state.captures.first { hint.past.evidenceIDs.contains($0.id) } }
-                                    Button(RecallLocalization.text("不再提示这一条")) { model.dismissExperience(hint.id) }
+                                    Button(RecallLocalization.text("不再提示这一条")) { model.dismissExperience(hint) }
                                 }
                             }.padding(20).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 18))
                         }
@@ -303,7 +303,6 @@ struct MatterWorkspaceView: View {
                 Text(RecallLocalization.text("最近记录 ") + file.latest.date.formatted(date: .abbreviated, time: .omitted) + RecallLocalization.both(" · \(file.evidenceIDs.count) 条来源", " · \(file.evidenceIDs.count) sources"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
                 Spacer(minLength: 6)
-                Button(RecallLocalization.text("脉络")) { selected = file }.buttonStyle(.plain)
                 Button(RecallLocalization.text("补充")) { supplement(title: file.title) }.buttonStyle(.plain)
                 Button(RecallLocalization.text("接着问")) { continueChat(RecallLocalization.both("关于\(file.title)，请找回上次的进展、已确认的结论和仍缺少的信息。", "About \(file.title), find the last progress, confirmed conclusions and missing information.")) }.buttonStyle(.borderedProminent)
                 Menu {

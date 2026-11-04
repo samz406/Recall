@@ -13,21 +13,16 @@ struct RemindersView: View {
     @State private var reminderTab = 0
     @State private var proposedPage = 1
     @State private var scheduledPage = 1
+    @State private var creationResult: ReminderCreationResult?
+    @State private var highlightedReminderID: UUID?
     private let pageSize = 6
 
     private var proposed: [ReminderCandidate] {
-        model.state.reminders
-            .filter { $0.status == .proposed }
-            .sorted {
-                if $0.confidence != $1.confidence { return $0.confidence > $1.confidence }
-                return ($0.dueAt ?? .distantFuture) < ($1.dueAt ?? .distantFuture)
-            }
+        ReminderListLocation.proposed(model.state.reminders)
     }
 
     private var scheduled: [ReminderCandidate] {
-        model.state.reminders
-            .filter { $0.status.isAction }
-            .sorted { ($0.dueAt ?? .distantFuture) < ($1.dueAt ?? .distantFuture) }
+        ReminderListLocation.active(model.state.reminders)
     }
 
     private var overdue: [ReminderCandidate] {
@@ -68,9 +63,21 @@ struct RemindersView: View {
                 Spacer()
             }.padding(.horizontal, 24)
             Divider()
+            if let result = creationResult {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: result.notificationIssue == nil ? "checkmark.circle" : "info.circle")
+                    Text(result.message).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button { creationResult = nil } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain).accessibilityLabel(RecallLocalization.text("关闭"))
+                }.foregroundStyle(result.notificationIssue == nil ? RecallPalette.accent : RecallPalette.warning)
+                    .padding(14).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 10))
+                    .padding(.horizontal, 24).padding(.top, 12)
+            }
             if reminderTab == 2 {
                 ReminderHistoryView(previewHover: previewHistoryHover) { reminderShowingSources = $0 }
             } else {
+            ScrollViewReader { proxy in
             ScrollView {
             VStack(spacing: 20) {
                 if (reminderTab == 0 && scheduled.isEmpty) || (reminderTab == 1 && proposed.isEmpty) {
@@ -96,6 +103,12 @@ struct RemindersView: View {
             .padding(.vertical, 30)
             .frame(maxWidth: .infinity)
         }
+            .task(id: highlightedReminderID) {
+                guard let id = highlightedReminderID else { return }
+                await Task.yield()
+                proxy.scrollTo(id, anchor: .center)
+            }
+            }
             reminderDiscoveryFeedback.padding(.horizontal, 24).padding(.vertical, 12)
             }
         }
@@ -112,7 +125,10 @@ struct RemindersView: View {
         }
         .sheet(isPresented: $isCreatingReminder) {
             NewReminderSheet(preferredHour: model.state.reminderLearningProfile.preferredHour) { title, detail, dueAt, recurrence in
-                model.createReminder(title: title, detail: detail, dueAt: dueAt, recurrence: recurrence)
+                let result = try await model.createReminder(title: title, detail: detail, dueAt: dueAt, recurrence: recurrence)
+                creationResult = result
+                model.destination = .reminder(result.reminder.id)
+                openRequestedReminder()
             }
         }
         .sheet(item: $reminderShowingSources) { reminder in
@@ -146,10 +162,12 @@ struct RemindersView: View {
         }.buttonStyle(.plain)
     }
     private func openRequestedReminder() {
-        if case .reminder(let id) = model.destination, let row = model.state.reminders.first(where: { $0.id == id }) {
-            reminderTab = row.status == .proposed ? 1 : ([.completed, .cancelled, .dismissed].contains(row.status) ? 2 : 0)
-            proposedPage = max(1, ((proposed.firstIndex { $0.id == id } ?? 0) / pageSize) + 1)
-            scheduledPage = max(1, ((scheduled.firstIndex { $0.id == id } ?? 0) / pageSize) + 1)
+        if case .reminder(let id) = model.destination,
+           let location = ReminderListLocation(id: id, reminders: model.state.reminders, pageSize: pageSize) {
+            highlightedReminderID = id
+            reminderTab = location.tab
+            if location.tab == 1 { proposedPage = location.page }
+            if location.tab == 0 { scheduledPage = location.page }
         }
     }
     private var reminderHeader: some View {
@@ -247,6 +265,8 @@ struct RemindersView: View {
             viewSources: { reminderShowingSources = reminder },
             preferredHour: model.state.reminderLearningProfile.preferredHour
         )
+        .id(reminder.id)
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(highlightedReminderID == reminder.id ? RecallPalette.accent : .clear, lineWidth: 1.5))
     }
 
     private func paged<T>(_ items: [T], page: Int) -> [T] {
@@ -454,13 +474,11 @@ struct ReminderScheduleSheet: View {
                 }
             }
 
-            DatePicker(
-                "提醒时间",
-                selection: $selectedDate,
-                in: Date.now...,
-                displayedComponents: [.date, .hourAndMinute]
-            )
-            .datePickerStyle(.field)
+            ReminderDateTimeField(date: $selectedDate)
+            if selectedDate <= .now {
+                Text(RecallLocalization.both("请选择未来的提醒时间。", "Choose a future reminder time."))
+                    .font(.caption).foregroundStyle(RecallPalette.warning)
+            }
 
             Picker(RecallLocalization.text("重复"), selection: $recurrence) {
                 ForEach(ReminderRecurrence.allCases) { option in
@@ -470,7 +488,7 @@ struct ReminderScheduleSheet: View {
             .pickerStyle(.segmented)
 
             HStack {
-                Text(RecallLocalization.text("创建后仍可在“已安排”中取消提醒。"))
+                Text(RecallLocalization.both("安排后可在‘待处理’中修改或取消。", "Edit or cancel it later from Pending."))
                     .font(.caption)
                     .foregroundStyle(RecallPalette.secondary)
                 Spacer()
@@ -488,15 +506,17 @@ struct ReminderScheduleSheet: View {
     }
 }
 
-private struct NewReminderSheet: View {
+struct NewReminderSheet: View {
     @Environment(\.dismiss) private var dismiss
-    let onCreate: (String, String, Date, ReminderRecurrence) -> Void
+    let onCreate: @MainActor (String, String, Date, ReminderRecurrence) async throws -> Void
     @State private var title = ""
     @State private var detail = ""
     @State private var dueAt: Date
     @State private var recurrence: ReminderRecurrence = .none
+    @State private var isSaving = false
+    @State private var saveError: String?
 
-    init(preferredHour: Int, onCreate: @escaping (String, String, Date, ReminderRecurrence) -> Void) {
+    init(preferredHour: Int, onCreate: @escaping @MainActor (String, String, Date, ReminderRecurrence) async throws -> Void) {
         self.onCreate = onCreate
         let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: .now) ?? .now.addingTimeInterval(86_400)
         _dueAt = State(initialValue: Calendar.current.date(bySettingHour: preferredHour, minute: 0, second: 0, of: tomorrow) ?? tomorrow)
@@ -514,26 +534,49 @@ private struct NewReminderSheet: View {
                 .font(.system(size: 16))
             TextField(RecallLocalization.text("补充说明（可选）"), text: $detail, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
-                .lineLimit(2...4)
-            DatePicker("提醒时间", selection: $dueAt, in: Date.now..., displayedComponents: [.date, .hourAndMinute])
-                .datePickerStyle(.field)
+                .lineLimit(4...6).frame(minHeight: 82)
+            ReminderDateTimeField(date: $dueAt)
+            if dueAt <= .now {
+                Text(RecallLocalization.both("请选择未来的提醒时间。", "Choose a future reminder time."))
+                    .font(.caption).foregroundStyle(RecallPalette.warning)
+            }
             Picker(RecallLocalization.text("重复"), selection: $recurrence) {
                 ForEach(ReminderRecurrence.allCases) { option in
                     Text(option.title).tag(option)
                 }
             }
             .pickerStyle(.segmented)
+            if let saveError {
+                Label(saveError, systemImage: "exclamationmark.circle")
+                    .font(.callout).foregroundStyle(RecallPalette.danger).fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
+                Text(RecallLocalization.both("保存后显示在‘待处理’；通知未授权时显示在‘待确认’。", "Saved reminders appear in Pending, or To confirm if notifications are unavailable."))
+                    .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 Button(RecallLocalization.text("取消")) { dismiss() }
-                Button(RecallLocalization.text("创建提醒")) {
-                    onCreate(title, detail, dueAt, recurrence)
-                    dismiss()
+                Button {
+                    guard !isSaving else { return }
+                    isSaving = true; saveError = nil
+                    Task { @MainActor in
+                        defer { isSaving = false }
+                        do {
+                            try await onCreate(title, detail, dueAt, recurrence)
+                            dismiss()
+                        } catch { saveError = error.localizedDescription }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        if isSaving { ProgressView().controlSize(.small) }
+                        Text(RecallLocalization.both(isSaving ? "正在保存" : "创建提醒", isSaving ? "Saving" : "Create reminder"))
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || dueAt <= .now)
             }
         }
+        .disabled(isSaving)
+        .interactiveDismissDisabled(isSaving)
         .padding(24)
         .frame(width: 500)
     }

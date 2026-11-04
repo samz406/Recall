@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// A user-authored update stored with its original, deletable source record.
 public struct ManualMatterNote: Codable, Hashable, Sendable {
@@ -152,10 +153,20 @@ public struct MatterReview: Identifiable, Sendable {
 }
 
 public struct ExperienceHint: Identifiable, Sendable {
-    public var id: String { currentID + ":" + past.id.uuidString }
+    /// Dismiss the historical result, not just its pairing with one current topic.
+    public var id: String {
+        let text = past.detail.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return "experience:" + SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
     public var currentID: String
     public var past: MatterEvent
     public var matchingTerms: [String]
+    public init(currentID: String, past: MatterEvent, matchingTerms: [String]) {
+        self.currentID = currentID; self.past = past; self.matchingTerms = matchingTerms
+    }
+    public func isDismissed(using ids: [String]) -> Bool {
+        ids.contains(id) || ids.contains { $0.hasSuffix(":" + past.id.uuidString) }
+    }
 }
 
 public struct MatterMemoryEngine: Sendable {

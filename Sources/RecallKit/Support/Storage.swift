@@ -427,13 +427,17 @@ public actor FileMemoryStore {
     }
 
     public func setExperienceHints(enabled: Bool) throws {
+        guard state.experienceHintsEnabled != enabled else { return }
+        let previous = state
         state.experienceHintsEnabled = enabled
-        try persist()
+        do { try persistReviewState(invalidateAnalysis: false) } catch { state = previous; throw error }
     }
 
     public func dismissExperience(id: String) throws {
-        if !state.dismissedExperienceIDs.contains(id) { state.dismissedExperienceIDs.append(id) }
-        try persist()
+        guard !id.isEmpty, !state.dismissedExperienceIDs.contains(id) else { return }
+        let previous = state
+        state.dismissedExperienceIDs.append(id)
+        do { try persistReviewState(invalidateAnalysis: false) } catch { state = previous; throw error }
     }
 
     public func isIntelligenceIndexAvailable() -> Bool { intelligenceIndex != nil }
@@ -1288,13 +1292,17 @@ public actor FileMemoryStore {
     }
 
     public func updateReminder(_ reminder: ReminderCandidate) throws {
-        guard let index = state.reminders.firstIndex(where: { $0.id == reminder.id }) else {
+        let previous = state
+        if let index = state.reminders.firstIndex(where: { $0.id == reminder.id }) {
+            state.reminders[index] = reminder
+        } else {
             state.reminders.insert(reminder, at: 0)
-            try persist()
-            return
         }
-        state.reminders[index] = reminder
-        try persist()
+        do {
+            if reminder.origin == .manual && reminder.sourceCaptureIDs.isEmpty {
+                try persistReviewState()
+            } else { try persist() }
+        } catch { state = previous; throw error }
     }
 
     /// 将提醒状态与用户反馈一次写入，避免只保存了其中一部分。
@@ -1302,6 +1310,7 @@ public actor FileMemoryStore {
         _ reminder: ReminderCandidate,
         learningProfile: ReminderLearningProfile
     ) throws {
+        let previous = state
         if let index = state.reminders.firstIndex(where: { $0.id == reminder.id }) {
             state.reminders[index] = reminder
         } else {
@@ -1316,7 +1325,7 @@ public actor FileMemoryStore {
                 if reminder.status == .cancelled || reminder.status == .dismissed { state.dailySummaries[i].todos[j].status = .ignored }
             }
         }
-        try persist()
+        do { try persist() } catch { state = previous; throw error }
     }
 
     public func removeReminders(ids: Set<UUID>) throws {
