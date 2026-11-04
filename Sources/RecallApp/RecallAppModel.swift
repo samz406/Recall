@@ -1259,7 +1259,11 @@ final class RecallAppModel: ObservableObject {
             guard dueAt > .now else { throw ReminderCreationError.invalidInput }
             reminder.status = .scheduled; reminder.scheduledAt = .now; reminder.updatedAt = .now
             try await reminderCreationScheduler.schedule(reminder)
-            do { try await store.updateReminder(reminder) }
+            do {
+                var profile = await store.snapshot().reminderLearningProfile
+                profile.record(.confirmed(hour: Calendar.current.component(.hour, from: dueAt)), semanticKey: reminder.semanticKey)
+                try await store.updateReminder(reminder, learningProfile: profile)
+            }
             catch { reminderCreationScheduler.cancel(reminder); throw ReminderCreationError.scheduleSaveFailed }
             state = await store.snapshot()
             let result = ReminderCreationResult(reminder: reminder, notificationIssue: nil)

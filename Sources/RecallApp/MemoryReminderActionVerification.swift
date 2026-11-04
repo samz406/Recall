@@ -42,7 +42,7 @@ extension RecallLayoutPreviews {
             ManualMatterNote(title: "Atlas 发布接口", detail: "正在推进合成接口。", status: .progressed, eventAt: now),
             ManualMatterNote(title: "Atlas 发布页面", detail: "正在推进合成页面。", status: .progressed, eventAt: now)]
         let records = try notes.map { try $0.capture(recordedAt: now) }
-        let model = RecallAppModel(previewState: RecallState(captures: records))
+        let model = RecallAppModel(previewState: RecallState(captures: records, experienceHintsEnabled: true))
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(5)) }
         guard let hint = model.experienceHint else { throw MemoryReminderFailure.failed("合成主题没有生成历史经验") }
@@ -89,10 +89,12 @@ extension RecallLayoutPreviews {
         let result = try await model.createReminder(title: "  核对合成验收  ", detail: "完整的合成说明", dueAt: .now.addingTimeInterval(86_400), recurrence: .weekly)
         let reopened = try FileMemoryStore(storage: model.storage, credentials: InMemoryCredentialStore()), persisted = await reopened.snapshot()
         let succeeds = permission == .allowed && !queueFails
+        let confirmations = persisted.reminderLearningProfile.semanticFeedback[result.reminder.semanticKey]?.confirmed ?? 0
         guard verifiedDraft, persisted.reminders.count == 1, persisted.reminders[0].id == result.reminder.id,
               result.reminder.status == (succeeds ? .scheduled : .proposed), result.reminder.origin == .manual,
               result.reminder.recurrence == .weekly, result.reminder.title == "核对合成验收",
-              result.reminder.sourceCaptureIDs.isEmpty, (result.notificationIssue == nil) == succeeds else {
+              result.reminder.sourceCaptureIDs.isEmpty, (result.notificationIssue == nil) == succeeds,
+              confirmations == (succeeds ? 1 : 0) else {
             throw MemoryReminderFailure.failed("手动提醒没有按通知结果保存为待处理或待确认")
         }
         let location = ReminderListLocation(id: result.reminder.id, reminders: model.state.reminders, pageSize: 6)
@@ -121,7 +123,8 @@ extension RecallLayoutPreviews {
         probe.onSchedule = { secondBackup = try blockStateFile(model.storage) }
         let result = try await model.createReminder(title: "保留合成输入", detail: "说明", dueAt: .now.addingTimeInterval(86_400), recurrence: .none)
         guard result.reminder.status == .proposed, result.notificationIssue != nil, probe.cancelled == [result.reminder.id],
-              model.state.reminders.count == 1, let secondBackup else { throw MemoryReminderFailure.failed("排队后保存失败没有撤回通知并保留草稿") }
+              model.state.reminders.count == 1, model.state.reminderLearningProfile.semanticFeedback.isEmpty,
+              let secondBackup else { throw MemoryReminderFailure.failed("排队后保存失败没有撤回通知并保留草稿") }
         try restoreStateFile(model.storage, backup: secondBackup)
         let reopened = try FileMemoryStore(storage: model.storage, credentials: InMemoryCredentialStore())
         guard await reopened.snapshot().reminders.first?.status == .proposed else { throw MemoryReminderFailure.failed("通知失败的草稿重启后丢失") }

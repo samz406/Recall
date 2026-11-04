@@ -1325,7 +1325,11 @@ public actor FileMemoryStore {
                 if reminder.status == .cancelled || reminder.status == .dismissed { state.dailySummaries[i].todos[j].status = .ignored }
             }
         }
-        do { try persist() } catch { state = previous; throw error }
+        do {
+            if reminder.origin == .manual && reminder.sourceCaptureIDs.isEmpty {
+                try persistReviewState()
+            } else { try persist() }
+        } catch { state = previous; throw error }
     }
 
     public func removeReminders(ids: Set<UUID>) throws {
