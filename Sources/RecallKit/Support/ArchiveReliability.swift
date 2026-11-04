@@ -18,6 +18,9 @@ public struct ArchiveBackup: Identifiable, Sendable, Equatable {
     public var id: String
     public var createdAt: Date
     public var captureCount: Int
+    public init(id: String, createdAt: Date, captureCount: Int) {
+        self.id = id; self.createdAt = createdAt; self.captureCount = captureCount
+    }
 }
 
 /// One verified mirror, not an accumulating history of deleted personal data.
@@ -41,8 +44,9 @@ public enum ArchiveReliability {
         return try work()
     }
     @discardableResult
-    static func write(_ data: Data, storage: RecallStorage, expectedDigest: String? = nil) throws -> Bool {
+    static func write(_ data: Data, storage: RecallStorage, expectedDigest: String? = nil, requireMissing: Bool = false) throws -> Bool {
         try exclusive(storage) {
+            if requireMissing, FileManager.default.fileExists(atPath: storage.stateURL.path) { throw ArchiveReliabilityError.changedExternally }
             if let expectedDigest {
                 let existing = try Data(contentsOf: storage.stateURL)
                 guard digest(existing) == expectedDigest else { throw ArchiveReliabilityError.changedExternally }

@@ -26,7 +26,9 @@ public struct RecallStorage: Sendable {
         recentlyDeletedScreenshotsURL = rootURL.appendingPathComponent("Recently Deleted/Screenshots", isDirectory: true)
         stateURL = rootURL.appendingPathComponent("recall-state.json")
         intelligenceDatabaseURL = rootURL.appendingPathComponent("recall-intelligence.sqlite")
-        try fileManager.createDirectory(at: screenshotsURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: rootURL.path)
+        try fileManager.createDirectory(at: screenshotsURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try fileManager.createDirectory(at: recentlyDeletedScreenshotsURL, withIntermediateDirectories: true)
     }
 
@@ -36,7 +38,9 @@ public struct RecallStorage: Sendable {
         recentlyDeletedScreenshotsURL = rootURL.appendingPathComponent("Recently Deleted/Screenshots", isDirectory: true)
         stateURL = rootURL.appendingPathComponent("recall-state.json")
         intelligenceDatabaseURL = rootURL.appendingPathComponent("recall-intelligence.sqlite")
-        try fileManager.createDirectory(at: screenshotsURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: rootURL.path)
+        try fileManager.createDirectory(at: screenshotsURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try fileManager.createDirectory(at: recentlyDeletedScreenshotsURL, withIntermediateDirectories: true)
     }
 
@@ -281,8 +285,10 @@ public actor FileMemoryStore {
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 
+        var initialDigest: String?
         if FileManager.default.fileExists(atPath: storage.stateURL.path) {
             let data = try Data(contentsOf: storage.stateURL)
+            initialDigest = ArchiveReliability.digest(data)
             var restoredState = try ArchiveReliability.decode(data)
             if !restoredState.llmConfiguration.apiKey.isEmpty {
                 var config = restoredState.llmConfiguration
@@ -297,7 +303,8 @@ public actor FileMemoryStore {
                     guard try credentials.read(config.connectionID) != nil else { throw CredentialError.unavailable }
                     config.apiKey = ""; config.credentialReference = config.connectionID.uuidString; config.credentialRevision += 1
                     restoredState.llmConfiguration = config
-                    try Self.write(restoredState, encoder: encoder, to: storage.stateURL)
+                    try Self.write(restoredState, encoder: encoder, to: storage.stateURL, expectedDigest: initialDigest)
+                    initialDigest = ArchiveReliability.digest(try encoder.encode(restoredState))
                 } catch {
                     pendingLegacyCredential = (config.connectionID, config.apiKey)
                     config.apiKey = ""; config.credentialReference = nil; restoredState.llmConfiguration = config
@@ -325,14 +332,20 @@ public actor FileMemoryStore {
                 }
             }
             let credentialsReady = pendingLegacyCredential == nil
-            if !deferMaintenance && credentialsReady { try Self.write(restoredState, encoder: encoder, to: storage.stateURL) }
+            if !deferMaintenance && credentialsReady {
+                try Self.write(restoredState, encoder: encoder, to: storage.stateURL, expectedDigest: initialDigest)
+                initialDigest = ArchiveReliability.digest(try encoder.encode(restoredState))
+            }
             state = restoredState
         } else {
             state = RecallState()
-            try Self.write(state, encoder: encoder, to: storage.stateURL)
+            try Self.write(state, encoder: encoder, to: storage.stateURL, requireMissing: true)
         }
         committedState = state
         lastDiskDigest = try Data(contentsOf: storage.stateURL).mapDigest
+        if let lastDiskDigest {
+            backupPending = !FileManager.default.fileExists(atPath: storage.rootURL.appendingPathComponent("Recovery/latest-" + lastDiskDigest + ".json").path)
+        }
         if pendingLegacyCredential != nil { indexNeedsRebuild = true; return }
         if deferMaintenance {
             // The saved state is authoritative. Only withdraw known missing/excluded
@@ -366,10 +379,11 @@ public actor FileMemoryStore {
                 })
             }
         }
-        try Self.write(state, encoder: encoder, to: storage.stateURL)
+        try Self.write(state, encoder: encoder, to: storage.stateURL, expectedDigest: lastDiskDigest)
         do { try intelligenceIndex?.replace(with: state) } catch { indexNeedsRebuild = true }
         committedState = state
         lastDiskDigest = try Data(contentsOf: storage.stateURL).mapDigest
+        if let lastDiskDigest { backupPending = !FileManager.default.fileExists(atPath: storage.rootURL.appendingPathComponent("Recovery/latest-" + lastDiskDigest + ".json").path) }
     }
 
     public func snapshot() -> RecallState { state }
@@ -1518,9 +1532,9 @@ public actor FileMemoryStore {
         if indexChanged { indexNeedsRebuild = true }
     }
 
-    private static func write(_ state: RecallState, encoder: JSONEncoder, to url: URL) throws {
+    private static func write(_ state: RecallState, encoder: JSONEncoder, to url: URL, expectedDigest: String? = nil, requireMissing: Bool = false) throws {
         let data = try encoder.encode(state)
-        _ = try ArchiveReliability.write(data, storage: RecallStorage(rootURL: url.deletingLastPathComponent()))
+        _ = try ArchiveReliability.write(data, storage: RecallStorage(rootURL: url.deletingLastPathComponent()), expectedDigest: expectedDigest, requireMissing: requireMissing)
     }
 
     private func writeState() throws {

@@ -13,6 +13,8 @@ struct LiveMemoryResponder: LLMResponding {
               live.llmConfiguration == original.llmConfiguration,
               live.matterCorrections == original.matterCorrections,
               live.memoryKnowledgeSettings == original.memoryKnowledgeSettings,
+              live.workflow.identityBindings == original.workflow.identityBindings,
+              live.dataGeneration == original.dataGeneration,
               live.memoryKnowledge.suppressedKeys == original.memoryKnowledge.suppressedKeys,
               SummaryFeedbackLearning.revision(in: live) == SummaryFeedbackLearning.revision(in: original),
               Set(original.captures.map(\.id)).isSubset(of: Set(live.captures.map(\.id))) else {

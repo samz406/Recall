@@ -78,7 +78,7 @@ enum MemoryReliabilityVerification {
     }
     static func conflictingWritersDoNotLoseRecords() async throws {
         let storage = try storage(); defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        let first = try verificationStore(storage: storage), stale = try verificationStore(storage: storage)
+        let first = try verificationStore(storage: storage), stale = try verificationStore(storage: storage, deferMaintenance: true)
         let source = record("Synthetic record from writer one")
         try await first.addCapture(source)
         do { try await stale.addCapture(record("Stale overwrite")); throw Failure(errorDescription: "A stale writer overwrote newer records") }

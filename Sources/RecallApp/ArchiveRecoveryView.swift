@@ -10,7 +10,16 @@ final class RecallStartupController: ObservableObject {
     @Published var isWorking = false
     private(set) var storage: RecallStorage?
 
-    init() { Task { await open() } }
+    init(storage: RecallStorage? = nil, automatic: Bool = true) {
+        self.storage = storage
+        if automatic { Task { await open() } }
+    }
+    static func preview() -> RecallStartupController {
+        let value = RecallStartupController(automatic: false)
+        value.failure = RecallLocalization.both("无法读取本地档案。原始文件已保留。", "The archive could not be read. The original file is preserved.")
+        value.backups = [ArchiveBackup(id: "synthetic", createdAt: Date(timeIntervalSince1970: 1_794_000_000), captureCount: 120)]
+        return value
+    }
     func open() async {
         guard !isWorking else { return }
         isWorking = true
@@ -20,13 +29,18 @@ final class RecallStartupController: ObservableObject {
             if CommandLine.arguments.contains("--layout-previews") { model = try RecallAppModel(previewState: RecallState()); return }
             let storage = try self.storage ?? RecallStorage()
             self.storage = storage
-            backups = ArchiveReliability.backups(storage)
+            if !FileManager.default.fileExists(atPath: storage.stateURL.path) {
+                backups = await Task.detached(priority: .utility) { ArchiveReliability.backups(storage) }.value
+            }
             if !FileManager.default.fileExists(atPath: storage.stateURL.path), !backups.isEmpty {
                 failure = RecallLocalization.both("原始档案缺失。请选择已校验的备份恢复。", "The archive is missing. Restore a verified backup."); return
             }
             model = try RecallAppModel(storageOverride: storage)
             failure = nil
-        } catch { failure = error.localizedDescription }
+        } catch {
+            failure = error.localizedDescription
+            if let storage { backups = await Task.detached(priority: .utility) { ArchiveReliability.backups(storage) }.value }
+        }
     }
     func restore(_ backup: ArchiveBackup) async {
         guard let storage, !isWorking else { return }

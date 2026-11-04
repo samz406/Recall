@@ -231,6 +231,8 @@ final class RecallAppModel: ObservableObject {
         do { try await store.syncDailyReviewReminders() }
         catch { recordError(error, source: "Reminders", message: "从每日回顾更新提醒失败，将重试") }
         state = await store.snapshot()
+        archiveBackupPending = await store.backupPending
+        pendingFileCleanupCount = (state.pendingFileDeletions ?? []).count + (state.pendingRecoveryCleanup == true ? 1 : 0)
         guard !isFinishingStartup else { return }
         rebuildMatterFiles()
         configureShortcuts()
@@ -343,7 +345,7 @@ final class RecallAppModel: ObservableObject {
         recentlyDeletedTimer?.invalidate()
         recentlyDeletedTimer = nil
         let expiry = state.recentlyDeletedMemories.map(\.expiresAt).min()
-        let pending = !(state.pendingFileDeletions ?? []).isEmpty || state.pendingRecoveryCleanup == true
+        let pending = !(state.pendingFileDeletions ?? []).isEmpty || state.pendingRecoveryCleanup == true || archiveBackupPending
         guard let expiry = expiry ?? (pending ? Date.now : nil) else { return }
         let now = Date.now
         let nextAttempt = expiry <= now ? max(now, recentlyDeletedRetryAfter ?? now) : expiry
@@ -360,6 +362,7 @@ final class RecallAppModel: ObservableObject {
             armRecentlyDeletedTimer()
         }
         do {
+            if await store.backupPending { try await store.retryArchiveBackup() }
             let count = try await store.purgeExpiredRecentlyDeleted()
             let cleanup = try await store.retryPendingFileCleanup()
             pendingFileCleanupCount = cleanup.pendingCount
@@ -369,7 +372,8 @@ final class RecallAppModel: ObservableObject {
             }
             archiveBackupPending = await store.backupPending
             state = await store.snapshot()
-            if cleanup.pendingCount == 0 { recentlyDeletedRetryAfter = nil }
+            if cleanup.pendingCount == 0 && !archiveBackupPending { recentlyDeletedRetryAfter = nil }
+            else if archiveBackupPending { recentlyDeletedRetryAfter = Date.now.addingTimeInterval(60) }
             if count > 0 {
                 state = await store.snapshot()
                 if let undo = deletionUndoNotice, undo.expiresAt <= .now { deletionUndoNotice = nil }
