@@ -634,18 +634,19 @@ public actor FileMemoryStore {
         let before = state
         var value = schedule
         let old = state.reviewSchedules.first { $0.id == value.id }
-        if old != value || value.nextRunAt == nil {
-            value.nextRunAt = value.nextTrigger(after: now); value.retryAfter = nil
-            value.failureCount = 0; value.lastReportID = nil
-        }
+        guard old != value || value.nextRunAt == nil else { return }
+        value.nextRunAt = value.nextTrigger(after: now); value.retryAfter = nil
+        value.failureCount = 0; value.lastReportID = nil
         state.reviewSchedules.removeAll { $0.id == value.id }; state.reviewSchedules.append(value)
-        do { try persist() } catch { state = before; throw error }
+        // Only schedule settings changed. Do not reconcile the archive or synchronize its index.
+        do { try persistReviewState() } catch { state = before; throw error }
     }
 
     public func deleteReviewSchedule(id: UUID) throws {
+        guard state.reviewSchedules.contains(where: { $0.id == id }) else { return }
         let before = state
         state.reviewSchedules.removeAll { $0.id == id }
-        do { try persist() } catch { state = before; throw error }
+        do { try persistReviewState() } catch { state = before; throw error }
     }
 
     public func commitWeeklyReport(_ submitted: WeeklyReport, replacing id: UUID? = nil,

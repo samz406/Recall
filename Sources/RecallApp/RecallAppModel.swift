@@ -77,6 +77,7 @@ final class RecallAppModel: ObservableObject {
     private let memoryWorkspaceCache = MemoryWorkspaceCache()
     @Published private(set) var isGeneratingWeeklyReview = false
     @Published var weeklyReviewMessage: String?
+    @Published private(set) var savingReviewScheduleIDs: Set<UUID> = []
     @Published var reviewTopicToOpen: String?
     @Published var weeklyReportToOpen: UUID?
     private var weeklyReviewTask: Task<Void, Never>?
@@ -478,25 +479,40 @@ final class RecallAppModel: ObservableObject {
     }
 
     func saveReviewSchedule(_ value: ReviewSchedule) async -> Bool {
+        guard savingReviewScheduleIDs.insert(value.id).inserted else { return false }
+        defer { savingReviewScheduleIDs.remove(value.id) }
         var schedule = value
+        var notificationMessage: String?
         if schedule.notifyWhenReady {
             do {
                 let granted = try await notificationScheduler.requestAuthorization()
                 if !granted {
                     schedule.notifyWhenReady = false
-                    weeklyReviewMessage = "自动生成会照常执行；系统通知未授权。"
+                    notificationMessage = "自动生成会照常执行；系统通知未授权。"
                 }
             } catch {
                 schedule.notifyWhenReady = false
+                notificationMessage = RecallLocalization.both("计划会照常执行；系统通知暂不可用。", "The schedule will run, but system notifications are unavailable.")
                 recordError(error, source: "WeeklyReview", message: "回顾通知授权失败")
             }
         }
-        do { try await store.saveReviewSchedule(schedule); await refresh(); return true }
-        catch { recordError(error, source: "WeeklyReview", message: "保存回顾计划失败"); return false }
+        do {
+            try await store.saveReviewSchedule(schedule)
+            state.reviewSchedules = await store.snapshot().reviewSchedules
+            // Saving a future plan does not require reminder scans, topic rebuilding,
+            // capture understanding, missed reviews or other refresh-time maintenance.
+            if !isPreview { armWeeklySchedules() }
+            weeklyReviewMessage = notificationMessage ?? RecallLocalization.both("计划已保存。", "Schedule saved.")
+            return true
+        } catch {
+            weeklyReviewMessage = RecallLocalization.both("计划未能保存，原有计划保持不变，请重试。", "Unable to save the schedule. The previous schedule is unchanged; please retry.")
+            recordError(error, source: "WeeklyReview", message: "保存回顾计划失败")
+            return false
+        }
     }
 
     func deleteReviewSchedule(_ id: UUID) async {
-        do { try await store.deleteReviewSchedule(id: id); state = await store.snapshot() }
+        do { try await store.deleteReviewSchedule(id: id); state.reviewSchedules = await store.snapshot().reviewSchedules }
         catch { recordError(error, source: "WeeklyReview", message: "删除回顾计划失败") }
     }
 
