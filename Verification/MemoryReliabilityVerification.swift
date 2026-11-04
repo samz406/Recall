@@ -123,6 +123,7 @@ enum MemoryReliabilityVerification {
         let bad = [
             AnswerGrounding.Claim(statement: "Atlas 已上线", actor: "user", status: "completed", evidence: [proof]),
             .init(statement: "Atlas 将在 2028 年上线", evidence: [proof]),
+            .init(statement: "Atlas 将在周五上线", evidence: [proof]),
             .init(statement: "Atlas 已发布", evidence: [.init(sourceID: source.id, quote: "Atlas 已发布")]),
             .init(statement: "伪造来源", evidence: [.init(sourceID: UUID(), quote: source.ocrText)])
         ]

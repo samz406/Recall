@@ -61,6 +61,7 @@ struct RecallRootView: View {
         .onChange(of: interfaceLanguage) { _, _ in model.noticeMessage = nil }
         .onAppear {
             model.openMainWindow = { openWindow(id: "main"); RecallAppDelegate.activateMainWindow() }
+            if !model.isPreview && !model.isLoadingSavedState && model.state.captures.isEmpty && !model.state.workflow.onboardingCompleted { model.showsOnboarding = true }
             if model.openAskRequested { section = .chat; model.openAskRequested = false }
         }
         .onChange(of: model.openAskRequested) { _, requested in if requested { section = .chat; model.openAskRequested = false } }

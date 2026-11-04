@@ -108,7 +108,7 @@ public struct AnswerGrounding: Sendable {
             let assertedRelease = #"已上线|已发布|已部署|已经上线|already deployed|has been deployed|released to production"#
             if statement.range(of: assertedRelease, options: [.regularExpression, .caseInsensitive]) != nil,
                quotes.range(of: assertedRelease, options: [.regularExpression, .caseInsensitive]) == nil { rejected += 1; continue }
-            if !numbers(statement).isSubset(of: numbers(quotes)) { rejected += 1; continue }
+            if !numbers(statement).isSubset(of: numbers(quotes)) || !dateTerms(statement).isSubset(of: dateTerms(quotes)) { rejected += 1; continue }
             let ids = references.map(\.sourceID).memoryUnique()
             for id in ids where !sources.contains(id) { sources.append(id) }
             let suffix = ids.compactMap { sources.firstIndex(of: $0).map { "[\($0 + 1)]" } }.joined()
@@ -118,6 +118,12 @@ public struct AnswerGrounding: Sendable {
         guard !accepted.isEmpty else { return fallback(records: records, rejected: max(rejected, claims.count)) }
         if rejected > 0 { accepted.append(RecallLocalization.both("部分结论依据不足，已省略。", "Some claims lacked support and were omitted.")) }
         return Result(content: accepted.joined(separator: "\n\n"), sourceIDs: sources, rejectedCount: rejected)
+    }
+    private static func dateTerms(_ text: String) -> Set<String> {
+        let pattern = #"(?:今天|昨天|明天|后天|前天|当天|(?:周|星期|礼拜)[一二三四五六日天]|[一二三四五六七八九十]+月(?:[一二三四五六七八九十]+[日号])?|\b(?:today|yesterday|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b)"#
+        let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        let ns = text as NSString
+        return Set(regex?.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range).lowercased() } ?? [])
     }
     private static func numbers(_ text: String) -> Set<String> {
         let regex = try? NSRegularExpression(pattern: #"\d+(?:[.:/-]\d+)*"#)
