@@ -22,6 +22,7 @@ final class RecallAppModel: ObservableObject {
     @Published var state = RecallState() {
         didSet {
             timelineWorkspace.update(captures: state.captures)
+            chatSources.update(state)
             if oldValue.reminders != state.reminders {
                 let active = Set(state.reminders.filter { $0.status == .scheduled || $0.status == .snoozed }.map(\.id))
                 for old in oldValue.reminders where (old.status == .scheduled || old.status == .snoozed) && !active.contains(old.id) {
@@ -48,6 +49,7 @@ final class RecallAppModel: ObservableObject {
     private var targetObserver: NSObjectProtocol?
     private var shortcutWakeObserver: NSObjectProtocol?
     let timelineWorkspace = TimelineWorkspace()
+    let chatSources = ChatSourcesWorkspace()
     @Published private(set) var isLoadingSavedState = true
     private var isFinishingStartup = true
     @Published var tasks: [RecallTaskStatus] = []
@@ -148,6 +150,7 @@ final class RecallAppModel: ObservableObject {
             self.assistant = MemoryAssistant(store: store)
             if let previewState {
                 state = previewState; isLoadingSavedState = false; isFinishingStartup = false
+                chatSources.update(previewState)
                 rebuildMatterFiles()
                 return
             }

@@ -148,7 +148,8 @@ enum KnowledgeProjectionVerification {
         let started = clock.now
         let plan = MemoryRetrievalEngine().plan(question: "账单导出后来怎样了", state: state, fallback: [], trustLedger: true, alreadyCorrected: true)
         let elapsed = started.duration(to: clock.now)
-        try expect(elapsed < .milliseconds(500), "账本已最新时，问一问不应重新编码全部截图")
+        try expect(elapsed < .milliseconds(500), "账本检索不应在过滤和排序时反复扫描相同条目的全文")
+        print("PERF: current-ledger retrieval 400 long records \(elapsed)")
         try expect(plan.evidence.contains { $0.ocrText.contains("账单导出") }, "跳过整库对账后仍应取回相关记录")
     }
     static func askSearchSkipsRepeatedArchiveWalks() throws {
