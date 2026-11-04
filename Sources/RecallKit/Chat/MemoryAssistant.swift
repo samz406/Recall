@@ -238,7 +238,7 @@ public final class MemoryAssistant {
             // 已传入证据时，不能接受模型仍声称“记忆为空”的幻觉式回答。
             // 此时保留本地可追溯摘要，确保用户至少得到真实的时间线内容。
             let ids = plan.evidence.flatMap { retrieval.sourceIDs[$0.id] ?? [$0.id] }
-            let checked = try await AnswerGrounding.verify(draft: cloudAnswer.content, question: question, sourceIDs: ids, state: state, responder: responder)
+            let checked = try await AnswerGrounding.verify(draft: cloudAnswer.content, question: question, sourceIDs: ids, state: state, responder: responder, materials: request.context)
             response = LLMAnswer(content: checked.content, citedCaptureIDs: checked.sourceIDs)
         }
 

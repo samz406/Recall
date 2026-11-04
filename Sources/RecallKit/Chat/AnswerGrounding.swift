@@ -24,20 +24,27 @@ public struct AnswerGrounding: Sendable {
     }
     /// Independent semantic check, followed by deterministic quote/identity/state checks.
     /// No draft is streamed before this boundary. Audit failure falls back to source text, never guessed facts.
-    static func verify(draft: String, question: String, sourceIDs: [UUID], state: RecallState, responder: any LLMResponding) async throws -> Result {
+    static func verify(draft: String, question: String, sourceIDs: [UUID], state: RecallState, responder: any LLMResponding, materials: [CaptureRecord]? = nil) async throws -> Result {
         let wanted = Set(sourceIDs)
         let candidates = EvidenceAccess.records(state).filter { wanted.contains($0.id) }
         guard !candidates.isEmpty else { return Result(content: noEvidence, sourceIDs: [], rejectedCount: 0) }
+        let supplied = Dictionary(uniqueKeysWithValues: (materials ?? candidates).map { ($0.id, $0.ocrText) })
         var used = 0
         let records = candidates.prefix(24).compactMap { record -> CaptureRecord? in
-            let text = PrivacyEngine().redact(record.correctedText ?? record.ocrText)
-            guard used < 24_000 else { return nil }
+            let original = record.correctedText ?? record.ocrText
+            guard let material = supplied[record.id] else { return nil }
+            // Only re-send original lines already supplied to this answer. A verification call cannot
+            // bypass a tool's clipping budget by reopening the entire original record.
+            let lines = material.components(separatedBy: .newlines).filter { !$0.isEmpty && original.contains($0) }
+            let text = PrivacyEngine().redact(lines.joined(separator: "\n"))
+            guard !text.isEmpty, used < 24_000 else { return nil }
             var copy = record
             copy.ocrText = "sourceID: \(record.id.uuidString) | capturedAt: \(ISO8601DateFormatter().string(from: record.createdAt))\n" + String(text.prefix(min(4_000, 24_000 - used)))
             copy.imageRelativePath = nil; copy.manualMatter = nil
             used += copy.ocrText.count
             return copy
         }
+        guard !records.isEmpty else { return fallback(records: candidates) }
         let instruction = """
         核对回答草稿，仅保留原文确实支持的结论；不补充草稿未提出的新事实。
         每项必须有 sourceID 和逐字 quote。引用必须取自给出的正文，不能引用 sourceID、记录时间或问题本身。

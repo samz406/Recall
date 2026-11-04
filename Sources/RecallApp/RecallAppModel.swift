@@ -346,7 +346,8 @@ final class RecallAppModel: ObservableObject {
         recentlyDeletedTimer = nil
         let expiry = state.recentlyDeletedMemories.map(\.expiresAt).min()
         let pending = !(state.pendingFileDeletions ?? []).isEmpty || state.pendingRecoveryCleanup == true || archiveBackupPending
-        guard let expiry = expiry ?? (pending ? Date.now : nil) else { return }
+        let deadline = pending ? min(expiry ?? Date.now, Date.now) : expiry
+        guard let expiry = deadline else { return }
         let now = Date.now
         let nextAttempt = expiry <= now ? max(now, recentlyDeletedRetryAfter ?? now) : expiry
         recentlyDeletedTimer = Timer.scheduledTimer(withTimeInterval: max(1, nextAttempt.timeIntervalSince(now)), repeats: false) { [weak self] _ in

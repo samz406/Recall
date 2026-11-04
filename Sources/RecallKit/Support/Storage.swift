@@ -303,8 +303,7 @@ public actor FileMemoryStore {
                     guard try credentials.read(config.connectionID) != nil else { throw CredentialError.unavailable }
                     config.apiKey = ""; config.credentialReference = config.connectionID.uuidString; config.credentialRevision += 1
                     restoredState.llmConfiguration = config
-                    try Self.write(restoredState, encoder: encoder, to: storage.stateURL, expectedDigest: initialDigest)
-                    initialDigest = ArchiveReliability.digest(try encoder.encode(restoredState))
+                    initialDigest = try Self.write(restoredState, encoder: encoder, to: storage.stateURL, expectedDigest: initialDigest)
                 } catch {
                     pendingLegacyCredential = (config.connectionID, config.apiKey)
                     config.apiKey = ""; config.credentialReference = nil; restoredState.llmConfiguration = config
@@ -333,17 +332,16 @@ public actor FileMemoryStore {
             }
             let credentialsReady = pendingLegacyCredential == nil
             if !deferMaintenance && credentialsReady {
-                try Self.write(restoredState, encoder: encoder, to: storage.stateURL, expectedDigest: initialDigest)
-                initialDigest = ArchiveReliability.digest(try encoder.encode(restoredState))
+                initialDigest = try Self.write(restoredState, encoder: encoder, to: storage.stateURL, expectedDigest: initialDigest)
             }
             state = restoredState
         } else {
             guard ArchiveReliability.backups(storage).isEmpty else { throw ArchiveReliabilityError.missingPrimary }
             state = RecallState()
-            try Self.write(state, encoder: encoder, to: storage.stateURL, requireMissing: true)
+            initialDigest = try Self.write(state, encoder: encoder, to: storage.stateURL, requireMissing: true)
         }
         committedState = state
-        lastDiskDigest = try Data(contentsOf: storage.stateURL).mapDigest
+        lastDiskDigest = initialDigest
         if let lastDiskDigest {
             backupPending = !FileManager.default.fileExists(atPath: storage.rootURL.appendingPathComponent("Recovery/latest-" + lastDiskDigest + ".json").path)
         }
@@ -380,10 +378,9 @@ public actor FileMemoryStore {
                 })
             }
         }
-        try Self.write(state, encoder: encoder, to: storage.stateURL, expectedDigest: lastDiskDigest)
+        lastDiskDigest = try Self.write(state, encoder: encoder, to: storage.stateURL, expectedDigest: lastDiskDigest)
         do { try intelligenceIndex?.replace(with: state) } catch { indexNeedsRebuild = true }
         committedState = state
-        lastDiskDigest = try Data(contentsOf: storage.stateURL).mapDigest
         if let lastDiskDigest { backupPending = !FileManager.default.fileExists(atPath: storage.rootURL.appendingPathComponent("Recovery/latest-" + lastDiskDigest + ".json").path) }
     }
 
@@ -1486,56 +1483,70 @@ public actor FileMemoryStore {
     }
 
     func persist(preservingReviewsFrom previous: RecallState? = nil) throws {
-        chatAnalysis = nil
-        guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
-        reconcileDailyReviewCheckpoints()
-        let liveIDs = Set(state.captures.map(\.id))
-        let excludedIDs = Set(state.captures.filter { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id))
-        let invalidIDs = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
-        let feedbackIDs = Set(state.summaryFeedback.map(\.id))
-        var droppedIDs = Set(state.summaryFeedback.filter {
-            !Set($0.sourceVersions.keys).isSubset(of: liveIDs) || !Set($0.sourceVersions.keys).isDisjoint(with: excludedIDs.union(invalidIDs))
-                || !Set($0.dependencyFeedbackIDs ?? []).isSubset(of: feedbackIDs)
-        }.map(\.id))
-        for _ in state.summaryFeedback.indices {
-            let more = Set(state.summaryFeedback.filter { !Set($0.dependencyFeedbackIDs ?? []).isDisjoint(with: droppedIDs) }.map(\.id))
-            if more.isSubset(of: droppedIDs) { break }; droppedIDs.formUnion(more)
-        }
-        let droppedFeedback = state.summaryFeedback.filter { droppedIDs.contains($0.id) }
-        if !droppedFeedback.isEmpty {
-            let touched = Set(droppedFeedback.flatMap { $0.resolution?.corrections.map(\.sourceID) ?? [] })
-            state.summaryFeedback.removeAll { entry in droppedFeedback.contains { $0.id == entry.id } }
-            invalidateMemoryOutputs(sourceIDs: touched)
-        }
-        reconcileCaptureUnderstanding()
-        state.topicGroups.removeAll { group in group.sourceIDs.map { Set($0).isDisjoint(with: liveIDs) } ?? false }
-        invalidateWeeklyReports()
-        let topicState = state
-        state.topicReviews.removeAll { !$0.sourcesUnchanged(in: topicState) }
-        applyKnowledge(MemoryKnowledgeEngine().reconcile(state, allowNew: false))
-        if let previous { preserveReviewHistory(from: previous) }
-        state.memoryKnowledge.dependencies = MemoryKnowledgeEngine().dependencies(in: state, claims: state.memoryKnowledge.claims)
-        try writeState()
         do {
-            if indexNeedsRebuild { try intelligenceIndex?.replace(with: state) }
-            else { try intelligenceIndex?.synchronize(with: state) }
-            indexNeedsRebuild = false
-        } catch { indexNeedsRebuild = true }
+            chatAnalysis = nil
+            guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
+            reconcileDailyReviewCheckpoints()
+            let liveIDs = Set(state.captures.map(\.id))
+            let excludedIDs = Set(state.captures.filter { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id))
+            let invalidIDs = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
+            let feedbackIDs = Set(state.summaryFeedback.map(\.id))
+            var droppedIDs = Set(state.summaryFeedback.filter {
+                !Set($0.sourceVersions.keys).isSubset(of: liveIDs) || !Set($0.sourceVersions.keys).isDisjoint(with: excludedIDs.union(invalidIDs))
+                    || !Set($0.dependencyFeedbackIDs ?? []).isSubset(of: feedbackIDs)
+            }.map(\.id))
+            for _ in state.summaryFeedback.indices {
+                let more = Set(state.summaryFeedback.filter { !Set($0.dependencyFeedbackIDs ?? []).isDisjoint(with: droppedIDs) }.map(\.id))
+                if more.isSubset(of: droppedIDs) { break }; droppedIDs.formUnion(more)
+            }
+            let droppedFeedback = state.summaryFeedback.filter { droppedIDs.contains($0.id) }
+            if !droppedFeedback.isEmpty {
+                let touched = Set(droppedFeedback.flatMap { $0.resolution?.corrections.map(\.sourceID) ?? [] })
+                state.summaryFeedback.removeAll { entry in droppedFeedback.contains { $0.id == entry.id } }
+                invalidateMemoryOutputs(sourceIDs: touched)
+            }
+            reconcileCaptureUnderstanding()
+            state.topicGroups.removeAll { group in group.sourceIDs.map { Set($0).isDisjoint(with: liveIDs) } ?? false }
+            invalidateWeeklyReports()
+            let topicState = state
+            state.topicReviews.removeAll { !$0.sourcesUnchanged(in: topicState) }
+            applyKnowledge(MemoryKnowledgeEngine().reconcile(state, allowNew: false))
+            if let previous { preserveReviewHistory(from: previous) }
+            state.memoryKnowledge.dependencies = MemoryKnowledgeEngine().dependencies(in: state, claims: state.memoryKnowledge.claims)
+            try writeState()
+            do {
+                if indexNeedsRebuild { try intelligenceIndex?.replace(with: state) }
+                else { try intelligenceIndex?.synchronize(with: state) }
+                indexNeedsRebuild = false
+            } catch { indexNeedsRebuild = true }
+        } catch {
+            if let committedState { state = committedState }
+            chatAnalysis = nil
+            throw error
+        }
     }
 
     /// Only review-owned fields changed. Full reconciliation/index maintenance follows
     /// on the existing maintenance cycle; queries use their memory fallback meanwhile.
     func persistReviewState(indexChanged: Bool = false, invalidateAnalysis: Bool = true) throws {
-        if invalidateAnalysis { chatAnalysis = nil }
-        guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
-        try Task.checkCancellation()
-        try writeState()
-        if indexChanged { indexNeedsRebuild = true }
+        do {
+            if invalidateAnalysis { chatAnalysis = nil }
+            guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
+            try Task.checkCancellation()
+            try writeState()
+            if indexChanged { indexNeedsRebuild = true }
+        } catch {
+            if let committedState { state = committedState }
+            chatAnalysis = nil
+            throw error
+        }
     }
 
-    private static func write(_ state: RecallState, encoder: JSONEncoder, to url: URL, expectedDigest: String? = nil, requireMissing: Bool = false) throws {
+    @discardableResult
+    private static func write(_ state: RecallState, encoder: JSONEncoder, to url: URL, expectedDigest: String? = nil, requireMissing: Bool = false) throws -> String {
         let data = try encoder.encode(state)
         _ = try ArchiveReliability.write(data, storage: RecallStorage(rootURL: url.deletingLastPathComponent()), expectedDigest: expectedDigest, requireMissing: requireMissing)
+        return ArchiveReliability.digest(data)
     }
 
     private func writeState() throws {
@@ -1552,7 +1563,6 @@ public actor FileMemoryStore {
     }
 }
 
-private extension Data { var mapDigest: String { ArchiveReliability.digest(self) } }
 
 enum CaptureTextFingerprint {
     /// Normalized, order-independent set of meaningful lines.

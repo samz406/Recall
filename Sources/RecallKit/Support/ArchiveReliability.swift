@@ -34,7 +34,13 @@ public enum ArchiveReliability {
         let state = try decoder.decode(RecallState.self, from: data)
         guard (1...2).contains(state.schemaVersion) else { throw ArchiveReliabilityError.unsupportedVersion }
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard object?["captures"] is [Any] else { throw ArchiveReliabilityError.invalidArchive }
+        guard object?["captures"] is [Any],
+              Set(state.captures.map(\.id)).count == state.captures.count,
+              Set(state.messages.map(\.id)).count == state.messages.count,
+              Set(state.reminders.map(\.id)).count == state.reminders.count,
+              Set(state.rules.map(\.id)).count == state.rules.count,
+              Set(state.dailySummaries.map(\.id)).count == state.dailySummaries.count,
+              Set(state.weeklyReports.map(\.id)).count == state.weeklyReports.count else { throw ArchiveReliabilityError.invalidArchive }
         return state
     }
     static func directory(_ storage: RecallStorage) -> URL { storage.rootURL.appendingPathComponent("Recovery", isDirectory: true) }

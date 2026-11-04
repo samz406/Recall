@@ -39,7 +39,7 @@ final class RecallStartupController: ObservableObject {
             failure = nil
         } catch {
             failure = error.localizedDescription
-            if case ArchiveReliabilityError.unsupportedVersion = error { backups = [] }
+            if case .unsupportedVersion? = error as? ArchiveReliabilityError { backups = [] }
             else if let storage { backups = await Task.detached(priority: .utility) { ArchiveReliability.backups(storage) }.value }
         }
     }
