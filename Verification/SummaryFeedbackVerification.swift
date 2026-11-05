@@ -224,6 +224,7 @@ enum SummaryFeedbackVerification {
         let reopened = try verificationStore(storage: f.storage)
         let reopenedState = await reopened.snapshot()
         try check(SummaryFeedbackLearning.targetIsCurrent(.period(saved), in: reopenedState), "重启重排来源字典后回顾版本指纹发生变化")
+        guard let persistedBefore = reopenedState.weeklyReports.first(where: { $0.id == saved.id }) else { throw Failure(text: "重启丢失周报") }
         // This simulates a restart. Continue through the new store instead of leaving the
         // pre-restart writer active, which must now be rejected by archive conflict protection.
         f.store = reopened
@@ -239,7 +240,9 @@ enum SummaryFeedbackVerification {
                   "周期回顾没有应用修订，或把整周材料复制到每条反馈中")
         try await f.store.withdrawSummaryFeedback(job.id)
         let undone = await f.store.snapshot()
-        try check(undone.weeklyReports.first?.items == saved.items && undone.weeklyReports.first?.digestTopicIDs == saved.digestTopicIDs,
+        // The on-disk format keeps seconds. Compare the persisted version seen after restart,
+        // rather than the pre-restart Date values that still contain fractional seconds.
+        try check(undone.weeklyReports.first?.items == persistedBefore.items && undone.weeklyReports.first?.digestTopicIDs == persistedBefore.digestTopicIDs,
                   "增量撤销没有恢复周报原条目、顺序与精选范围")
     }
 }
