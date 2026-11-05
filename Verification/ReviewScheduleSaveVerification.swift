@@ -21,9 +21,12 @@ enum ReviewScheduleSaveVerification {
         let originalKnowledge = try encoder.encode(before.memoryKnowledge)
         _ = await store.preparedForChat()
         let plan = ReviewSchedule(template: ReviewTemplate(kind: .personal))
+        let archiveBefore = try Data(contentsOf: f.storage.stateURL)
         let clock = ContinuousClock(), start = clock.now
         try await store.saveReviewSchedule(plan)
         let elapsed = start.duration(to: clock.now)
+        let archiveAfter = try Data(contentsOf: f.storage.stateURL)
+        try expect(archiveBefore == archiveAfter, "保存计划重写了整份档案")
         let after = await store.snapshot(), dirty = await store.memoryIndexNeedsRebuild()
         let savedKnowledge = try encoder.encode(after.memoryKnowledge)
         try expect(elapsed < .seconds(2), "保存计划不应在数千条记录上执行整库整理")
@@ -33,7 +36,7 @@ enum ReviewScheduleSaveVerification {
             && dirty, "保存计划改写了记忆、回顾或后台队列，或重建了索引")
         let prepared = await store.preparedForChat()
         try expect(prepared.reviewSchedules.first?.id == plan.id, "保存后读取到旧的计划缓存")
-        print("PERF: save review schedule with 6351 synthetic records \(elapsed); atomic primary + latest verified mirror, no reconciliation/index refresh")
+        print("PERF: save review schedule with 6351 synthetic records \(elapsed); schedule file only, archive bytes unchanged")
     }
     private static func lifecycle() async throws {
         let f = try StartupLoadingVerification.fixture()
@@ -61,9 +64,10 @@ enum ReviewScheduleSaveVerification {
         let store = try verificationStore(storage: f.storage, deferMaintenance: true)
         try await store.saveReviewSchedule(ReviewSchedule(template: ReviewTemplate(kind: .personal)))
         let before = await store.snapshot(), saved = before.reviewSchedules[0]
-        let backup = f.storage.stateURL.appendingPathExtension("backup")
-        try FileManager.default.moveItem(at: f.storage.stateURL, to: backup)
-        try FileManager.default.createDirectory(at: f.storage.stateURL, withIntermediateDirectories: false)
+        let backup = f.storage.reviewSchedulesURL.appendingPathExtension("backup")
+        try FileManager.default.copyItem(at: f.storage.reviewSchedulesURL, to: backup)
+        try FileManager.default.removeItem(at: f.storage.reviewSchedulesURL)
+        try FileManager.default.createDirectory(at: f.storage.reviewSchedulesURL, withIntermediateDirectories: false)
         // An identical, already saved plan and deleting an absent plan require no disk write.
         try await store.saveReviewSchedule(saved)
         try await store.deleteReviewSchedule(id: UUID())
@@ -74,8 +78,8 @@ enum ReviewScheduleSaveVerification {
         catch is Failure { throw Failure(message: "删除写入失败未上报") } catch {}
         let after = await store.snapshot()
         try expect(after.reviewSchedules == before.reviewSchedules && after.captures == before.captures, "计划保存或删除失败没有回滚")
-        try FileManager.default.removeItem(at: f.storage.stateURL)
-        try FileManager.default.moveItem(at: backup, to: f.storage.stateURL)
+        try FileManager.default.removeItem(at: f.storage.reviewSchedulesURL)
+        try FileManager.default.moveItem(at: backup, to: f.storage.reviewSchedulesURL)
         let reopened = try verificationStore(storage: f.storage, deferMaintenance: true)
         let reopenedState = await reopened.snapshot()
         try expect(reopenedState.reviewSchedules == before.reviewSchedules, "失败后磁盘中的原计划改变")

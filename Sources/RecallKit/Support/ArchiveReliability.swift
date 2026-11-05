@@ -122,6 +122,10 @@ public enum ArchiveReliability {
             }
             do {
                 try data.write(to: storage.stateURL, options: .atomic)
+                // A restored archive is the schedule source of truth. A newer sidecar would put the old plan back.
+                if FileManager.default.fileExists(atPath: storage.reviewSchedulesURL.path) {
+                    try FileManager.default.removeItem(at: storage.reviewSchedulesURL)
+                }
             } catch {
                 if let isolated, !FileManager.default.fileExists(atPath: storage.stateURL.path) {
                     try? FileManager.default.moveItem(at: isolated, to: storage.stateURL)

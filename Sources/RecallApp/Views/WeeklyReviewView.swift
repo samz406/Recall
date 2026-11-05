@@ -263,7 +263,7 @@ struct WeeklyReviewView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Label(RecallLocalization.text("部分来源已删除或更正，这份回顾需要更新。"), systemImage: "exclamationmark.circle")
                     Text(RecallLocalization.text("失效内容已隐藏，避免重新显示你删除或更正的信息。")).font(.caption)
-                    Button(RecallLocalization.text("更新回顾")) { model.generateWeeklyReview(period: report.period, template: report.template, scope: report.scope, replacing: nil) }
+                    Button(RecallLocalization.text("重新生成（保留原版本）")) { regenerate(report) }
                         .buttonStyle(.borderedProminent).disabled(model.isGeneratingWeeklyReview)
                 }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                     .foregroundStyle(RecallPalette.warning).background(RecallPalette.warning.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
@@ -303,14 +303,17 @@ struct WeeklyReviewView: View {
             Button { exporting = report } label: { Label(RecallLocalization.text("复制与导出"), systemImage: "square.and.arrow.up") }.disabled(!report.isReadable)
             Menu {
                 Button(RecallLocalization.text("查看本期来源")) { materials = report }.disabled(!report.isReadable)
-                Divider()
-                Button(RecallLocalization.text("重新生成（保留原版本）")) {
-                    model.generateWeeklyReview(period: report.period, template: report.template, scope: report.scope,
-                        replacing: nil)
-                }.disabled(model.isGeneratingWeeklyReview)
+                if report.isReadable {
+                    Divider()
+                    Button(RecallLocalization.text("重新生成（保留原版本）")) { regenerate(report) }
+                        .disabled(model.isGeneratingWeeklyReview)
+                }
                 Button(RecallLocalization.text("删除回顾"), role: .destructive) { deleting = report }
             } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
         }.fixedSize()
+    }
+    private func regenerate(_ report: WeeklyReport) {
+        model.generateWeeklyReview(period: report.period, template: report.template, scope: report.scope, replacing: nil)
     }
     private func reportSections(_ report: WeeklyReport) -> some View {
         let rows = report.digestRows
@@ -474,7 +477,7 @@ private struct ReviewEditSheet: View {
         isSaving = true
         Task {
             if await model.editWeeklyReport(reportID, markdown: value) { dismiss() }
-            else { error = "来源可能已变化，未能保存。请关闭后更新回顾。" }
+            else { error = "来源可能已变化，未能保存。请关闭后重新生成。" }
             isSaving = false
         }
     }
@@ -502,7 +505,7 @@ private struct ReviewExportSheet: View {
                         if let content = await model.weeklyMarkdownForExport(reportID) {
                             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(content, forType: .string)
                             message = "已复制。"
-                        } else { message = "来源已变化，未能复制。请先更新回顾。" }
+                        } else { message = "来源已变化，未能复制。请先重新生成。" }
                     }
                 }.disabled(report == nil)
                 Button(RecallLocalization.text("导出 Markdown")) { export() }.buttonStyle(.borderedProminent).disabled(report == nil)
@@ -516,7 +519,7 @@ private struct ReviewExportSheet: View {
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             Task { @MainActor in
-                guard let content = await model.weeklyMarkdownForExport(reportID) else { message = "来源已变化，请先更新回顾。"; return }
+                guard let content = await model.weeklyMarkdownForExport(reportID) else { message = "来源已变化，请先重新生成。"; return }
                 do { try content.write(to: url, atomically: true, encoding: .utf8); message = "文件已导出。" }
                 catch { model.logWeeklyExportFailure(error); message = "导出失败，请换一个位置重试。" }
             }
@@ -543,7 +546,7 @@ private struct ReviewMaterialsSheet: View {
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if report == nil { Text(RecallLocalization.text("来源已删除或更正，请更新回顾后再查看。")) }
+                    if report == nil { Text(RecallLocalization.text("来源已删除或更正，请重新生成后再查看。")) }
                     else if rows.isEmpty { Text(RecallLocalization.text("没有匹配的材料。")) }
                     ForEach(Array(rows.prefix(limit))) { item in
                         Button { selected = item } label: {
@@ -580,7 +583,7 @@ private struct ReviewSourcesSheet: View {
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
-                    if !current { Text(RecallLocalization.text("来源已删除或更正，请关闭后更新回顾。")).foregroundStyle(RecallPalette.secondary) }
+                    if !current { Text(RecallLocalization.text("来源已删除或更正，请关闭后重新生成。")).foregroundStyle(RecallPalette.secondary) }
                     else {
                         ForEach((item.previous.map { [$0] } ?? []) + item.excerpts) { entry in
                             VStack(alignment: .leading, spacing: 10) {

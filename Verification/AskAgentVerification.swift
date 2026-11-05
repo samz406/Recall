@@ -20,7 +20,10 @@ enum AskAgentVerification {
         try await invalidPlanFallsBack()
         try await deletedSourceVoidsTheAnswer()
         try await cancellationStopsTheRequest()
-        print("PASS: 10 ask-agent scenarios (stream, direct answer, tools, refusal, budget, fallback, deletion, cancellation)")
+        try await greetingSkipsRetrieval()
+        try await conversationalReplySkipsSearch()
+        try await statusPrecedesLookup()
+        print("PASS: 13 ask-agent scenarios (stream, direct answer, tools, refusal, budget, fallback, deletion, cancellation, greeting, reply, status)")
     }
 
     private static func streamLines() throws {
@@ -135,7 +138,7 @@ enum AskAgentVerification {
         var tools: [String] = []
         _ = try await MemoryAssistant(store: store).ask("AtlasScopeToken", model: script, onStep: { name, _ in if name.hasPrefix("tool:") { tools.append(name) } }, limits: AskLimits(maxRounds: 2))
         let purposes = await script.recorded().map(\.purpose)
-        try expect(purposes.filter { $0 == .chatPlanning }.count == 2 && tools.count == 2 && purposes.last == .answerVerification, "超过轮数后仍继续要工具")
+        try expect(purposes.filter { $0 == .chatPlanning }.count == 2 && tools.count == 2 && purposes.last == .chat, "超过轮数后仍继续要工具")
     }
 
     private static func budgetForcesAnAnswer() async throws {
@@ -199,6 +202,47 @@ enum AskAgentVerification {
             _ = try await task.value
             throw Failure(message: "取消后仍然返回了回答")
         } catch is CancellationError {}
+    }
+
+    private static func greetingSkipsRetrieval() async throws {
+        let (storage, store, _) = try await fixture("AtlasScopeToken was saved")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let script = ScriptedAskModel { _ in throw Failure(message: "寒暄不应该调用模型") }
+        let answer = try await MemoryAssistant(store: store).ask("hello", model: script)
+        let recorded = await script.recorded()
+        try expect(recorded.isEmpty, "寒暄调用了模型")
+        try expect(answer.citations.isEmpty && !answer.content.contains("AtlasScopeToken"), "寒暄带回了屏幕原文")
+    }
+
+    private static func conversationalReplySkipsSearch() async throws {
+        let (storage, store, _) = try await fixture("AtlasScopeToken was saved")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let script = ScriptedAskModel { _ in
+            LLMAnswer(content: #"{"reply":"可以告诉我日期或关键词。"}"#, citedCaptureIDs: [])
+        }
+        let answer = try await MemoryAssistant(store: store).ask("最近怎样", model: script)
+        let recorded = await script.recorded()
+        try expect(recorded.count == 1 && recorded[0].purpose == .chatPlanning && recorded[0].context.isEmpty, "决定是否查记录之前就把原文放进了上下文")
+        try expect(!recorded[0].question.contains("was saved"), "规划请求附上了屏幕原文")
+        try expect(answer.citations.isEmpty && answer.content.contains("关键词") && !answer.content.contains("AtlasScopeToken"), "直接回复没有原样返回，或混入了原文")
+    }
+
+    private static func statusPrecedesLookup() async throws {
+        let (storage, store, capture) = try await fixture("AtlasScopeToken was saved")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let script = ScriptedAskModel { request in
+            if request.purpose == .chatPlanning, !request.question.contains("已读取的工具结果") {
+                return LLMAnswer(content: #"{"status":"我先查 AtlasScopeToken。","calls":[{"tool":"search_records","args":{"query":"AtlasScopeToken"}}]}"#, citedCaptureIDs: [])
+            }
+            return LLMAnswer(content: #"{"answer":"已找到 AtlasScopeToken","citations":[""# + capture.id.uuidString + #""]}"#, citedCaptureIDs: [])
+        }
+        var status = ""
+        let answer = try await MemoryAssistant(store: store).ask("AtlasScopeToken 在哪", onStatus: { status = $0 }, model: script)
+        let recorded = await script.recorded()
+        try expect(recorded.first?.context.isEmpty == true, "第一次规划已经带上了检索结果")
+        try expect(status.contains("AtlasScopeToken"), "查找前没有把进度告诉用户")
+        try expect(answer.content.contains("AtlasScopeToken"), "按查询条件检索后没有整理出回答")
+        try expect(recorded.contains { $0.purpose == .chatPlanning } && recorded.last?.purpose == .answerVerification, "查询之后没有核对回答")
     }
 
     private static func fixture(_ text: String) async throws -> (RecallStorage, FileMemoryStore, CaptureRecord) {

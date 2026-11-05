@@ -33,8 +33,21 @@ struct MemoryReadTools: Sendable {
         let allowed = allowedCaptures()
         let reviews = allowedReviews()
         let allowedIDs = Set(allowed.map(\.id))
+        var dayCounts: [Date: Int] = [:]
+        var earliest: Date?
+        var latest: Date?
+        var appNames: Set<String> = []
+        for record in allowed {
+            let day = calendar.startOfDay(for: record.createdAt)
+            dayCounts[day, default: 0] += 1
+            if earliest == nil || record.createdAt < earliest! { earliest = record.createdAt }
+            if latest == nil || record.createdAt > latest! { latest = record.createdAt }
+            if let name = record.sourceAppName, !name.isEmpty { appNames.insert(name) }
+        }
+        var reviewDays: Set<Date> = []
+        for review in reviews { reviewDays.insert(calendar.startOfDay(for: review.day)) }
         var lines = ["今天 \(Self.dayString(now, calendar: calendar))，时区 \(calendar.timeZone.identifier)。"]
-        if let earliest = allowed.map(\.createdAt).min(), let latest = allowed.map(\.createdAt).max() {
+        if let earliest, let latest {
             lines.append("可引用记录从 \(Self.dayString(earliest, calendar: calendar)) 到 \(Self.dayString(latest, calendar: calendar))。")
         } else {
             lines.append("当前范围没有可引用的记录。")
@@ -42,10 +55,9 @@ struct MemoryReadTools: Sendable {
         lines.append("最近 30 天（没列出的日期是 0 条）：")
         let today = calendar.startOfDay(for: now)
         for offset in stride(from: 29, through: 0, by: -1) {
-            guard let day = calendar.date(byAdding: .day, value: -offset, to: today),
-                  let next = calendar.date(byAdding: .day, value: 1, to: day) else { continue }
-            let count = allowed.filter { $0.createdAt >= day && $0.createdAt < next }.count
-            let hasReview = reviews.contains { calendar.isDate($0.day, inSameDayAs: day) }
+            guard let day = calendar.date(byAdding: .day, value: -offset, to: today) else { continue }
+            let count = dayCounts[day] ?? 0
+            let hasReview = reviewDays.contains(day)
             guard count > 0 || hasReview else { continue }
             lines.append("\(Self.dayString(day, calendar: calendar)) 记录 \(count) 条\(hasReview ? "，有每日回顾" : "，没有每日回顾")")
         }
@@ -54,7 +66,7 @@ struct MemoryReadTools: Sendable {
             if !topics.contains(claim.title) { topics.append(claim.title) }
             if topics.count == 50 { break }
         }
-        let apps = Array(Set(allowed.compactMap(\.sourceAppName).filter { !$0.isEmpty })).sorted().prefix(30)
+        let apps = appNames.sorted().prefix(30)
         let pending = state.reminders.filter { Self.pending.contains($0.status) && sourcesAllowed($0.sourceCaptureIDs, allowedIDs: allowedIDs) }.count
         lines.append("主题：\(topics.isEmpty ? "无" : topics.joined(separator: "、"))")
         lines.append("应用：\(apps.isEmpty ? "无" : apps.joined(separator: "、"))")
