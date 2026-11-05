@@ -6,7 +6,7 @@ extension RecallLayoutPreviews {
     @MainActor static func verifyReviewScheduleSave() async throws {
         let records = (0..<120).map { i in CaptureRecord(eventTemplate: .manualMoment, sourceAppName: "Synthetic Notes", contentHash: "schedule-\(i)",
             ocrText: "合成归档正文，只用于验证保存计划不触发内容整理。") }
-        let model = RecallAppModel(previewState: RecallState(captures: records))
+        let model = try RecallAppModel(previewState: RecallState(captures: records))
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(5)) }
         let revision = model.memoryWorkspace?.revision

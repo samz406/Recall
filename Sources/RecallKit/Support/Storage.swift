@@ -26,7 +26,9 @@ public struct RecallStorage: Sendable {
         recentlyDeletedScreenshotsURL = rootURL.appendingPathComponent("Recently Deleted/Screenshots", isDirectory: true)
         stateURL = rootURL.appendingPathComponent("recall-state.json")
         intelligenceDatabaseURL = rootURL.appendingPathComponent("recall-intelligence.sqlite")
-        try fileManager.createDirectory(at: screenshotsURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: rootURL.path)
+        try fileManager.createDirectory(at: screenshotsURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try fileManager.createDirectory(at: recentlyDeletedScreenshotsURL, withIntermediateDirectories: true)
     }
 
@@ -36,7 +38,9 @@ public struct RecallStorage: Sendable {
         recentlyDeletedScreenshotsURL = rootURL.appendingPathComponent("Recently Deleted/Screenshots", isDirectory: true)
         stateURL = rootURL.appendingPathComponent("recall-state.json")
         intelligenceDatabaseURL = rootURL.appendingPathComponent("recall-intelligence.sqlite")
-        try fileManager.createDirectory(at: screenshotsURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: rootURL.path)
+        try fileManager.createDirectory(at: screenshotsURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try fileManager.createDirectory(at: recentlyDeletedScreenshotsURL, withIntermediateDirectories: true)
     }
 
@@ -82,6 +86,9 @@ public struct RecallStorage: Sendable {
 }
 
 public struct RecallState: Codable, Sendable {
+    public var dataGeneration: UUID? = nil
+    public var pendingFileDeletions: [String]? = nil
+    public var pendingRecoveryCleanup: Bool? = nil
     public var schemaVersion = 2
     public var workflow = WorkflowSettings()
     public var rules: [EventRule]
@@ -185,6 +192,7 @@ public struct RecallState: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case dataGeneration, pendingFileDeletions, pendingRecoveryCleanup
         case schemaVersion, workflow
         case topicReviews, understandingJobs, understandingSettings, dailyReviewCheckpoints, pendingDailyReviewMaintenance
         case summaryFeedback, summaryFeedbackSettings
@@ -197,6 +205,9 @@ public struct RecallState: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        dataGeneration = try container.decodeIfPresent(UUID.self, forKey: .dataGeneration)
+        pendingFileDeletions = try container.decodeIfPresent([String].self, forKey: .pendingFileDeletions)
+        pendingRecoveryCleanup = try container.decodeIfPresent(Bool.self, forKey: .pendingRecoveryCleanup)
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         guard schemaVersion <= 2 else { throw WorkflowError.changed }
         schemaVersion = 2
@@ -256,6 +267,9 @@ public actor FileMemoryStore {
     /// Corrected copy reused by 问一问 until a memory write. Chat messages do not clear it.
     private var chatAnalysis: RecallState?
     private var startupMaintenancePending = false
+    private var committedState: RecallState?
+    private var lastDiskDigest: String?
+    public private(set) var backupPending = false
 
     public init() throws {
         try self.init(storage: RecallStorage())
@@ -271,9 +285,11 @@ public actor FileMemoryStore {
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 
+        var initialDigest: String?
         if FileManager.default.fileExists(atPath: storage.stateURL.path) {
             let data = try Data(contentsOf: storage.stateURL)
-            var restoredState = try decoder.decode(RecallState.self, from: data)
+            initialDigest = ArchiveReliability.digest(data)
+            var restoredState = try ArchiveReliability.decode(data)
             if !restoredState.llmConfiguration.apiKey.isEmpty {
                 var config = restoredState.llmConfiguration
                 // A pre-ID archive must find the same Keychain item after an interrupted migration.
@@ -287,7 +303,7 @@ public actor FileMemoryStore {
                     guard try credentials.read(config.connectionID) != nil else { throw CredentialError.unavailable }
                     config.apiKey = ""; config.credentialReference = config.connectionID.uuidString; config.credentialRevision += 1
                     restoredState.llmConfiguration = config
-                    try Self.write(restoredState, encoder: encoder, to: storage.stateURL)
+                    initialDigest = try Self.write(restoredState, encoder: encoder, to: storage.stateURL, expectedDigest: initialDigest)
                 } catch {
                     pendingLegacyCredential = (config.connectionID, config.apiKey)
                     config.apiKey = ""; config.credentialReference = nil; restoredState.llmConfiguration = config
@@ -315,11 +331,19 @@ public actor FileMemoryStore {
                 }
             }
             let credentialsReady = pendingLegacyCredential == nil
-            if !deferMaintenance && credentialsReady { try Self.write(restoredState, encoder: encoder, to: storage.stateURL) }
+            if !deferMaintenance && credentialsReady {
+                initialDigest = try Self.write(restoredState, encoder: encoder, to: storage.stateURL, expectedDigest: initialDigest)
+            }
             state = restoredState
         } else {
+            guard ArchiveReliability.backups(storage).isEmpty else { throw ArchiveReliabilityError.missingPrimary }
             state = RecallState()
-            try Self.write(state, encoder: encoder, to: storage.stateURL)
+            initialDigest = try Self.write(state, encoder: encoder, to: storage.stateURL, requireMissing: true)
+        }
+        committedState = state
+        lastDiskDigest = initialDigest
+        if let lastDiskDigest {
+            backupPending = !FileManager.default.fileExists(atPath: storage.rootURL.appendingPathComponent("Recovery/latest-" + lastDiskDigest + ".json").path)
         }
         if pendingLegacyCredential != nil { indexNeedsRebuild = true; return }
         if deferMaintenance {
@@ -354,8 +378,10 @@ public actor FileMemoryStore {
                 })
             }
         }
-        try Self.write(state, encoder: encoder, to: storage.stateURL)
+        lastDiskDigest = try Self.write(state, encoder: encoder, to: storage.stateURL, expectedDigest: lastDiskDigest)
         do { try intelligenceIndex?.replace(with: state) } catch { indexNeedsRebuild = true }
+        committedState = state
+        if let lastDiskDigest { backupPending = !FileManager.default.fileExists(atPath: storage.rootURL.appendingPathComponent("Recovery/latest-" + lastDiskDigest + ".json").path) }
     }
 
     public func snapshot() -> RecallState { state }
@@ -380,7 +406,7 @@ public actor FileMemoryStore {
         conversationID = UUID()
         // Messages and their compression aren't indexed in SQLite. One atomic state write
         // is sufficient, and avoids reporting failure after an unrelated index update.
-        do { try Self.write(state, encoder: encoder, to: storage.stateURL) }
+        do { try writeState() }
         catch {
             state = previous
             conversationID = previousID
@@ -394,6 +420,7 @@ public actor FileMemoryStore {
         var correction = correction
         correction.evidenceIDs = correction.evidenceIDs.filter(available.contains)
         guard !correction.evidenceIDs.isEmpty else { return }
+        state.pendingRecoveryCleanup = true
         state.matterCorrections.append(correction)
         invalidateMemoryOutputs(sourceIDs: Set(correction.evidenceIDs))
         // Prevent old assistant conclusions from surviving a correction via conversation compression.
@@ -500,6 +527,7 @@ public actor FileMemoryStore {
     }
 
     public func updatePrivacy(_ privacy: PrivacySettings) throws {
+        if state.privacy.excludedBundleIdentifiers != privacy.excludedBundleIdentifiers { state.pendingRecoveryCleanup = true }
         state.privacy = privacy
         try persist()
     }
@@ -963,6 +991,7 @@ public actor FileMemoryStore {
         state.conversationSummary = nil
         state.conversationSummaryCoveredMessageCount = 0
         state.recentlyDeletedMemories.insert(transaction, at: 0)
+        state.pendingRecoveryCleanup = true
         do {
             for path in transaction.screenshotPaths { try storage.moveScreenshotToRecentlyDeleted(relativePath: path) }
             try persist()
@@ -1100,23 +1129,25 @@ public actor FileMemoryStore {
 
     public func purgeRecentlyDeleted(id: UUID) throws {
         guard let item = state.recentlyDeletedMemories.first(where: { $0.id == id }) else { return }
-        for path in item.screenshotPaths { try storage.permanentlyDeleteRecentlyDeletedScreenshot(relativePath: path) }
-        let previousState = state
+        let before = state
+        queueDeletedScreenshots(item.screenshotPaths)
+        state.pendingRecoveryCleanup = true
         state.recentlyDeletedMemories.removeAll { $0.id == id }
-        do { try persist() } catch { state = previousState; throw error }
+        do { try persist() } catch { state = before; throw error }
+        _ = try retryPendingFileCleanup()
     }
 
     @discardableResult
     public func purgeExpiredRecentlyDeleted(now: Date = .now) throws -> Int {
         let expired = state.recentlyDeletedMemories.filter { $0.expiresAt <= now }
         guard !expired.isEmpty else { return 0 }
-        for item in expired {
-            for path in item.screenshotPaths { try storage.permanentlyDeleteRecentlyDeletedScreenshot(relativePath: path) }
-        }
-        let previousState = state
+        let before = state
+        queueDeletedScreenshots(expired.flatMap(\.screenshotPaths))
+        state.pendingRecoveryCleanup = true
         let ids = Set(expired.map(\.id))
         state.recentlyDeletedMemories.removeAll { ids.contains($0.id) }
-        do { try persist() } catch { state = previousState; throw error }
+        do { try persist() } catch { state = before; throw error }
+        _ = try retryPendingFileCleanup()
         return expired.count
     }
 
@@ -1150,8 +1181,10 @@ public actor FileMemoryStore {
 
     /// 永久清除全部记忆内容，但保留用户的事件、隐私、模型与定时设置。
     public func clearAllMemoryData() throws {
+        let before = state
         let activePaths = (state.captures.compactMap(\.imageRelativePath) + state.memoryKnowledge.pendingScreenshotDeletions).memoryUnique()
         let deletedPaths = state.recentlyDeletedMemories.flatMap(\.screenshotPaths)
+        state.dataGeneration = UUID()
         state.captures = []
         state.messages = []
         state.reminders = []
@@ -1176,10 +1209,15 @@ public actor FileMemoryStore {
         state.summaryFeedback = []
         state.understandingJobs = []
         state.dismissedExperienceIDs = []
-        try persist()
+        state.workflow.meetings = []
+        state.topicReviews = []
+        state.dailyReviewCheckpoints = []
+        state.pendingDailyReviewMaintenance = []
+        state.pendingFileDeletions = ((state.pendingFileDeletions ?? []) + activePaths + deletedPaths.map { "Recently Deleted/Screenshots/" + URL(fileURLWithPath: $0).lastPathComponent } + managedScreenshotFiles()).memoryUnique()
+        state.pendingRecoveryCleanup = true
+        do { try persist() } catch { state = before; throw error }
         conversationID = UUID()
-        for path in activePaths { try? storage.deleteScreenshot(relativePath: path) }
-        for path in deletedPaths { try? storage.permanentlyDeleteRecentlyDeletedScreenshot(relativePath: path) }
+        _ = try retryPendingFileCleanup()
     }
 
     public func updateConversationSummary(_ summary: String?, coveredMessageCount: Int, inConversation expectedID: UUID? = nil) throws {
@@ -1202,7 +1240,7 @@ public actor FileMemoryStore {
     private func persistAppended() throws {
         chatAnalysis = nil
         guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
-        try Self.write(state, encoder: encoder, to: storage.stateURL)
+        try writeState()
         do {
             if indexNeedsRebuild { try intelligenceIndex?.replace(with: state) }
             else { try intelligenceIndex?.synchronize(with: state) }
@@ -1225,8 +1263,12 @@ public actor FileMemoryStore {
     }
 
     public func deleteCapture(id: UUID) throws -> CaptureRecord? {
+        let before = state
         guard let removed = removeCaptureState(id: id) else { return nil }
-        try persist()
+        state.pendingFileDeletions = ((state.pendingFileDeletions ?? []) + [removed.imageRelativePath].compactMap { $0 }).memoryUnique()
+        state.pendingRecoveryCleanup = true
+        do { try persist() } catch { state = before; throw error }
+        _ = try retryPendingFileCleanup()
         return removed
     }
 
@@ -1414,7 +1456,7 @@ public actor FileMemoryStore {
                 paths.insert(path)
                 state.captures[i].imageRelativePath = nil
             }
-            guard age > Double(rule.retainTextDays) * 86_400 else { continue }
+            guard record.keepTextIndefinitely != true, age > Double(rule.retainTextDays) * 86_400 else { continue }
             if let directive = record.memoryDirective, state.memoryKnowledgeSettings.retainExplicitMemories,
                directive.scope != .conversation, durableIDs.contains(record.id) {
                 if let path = record.imageRelativePath { paths.insert(path) }
@@ -1434,64 +1476,94 @@ public actor FileMemoryStore {
             }
         }
         for id in expired { _ = removeCaptureState(id: id) }
+        if !expired.isEmpty || !paths.isEmpty { state.pendingRecoveryCleanup = true }
         state.memoryKnowledge.pendingScreenshotDeletions = Array(paths).sorted()
         do { try persist() } catch { state = previous; throw error }
         return Array(paths).sorted()
     }
 
     func persist(preservingReviewsFrom previous: RecallState? = nil) throws {
-        chatAnalysis = nil
-        guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
-        reconcileDailyReviewCheckpoints()
-        let liveIDs = Set(state.captures.map(\.id))
-        let excludedIDs = Set(state.captures.filter { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id))
-        let invalidIDs = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
-        let feedbackIDs = Set(state.summaryFeedback.map(\.id))
-        var droppedIDs = Set(state.summaryFeedback.filter {
-            !Set($0.sourceVersions.keys).isSubset(of: liveIDs) || !Set($0.sourceVersions.keys).isDisjoint(with: excludedIDs.union(invalidIDs))
-                || !Set($0.dependencyFeedbackIDs ?? []).isSubset(of: feedbackIDs)
-        }.map(\.id))
-        for _ in state.summaryFeedback.indices {
-            let more = Set(state.summaryFeedback.filter { !Set($0.dependencyFeedbackIDs ?? []).isDisjoint(with: droppedIDs) }.map(\.id))
-            if more.isSubset(of: droppedIDs) { break }; droppedIDs.formUnion(more)
-        }
-        let droppedFeedback = state.summaryFeedback.filter { droppedIDs.contains($0.id) }
-        if !droppedFeedback.isEmpty {
-            let touched = Set(droppedFeedback.flatMap { $0.resolution?.corrections.map(\.sourceID) ?? [] })
-            state.summaryFeedback.removeAll { entry in droppedFeedback.contains { $0.id == entry.id } }
-            invalidateMemoryOutputs(sourceIDs: touched)
-        }
-        reconcileCaptureUnderstanding()
-        state.topicGroups.removeAll { group in group.sourceIDs.map { Set($0).isDisjoint(with: liveIDs) } ?? false }
-        invalidateWeeklyReports()
-        let topicState = state
-        state.topicReviews.removeAll { !$0.sourcesUnchanged(in: topicState) }
-        applyKnowledge(MemoryKnowledgeEngine().reconcile(state, allowNew: false))
-        if let previous { preserveReviewHistory(from: previous) }
-        state.memoryKnowledge.dependencies = MemoryKnowledgeEngine().dependencies(in: state, claims: state.memoryKnowledge.claims)
-        try Self.write(state, encoder: encoder, to: storage.stateURL)
         do {
-            if indexNeedsRebuild { try intelligenceIndex?.replace(with: state) }
-            else { try intelligenceIndex?.synchronize(with: state) }
-            indexNeedsRebuild = false
-        } catch { indexNeedsRebuild = true }
+            chatAnalysis = nil
+            guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
+            reconcileDailyReviewCheckpoints()
+            let liveIDs = Set(state.captures.map(\.id))
+            let excludedIDs = Set(state.captures.filter { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id))
+            let invalidIDs = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
+            let feedbackIDs = Set(state.summaryFeedback.map(\.id))
+            var droppedIDs = Set(state.summaryFeedback.filter {
+                !Set($0.sourceVersions.keys).isSubset(of: liveIDs) || !Set($0.sourceVersions.keys).isDisjoint(with: excludedIDs.union(invalidIDs))
+                    || !Set($0.dependencyFeedbackIDs ?? []).isSubset(of: feedbackIDs)
+            }.map(\.id))
+            for _ in state.summaryFeedback.indices {
+                let more = Set(state.summaryFeedback.filter { !Set($0.dependencyFeedbackIDs ?? []).isDisjoint(with: droppedIDs) }.map(\.id))
+                if more.isSubset(of: droppedIDs) { break }; droppedIDs.formUnion(more)
+            }
+            let droppedFeedback = state.summaryFeedback.filter { droppedIDs.contains($0.id) }
+            if !droppedFeedback.isEmpty {
+                let touched = Set(droppedFeedback.flatMap { $0.resolution?.corrections.map(\.sourceID) ?? [] })
+                state.summaryFeedback.removeAll { entry in droppedFeedback.contains { $0.id == entry.id } }
+                invalidateMemoryOutputs(sourceIDs: touched)
+            }
+            reconcileCaptureUnderstanding()
+            state.topicGroups.removeAll { group in group.sourceIDs.map { Set($0).isDisjoint(with: liveIDs) } ?? false }
+            invalidateWeeklyReports()
+            let topicState = state
+            state.topicReviews.removeAll { !$0.sourcesUnchanged(in: topicState) }
+            applyKnowledge(MemoryKnowledgeEngine().reconcile(state, allowNew: false))
+            if let previous { preserveReviewHistory(from: previous) }
+            state.memoryKnowledge.dependencies = MemoryKnowledgeEngine().dependencies(in: state, claims: state.memoryKnowledge.claims)
+            try writeState()
+            do {
+                if indexNeedsRebuild { try intelligenceIndex?.replace(with: state) }
+                else { try intelligenceIndex?.synchronize(with: state) }
+                indexNeedsRebuild = false
+            } catch { indexNeedsRebuild = true }
+        } catch {
+            if let committedState { state = committedState }
+            chatAnalysis = nil
+            throw error
+        }
     }
 
     /// Only review-owned fields changed. Full reconciliation/index maintenance follows
     /// on the existing maintenance cycle; queries use their memory fallback meanwhile.
     func persistReviewState(indexChanged: Bool = false, invalidateAnalysis: Bool = true) throws {
-        if invalidateAnalysis { chatAnalysis = nil }
-        guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
-        try Task.checkCancellation()
-        try Self.write(state, encoder: encoder, to: storage.stateURL)
-        if indexChanged { indexNeedsRebuild = true }
+        do {
+            if invalidateAnalysis { chatAnalysis = nil }
+            guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
+            try Task.checkCancellation()
+            try writeState()
+            if indexChanged { indexNeedsRebuild = true }
+        } catch {
+            if let committedState { state = committedState }
+            chatAnalysis = nil
+            throw error
+        }
     }
 
-    private static func write(_ state: RecallState, encoder: JSONEncoder, to url: URL) throws {
+    @discardableResult
+    private static func write(_ state: RecallState, encoder: JSONEncoder, to url: URL, expectedDigest: String? = nil, requireMissing: Bool = false) throws -> String {
         let data = try encoder.encode(state)
-        try data.write(to: url, options: .atomic)
+        _ = try ArchiveReliability.write(data, storage: RecallStorage(rootURL: url.deletingLastPathComponent()), expectedDigest: expectedDigest, requireMissing: requireMissing)
+        return ArchiveReliability.digest(data)
+    }
+
+    private func writeState() throws {
+        do {
+            let data = try encoder.encode(state)
+            backupPending = try !ArchiveReliability.write(data, storage: storage, expectedDigest: lastDiskDigest)
+            lastDiskDigest = ArchiveReliability.digest(data)
+            committedState = state
+        } catch {
+            if let committedState { state = committedState }
+            if let lastDiskDigest { backupPending = !FileManager.default.fileExists(atPath: storage.rootURL.appendingPathComponent("Recovery/latest-" + lastDiskDigest + ".json").path) }
+            chatAnalysis = nil; indexNeedsRebuild = true
+            throw error
+        }
     }
 }
+
 
 enum CaptureTextFingerprint {
     /// Normalized, order-independent set of meaningful lines.

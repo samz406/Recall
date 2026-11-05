@@ -141,7 +141,7 @@ enum WeeklyReviewVerification {
         let report = try await WeeklyReviewEngine().generate(in: state, period: period, template: ReviewTemplate(kind: .work), now: date(21, 20))
         _ = try await store.commitWeeklyReport(report)
         try await store.editWeeklyReport(id: report.id, markdown: "# 人工调整\n清单整理已完成。")
-        let reread = try verificationStore(storage: storage)
+        let reread = try verificationStore(storage: storage, deferMaintenance: true)
         let reloaded = await reread.snapshot()
         try expect(reloaded.weeklyReports.first?.editedMarkdown?.contains("人工调整") == true, "回顾快照和编辑内容必须持久保存")
         let captureID = state.captures[0].id

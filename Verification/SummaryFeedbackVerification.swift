@@ -6,7 +6,7 @@ enum SummaryFeedbackVerification {
     private struct Failure: LocalizedError { let text: String; var errorDescription: String? { text } }
     private static func check(_ value: @autoclosure () -> Bool, _ text: String) throws { if !value() { throw Failure(text: text) } }
     private struct Fixture {
-        let store: FileMemoryStore
+        var store: FileMemoryStore
         let storage: RecallStorage
         let source: CaptureRecord
         let other: CaptureRecord
@@ -214,7 +214,7 @@ enum SummaryFeedbackVerification {
                   "撤销补记留下了虚构的截图来源或没有恢复回顾")
     }
     private static func periodRepair() async throws {
-        let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
+        var f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
         let source = try ManualMatterNote(title: "Atlas 发布流程改版", detail: "发布流程的步骤导航已通过验收。", status: .completed, eventAt: Date.now.addingTimeInterval(-60), reviewCategory: .work).capture()
         try await f.store.addCapture(source)
         let state = await f.store.snapshot()
@@ -224,6 +224,10 @@ enum SummaryFeedbackVerification {
         let reopened = try verificationStore(storage: f.storage)
         let reopenedState = await reopened.snapshot()
         try check(SummaryFeedbackLearning.targetIsCurrent(.period(saved), in: reopenedState), "重启重排来源字典后回顾版本指纹发生变化")
+        guard let persistedBefore = reopenedState.weeklyReports.first(where: { $0.id == saved.id }) else { throw Failure(text: "重启丢失周报") }
+        // This simulates a restart. Continue through the new store instead of leaving the
+        // pre-restart writer active, which must now be rejected by archive conflict protection.
+        f.store = reopened
         guard let row = saved.digestRows.first else { throw Failure(text: "测试缺少周报条目") }
         _ = try await f.store.submitSummaryFeedback(target: .period(saved, item: row.item), text: "标题请明确写发布流程的步骤导航。")
         guard let job = try await f.store.claimSummaryFeedback(modelAvailable: true) else { throw Failure(text: "未领取周报反馈") }
@@ -236,7 +240,9 @@ enum SummaryFeedbackVerification {
                   "周期回顾没有应用修订，或把整周材料复制到每条反馈中")
         try await f.store.withdrawSummaryFeedback(job.id)
         let undone = await f.store.snapshot()
-        try check(undone.weeklyReports.first?.items == saved.items && undone.weeklyReports.first?.digestTopicIDs == saved.digestTopicIDs,
+        // The on-disk format keeps seconds. Compare the persisted version seen after restart,
+        // rather than the pre-restart Date values that still contain fractional seconds.
+        try check(undone.weeklyReports.first?.items == persistedBefore.items && undone.weeklyReports.first?.digestTopicIDs == persistedBefore.digestTopicIDs,
                   "增量撤销没有恢复周报原条目、顺序与精选范围")
     }
 }

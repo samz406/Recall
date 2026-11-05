@@ -61,6 +61,7 @@ struct RecallRootView: View {
         .onChange(of: interfaceLanguage) { _, _ in model.noticeMessage = nil }
         .onAppear {
             model.openMainWindow = { openWindow(id: "main"); RecallAppDelegate.activateMainWindow() }
+            if !model.isPreview && !model.isLoadingSavedState && model.state.captures.isEmpty && !model.state.workflow.onboardingCompleted { model.showsOnboarding = true }
             if model.openAskRequested { section = .chat; model.openAskRequested = false }
         }
         .onChange(of: model.openAskRequested) { _, requested in if requested { section = .chat; model.openAskRequested = false } }
@@ -1503,6 +1504,9 @@ private struct ChatComposer: View {
 extension RecallRootView {
     @MainActor static func previewPage(_ name: String) -> AnyView {
         switch name {
+        case "archive-recovery": AnyView(ArchiveRecoveryView(startup: RecallStartupController.preview()))
+        case "archive-safety": AnyView(LocalArchiveSafetyCard().padding(24).frame(maxWidth: .infinity, maxHeight: .infinity).background(RecallPalette.background))
+        case "record-retention": AnyView(RetentionDetailPreview())
         case "preferences": AnyView(PrivacyAndModelView(initialCategory: "使用偏好"))
         case "first-moment": AnyView(FirstMomentView())
         case "sample": AnyView(FirstMomentView(sampleMode: true))
@@ -1541,5 +1545,12 @@ private struct ModelConnectionStatusPreview: View {
             let fails = fails
             draft.test { _ in if fails { throw URLError(.cannotConnectToHost) } }
         }
+    }
+}
+
+private struct RetentionDetailPreview: View {
+    @EnvironmentObject private var model: RecallAppModel
+    var body: some View {
+        if let source = model.state.captures.first { CaptureDetailSheet(capture: source) }
     }
 }

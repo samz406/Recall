@@ -11,7 +11,7 @@ enum AskAgentVerification {
 
     static func run() async throws {
         try streamLines()
-        try await directAnswerKeepsOneRequest()
+        try await directAnswerIncludesVerification()
         try await toolsThenAnswerDropFakeCitations()
         try await unauthorizedReadsStayLocal()
         try await tooManyCallsForceAnAnswer()
@@ -39,7 +39,7 @@ enum AskAgentVerification {
         try expect(ModelStreamDecoder.consume(stop, into: &anthropic), "Anthropic 结束标记没有收束")
     }
 
-    private static func directAnswerKeepsOneRequest() async throws {
+    private static func directAnswerIncludesVerification() async throws {
         let (storage, store, capture) = try await fixture("AtlasScopeToken was saved")
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
         let before = await store.snapshot().memoryKnowledge.updatedAt
@@ -50,7 +50,7 @@ enum AskAgentVerification {
         var steps: [String] = []
         let answer = try await MemoryAssistant(store: store).ask("AtlasScopeToken", model: script, onStep: { name, _ in steps.append(name) })
         let purposes = await script.recorded().map(\.purpose)
-        try expect(purposes == [.chatPlanning], "第一轮能回答时仍继续请求模型")
+        try expect(purposes == [.chatPlanning, .answerVerification], "直接回答应只增加一次事实核验")
         try expect(answer.content.contains("AtlasScopeToken") && answer.citations == [capture.id], "第一轮回答没有保留已出现的来源")
         let after = await store.snapshot().memoryKnowledge.updatedAt
         try expect(after == before, "提问重算了记忆账本")
@@ -71,7 +71,7 @@ enum AskAgentVerification {
         let answer = try await MemoryAssistant(store: store).ask("AtlasScopeToken", model: script)
         try expect(answer.citations == [capture.id] && !answer.content.contains(fake.uuidString), "伪造的来源仍留在回答里")
         let purposes = await script.recorded().map(\.purpose)
-        try expect(purposes == [.chatPlanning, .chatPlanning], "检索后的回答多走了最终流式请求")
+        try expect(purposes == [.chatPlanning, .chatPlanning, .answerVerification], "检索后的回答多走了最终流式请求")
     }
 
     private static func unauthorizedReadsStayLocal() async throws {
@@ -119,8 +119,8 @@ enum AskAgentVerification {
         var tools: [String] = []
         let answer = try await MemoryAssistant(store: store).ask("AtlasScopeToken", model: script, onStep: { name, _ in if name.hasPrefix("tool:") { tools.append(name) } })
         let purposes = await script.recorded().map(\.purpose)
-        try expect(tools.count == 6 && purposes.filter { $0 == .chatPlanning }.count == 1 && purposes.last == .chat, "超过每轮调用上限后仍继续决定")
-        try expect(answer.content.contains("现有材料"), "强制回答没有写回会话")
+        try expect(tools.count == 6 && purposes.filter { $0 == .chatPlanning }.count == 1 && purposes.last == .answerVerification, "超过每轮调用上限后仍继续决定")
+        try expect(answer.content.contains("AtlasScopeToken"), "强制回答没有写回会话")
     }
 
     private static func roundCapForcesAnAnswer() async throws {
@@ -135,7 +135,7 @@ enum AskAgentVerification {
         var tools: [String] = []
         _ = try await MemoryAssistant(store: store).ask("AtlasScopeToken", model: script, onStep: { name, _ in if name.hasPrefix("tool:") { tools.append(name) } }, limits: AskLimits(maxRounds: 2))
         let purposes = await script.recorded().map(\.purpose)
-        try expect(purposes.filter { $0 == .chatPlanning }.count == 2 && tools.count == 2 && purposes.last == .chat, "超过轮数后仍继续要工具")
+        try expect(purposes.filter { $0 == .chatPlanning }.count == 2 && tools.count == 2 && purposes.last == .answerVerification, "超过轮数后仍继续要工具")
     }
 
     private static func budgetForcesAnAnswer() async throws {
@@ -150,8 +150,9 @@ enum AskAgentVerification {
         }
         _ = try await MemoryAssistant(store: store).ask("HEAD-TOKEN", model: script, limits: AskLimits(maxResultCharacters: 80))
         let recorded = await script.recorded()
-        let sent = recorded.filter { $0.purpose == .chat }.map { $0.question + ($0.supplementaryContext ?? "") + $0.context.map(\.ocrText).joined() }.joined()
-        try expect(recorded.last?.purpose == .chat && !sent.contains("TAIL-SECRET"), "超出字数预算后仍把后文发给模型")
+        let sent = recorded.filter { $0.purpose == .chat || $0.purpose == .answerVerification }.map { $0.question + ($0.supplementaryContext ?? "") + $0.context.map(\.ocrText).joined() }.joined()
+        try expect(!sent.contains("TAIL-SECRET"), "超出字数预算后仍把后文发给模型")
+        try expect(recorded.last?.purpose == .answerVerification, "裁剪后的原文片段未进入事实核验")
     }
 
     private static func invalidPlanFallsBack() async throws {
@@ -162,7 +163,7 @@ enum AskAgentVerification {
             return LLMAnswer(content: "回退后的摘录", citedCaptureIDs: [])
         }
         let answer = try await MemoryAssistant(store: store).ask("AtlasScopeToken", model: script)
-        try expect(answer.content.contains("回退后的摘录"), "格式错误没有退回原来的回答")
+        try expect(answer.content.contains("AtlasScopeToken"), "格式错误没有退回原来的回答")
         let purposes = await script.recorded().map(\.purpose)
         try expect(purposes.contains(.chatPlanning) && purposes.contains(.chat), "回退没有再走原来的回答请求")
     }
@@ -226,6 +227,12 @@ private actor ScriptedAskModel: LLMResponding {
     init(_ handler: @escaping @Sendable (LLMRequest) async throws -> LLMAnswer) { self.handler = handler }
     func answer(to request: LLMRequest) async throws -> LLMAnswer {
         stored.append(request)
+        if request.purpose == .answerVerification, let source = request.context.first {
+            let quote = source.ocrText.components(separatedBy: "\n").dropFirst().joined(separator: "\n")
+            let claim = AnswerGrounding.Claim(statement: quote, evidence: [.init(sourceID: source.id, quote: quote)])
+            let data = try JSONEncoder().encode(["claims": [claim]])
+            return LLMAnswer(content: String(decoding: data, as: UTF8.self), citedCaptureIDs: [])
+        }
         return try await handler(request)
     }
     func recorded() -> [LLMRequest] { stored }

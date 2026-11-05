@@ -117,7 +117,7 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
 }
 
 public enum LLMRequestPurpose: Equatable, Sendable {
-    case chat, chatPlanning, dailySummary, reviewSynthesis, reviewAudit, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup, summaryFeedback, summaryFeedbackAudit, captureUnderstanding, captureUnderstandingAudit, reminderDiscovery, reminderDiscoveryAudit
+    case chat, chatPlanning, answerVerification, dailySummary, reviewSynthesis, reviewAudit, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup, summaryFeedback, summaryFeedbackAudit, captureUnderstanding, captureUnderstandingAudit, reminderDiscovery, reminderDiscoveryAudit
 }
 
 public struct LLMRequest: Sendable {
@@ -598,6 +598,7 @@ public struct CompatibleLLM: LLMResponding {
         if request.purpose != .chat {
             let role: String
             switch request.purpose {
+            case .answerVerification: role = "逐项核验回答草稿与原始证据"
             case .dailySummary: role = "整理指定日期的每日回顾"
             case .reviewSynthesis: role = "综合指定范围的结构化记忆，生成正式回顾"
             case .reviewAudit: role = "独立核验回顾与原始结构化事实"

@@ -6,28 +6,37 @@ import UserNotifications
 @main
 struct RecallApp: App {
     @NSApplicationDelegateAdaptor(RecallAppDelegate.self) private var appDelegate
-    @StateObject private var model = RecallAppModel(previewState: CommandLine.arguments.contains("--layout-previews") ? RecallState() : nil)
+    @StateObject private var startup = RecallStartupController(automatic: !CommandLine.arguments.contains("--layout-previews"))
 
     var body: some Scene {
         Window("Recall", id: "main") {
-            RecallRootView()
-                .environmentObject(model)
-                .recallColors()
-                .frame(minWidth: 980, minHeight: 680)
+            if CommandLine.arguments.contains("--layout-previews") {
+                // Each native probe owns its synthetic data and appearance. A late startup
+                // transition in this unrelated window must not reset NSApp's test appearance.
+                Color.clear
+            } else {
+                Group {
+                    if let model = startup.model { RecallRootView().environmentObject(model) }
+                    else { ArchiveRecoveryView(startup: startup) }
+                }.recallColors().frame(minWidth: 980, minHeight: 680)
+            }
         }
         .defaultSize(width: 1180, height: 780)
 
-        MenuBarExtra("Recall", systemImage: model.isRecording ? "circle.dotted.circle" : "brain.head.profile") {
-            MenuBarPanel()
-                .environmentObject(model)
-                .recallColors()
+        MenuBarExtra("Recall", systemImage: startup.model?.isRecording == true ? "circle.dotted.circle" : "brain.head.profile") {
+            if let model = startup.model { MenuBarPanel().environmentObject(model).recallColors() }
+            else { Button(RecallLocalization.both("打开恢复页面", "Open recovery")) { RecallAppDelegate.activateMainWindow() } }
         }
 
         Settings {
-            RecallSettingsView()
-                .environmentObject(model)
-                .recallColors()
-                .frame(width: 620, height: 560)
+            if CommandLine.arguments.contains("--layout-previews") {
+                Color.clear
+            } else {
+                Group {
+                    if let model = startup.model { RecallSettingsView().environmentObject(model) }
+                    else { ArchiveRecoveryView(startup: startup) }
+                }.recallColors().frame(width: 620, height: 560)
+            }
         }
     }
 }

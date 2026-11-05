@@ -30,7 +30,7 @@ extension RecallLayoutPreviews {
         let prior = ReminderCandidate(title: "保留合成候选", detail: "未经确认，不安排通知。", sourceCaptureIDs: [source.id], confidence: 0.7, createdAt: source.createdAt)
         let state = RecallState(captures: [source], reminders: [prior], privacy: PrivacySettings(cloudUseEnabled: true),
             llmConfiguration: LLMConfiguration(provider: .openAICompatible, baseURLString: "https://model.invalid/v1", model: "synthetic", apiKey: "synthetic-not-a-key"))
-        let model = RecallAppModel(previewState: state)
+        let model = try RecallAppModel(previewState: state)
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         let backgroundProbe = ReminderModelProbe(slow: false)
         model.discoverReminders(force: false, announce: false, responder: backgroundProbe)

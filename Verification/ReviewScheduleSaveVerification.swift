@@ -33,7 +33,7 @@ enum ReviewScheduleSaveVerification {
             && dirty, "保存计划改写了记忆、回顾或后台队列，或重建了索引")
         let prepared = await store.preparedForChat()
         try expect(prepared.reviewSchedules.first?.id == plan.id, "保存后读取到旧的计划缓存")
-        print("PERF: save review schedule with 6351 synthetic records \(elapsed); single atomic archive write, no reconciliation/index refresh")
+        print("PERF: save review schedule with 6351 synthetic records \(elapsed); atomic primary + latest verified mirror, no reconciliation/index refresh")
     }
     private static func lifecycle() async throws {
         let f = try StartupLoadingVerification.fixture()

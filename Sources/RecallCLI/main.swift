@@ -176,8 +176,7 @@ do {
         let store = try FileMemoryStore(storage: storage)
         try await runSummarize(store, storage)
     } else {
-        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        let preview = try decoder.decode(RecallState.self, from: Data(contentsOf: storage.stateURL))
+        let preview = try ArchiveReliability.decode(Data(contentsOf: storage.stateURL))
         try await runSummarize(nil, storage, preview: preview)
     }
 } catch {

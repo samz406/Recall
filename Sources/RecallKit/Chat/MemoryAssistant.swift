@@ -202,6 +202,7 @@ public final class MemoryAssistant {
         case .localOnly:
             response = try await ExtractiveMemoryResponder().answer(to: request)
         case .openAICompatible, .anthropicCompatible:
+            if plan.evidence.isEmpty { response = LLMAnswer(content: AnswerGrounding.noEvidence, citedCaptureIDs: []); break }
             let beforeCloud = await store.snapshot()
             guard state.privacy.cloudUseEnabled, beforeCloud.privacy.cloudUseEnabled else {
                 throw LLMError.serviceError("请先在隐私设置中明确开启云端模型使用。")
@@ -230,18 +231,21 @@ public final class MemoryAssistant {
                 recentMessages: safeRecentMessages
             )
             let modelStarted = clock.now
-            let responder = if let model { model } else { try await store.modelResponder() }
+            let base = if let model { model } else { try await store.modelResponder() }
+            let responder = LiveMemoryResponder(base: base, store: store, original: originalState)
             let cloudAnswer = try await responder.answerCancellably(to: cloudRequest)
             onStep?("model", Self.milliseconds(from: modelStarted, clock: clock))
             // 已传入证据时，不能接受模型仍声称“记忆为空”的幻觉式回答。
             // 此时保留本地可追溯摘要，确保用户至少得到真实的时间线内容。
-            response = !safeContext.isEmpty && claimsEvidenceIsEmpty(cloudAnswer.content)
-                ? try await ExtractiveMemoryResponder().answer(to: request)
-                : cloudAnswer
+            let ids = plan.evidence.flatMap { retrieval.sourceIDs[$0.id] ?? [$0.id] }
+            let checked = try await AnswerGrounding.verify(draft: cloudAnswer.content, question: question, sourceIDs: ids, state: state, responder: responder, materials: request.context)
+            response = LLMAnswer(content: checked.content, citedCaptureIDs: checked.sourceIDs)
         }
 
         let latestState = await store.snapshot()
-        guard latestState.llmConfiguration == state.llmConfiguration,
+        guard latestState.privacy.cloudUseEnabled == state.privacy.cloudUseEnabled,
+              latestState.privacy.excludedBundleIdentifiers == state.privacy.excludedBundleIdentifiers,
+              latestState.llmConfiguration == state.llmConfiguration,
               latestState.matterCorrections.map(\.id) == originalState.matterCorrections.map(\.id),
               SummaryFeedbackLearning.revision(in: latestState) == SummaryFeedbackLearning.revision(in: originalState),
               Set(state.captures.map(\.id)).isSubset(of: Set(latestState.captures.map(\.id))) else {
@@ -302,7 +306,8 @@ public final class MemoryAssistant {
         guard live.llmConfiguration == originalState.llmConfiguration else { throw CredentialError.unavailable }
         let outcome: AskTranscript
         do {
-            let responder = if let model { model } else { try await store.modelResponder() }
+            let base = if let model { model } else { try await store.modelResponder() }
+            let responder = LiveMemoryResponder(base: base, store: store, original: originalState)
             outcome = try await AskAgent.answer(
                 question: question, state: fullState, scope: scope, textIndex: textIndex, responder: responder,
                 limits: limits, onPartial: onPartial, onStep: onStep
@@ -315,7 +320,9 @@ public final class MemoryAssistant {
         }
         onEvidenceReady?(outcome.citations.count)
         let latestState = await store.snapshot()
-        guard latestState.llmConfiguration == originalState.llmConfiguration,
+        guard latestState.privacy.cloudUseEnabled == originalState.privacy.cloudUseEnabled,
+              latestState.privacy.excludedBundleIdentifiers == originalState.privacy.excludedBundleIdentifiers,
+              latestState.llmConfiguration == originalState.llmConfiguration,
               latestState.matterCorrections.map(\.id) == originalState.matterCorrections.map(\.id),
               SummaryFeedbackLearning.revision(in: latestState) == SummaryFeedbackLearning.revision(in: originalState),
               Set(state.captures.map(\.id)).isSubset(of: Set(latestState.captures.map(\.id))) else {

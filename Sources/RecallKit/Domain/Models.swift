@@ -177,6 +177,7 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
     public var manualMatter: ManualMatterNote?
     public var memoryDirective: MemoryDirective?
     public var isMemoryEvidenceArchive: Bool?
+    public var keepTextIndefinitely: Bool? = nil
     public var correctedText: String?
     public var sourceMessages: [SourceMessage]? = nil
     public var importMetadata: TextImportMetadata? = nil

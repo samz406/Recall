@@ -141,7 +141,7 @@ enum ReviewDigestVerification {
         let state = await store.snapshot()
         let generated = try await WeeklyReviewEngine().generate(in: state, period: period, template: ReviewTemplate(kind: .personal), now: date(25))
         let saved = try await store.commitWeeklyReport(generated, now: date(25))
-        let reloaded = try verificationStore(storage: root)
+        let reloaded = try verificationStore(storage: root, deferMaintenance: true)
         let loaded = await reloaded.snapshot().weeklyReports.first!
         try expect(loaded.digestTopicIDs == saved.digestTopicIDs && loaded.items.count == 9, "持久化不能丢掉精选顺序或未入选材料")
         let selectedSources = Set(saved.digestRows.flatMap { $0.item.sourceIDs })
