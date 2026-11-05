@@ -128,7 +128,9 @@ final class RecallAppModel: ObservableObject {
     private var recentlyDeletedRetryAfter: Date?
     private var isPurgingRecentlyDeleted = false
     @Published private(set) var isGeneratingDailySummary = false
+    private var generatingDailyReviewDay: Date?
     private var dailyReviewTask: Task<Void, Never>?
+    private let dailyReviewResponderOverride: (any LLMResponding)?
     private var dailyReviewStatusID: UUID?
     private var dailyReviewBackfillPausedUntil: Date?
     private var isDailyReviewBackfillPaused: Bool { dailyReviewBackfillPausedUntil.map { Date.now < $0 } ?? false }
@@ -137,8 +139,9 @@ final class RecallAppModel: ObservableObject {
     private var reminderActionObserver: NSObjectProtocol?
     private var appActiveObserver: NSObjectProtocol?
 
-    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil, storageOverride: RecallStorage? = nil) throws {
+    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil, storageOverride: RecallStorage? = nil, dailyReviewResponder: (any LLMResponding)? = nil) throws {
         self.isPreview = previewState != nil
+        self.dailyReviewResponderOverride = dailyReviewResponder
         self.reminderCreationScheduler = reminderCreationScheduler ?? LocalNotificationScheduler()
         do {
             let storage: RecallStorage
@@ -1564,7 +1567,20 @@ final class RecallAppModel: ObservableObject {
 
     func generateDailyReview(on day: Date) {
         guard day <= Date.now else { return }
+        pauseAutomaticDailyReviews()
         generateDailySummary(for: day, reason: .manual)
+    }
+    /// A manual date selection must not resume an unrelated automatic backlog on completion.
+    private func pauseAutomaticDailyReviews() {
+        let now = Date.now, calendar = Calendar.current
+        let trigger = state.dailySummarySettings.triggerDate(on: now)
+        dailyReviewBackfillPausedUntil = trigger > now ? trigger : state.dailySummarySettings.triggerDate(on: calendar.date(byAdding: .day, value: 1, to: now) ?? now.addingTimeInterval(86_400))
+        pendingDailySummaries.removeAll { $0.reason == .scheduled }
+    }
+    func dailyReviewTask(on day: Date) -> RecallTaskStatus? {
+        tasks.first { task in
+            task.kind == "每日回顾" && task.reviewDay.map { Calendar.current.isDate($0, inSameDayAs: day) } == true
+        }
     }
     /// Generates structured daily reviews for days that have records but no review yet. Oldest day first.
     func backfillDailyReviews(_ days: [Date]) {
@@ -1572,7 +1588,7 @@ final class RecallAppModel: ObservableObject {
         let ordered = Array(Set(days.map { calendar.startOfDay(for: $0) })).filter { $0 <= Date.now }.sorted()
         guard let first = ordered.first else { return }
         guard state.privacy.cloudUseEnabled else { noticeMessage = "请先允许发送脱敏文本，再补生成这些天的每日回顾。"; return }
-        dailyReviewBackfillPausedUntil = nil
+        pauseAutomaticDailyReviews()
         for day in ordered.dropFirst() where !pendingDailySummaries.contains(where: { calendar.isDate($0.day, inSameDayAs: day) }) {
             pendingDailySummaries.append((day, .manual))
         }
@@ -1582,10 +1598,8 @@ final class RecallAppModel: ObservableObject {
     }
     func cancelDailyReview() {
         guard let id = dailyReviewStatusID, requestTaskCancellation(id) else { return }
-        let now = Date.now, calendar = Calendar.current
-        let trigger = state.dailySummarySettings.triggerDate(on: now)
-        dailyReviewBackfillPausedUntil = trigger > now ? trigger : state.dailySummarySettings.triggerDate(on: calendar.date(byAdding: .day, value: 1, to: now) ?? now.addingTimeInterval(86_400))
-        pendingDailySummaries.removeAll { if case .manual = $0.reason { return false }; return true }
+        pauseAutomaticDailyReviews()
+        pendingDailySummaries.removeAll()
         dailyReviewTask?.cancel()
     }
     /// Days whose saved daily review predates the structured format. Regenerating them is an explicit,
@@ -1600,7 +1614,7 @@ final class RecallAppModel: ObservableObject {
         guard state.privacy.cloudUseEnabled else { noticeMessage = "请先允许发送脱敏文本，再用每日回顾整理记忆。"; return }
         let days = Array(daysNeedingStructuredReview.prefix(limit)).sorted()
         guard let first = days.first else { noticeMessage = "最近的每日回顾都已包含主题信息。"; return }
-        dailyReviewBackfillPausedUntil = nil
+        pauseAutomaticDailyReviews()
         for day in days.dropFirst() where !pendingDailySummaries.contains(where: { Calendar.current.isDate($0.day, inSameDayAs: day) }) {
             pendingDailySummaries.append((day, .manual))
         }
@@ -1611,7 +1625,7 @@ final class RecallAppModel: ObservableObject {
 
     func generatePreviousDaySummaryNow() {
         let previousDay = Calendar.current.date(byAdding: .day, value: -1, to: .now) ?? .now
-        generateDailySummary(for: previousDay, reason: .manual)
+        generateDailyReview(on: previousDay)
     }
 
     func updateLLM(configuration: LLMConfiguration, apiKey: String?) {
@@ -1659,21 +1673,32 @@ final class RecallAppModel: ObservableObject {
     }
 
     private func generateDailySummary(for day: Date, reason: DailySummaryReason) {
-        if case .manual = reason { dailyReviewBackfillPausedUntil = nil }
-        else if isDailyReviewBackfillPaused { return }
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: day)
+        if reason == .scheduled, isDailyReviewBackfillPaused { return }
+        // Revalidate at execution time too: an earlier queued date may now have a saved review.
+        if reason == .scheduled {
+            guard state.dailySummarySettings.isEnabled,
+                  !state.dailySummaries.contains(where: { calendar.isDate($0.day, inSameDayAs: day) }),
+                  state.captures.contains(where: { $0.eventTemplate != .dailyReview && calendar.isDate($0.createdAt, inSameDayAs: day) }) else { return }
+        }
+        guard generatingDailyReviewDay != day else { return }
         if isGeneratingDailySummary || isGeneratingWeeklyReview || generatingTopicID != nil {
-            guard !pendingDailySummaries.contains(where: { Calendar.current.isDate($0.day, inSameDayAs: day) }) else { return }
+            if let index = pendingDailySummaries.firstIndex(where: { calendar.isDate($0.day, inSameDayAs: day) }) {
+                if reason == .manual { pendingDailySummaries[index].reason = .manual }
+                return
+            }
             pendingDailySummaries.append((day, reason)); pendingDailySummaries.sort { $0.day < $1.day }; return
         }
-        let taskID = beginTask("每日回顾", target: day.formatted(date: .abbreviated, time: .omitted), phase: "准备记录", retry: { [weak self] in
-            self?.generateDailySummary(for: day, reason: .manual)
+        let taskID = beginTask("每日回顾", target: day.formatted(date: .abbreviated, time: .omitted), phase: "准备记录", reviewDay: day, retry: { [weak self] in
+            self?.generateDailyReview(on: day)
         })
-        guard let responder = dailySummaryResponder() else {
+        guard let responder = dailyReviewResponderOverride ?? dailySummaryResponder() else {
             finishTask(taskID, state: .failed, message: ModelReviewError.unavailable.localizedDescription)
             return
         }
         isGeneratingDailySummary = true
-        let calendar = Calendar.current
+        generatingDailyReviewDay = day
         let start = calendar.startOfDay(for: day)
         let end = min(calendar.date(byAdding: .day, value: 1, to: start) ?? day, .now)
         let period = ReviewPeriod(start: start, end: end, timeZoneIdentifier: calendar.timeZone.identifier)
@@ -1681,7 +1706,10 @@ final class RecallAppModel: ObservableObject {
         let requestState = state
         dailyReviewStatusID = taskID
         dailyReviewTask = Task {
-            defer { isGeneratingDailySummary = false; dailyReviewTask = nil; dailyReviewStatusID = nil; processNextDailySummary() }
+            defer {
+                isGeneratingDailySummary = false; generatingDailyReviewDay = nil
+                dailyReviewTask = nil; dailyReviewStatusID = nil; processNextDailySummary()
+            }
             do {
                 let outcome = try await modelStore.generateDirectDailyReview(day: day, period: period, responder: responder,
                     expectedConfiguration: requestState.llmConfiguration, expectedPrivacy: requestState.privacy,
@@ -1695,7 +1723,7 @@ final class RecallAppModel: ObservableObject {
                 state = await modelStore.snapshot()
                 let reminderNotice = outcome.reminders.added > 0 ? "，新增 \(outcome.reminders.added) 项待确认" : ""
                 finishTask(taskID, state: partial ? .partial : .succeeded,
-                    message: (partial ? "回顾已保存，部分原文暂无法确认" : "回顾已保存") + reminderNotice, destination: .daily(summary.id), detail: outcome.metrics.detail)
+                    message: "回顾已保存" + reminderNotice, destination: .daily(summary.id), detail: outcome.metrics.detail)
                 if reason == .manual { dailyToOpen = summary.id }
                 // Do not run whole-archive maintenance in the user's completion path.
                 // Pending local derived work is drained on the existing maintenance cycle.
@@ -1715,9 +1743,11 @@ final class RecallAppModel: ObservableObject {
     }
 
     func processNextDailySummary() {
-        guard !isGeneratingDailySummary, !pendingDailySummaries.isEmpty else { return }
-        let next = pendingDailySummaries.removeFirst()
-        generateDailySummary(for: next.day, reason: next.reason)
+        guard !isGeneratingDailySummary, !isGeneratingWeeklyReview, generatingTopicID == nil else { return }
+        while !pendingDailySummaries.isEmpty, !isGeneratingDailySummary {
+            let next = pendingDailySummaries.removeFirst()
+            generateDailySummary(for: next.day, reason: next.reason)
+        }
     }
 
     func reviewInsight(_ insight: PersonalInsight, rating: InsightFeedbackRating) {
@@ -1783,12 +1813,17 @@ final class RecallAppModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 let previousDay = Calendar.current.date(byAdding: .day, value: -1, to: .now) ?? .now
-                self.generateDailySummary(for: previousDay, reason: .scheduled)
+                self.armDailySummaryTimer()
+                self.generateScheduledDailyReview(on: previousDay)
             }
         }
     }
 
-    private func generateMissedDailySummaryIfNeeded() {
+    func generateScheduledDailyReview(on day: Date) {
+        generateDailySummary(for: day, reason: .scheduled)
+    }
+
+    func generateMissedDailySummaryIfNeeded() {
         let settings = state.dailySummarySettings
         guard settings.isEnabled, !isGeneratingDailySummary, !isDailyReviewBackfillPaused else { return }
         let now = Date.now
@@ -1805,8 +1840,11 @@ final class RecallAppModel: ObservableObject {
             return day
         }.sorted()
         guard let first = missingDays.first else { return }
-        pendingDailySummaries = missingDays.dropFirst().map { ($0, .scheduled) }
-        generateDailySummary(for: first, reason: .scheduled)
+        for day in missingDays.dropFirst() where !pendingDailySummaries.contains(where: { calendar.isDate($0.day, inSameDayAs: day) }) {
+            pendingDailySummaries.append((day, .scheduled))
+        }
+        pendingDailySummaries.sort { $0.day < $1.day }
+        generateScheduledDailyReview(on: first)
     }
 
     private func dailySummaryTimeText(_ settings: DailySummarySettings) -> String {
@@ -1840,3 +1878,4 @@ final class RecallAppModel: ObservableObject {
         }
     }
 }
+

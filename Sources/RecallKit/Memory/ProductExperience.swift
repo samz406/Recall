@@ -163,6 +163,7 @@ public struct RecallTaskStatus: Identifiable, Sendable {
     public var id = UUID()
     public var kind: String
     public var target: String
+    public var reviewDay: Date? = nil
     public var phase: String
     public var detail: String? = nil
     public var state: RecallTaskState = .running
@@ -170,7 +171,9 @@ public struct RecallTaskStatus: Identifiable, Sendable {
     public var destination: MemorySearchDestination?
     public var isRunning: Bool { state == .running || state == .cancelling }
     public var isCancelling: Bool { state == .cancelling }
-    public init(kind: String, target: String, phase: String) { self.kind = kind; self.target = target; self.phase = phase }
+    public init(kind: String, target: String, phase: String, reviewDay: Date? = nil) {
+        self.kind = kind; self.target = target; self.phase = phase; self.reviewDay = reviewDay
+    }
     @discardableResult
     public mutating func requestCancellation() -> Bool {
         guard state == .running else { return false }
@@ -183,3 +186,4 @@ public struct RecallTaskStatus: Identifiable, Sendable {
         self.phase = phase; self.detail = detail
     }
 }
+

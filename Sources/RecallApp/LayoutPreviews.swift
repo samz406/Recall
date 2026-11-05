@@ -82,6 +82,7 @@ enum RecallLayoutPreviews {
         try await verifyChatSources()
         try await verifyMemoryReminderActions()
         try await verifyReviewScheduleSave()
+        try await verifyDailyReviewGeneration()
         try await verifyMemoryReliabilityEntries()
         let model = try RecallAppModel(previewState: try await fixture())
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
@@ -136,3 +137,4 @@ enum RecallLayoutPreviews {
     }
     private enum PreviewFailure: Error { case noImage }
 }
+

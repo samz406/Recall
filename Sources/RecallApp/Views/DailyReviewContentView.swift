@@ -5,8 +5,6 @@ import RecallKit
 struct DailyReviewContentView: View {
     @EnvironmentObject private var model: RecallAppModel
     let summary: DailySummary
-    @State private var evidence: DailySummaryItem?
-    @State private var expanded: Set<String> = []
     private var items: [DailySummaryItem] {
         let live = Set(model.state.captures.map(\.id))
         let presented = summary.modelCoverage == nil ? DailySummaryItemParser.sanitized(summary.items) : DailySummaryItemParser.modelValidated(summary.items)
@@ -21,9 +19,6 @@ struct DailyReviewContentView: View {
     var body: some View {
         let rows = items
         VStack(alignment: .leading, spacing: 30) {
-            if let notice = summary.modelCoverage?.notice {
-                Label(notice, systemImage: "info.circle").font(.callout).foregroundStyle(RecallPalette.secondary)
-            }
             if summary.formatVersion != 2 {
                 Text(RecallLocalization.text("这份回顾使用较早的整理规则，可以重新生成；原版本会保留。"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
@@ -32,16 +27,11 @@ struct DailyReviewContentView: View {
             ForEach(DailySummarySection.displaySections) { section in
                 let sectionRows = rows.filter { $0.section == section }
                 if !sectionRows.isEmpty {
-                    let shown = visible(sectionRows, section: section)
                     VStack(alignment: .leading, spacing: 18) {
                         sectionHeading(section)
                         VStack(alignment: .leading, spacing: 22) {
-                            ForEach(shown) { item in itemRow(item) }
+                            ForEach(sectionRows) { item in itemRow(item) }
                         }.padding(.leading, 28)
-                        if sectionRows.count > shown.count {
-                            Button(RecallLocalization.text("展开其余")) { expanded.insert(section.rawValue) }
-                                .buttonStyle(.borderless).font(.caption)
-                        }
                     }
                 }
             }
@@ -55,10 +45,6 @@ struct DailyReviewContentView: View {
                     }
                 }.font(.callout).foregroundStyle(RecallPalette.secondary)
             }
-        }
-        .sheet(item: $evidence) { item in
-            RecallSourcesView(title: item.title, ids: item.evidenceIDs.filter { id in model.state.captures.contains { $0.id == id } })
-                .environmentObject(model)
         }
     }
     private func sectionHeading(_ section: DailySummarySection) -> some View {
@@ -96,19 +82,12 @@ struct DailyReviewContentView: View {
                     Button(RecallLocalization.text("已完成")) { model.completeSummaryAction(item, summary: summary) }
                 }.buttonStyle(.borderless).font(.caption).padding(.top, 2)
             }
-            HStack(spacing: 16) {
-                Button(RecallLocalization.text("依据")) { evidence = item }
-                Menu(RecallLocalization.text("纠正归属")) {
-                    Button(RecallLocalization.text("不是我说的")) { model.correctMatter(MatterCorrection(evidenceIDs: item.evidenceIDs, kind: .notMine)) }
-                    Button(RecallLocalization.text("内容不准确")) { model.correctMatter(MatterCorrection(evidenceIDs: item.evidenceIDs, kind: .inaccurate)) }
-                }
+            Menu(RecallLocalization.text("纠正内容")) {
+                Button(RecallLocalization.text("不是我说的")) { model.correctMatter(MatterCorrection(evidenceIDs: item.evidenceIDs, kind: .notMine)) }
+                Button(RecallLocalization.text("内容不准确")) { model.correctMatter(MatterCorrection(evidenceIDs: item.evidenceIDs, kind: .inaccurate)) }
             }.buttonStyle(.borderless).font(.caption).padding(.top, 2)
+                .help(RecallLocalization.both("不再把相关记录用于回顾和记忆判断，原始记录仍保留。", "Exclude related records from reviews and memory analysis. Original records are kept."))
         }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-    private func visible(_ rows: [DailySummaryItem], section: DailySummarySection) -> [DailySummaryItem] {
-        if expanded.contains(section.rawValue) { return rows }
-        let limit = section == .progress ? 5 : section == .insights ? 2 : rows.count
-        return Array(rows.prefix(limit))
     }
     private func itemTitle(_ title: String) -> some View {
         Text(title).font(.system(size: 15, weight: .semibold)).lineSpacing(3)
@@ -157,3 +136,4 @@ struct TopicMergeSheet: View {
         }.padding(24).frame(width: 640, height: 560).interactiveDismissDisabled(saving)
     }
 }
+

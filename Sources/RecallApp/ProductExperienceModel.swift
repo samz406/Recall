@@ -4,8 +4,8 @@ import RecallKit
 @MainActor
 extension RecallAppModel {
     @discardableResult
-    func beginTask(_ kind: String, target: String, phase: String, retry: (() -> Void)? = nil) -> UUID {
-        let task = RecallTaskStatus(kind: kind, target: target, phase: phase)
+    func beginTask(_ kind: String, target: String, phase: String, reviewDay: Date? = nil, retry: (() -> Void)? = nil) -> UUID {
+        let task = RecallTaskStatus(kind: kind, target: target, phase: phase, reviewDay: reviewDay)
         tasks.removeAll { !$0.isRunning && Date.now.timeIntervalSince($0.startedAt) > 86_400 }
         if tasks.count >= 20, let index = tasks.lastIndex(where: { !$0.isRunning }) { tasks.remove(at: index) }
         tasks.insert(task, at: 0)
@@ -84,3 +84,4 @@ extension RecallAppModel {
         else { noticeMessage = "来源已删除或不再可用。" }
     }
 }
+
