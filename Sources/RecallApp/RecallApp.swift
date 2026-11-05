@@ -6,14 +6,20 @@ import UserNotifications
 @main
 struct RecallApp: App {
     @NSApplicationDelegateAdaptor(RecallAppDelegate.self) private var appDelegate
-    @StateObject private var startup = RecallStartupController()
+    @StateObject private var startup = RecallStartupController(automatic: !CommandLine.arguments.contains("--layout-previews"))
 
     var body: some Scene {
         Window("Recall", id: "main") {
-            Group {
-                if let model = startup.model { RecallRootView().environmentObject(model) }
-                else { ArchiveRecoveryView(startup: startup) }
-            }.recallColors().frame(minWidth: 980, minHeight: 680)
+            if CommandLine.arguments.contains("--layout-previews") {
+                // Each native probe owns its synthetic data and appearance. A late startup
+                // transition in this unrelated window must not reset NSApp's test appearance.
+                Color.clear
+            } else {
+                Group {
+                    if let model = startup.model { RecallRootView().environmentObject(model) }
+                    else { ArchiveRecoveryView(startup: startup) }
+                }.recallColors().frame(minWidth: 980, minHeight: 680)
+            }
         }
         .defaultSize(width: 1180, height: 780)
 
@@ -23,10 +29,14 @@ struct RecallApp: App {
         }
 
         Settings {
-            Group {
-                if let model = startup.model { RecallSettingsView().environmentObject(model) }
-                else { ArchiveRecoveryView(startup: startup) }
-            }.recallColors().frame(width: 620, height: 560)
+            if CommandLine.arguments.contains("--layout-previews") {
+                Color.clear
+            } else {
+                Group {
+                    if let model = startup.model { RecallSettingsView().environmentObject(model) }
+                    else { ArchiveRecoveryView(startup: startup) }
+                }.recallColors().frame(width: 620, height: 560)
+            }
         }
     }
 }

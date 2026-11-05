@@ -1505,7 +1505,7 @@ extension RecallRootView {
     @MainActor static func previewPage(_ name: String) -> AnyView {
         switch name {
         case "archive-recovery": AnyView(ArchiveRecoveryView(startup: RecallStartupController.preview()))
-        case "archive-safety": AnyView(LocalArchiveSafetyCard().padding(24))
+        case "archive-safety": AnyView(LocalArchiveSafetyCard().padding(24).frame(maxWidth: .infinity, maxHeight: .infinity).background(RecallPalette.background))
         case "record-retention": AnyView(RetentionDetailPreview())
         case "preferences": AnyView(PrivacyAndModelView(initialCategory: "使用偏好"))
         case "first-moment": AnyView(FirstMomentView())
