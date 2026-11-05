@@ -94,57 +94,7 @@ public struct MemorySearchHit: Identifiable, Sendable {
     public var date: Date
     public var sourceIDs: Set<UUID>
     public var destination: MemorySearchDestination
-}
-public struct GlobalMemorySearch: Sendable {
-    private var rows: [MemorySearchHit]
-    private var apps: [UUID: String]
-    public init(state: RecallState, matters: [MatterFile]) {
-        let excluded = state.privacy.excludedBundleIdentifiers
-        let sources = state.captures.filter { !excluded.contains($0.sourceBundleIdentifier ?? "") }
-        let ids = Set(sources.map(\.id))
-        apps = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0.sourceAppName ?? "") })
-        var hits: [MemorySearchHit] = []
-        for source in sources {
-            if Task.isCancelled { break }
-            hits.append(MemorySearchHit(id: "record:" + source.id.uuidString, title: CapturePresentation(capture: source).title,
-                detail: source.ocrText, kind: "原始记录", date: source.createdAt, sourceIDs: [source.id], destination: .record(source.id)))
-        }
-        for file in matters where Set(file.evidenceIDs).isSubset(of: ids) {
-            hits.append(.init(id: "topic:" + file.id, title: file.title, detail: file.events.map(\.detail).joined(separator: "\n"), kind: "记忆主题",
-                date: file.latest.date, sourceIDs: Set(file.evidenceIDs), destination: .topic(file.id)))
-        }
-        for report in state.dailySummaries where Set(report.sourceCaptureIDs).isSubset(of: ids) {
-            hits.append(.init(id: "daily:" + report.id.uuidString, title: report.day.formatted(date: .abbreviated, time: .omitted) + " · 每日回顾",
-                detail: DailySummaryItemParser.markdown(from: report.items), kind: "每日回顾", date: report.day,
-                sourceIDs: Set(report.sourceCaptureIDs), destination: .daily(report.id)))
-        }
-        for report in state.weeklyReports where report.isReadable && report.sourceIDs.isSubset(of: ids) {
-            hits.append(.init(id: "review:" + report.id.uuidString, title: report.displayName, detail: report.markdown,
-                kind: "周期回顾", date: report.createdAt, sourceIDs: report.sourceIDs, destination: .review(report.id)))
-        }
-        for reminder in state.reminders where Set(reminder.sourceCaptureIDs).isSubset(of: ids) {
-            hits.append(.init(id: "reminder:" + reminder.id.uuidString, title: reminder.title, detail: reminder.detail, kind: "提醒",
-                date: reminder.updatedAt, sourceIDs: Set(reminder.sourceCaptureIDs), destination: .reminder(reminder.id)))
-        }
-        for claim in state.memoryKnowledge.claims where claim.usable(at: .now) && claim.scope != .conversation && Set(claim.sourceIDs).isSubset(of: ids) {
-            hits.append(.init(id: "knowledge:" + claim.id.uuidString, title: claim.title, detail: claim.content, kind: "长期记忆",
-                date: claim.date, sourceIDs: Set(claim.sourceIDs), destination: .knowledge(claim.id)))
-        }
-        rows = hits
-    }
-    public func search(_ text: String, start: Date? = nil, end: Date? = nil, app: String? = nil, topicSources: Set<UUID>? = nil, limit: Int = 50) -> [MemorySearchHit] {
-        let terms = text.split(whereSeparator: \.isWhitespace).map(String.init)
-        guard !terms.isEmpty || start != nil || end != nil || app != nil || topicSources != nil else { return [] }
-        return rows.filter { row in
-            (start == nil || row.date >= start!) && (end == nil || row.date < end!)
-                && (app == nil || row.sourceIDs.contains { apps[$0] == app })
-                && (topicSources == nil || !row.sourceIDs.isDisjoint(with: topicSources!))
-                && terms.allSatisfy { (row.title + " " + row.detail).localizedCaseInsensitiveContains($0) }
-        }.sorted {
-            let a = $0.title.localizedCaseInsensitiveContains(text), b = $1.title.localizedCaseInsensitiveContains(text)
-            return a == b ? ($0.date == $1.date ? $0.id < $1.id : $0.date > $1.date) : a
-        }.prefix(max(1, limit)).map { $0 }
-    }
+    public var endDate: Date? = nil
 }
 
 public enum RecallTaskState: String, Sendable { case running, cancelling, succeeded, partial, failed, cancelled }

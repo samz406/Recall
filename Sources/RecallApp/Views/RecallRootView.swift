@@ -1497,6 +1497,10 @@ private struct ChatComposer: View {
 extension RecallRootView {
     @MainActor static func previewPage(_ name: String) -> AnyView {
         switch name {
+        case "global-search": AnyView(GlobalMemorySearchSheet())
+        case "global-search-results": AnyView(GlobalMemorySearchSheet(initialQuery: "Atlas"))
+        case "global-search-dates": AnyView(GlobalMemorySearchSheet(initialQuery: "Atlas", initialDates: true))
+        case "global-search-calendar": AnyView(TimelineCalendarPopover(selectedDay: .now).padding(24))
         case "archive-recovery": AnyView(ArchiveRecoveryView(startup: RecallStartupController.preview()))
         case "archive-safety": AnyView(LocalArchiveSafetyCard().padding(24).frame(maxWidth: .infinity, maxHeight: .infinity).background(RecallPalette.background))
         case "record-retention": AnyView(RetentionDetailPreview())

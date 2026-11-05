@@ -78,7 +78,7 @@ public struct MatterCorrection: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
-public struct MatterEvent: Identifiable, Sendable {
+public struct MatterEvent: Identifiable, Equatable, Sendable {
     public var id: UUID
     public var title: String
     public var detail: String
@@ -100,7 +100,7 @@ public struct MatterEvent: Identifiable, Sendable {
     }
 }
 
-public struct MatterFile: Identifiable, Sendable {
+public struct MatterFile: Identifiable, Equatable, Sendable {
     public var id: String
     public var title: String
     public var events: [MatterEvent]
@@ -489,3 +489,4 @@ public struct MemoryEvidenceSelector: Sendable {
         return Array(selected.prefix(limit))
     }
 }
+

@@ -15,6 +15,7 @@ struct RecallVerifier {
             try await AskAgentVerification.run()
             try await MemoryReliabilityVerification.run()
             try await ChatSourceIndexVerification.run()
+            try await GlobalSearchVerification.run()
             try await MemoryReminderActionsVerification.run()
             try await ReviewScheduleSaveVerification.run()
             try await StartupLoadingVerification.run()
@@ -1975,3 +1976,4 @@ enum VerificationError: LocalizedError {
 func verificationStore(storage: RecallStorage, deferMaintenance: Bool = false) throws -> FileMemoryStore {
     try FileMemoryStore(storage: storage, deferMaintenance: deferMaintenance, credentials: InMemoryCredentialStore())
 }
+
