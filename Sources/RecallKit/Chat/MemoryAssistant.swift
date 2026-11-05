@@ -317,7 +317,7 @@ public final class MemoryAssistant {
             let responder = LiveMemoryResponder(base: base, store: store, original: originalState)
             outcome = try await AskAgent.answer(
                 question: question, state: fullState, scope: scope, textIndex: textIndex, responder: responder,
-                limits: limits, onPartial: onPartial, onStatus: onStatus, onStep: onStep
+                history: state.messages, limits: limits, onPartial: onPartial, onStatus: onStatus, onStep: onStep
             )
         } catch is CancellationError {
             throw CancellationError()

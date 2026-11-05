@@ -123,6 +123,8 @@ public enum LLMRequestPurpose: Equatable, Sendable {
 public struct LLMRequest: Sendable {
     public var purpose: LLMRequestPurpose
     public var outputTokenLimit: Int?
+    /// 草稿会在后续核验后才展示时，跳过隐藏推理以降低延迟。
+    public var reducesReasoning: Bool
     public var question: String
     public var context: [CaptureRecord]
     public var conversationSummary: String?
@@ -136,9 +138,11 @@ public struct LLMRequest: Sendable {
         conversationSummary: String? = nil,
         supplementaryContext: String? = nil,
         recentMessages: [ConversationMessage] = [],
-        purpose: LLMRequestPurpose = .chat, outputTokenLimit: Int? = nil
+        purpose: LLMRequestPurpose = .chat, outputTokenLimit: Int? = nil,
+        reducesReasoning: Bool = false
     ) {
         self.purpose = purpose; self.outputTokenLimit = outputTokenLimit
+        self.reducesReasoning = reducesReasoning
         self.question = question
         self.context = context
         self.conversationSummary = conversationSummary
@@ -433,8 +437,8 @@ public struct CompatibleLLM: LLMResponding {
             temperature: 0.2,
             maxTokens: outputLimit(for: request),
             stream: onText == nil ? nil : true,
-            // Planning only emits a short JSON decision; hidden reasoning just adds latency per round.
-            thinking: request.purpose == .chatPlanning && (endpoint.host?.lowercased().hasSuffix("deepseek.com") ?? false) ? .init(type: "disabled") : nil
+            // Structured steps and drafts that get audited afterwards gain nothing from hidden reasoning.
+            thinking: (request.purpose != .chat || request.reducesReasoning) && (endpoint.host?.lowercased().hasSuffix("deepseek.com") ?? false) ? .init(type: "disabled") : nil
         )
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
@@ -457,7 +461,7 @@ public struct CompatibleLLM: LLMResponding {
         // a 93 KB review took 28 s with DeepSeek thinking and 5 s without; MiniMax at default effort
         // spent 11999/12000 tokens thinking and returned no JSON. Chat keeps the provider default.
         // MiniMax-M3.1 rejects `thinking: disabled` (HTTP 400), so it only gets a lower effort.
-        let structured = request.purpose != .chat
+        let structured = request.purpose != .chat || request.reducesReasoning
         let host = endpoint.host?.lowercased() ?? ""
         let miniMax = usesMiniMaxAuthenticationFallback(for: endpoint)
         let disableThinking = structured && (host == "api.deepseek.com" || host.hasSuffix(".deepseek.com"))
