@@ -1779,7 +1779,7 @@ struct RecallVerifier {
         try expect(result.role == .system && result.content.contains("已清空"), "命令应本地返回实际执行结果，无模型密钥也能工作")
         try expect(cleared.messages.map(\.id) == [result.id] && cleared.conversationSummary == nil && cleared.conversationSummaryCoveredMessageCount == 0, "清空应移除全部聊天历史及压缩上下文，只留下命令结果")
         try expect(cleared.captures.map(\.id) == [capture.id] && cleared.reminders.map(\.id) == [reminder.id] && cleared.dailySummaries.map(\.id) == [summary.id], "清会话不能删除采集、提醒和每日总结")
-        let reloaded = try verificationStore(storage: storage)
+        let reloaded = try verificationStore(storage: storage, deferMaintenance: true)
         let persisted = await reloaded.snapshot()
         try expect(persisted.messages.map(\.id) == [result.id] && persisted.conversationSummary == nil, "重启后不能恢复已清空的会话和摘要")
         let unknown = try await assistant.ask("/unknown")

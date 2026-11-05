@@ -9,8 +9,7 @@ public final class ReadOnlyMCPServer {
     private var ready = false
     public init(storage: RecallStorage, token: String) { self.storage = storage; self.token = token }
     private func snapshot() throws -> (RecallState, MCPGrant) {
-        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        let state = try decoder.decode(RecallState.self, from: Data(contentsOf: storage.stateURL))
+        let state = try ArchiveReliability.decode(Data(contentsOf: storage.stateURL))
         guard let grant = state.workflow.mcpGrant, !token.isEmpty, grant.token == token,
               grant.from <= grant.through else { throw WorkflowError.denied }
         return (state, grant)

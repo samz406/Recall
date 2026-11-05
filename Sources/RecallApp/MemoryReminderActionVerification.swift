@@ -49,7 +49,7 @@ extension RecallLayoutPreviews {
         model.dismissExperience(hint)
         guard model.experienceHint == nil else { throw MemoryReminderFailure.failed("点击后同一经验仍在其他主题显示") }
         try await waitForDismissal(model)
-        let reopened = try FileMemoryStore(storage: model.storage, credentials: InMemoryCredentialStore())
+        let reopened = try FileMemoryStore(storage: model.storage, deferMaintenance: true, credentials: InMemoryCredentialStore())
         guard hint.isDismissed(using: await reopened.snapshot().dismissedExperienceIDs),
               model.noticeMessage == RecallLocalization.both("已关闭这条历史经验提示。", "This historical suggestion has been dismissed.") else {
             throw MemoryReminderFailure.failed("关闭状态没有保存或没有反馈")
@@ -87,7 +87,7 @@ extension RecallLayoutPreviews {
             verifiedDraft = true
         }
         let result = try await model.createReminder(title: "  核对合成验收  ", detail: "完整的合成说明", dueAt: .now.addingTimeInterval(86_400), recurrence: .weekly)
-        let reopened = try FileMemoryStore(storage: model.storage, credentials: InMemoryCredentialStore()), persisted = await reopened.snapshot()
+        let reopened = try FileMemoryStore(storage: model.storage, deferMaintenance: true, credentials: InMemoryCredentialStore()), persisted = await reopened.snapshot()
         let succeeds = permission == .allowed && !queueFails
         let confirmations = persisted.reminderLearningProfile.semanticFeedback[result.reminder.semanticKey]?.confirmed ?? 0
         guard verifiedDraft, persisted.reminders.count == 1, persisted.reminders[0].id == result.reminder.id,
@@ -126,7 +126,7 @@ extension RecallLayoutPreviews {
               model.state.reminders.count == 1, model.state.reminderLearningProfile.semanticFeedback.isEmpty,
               let secondBackup else { throw MemoryReminderFailure.failed("排队后保存失败没有撤回通知并保留草稿") }
         try restoreStateFile(model.storage, backup: secondBackup)
-        let reopened = try FileMemoryStore(storage: model.storage, credentials: InMemoryCredentialStore())
+        let reopened = try FileMemoryStore(storage: model.storage, deferMaintenance: true, credentials: InMemoryCredentialStore())
         guard await reopened.snapshot().reminders.first?.status == .proposed else { throw MemoryReminderFailure.failed("通知失败的草稿重启后丢失") }
     }
     @MainActor private static func verifyReminderCalendar() throws {

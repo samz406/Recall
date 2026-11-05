@@ -34,7 +34,7 @@ enum MemoryReminderActionsVerification {
         try await store.dismissExperience(id: "experience:synthetic")
         try await store.dismissExperience(id: "experience:synthetic")
         try await store.setExperienceHints(enabled: false)
-        let reopened = try verificationStore(storage: storage), snapshot = await reopened.snapshot()
+        let reopened = try verificationStore(storage: storage, deferMaintenance: true), snapshot = await reopened.snapshot()
         try expect(snapshot.dismissedExperienceIDs == ["experience:synthetic"] && !snapshot.experienceHintsEnabled,
             "重启丢失了关闭记录或重复追加了相同 ID")
         let backup = storage.stateURL.appendingPathExtension("backup")
@@ -60,7 +60,7 @@ enum MemoryReminderActionsVerification {
         try expect(prepared.reminders.first?.id == row.id, "手动提醒保存后问一问仍使用旧缓存")
         row.status = .scheduled; row.scheduledAt = now
         try await store.updateReminder(row)
-        let reopened = try verificationStore(storage: storage), saved = await reopened.snapshot()
+        let reopened = try verificationStore(storage: storage, deferMaintenance: true), saved = await reopened.snapshot()
         try expect(saved.reminders == [row] && row.sourceCaptureIDs.isEmpty, "手动提醒因没有截图来源而丢失或状态未保存")
         let backup = storage.stateURL.appendingPathExtension("backup")
         try FileManager.default.moveItem(at: storage.stateURL, to: backup)
