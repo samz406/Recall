@@ -35,7 +35,17 @@ public struct AnswerGrounding: Sendable {
             guard let material = supplied[record.id] else { return nil }
             // Only re-send original lines already supplied to this answer. A verification call cannot
             // bypass a tool's clipping budget by reopening the entire original record.
-            let lines = material.components(separatedBy: .newlines).filter { !$0.isEmpty && original.contains($0) }
+            let lines = material.components(separatedBy: .newlines).compactMap { line -> String? in
+                guard !line.isEmpty else { return nil }
+                if original.contains(line) { return line }
+                // MemoryReadTools adds this display marker when clipping. It is not part of the
+                // original quote. Removing only the verified suffix must never reopen the full text.
+                if line.hasSuffix("…") {
+                    let prefix = String(line.dropLast())
+                    if !prefix.isEmpty && original.contains(prefix) { return prefix }
+                }
+                return nil
+            }
             let text = PrivacyEngine().redact(lines.joined(separator: "\n"))
             guard !text.isEmpty, used < 24_000 else { return nil }
             var copy = record

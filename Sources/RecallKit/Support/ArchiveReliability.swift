@@ -106,13 +106,22 @@ public enum ArchiveReliability {
             guard state.llmConfiguration.apiKey.isEmpty else { throw ArchiveReliabilityError.invalidBackup }
             let damaged = storage.rootURL.appendingPathComponent("Damaged Archives", isDirectory: true)
             try FileManager.default.createDirectory(at: damaged, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            var isolated: URL?
             if FileManager.default.fileExists(atPath: storage.stateURL.path) {
-                let bytes = try Data(contentsOf: storage.stateURL)
-                let isolated = damaged.appendingPathComponent(UUID().uuidString + ".bin")
-                try bytes.write(to: isolated, options: .atomic)
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: isolated.path)
+                let destination = damaged.appendingPathComponent(UUID().uuidString + ".bin")
+                // Move the original inode instead of making another plaintext copy of a potentially
+                // pre-migration archive. The original remains available if replacement fails.
+                try FileManager.default.moveItem(at: storage.stateURL, to: destination)
+                isolated = destination
             }
-            try data.write(to: storage.stateURL, options: .atomic)
+            do {
+                try data.write(to: storage.stateURL, options: .atomic)
+            } catch {
+                if let isolated, !FileManager.default.fileExists(atPath: storage.stateURL.path) {
+                    try? FileManager.default.moveItem(at: isolated, to: storage.stateURL)
+                }
+                throw error
+            }
         }
     }
     /// Remove application-managed legacy copies and damaged archives when content is withdrawn.

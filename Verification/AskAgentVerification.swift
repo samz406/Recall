@@ -151,7 +151,8 @@ enum AskAgentVerification {
         _ = try await MemoryAssistant(store: store).ask("HEAD-TOKEN", model: script, limits: AskLimits(maxResultCharacters: 80))
         let recorded = await script.recorded()
         let sent = recorded.filter { $0.purpose == .chat || $0.purpose == .answerVerification }.map { $0.question + ($0.supplementaryContext ?? "") + $0.context.map(\.ocrText).joined() }.joined()
-        try expect(recorded.last?.purpose == .answerVerification && !sent.contains("TAIL-SECRET"), "超出字数预算后仍把后文发给模型")
+        try expect(!sent.contains("TAIL-SECRET"), "超出字数预算后仍把后文发给模型")
+        try expect(recorded.last?.purpose == .answerVerification, "裁剪后的原文片段未进入事实核验")
     }
 
     private static func invalidPlanFallsBack() async throws {
