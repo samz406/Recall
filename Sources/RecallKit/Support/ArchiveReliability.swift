@@ -30,6 +30,12 @@ public struct ArchiveBackup: Identifiable, Sendable, Equatable {
 public enum ArchiveReliability {
     public static func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
     public static func decode(_ data: Data) throws -> RecallState {
+        // Check the format before RecallState's compatibility decoder converts a future schema
+        // into a generic source-change error. The recovery page needs the explicit upgrade reason.
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let version = object["schemaVersion"] as? Int, !(1...2).contains(version) {
+            throw ArchiveReliabilityError.unsupportedVersion
+        }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         let state = try decoder.decode(RecallState.self, from: data)
         guard (1...2).contains(state.schemaVersion) else { throw ArchiveReliabilityError.unsupportedVersion }
