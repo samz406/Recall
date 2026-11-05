@@ -282,12 +282,20 @@ public actor FileMemoryStore {
         try self.init(storage: RecallStorage())
     }
 
+    /// Reading, verifying and decoding a large archive must not block the main thread.
+    public static func open(storage: RecallStorage, deferMaintenance: Bool = false, credentials: any CredentialStore = KeychainCredentialStore.shared) async throws -> FileMemoryStore {
+        try await Task.detached(priority: .userInitiated) {
+            try FileMemoryStore(storage: storage, deferMaintenance: deferMaintenance, credentials: credentials)
+        }.value
+    }
+
     public init(storage: RecallStorage, deferMaintenance: Bool = false, credentials: any CredentialStore = KeychainCredentialStore.shared) throws {
         self.credentials = credentials
         self.storage = storage
         intelligenceIndex = try? SQLiteIntelligenceIndex(databaseURL: storage.intelligenceDatabaseURL)
         encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // Compact output keeps the archive smaller, so every load and save reads or writes fewer bytes.
+        encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601

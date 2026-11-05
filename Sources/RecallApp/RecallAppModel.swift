@@ -138,7 +138,7 @@ final class RecallAppModel: ObservableObject {
     private var reminderActionObserver: NSObjectProtocol?
     private var appActiveObserver: NSObjectProtocol?
 
-    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil, storageOverride: RecallStorage? = nil) throws {
+    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil, storageOverride: RecallStorage? = nil, preloadedStore: FileMemoryStore? = nil) throws {
         self.isPreview = previewState != nil
         self.reminderCreationScheduler = reminderCreationScheduler ?? LocalNotificationScheduler()
         do {
@@ -154,7 +154,7 @@ final class RecallAppModel: ObservableObject {
             self.diagnosticLog = RecallDiagnosticLogStore(storage: storage)
             self.diagnosticEntries = diagnosticLog.entries
             let startupRead = Date.now
-            self.store = try FileMemoryStore(storage: storage, deferMaintenance: true, credentials: previewState == nil ? KeychainCredentialStore.shared : InMemoryCredentialStore())
+            self.store = try preloadedStore ?? FileMemoryStore(storage: storage, deferMaintenance: true, credentials: previewState == nil ? KeychainCredentialStore.shared : InMemoryCredentialStore())
             self.pipeline = CapturePipeline(store: store, storage: storage)
             self.assistant = MemoryAssistant(store: store)
             if let previewState {

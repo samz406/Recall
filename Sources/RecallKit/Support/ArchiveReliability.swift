@@ -29,18 +29,29 @@ public struct ArchiveBackup: Identifiable, Sendable, Equatable {
 /// Primary writes remain atomic. A failed mirror never turns a committed record into a failed save.
 public enum ArchiveReliability {
     public static func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+    private struct Skipped: Decodable { init(from decoder: Decoder) throws {} }
+    private struct Header: Decodable {
+        var schemaVersion: Int?
+        var captures: [Skipped]?
+        enum CodingKeys: String, CodingKey { case schemaVersion, captures }
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            schemaVersion = try? container.decode(Int.self, forKey: .schemaVersion)
+            captures = try? container.decode([Skipped].self, forKey: .captures)
+        }
+    }
     public static func decode(_ data: Data) throws -> RecallState {
         // Check the format before RecallState's compatibility decoder converts a future schema
         // into a generic source-change error. The recovery page needs the explicit upgrade reason.
-        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let version = object["schemaVersion"] as? Int, !(1...2).contains(version) {
+        // A header decode avoids building two full object graphs of a large archive.
+        let header = try? JSONDecoder().decode(Header.self, from: data)
+        if let version = header?.schemaVersion, !(1...2).contains(version) {
             throw ArchiveReliabilityError.unsupportedVersion
         }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         let state = try decoder.decode(RecallState.self, from: data)
         guard (1...2).contains(state.schemaVersion) else { throw ArchiveReliabilityError.unsupportedVersion }
-        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard object?["captures"] is [Any],
+        guard header?.captures != nil,
               Set(state.captures.map(\.id)).count == state.captures.count,
               Set(state.messages.map(\.id)).count == state.messages.count,
               Set(state.reminders.map(\.id)).count == state.reminders.count,

@@ -8,6 +8,7 @@ final class RecallStartupController: ObservableObject {
     @Published var failure: String?
     @Published var backups: [ArchiveBackup] = []
     @Published var isWorking = false
+    @Published private(set) var phase = RecallLocalization.both("正在读取本地记忆…", "Reading local memory…")
     private(set) var storage: RecallStorage?
 
     init(storage: RecallStorage? = nil, automatic: Bool = true) {
@@ -35,7 +36,11 @@ final class RecallStartupController: ObservableObject {
             if !FileManager.default.fileExists(atPath: storage.stateURL.path), !backups.isEmpty {
                 failure = RecallLocalization.both("原始档案缺失。请选择已校验的备份恢复。", "The archive is missing. Restore a verified backup."); return
             }
-            model = try RecallAppModel(storageOverride: storage)
+            phase = RecallLocalization.both("正在读取本地记忆…", "Reading local memory…")
+            let store = try await FileMemoryStore.open(storage: storage, deferMaintenance: true)
+            phase = RecallLocalization.both("正在准备界面…", "Preparing the interface…")
+            await Task.yield()
+            model = try RecallAppModel(storageOverride: storage, preloadedStore: store)
             failure = nil
         } catch {
             failure = error.localizedDescription
@@ -53,6 +58,22 @@ final class RecallStartupController: ObservableObject {
         } catch { failure = error.localizedDescription; isWorking = false }
     }
     func reveal() { if let storage { NSWorkspace.shared.open(storage.rootURL) } }
+}
+
+/// Shown while the archive loads. The recovery page is only for failures.
+struct LaunchView: View {
+    @ObservedObject var startup: RecallStartupController
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "brain.head.profile").font(.system(size: 44, weight: .light)).foregroundStyle(RecallPalette.secondary)
+            Text("Recall").font(.title.weight(.semibold))
+            ProgressView().controlSize(.small)
+            Text(startup.phase).font(.callout).foregroundStyle(RecallPalette.secondary)
+            Text(RecallLocalization.both("记录较多时首次打开可能需要几秒，数据都在本机。", "Large archives can take a few seconds to open. Everything stays on this Mac.")).font(.caption).foregroundStyle(RecallPalette.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(RecallPalette.background)
+    }
 }
 
 struct ArchiveRecoveryView: View {
