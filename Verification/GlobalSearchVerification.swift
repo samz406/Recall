@@ -29,6 +29,7 @@ enum GlobalSearchVerification {
         try expect(found.count == 1 && found[0].sourceIDs == [tail.id] && found[0].detail.contains("TailNeedleToken")
             && found[0].detail.count <= 302, "长正文尾部漏搜，或摘要不包含命中位置/长度无界")
         try expect(search.search("OldOnlyToken").isEmpty && search.search("CorrectedOnlyToken").count == 1, "纠正后仍搜到旧 OCR")
+        try expect(search.search("tAiLnEeDlEtOkEn").count == 1 && search.search("用户更正").count == 1, "ASCII 大小写或中文完整片段匹配失败")
         try expect(search.search("InternalArchiveToken").isEmpty && search.search("GeneratedReviewToken").isEmpty, "内部副本冒充原始记录")
         try expect(search.search("SavedReferenceToken").count == 1, "对方内容或保存资料不能作为原始记录检索")
         try expect(search.search("").isEmpty && search.search("TailNeedleToken", limit: 0).isEmpty, "空搜索/零条上限仍产生结果")
@@ -66,6 +67,9 @@ enum GlobalSearchVerification {
                 && future.isEmpty, "旧索引在长期记忆到期后仍返回该内容")
             claim.scope = .conversation; state.memoryKnowledge.claims = [claim]
             try expect(GlobalMemorySearch(state: state, matters: []).search("ExpiringToken").isEmpty, "临时会话约定进入长期检索")
+            claim.scope = .global; claim.kind = .reference; claim.title = "SavedReferenceMemoryToken"; claim.content = "SavedReferenceMemoryToken"
+            state.memoryKnowledge.claims = [claim]
+            try expect(GlobalMemorySearch(state: state, matters: []).search("SavedReferenceMemoryToken").count == 1, "保存的资料线索被检索范围排除")
         } else { throw Failure(errorDescription: "合成长期记忆未生成") }
         var edited = state; edited.captures[0].correctedText = "Atlas 账单已撤回，本条文字已由用户更正。"
         try expect(!GlobalMemorySearch(state: edited, matters: []).search("Atlas").contains { $0.kind == "周期回顾" }, "原始文字变更后仍搜索到旧版本周期回顾")

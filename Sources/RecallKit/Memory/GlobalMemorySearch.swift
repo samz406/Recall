@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Darwin
 
 public struct GlobalMemorySearchQuery: Hashable, Sendable {
     public var text: String
@@ -16,6 +17,49 @@ public struct GlobalMemorySearchQuery: Hashable, Sendable {
 
 /// Metadata and original text references only. No OCR summarization or tokenization on opening search.
 public struct GlobalMemorySearch: Sendable {
+    /// Binary UTF-8 search for Chinese/ASCII terms. ASCII case folding does not touch UTF-8 continuation bytes.
+    /// memchr scans long non-matching text in libc; uncommon cased Unicode terms retain Foundation matching.
+    private struct Term {
+        let text: String
+        let bytes: [UInt8]
+        let unicodeCase: Bool
+        init(_ text: String) {
+            self.text = text
+            bytes = text.utf8.map { Self.fold($0) }
+            unicodeCase = text.unicodeScalars.contains { scalar in
+                scalar.value > 127 && (CharacterSet.uppercaseLetters.contains(scalar)
+                    || CharacterSet.lowercaseLetters.contains(scalar) || CharacterSet.nonBaseCharacters.contains(scalar))
+            }
+        }
+        private static func fold(_ byte: UInt8) -> UInt8 { byte >= 65 && byte <= 90 ? byte + 32 : byte }
+        func matches(_ value: String) -> Bool {
+            if unicodeCase { return value.range(of: text, options: .caseInsensitive) != nil }
+            if let match = value.utf8.withContiguousStorageIfAvailable({ search($0) }) { return match }
+            return Array(value.utf8).withUnsafeBufferPointer { search($0) }
+        }
+        private func search(_ buffer: UnsafeBufferPointer<UInt8>) -> Bool {
+            let size = bytes.count
+            guard size > 0, buffer.count >= size, let base = buffer.baseAddress else { return false }
+            let anchor = size - 1, last = buffer.count - size + anchor
+            let lower = bytes[anchor], upper = (97...122).contains(lower) ? lower - 32 : lower
+            func next(_ byte: UInt8, after offset: Int) -> Int? {
+                guard offset <= last, let found = memchr(base.advanced(by: offset), Int32(byte), last - offset + 1) else { return nil }
+                return base.distance(to: UnsafePointer(found.assumingMemoryBound(to: UInt8.self)))
+            }
+            var a = next(lower, after: anchor), b = upper == lower ? nil : next(upper, after: anchor)
+            while a != nil || b != nil {
+                let position = min(a ?? Int.max, b ?? Int.max)
+                let first = position - anchor
+                var index = 0
+                while index < size && Self.fold(buffer[first + index]) == bytes[index] { index += 1 }
+                if index == size { return true }
+                // Each spelling advances independently, so an absent upper/lower spelling never rescans the suffix.
+                if a == position { a = next(lower, after: position + 1) }
+                if b == position { b = next(upper, after: position + 1) }
+            }
+            return false
+        }
+    }
     private enum VersionKind: String, Sendable { case daily, memory, weekly, legacy }
     private struct Signature: Sendable { var id: UUID; var expected: String; var kind: VersionKind }
     private struct Document: Sendable {
@@ -35,6 +79,7 @@ public struct GlobalMemorySearch: Sendable {
             self.sources = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         }
         func matches(_ signature: Signature) -> Bool {
+            if Task.isCancelled { return false }
             let key = signature.kind.rawValue + ":" + signature.id.uuidString
             lock.lock(); let cached = values[key]; lock.unlock()
             if let cached { return cached == signature.expected }
@@ -122,7 +167,7 @@ public struct GlobalMemorySearch: Sendable {
                 text: reminder.detail))
         }
         for claim in state.memoryKnowledge.claims where claim.usable(at: now) && claim.scope != .conversation
-            && MemoryLibraryCategory.all.includes(claim.kind) && permitted(Set(claim.sourceIDs)) {
+            && (MemoryLibraryCategory.all.includes(claim.kind) || claim.kind == .reference) && permitted(Set(claim.sourceIDs)) {
             if Task.isCancelled { break }
             let signatures = claim.evidence.map { Signature(id: $0.captureID, expected: $0.sourceVersion, kind: .memory) }
             rows.append(Document(hit: .init(id: "knowledge:" + claim.id.uuidString, title: claim.title, detail: "", kind: "长期记忆",
@@ -139,7 +184,7 @@ public struct GlobalMemorySearch: Sendable {
         try Task.checkCancellation()
         guard query.hasCriteria, limit > 0, query.start == nil || query.end == nil || query.start! < query.end! else { return [] }
         let terms = query.text.split(whereSeparator: \.isWhitespace).map(String.init)
-        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        let needles = terms.map(Term.init), phrase = Term(query.text)
         var matched: [(Document, Bool)] = []
         for document in documents {
             try Task.checkCancellation()
@@ -152,8 +197,8 @@ public struct GlobalMemorySearch: Sendable {
             }
             guard query.app == nil || row.sourceIDs.contains(where: { applications[$0] == query.app! }),
                   query.topicSources == nil || !row.sourceIDs.isDisjoint(with: query.topicSources!),
-                  terms.allSatisfy({ row.title.range(of: $0, options: options) != nil || document.text.range(of: $0, options: options) != nil }) else { continue }
-            matched.append((document, !query.text.isEmpty && row.title.range(of: query.text, options: options) != nil))
+                  needles.allSatisfy({ $0.matches(row.title) || $0.matches(document.text) }) else { continue }
+            matched.append((document, !query.text.isEmpty && phrase.matches(row.title)))
         }
         matched.sort {
             if $0.1 != $1.1 { return $0.1 }
@@ -169,6 +214,7 @@ public struct GlobalMemorySearch: Sendable {
             hits.append(row)
             if hits.count >= limit { break }
         }
+        try Task.checkCancellation()
         return hits
     }
     private static func snippet(_ text: String, terms: [String]) -> String {
