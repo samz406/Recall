@@ -143,6 +143,14 @@ struct RecallTaskStatusView: View {
 
 struct RecallTaskHistory: View {
     @EnvironmentObject var model: RecallAppModel
+    /// A regenerated or deleted result no longer has the saved ID, so the jump would do nothing.
+    private func destinationExists(_ target: MemorySearchDestination) -> Bool {
+        switch target {
+        case .daily(let id): model.state.dailySummaries.contains { $0.id == id }
+        case .review(let id): model.state.weeklyReports.contains { $0.id == id }
+        default: true
+        }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
@@ -158,7 +166,7 @@ struct RecallTaskHistory: View {
                     ForEach(model.tasks) { task in
                         VStack(alignment: .leading, spacing: 8) {
                             RecallTaskStatusView(task: task)
-                            if let target = task.destination {
+                            if let target = task.destination, destinationExists(target) {
                                 Button(RecallLocalization.text("查看结果")) { model.destination = target }
                             }
                         }

@@ -5,6 +5,7 @@ import RecallKit
 struct DailyReviewContentView: View {
     @EnvironmentObject private var model: RecallAppModel
     let summary: DailySummary
+    @State private var pendingCorrection: (item: DailySummaryItem, kind: MatterCorrectionKind)?
     private var items: [DailySummaryItem] {
         let live = Set(model.state.captures.map(\.id))
         let presented = summary.modelCoverage == nil ? DailySummaryItemParser.sanitized(summary.items) : DailySummaryItemParser.modelValidated(summary.items)
@@ -46,6 +47,19 @@ struct DailyReviewContentView: View {
                 }.font(.callout).foregroundStyle(RecallPalette.secondary)
             }
         }
+        .confirmationDialog(
+            RecallLocalization.both("确认纠正这条内容？", "Correct this item?"),
+            isPresented: Binding(get: { pendingCorrection != nil }, set: { if !$0 { pendingCorrection = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(RecallLocalization.both("确认纠正", "Correct"), role: .destructive) {
+                if let pending = pendingCorrection { model.correctMatter(MatterCorrection(evidenceIDs: pending.item.evidenceIDs, kind: pending.kind)) }
+                pendingCorrection = nil
+            }
+            Button(RecallLocalization.text("取消"), role: .cancel) { pendingCorrection = nil }
+        } message: {
+            Text(RecallLocalization.both("该内容的来源记录将不再用于分析，会让相关回顾重新生成。", "The source records will no longer be used, and related reviews will be regenerated."))
+        }
     }
     private func sectionHeading(_ section: DailySummarySection) -> some View {
         HStack(spacing: 10) {
@@ -63,8 +77,8 @@ struct DailyReviewContentView: View {
         let action = summary.todos.first { $0.id == item.actionCandidateID || $0.title == item.title }
         return VStack(alignment: .leading, spacing: 8) {
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) { itemTitle(text.title); itemStatus(item) }
-                VStack(alignment: .leading, spacing: 6) { itemTitle(text.title); itemStatus(item) }
+                HStack(alignment: .firstTextBaseline, spacing: 10) { itemTitle(text.title); itemStatus(item); Spacer(minLength: 8); correctionMenu(item) }
+                VStack(alignment: .leading, spacing: 6) { HStack { itemTitle(text.title); Spacer(minLength: 8); correctionMenu(item) }; itemStatus(item) }
             }
             if !text.detail.isEmpty {
                 Text(text.detail).font(RecallTypography.body).lineSpacing(5)
@@ -82,12 +96,16 @@ struct DailyReviewContentView: View {
                     Button(RecallLocalization.text("已完成")) { model.completeSummaryAction(item, summary: summary) }
                 }.buttonStyle(.borderless).font(.caption).padding(.top, 2)
             }
-            Menu(RecallLocalization.text("纠正内容")) {
-                Button(RecallLocalization.text("不是我说的")) { model.correctMatter(MatterCorrection(evidenceIDs: item.evidenceIDs, kind: .notMine)) }
-                Button(RecallLocalization.text("内容不准确")) { model.correctMatter(MatterCorrection(evidenceIDs: item.evidenceIDs, kind: .inaccurate)) }
-            }.buttonStyle(.borderless).font(.caption).padding(.top, 2)
-                .help(RecallLocalization.both("不再把相关记录用于回顾和记忆判断，原始记录仍保留。", "Exclude related records from reviews and memory analysis. Original records are kept."))
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func correctionMenu(_ item: DailySummaryItem) -> some View {
+        Menu {
+            Button(RecallLocalization.text("不是我说的")) { pendingCorrection = (item, .notMine) }
+            Button(RecallLocalization.text("内容不准确")) { pendingCorrection = (item, .inaccurate) }
+        } label: { Image(systemName: "ellipsis").foregroundStyle(RecallPalette.secondary) }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .accessibilityLabel(RecallLocalization.text("纠正内容"))
+            .help(RecallLocalization.both("不再把相关记录用于回顾和记忆判断，原始记录仍保留。", "Exclude related records from reviews and memory analysis. Original records are kept."))
     }
     private func itemTitle(_ title: String) -> some View {
         Text(title).font(.system(size: 15, weight: .semibold)).lineSpacing(3)

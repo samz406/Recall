@@ -51,7 +51,6 @@ public enum RecallLocalization {
         "到": "To",
         "不是我说的": "Not mine",
         "内容不准确": "Inaccurate",
-        "展开其余": "Show the rest",
         "补生成这几天": "Generate the missing days",
         "继续扫更早记录": "Scan earlier records",
         "指定主题": "Choose a topic",
