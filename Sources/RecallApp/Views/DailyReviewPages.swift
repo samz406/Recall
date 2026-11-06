@@ -27,7 +27,7 @@ struct DailySummariesView: View {
                             showsCalendar = false
                         }
                     }
-                    Button(RecallLocalization.text("生成回顾")) { model.generateDailyReview(on: selectedDate) }
+                    Button(RecallLocalization.text(selected == nil ? "生成回顾" : "重新生成")) { model.generateDailyReview(on: selectedDate) }
                         .buttonStyle(.borderedProminent).disabled(model.isLoadingSavedState || model.isGeneratingDailySummary)
                 }
             }
@@ -38,7 +38,7 @@ struct DailySummariesView: View {
                     dateList.frame(width: 214)
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
-                            if let task = model.tasks.first(where: { $0.kind == "每日回顾" }), task.isRunning || task.state == .failed || task.state == .partial {
+                            if let task = model.dailyReviewTask(on: selectedDate), task.isRunning || task.state == .failed {
                                 RecallTaskStatusView(task: task, cancel: model.cancelDailyReview)
                             }
                             if let selected {
@@ -726,4 +726,5 @@ struct MarkdownDocumentView: View {
         return (marker: "\(markerDigits).", text: String(line[textStart...]))
     }
 }
+
 

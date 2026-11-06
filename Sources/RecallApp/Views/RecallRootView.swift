@@ -1378,23 +1378,16 @@ private struct ChatComposer: View {
 
     private var editor: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ZStack(alignment: .topLeading) {
-                RecallChatInput(text: $question, height: $editorHeight, onFocus: { isFocused = $0 }, onSubmit: {
-                    if let command = commandSuggestions.first { insertCommand(command) } else { submit() }
-                }, onTab: {
-                    guard let command = commandSuggestions.first else { return false }
-                    insertCommand(command); return true
-                }, onEscape: {
-                    if !commandSuggestions.isEmpty { dismissedCommandQuery = question }
-                    else if isSending { model.stopChat() }
-                })
-                    .frame(height: editorHeight)
-                if question.isEmpty {
-                    Text(RecallLocalization.text("向 Recall 提问…")).font(.system(size: 16)).foregroundStyle(RecallPalette.secondary).allowsHitTesting(false)
-                }
-
-            }
-            .frame(minHeight: 42, alignment: .topLeading)
+            RecallChatInput(text: $question, height: $editorHeight, placeholder: RecallLocalization.text("向 Recall 提问…"), onFocus: { isFocused = $0 }, onSubmit: {
+                if let command = commandSuggestions.first { insertCommand(command) } else { submit() }
+            }, onTab: {
+                guard let command = commandSuggestions.first else { return false }
+                insertCommand(command); return true
+            }, onEscape: {
+                if !commandSuggestions.isEmpty { dismissedCommandQuery = question }
+                else if isSending { model.stopChat() }
+            })
+                .frame(height: editorHeight).frame(minHeight: 42, alignment: .topLeading)
             HStack {
                 Text(RecallLocalization.text("↵ 发送    ⇧↵ 换行")).font(.caption).foregroundStyle(RecallPalette.secondary)
                 Spacer()
@@ -1504,6 +1497,10 @@ private struct ChatComposer: View {
 extension RecallRootView {
     @MainActor static func previewPage(_ name: String) -> AnyView {
         switch name {
+        case "global-search": AnyView(GlobalMemorySearchSheet())
+        case "global-search-results": AnyView(GlobalMemorySearchSheet(initialQuery: "Atlas"))
+        case "global-search-dates": AnyView(GlobalMemorySearchSheet(initialQuery: "Atlas", initialDates: true))
+        case "global-search-calendar": AnyView(TimelineCalendarPopover(selectedDay: .now, selectDay: { _ in }).padding(24))
         case "archive-recovery": AnyView(ArchiveRecoveryView(startup: RecallStartupController.preview()))
         case "archive-safety": AnyView(LocalArchiveSafetyCard().padding(24).frame(maxWidth: .infinity, maxHeight: .infinity).background(RecallPalette.background))
         case "record-retention": AnyView(RetentionDetailPreview())
@@ -1554,3 +1551,4 @@ private struct RetentionDetailPreview: View {
         if let source = model.state.captures.first { CaptureDetailSheet(capture: source) }
     }
 }
+

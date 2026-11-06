@@ -5,6 +5,7 @@ import SwiftUI
 struct RecallChatInput: NSViewRepresentable {
     @Binding var text: String
     @Binding var height: CGFloat
+    var placeholder: String = ""
     let onFocus: (Bool) -> Void
     let onSubmit: () -> Void
     let onTab: () -> Bool
@@ -16,6 +17,7 @@ struct RecallChatInput: NSViewRepresentable {
         let scroll = NSScrollView()
         scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
         let editor = RecallInputTextView()
+        editor.placeholder = placeholder
         editor.delegate = coordinator; editor.isRichText = false; editor.drawsBackground = false
         editor.font = .systemFont(ofSize: 16); editor.textColor = .labelColor; editor.insertionPointColor = NSColor(RecallPalette.accent)
         editor.textContainerInset = .zero; editor.textContainer?.lineFragmentPadding = 0
@@ -29,13 +31,20 @@ struct RecallChatInput: NSViewRepresentable {
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
-        guard let editor = scroll.documentView as? NSTextView else { return }
-        if editor.string != text {
+        synchronize(scroll, coordinator: context.coordinator)
+    }
+    private func synchronize(_ scroll: NSScrollView, coordinator: Coordinator) {
+        guard let editor = scroll.documentView as? RecallInputTextView else { return }
+        editor.placeholder = placeholder
+        // SwiftUI can refresh with the last committed binding while an IME owns marked text.
+        // Replacing the native string here would destroy the composition and its selection.
+        if !editor.hasMarkedText(), editor.string != text {
             editor.string = text
             editor.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
         }
+        editor.needsDisplay = true
         editor.setFrameSize(NSSize(width: max(1, scroll.contentSize.width), height: max(44, editor.frame.height)))
-        context.coordinator.measure(editor)
+        coordinator.measure(editor)
     }
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: RecallChatInput
@@ -71,7 +80,23 @@ struct RecallChatInput: NSViewRepresentable {
 
 @MainActor
 private final class RecallInputTextView: NSTextView {
+    var placeholder = "" { didSet { needsDisplay = true } }
+    var showsPlaceholder: Bool { string.isEmpty && !hasMarkedText() }
     var lastModifiers: NSEvent.ModifierFlags = []
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard showsPlaceholder else { return }
+        (placeholder as NSString).draw(at: textContainerOrigin, withAttributes: [
+            .font: font ?? NSFont.systemFont(ofSize: 16),
+            .foregroundColor: NSColor(RecallPalette.secondary)
+        ])
+    }
+    override func didChangeText() { super.didChangeText(); needsDisplay = true }
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+        needsDisplay = true
+    }
+    override func unmarkText() { super.unmarkText(); needsDisplay = true }
     override func keyDown(with event: NSEvent) {
         lastModifiers = event.modifierFlags
         super.keyDown(with: event)
@@ -106,11 +131,25 @@ extension RecallChatInput {
         guard !coordinator.textView(editor, doCommandBy: #selector(NSResponder.cancelOperation(_:))), probe.escapes == 0 else { throw KeyboardFailure.contract }
         editor.unmarkText()
         guard coordinator.textView(editor, doCommandBy: #selector(NSResponder.cancelOperation(_:))), probe.escapes == 1 else { throw KeyboardFailure.contract }
+        editor.string = ""; probe.text = ""
+        guard editor.showsPlaceholder else { throw KeyboardFailure.contract }
+        editor.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        let composition = editor.string, markedRange = editor.markedRange()
+        // Simulate an unrelated SwiftUI refresh before the composed text has reached its binding.
+        probe.text = ""
+        input.synchronize(scroll, coordinator: coordinator)
+        guard editor.hasMarkedText(), editor.string == composition, editor.markedRange() == markedRange,
+              !editor.showsPlaceholder else { throw KeyboardFailure.contract }
+        editor.insertText("你", replacementRange: editor.markedRange())
+        guard editor.string.contains("你"), !editor.showsPlaceholder else { throw KeyboardFailure.contract }
+        editor.string = ""; editor.didChangeText()
+        guard editor.showsPlaceholder, probe.text.isEmpty else { throw KeyboardFailure.contract }
         editor.string = String(repeating: "这是一段用于验证自动增高的合成文字。", count: 20)
         coordinator.measure(editor)
         try await Task.sleep(for: .milliseconds(20))
         guard probe.height > 44 && probe.height <= 180 else { throw KeyboardFailure.contract }
-        print("PASS: native chat input Shift-Return, Return, Escape routing, IME composition protection and bounded multiline growth")
+        print("PASS: native chat input keyboard routing, IME placeholder/refresh/commit/clear and bounded multiline growth")
     }
     private enum KeyboardFailure: Error { case contract }
 }
+

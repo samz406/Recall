@@ -45,6 +45,10 @@ public enum RecallLocalization {
     private static let english: [String: String] = [
         "依据": "Evidence",
         "纠正归属": "Correct attribution",
+        "纠正内容": "Correct content",
+        "原始记录": "Original record",
+        "从": "From",
+        "到": "To",
         "不是我说的": "Not mine",
         "内容不准确": "Inaccurate",
         "展开其余": "Show the rest",
@@ -692,3 +696,4 @@ public enum RecallLocalization {
         "限定日期": "Limit dates",
     ]
 }
+

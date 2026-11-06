@@ -6,6 +6,24 @@ public struct DirectDailyReviewOutcome: Sendable {
     public var reminders = DailyReminderSync()
 }
 
+public enum DailyReviewGenerationPolicy: Sendable {
+    case replaceExisting, fillMissing, scheduled
+}
+
+public enum DailyReviewSkipped: Error {
+    case alreadySaved, alreadyAttempted, inProgress, scheduleDisabled
+}
+
+extension RecallState {
+    public func dailyReview(on day: Date, calendar: Calendar = .current) -> DailySummary? {
+        dailySummaries.first { calendar.isDate($0.day, inSameDayAs: day) }
+    }
+
+    public func hasAttemptedDailyReview(on day: Date, calendar: Calendar = .current) -> Bool {
+        dailyReviewAttemptedDays.contains { calendar.isDate($0, inSameDayAs: day) }
+    }
+}
+
 private actor DailyReviewMeter: LLMResponding {
     let responder: any LLMResponding
     var metrics = DailyReviewMetrics()
@@ -34,16 +52,31 @@ extension FileMemoryStore {
     /// The app's single entry point for manual, scheduled and retried daily reviews.
     /// This never prepares per-capture understanding or invokes independent model audits.
     public func generateDirectDailyReview(day: Date, period: ReviewPeriod, responder: any LLMResponding,
+                                          policy: DailyReviewGenerationPolicy = .replaceExisting,
                                           expectedConfiguration: LLMConfiguration? = nil, expectedPrivacy: PrivacySettings? = nil,
                                           limits: DailyReviewLimits = DailyReviewLimits(),
                                           onProgress: (@Sendable (ReviewGenerationProgress) async -> Void)? = nil,
                                           onMetrics: (@Sendable (DailyReviewMetrics) async -> Void)? = nil) async throws -> DirectDailyReviewOutcome {
         let start = Date.now, meter = DailyReviewMeter(responder)
+        let calendar = Calendar.current
+        let reviewDay = calendar.startOfDay(for: day)
         do {
             try Task.checkCancellation()
+            let original = state.dailyReview(on: reviewDay, calendar: calendar)
+            if policy != .replaceExisting, original != nil { throw DailyReviewSkipped.alreadySaved }
+            if policy == .scheduled {
+                guard state.dailySummarySettings.isEnabled else { throw DailyReviewSkipped.scheduleDisabled }
+                guard !state.hasAttemptedDailyReview(on: reviewDay, calendar: calendar) else { throw DailyReviewSkipped.alreadyAttempted }
+            }
             guard state.privacy.cloudUseEnabled, state.llmConfiguration.provider != .localOnly, state.llmConfiguration.hasCredential,
                   expectedConfiguration == nil || state.llmConfiguration == expectedConfiguration,
                   expectedPrivacy == nil || state.privacy == expectedPrivacy else { throw ModelReviewError.unavailable }
+            guard activeDailyReviewDays.insert(reviewDay).inserted else { throw DailyReviewSkipped.inProgress }
+            defer { activeDailyReviewDays.remove(reviewDay) }
+
+            // Claim the date before requesting the model. Even a failed or interrupted attempt
+            // can then only be repeated by an explicit user action.
+            try recordDailyReviewAttempt(on: reviewDay, now: start, calendar: calendar)
             let baseline = state
             await onProgress?(ReviewGenerationProgress(.preparing, detail: "正在读取所选日期的材料；已有整理直接复用，其余使用脱敏原文。"))
             let preparation = Task.detached(priority: .userInitiated) { try DailyReviewInput.make(in: baseline, period: period) }
@@ -71,13 +104,16 @@ extension FileMemoryStore {
             }
             await onProgress?(ReviewGenerationProgress(.saving, detail: "回顾已生成，本地来源和格式校验通过，正在保存。"))
             try Task.checkCancellation(); try validateDirectDailyReview(input, baseline: baseline)
+            let old = state.dailyReview(on: reviewDay, calendar: calendar)
+            if policy != .replaceExisting, old != nil { throw DailyReviewSkipped.alreadySaved }
+            guard old?.id == original?.id, old?.content == original?.content else { throw ModelReviewError.changed }
             let saveStart = Date.now, previous = state
             var saved = summary
-            if let old = state.dailySummaries.first(where: { Calendar.current.isDate($0.day, inSameDayAs: day) }) {
+            if let old {
                 saved.versions = Array(([DailyReviewVersion(summary: old)] + (old.versions ?? [])).prefix(8))
                 saved.sourceCaptureIDs = Array(Set(saved.sourceCaptureIDs + (saved.versions ?? []).flatMap(\.sourceIDs)))
             }
-            state.dailySummaries.removeAll { Calendar.current.isDate($0.day, inSameDayAs: day) }
+            state.dailySummaries.removeAll { calendar.isDate($0.day, inSameDayAs: reviewDay) }
             state.dailySummaries.append(saved); state.dailySummaries.sort { $0.day > $1.day }
             let liveSummaries = Set(state.dailySummaries.map(\.id))
             state.pendingDailyReviewMaintenance.removeAll { !liveSummaries.contains($0) }
@@ -87,12 +123,23 @@ extension FileMemoryStore {
             let metrics = await meter.finish(start: start, saveMilliseconds: DailyReviewMeter.milliseconds(since: saveStart))
             await onMetrics?(metrics)
             return DirectDailyReviewOutcome(summary: saved, metrics: metrics, reminders: reminders)
+        } catch let skip as DailyReviewSkipped {
+            throw skip
         } catch {
             let metrics = await meter.finish(start: start)
             await onMetrics?(metrics)
             if ModelCallCancellation.isCancellation(error) { throw CancellationError() }
             throw error
         }
+    }
+
+    private func recordDailyReviewAttempt(on day: Date, now: Date, calendar: Calendar) throws {
+        let today = calendar.startOfDay(for: now)
+        guard let earliest = calendar.date(byAdding: .day, value: -DailySummarySettings.automaticLookbackDays, to: today),
+              (earliest...today).contains(day), !state.hasAttemptedDailyReview(on: day, calendar: calendar) else { return }
+        let previous = state
+        state.dailyReviewAttemptedDays = state.dailyReviewAttemptedDays.filter { (earliest...today).contains($0) } + [day]
+        do { try persistReviewState(invalidateAnalysis: false) } catch { state = previous; throw error }
     }
 
     private func validateDirectDailyReview(_ input: DailyReviewInput, baseline: RecallState) throws {
@@ -141,3 +188,4 @@ extension FileMemoryStore {
         projectDayFromMatters(summary.day)
     }
 }
+

@@ -4,9 +4,15 @@ import RecallKit
 @MainActor
 extension RecallAppModel {
     @discardableResult
-    func beginTask(_ kind: String, target: String, phase: String, retry: (() -> Void)? = nil) -> UUID {
-        let task = RecallTaskStatus(kind: kind, target: target, phase: phase)
+    func beginTask(_ kind: String, target: String, phase: String, reviewDay: Date? = nil, retry: (() -> Void)? = nil) -> UUID {
+        let task = RecallTaskStatus(kind: kind, target: target, phase: phase, reviewDay: reviewDay)
         tasks.removeAll { !$0.isRunning && Date.now.timeIntervalSince($0.startedAt) > 86_400 }
+        if let reviewDay {
+            tasks.removeAll { previous in
+                !previous.isRunning && previous.kind == kind
+                    && previous.reviewDay.map { Calendar.current.isDate($0, inSameDayAs: reviewDay) } == true
+            }
+        }
         if tasks.count >= 20, let index = tasks.lastIndex(where: { !$0.isRunning }) { tasks.remove(at: index) }
         tasks.insert(task, at: 0)
         taskRetryActions = taskRetryActions.filter { id, _ in tasks.contains { $0.id == id } }
@@ -24,9 +30,15 @@ extension RecallAppModel {
     func updateReviewTask(_ id: UUID, progress: ReviewGenerationProgress) {
         updateTask(id, phase: progress.title, detail: progress.detail)
     }
+    func canRetryTask(_ task: RecallTaskStatus) -> Bool {
+        guard !task.isRunning, taskRetryActions[task.id] != nil else { return false }
+        if let day = task.reviewDay { return state.dailyReview(on: day) == nil }
+        return true
+    }
     func retryTask(_ id: UUID) {
         guard !isGeneratingDailySummary, !isGeneratingWeeklyReview, topicReviewTask == nil,
-              tasks.contains(where: { $0.id == id && !$0.isRunning }), let retry = taskRetryActions.removeValue(forKey: id) else { return }
+              let task = tasks.first(where: { $0.id == id }), canRetryTask(task),
+              let retry = taskRetryActions.removeValue(forKey: id) else { return }
         retry()
     }
     func finishTask(_ id: UUID, state: RecallTaskState, message: String, destination: MemorySearchDestination? = nil, detail: String? = nil) {
@@ -84,3 +96,4 @@ extension RecallAppModel {
         else { noticeMessage = "来源已删除或不再可用。" }
     }
 }
+

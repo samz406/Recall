@@ -25,17 +25,18 @@ extension RecallLayoutPreviews {
         let reopened = try FileMemoryStore(storage: model.storage, deferMaintenance: true, credentials: InMemoryCredentialStore())
         guard await reopened.snapshot().reviewSchedules.first?.id == plan.id else { throw ScheduleSaveFailure.failed("页面显示保存但重启后计划丢失") }
 
-        let stateURL = model.storage.stateURL, backup = stateURL.appendingPathExtension("schedule-backup")
-        try FileManager.default.moveItem(at: stateURL, to: backup)
-        try FileManager.default.createDirectory(at: stateURL, withIntermediateDirectories: false)
+        let scheduleURL = model.storage.reviewSchedulesURL
+        let backup = scheduleURL.appendingPathExtension("backup")
+        try FileManager.default.moveItem(at: scheduleURL, to: backup)
+        try FileManager.default.createDirectory(at: scheduleURL, withIntermediateDirectories: false)
         var changed = model.state.reviewSchedules[0]; changed.hour = (changed.hour + 1) % 24
         guard await model.saveReviewSchedule(changed) == false, model.savingReviewScheduleIDs.isEmpty,
               model.state.reviewSchedules[0].hour != changed.hour,
               model.weeklyReviewMessage == RecallLocalization.both("计划未能保存，原有计划保持不变，请重试。", "Unable to save the schedule. The previous schedule is unchanged; please retry.") else {
             throw ScheduleSaveFailure.failed("失败没有保留原计划、返回可重试提示或解除忙碌态")
         }
-        try FileManager.default.removeItem(at: stateURL)
-        try FileManager.default.moveItem(at: backup, to: stateURL)
+        try FileManager.default.removeItem(at: scheduleURL)
+        try FileManager.default.moveItem(at: backup, to: scheduleURL)
         guard await model.saveReviewSchedule(changed), model.state.reviewSchedules[0].hour == changed.hour else {
             throw ScheduleSaveFailure.failed("失败后不能重试保存")
         }
@@ -46,3 +47,4 @@ extension RecallLayoutPreviews {
         print("PASS: native schedule-save entry point, visible result, no global refresh, failure/retry and deletion; synthetic save \(elapsed) ms")
     }
 }
+
