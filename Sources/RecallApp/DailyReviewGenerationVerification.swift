@@ -156,13 +156,14 @@ extension RecallLayoutPreviews {
         let responder = DailyGenerationModel(), model = try dailyGenerationFixture(savedYesterday: true, responder: responder)
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         let days = Array(model.state.captures.suffix(2).map(\.createdAt))
-        let saved = model.state.dailySummaries[0]
+        // Compare with the saved archive version, whose ISO-8601 dates omit subseconds.
+        let saved = await model.store.snapshot().dailySummaries[0]
         model.backfillDailyReviews(days + days + [saved.day])
         try await waitForDailyGeneration(model)
         let count = await responder.count()
         guard count == 2, model.state.dailySummaries.count == 3, model.state.dailySummaries.contains(saved),
               model.tasks.allSatisfy({ $0.state == .succeeded || $0.state == .partial }) else {
-            throw DailyGenerationFailure.failed("明确选择多天后没有完整处理所选日期，或产生重复请求")
+            throw DailyGenerationFailure.failed("批量补生成请求 \(count) 次，已保存 \(model.state.dailySummaries.count) 天，旧稿保留 \(model.state.dailySummaries.contains(saved))，任务 \(model.tasks.map(\.phase))")
         }
     }
     @MainActor private static func verifyDailyBatchCancellation() async throws {
