@@ -102,6 +102,7 @@ final class RecallAppModel: ObservableObject {
     private var matterBuildTask: Task<Void, Never>?
     @Published var isRecording = false
     @Published var isThinking = false
+    @Published private(set) var chatStatusMessage: String?
     @Published var chatScope = MemoryQueryScope.all
     @Published private(set) var chatEvidenceCount: Int?
     @Published private(set) var typingMessageID: UUID?
@@ -143,7 +144,7 @@ final class RecallAppModel: ObservableObject {
     private var reminderActionObserver: NSObjectProtocol?
     private var appActiveObserver: NSObjectProtocol?
 
-    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil, storageOverride: RecallStorage? = nil, dailyReviewResponder: (any LLMResponding)? = nil) throws {
+    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil, storageOverride: RecallStorage? = nil, preloadedStore: FileMemoryStore? = nil, dailyReviewResponder: (any LLMResponding)? = nil) throws {
         self.isPreview = previewState != nil
         self.dailyReviewResponderOverride = dailyReviewResponder
         self.reminderCreationScheduler = reminderCreationScheduler ?? LocalNotificationScheduler()
@@ -160,7 +161,7 @@ final class RecallAppModel: ObservableObject {
             self.diagnosticLog = RecallDiagnosticLogStore(storage: storage)
             self.diagnosticEntries = diagnosticLog.entries
             let startupRead = Date.now
-            self.store = try FileMemoryStore(storage: storage, deferMaintenance: true, credentials: previewState == nil ? KeychainCredentialStore.shared : InMemoryCredentialStore())
+            self.store = try preloadedStore ?? FileMemoryStore(storage: storage, deferMaintenance: true, credentials: previewState == nil ? KeychainCredentialStore.shared : InMemoryCredentialStore())
             self.pipeline = CapturePipeline(store: store, storage: storage)
             self.assistant = MemoryAssistant(store: store)
             if let previewState {
@@ -528,7 +529,7 @@ final class RecallAppModel: ObservableObject {
         }
         do {
             try await store.saveReviewSchedule(schedule)
-            state.reviewSchedules = await store.snapshot().reviewSchedules
+            state.reviewSchedules = await store.currentReviewSchedules()
             // Saving a future plan does not require reminder scans, topic rebuilding,
             // capture understanding, missed reviews or other refresh-time maintenance.
             if !isPreview { armWeeklySchedules() }
@@ -542,7 +543,7 @@ final class RecallAppModel: ObservableObject {
     }
 
     func deleteReviewSchedule(_ id: UUID) async {
-        do { try await store.deleteReviewSchedule(id: id); state.reviewSchedules = await store.snapshot().reviewSchedules }
+        do { try await store.deleteReviewSchedule(id: id); state.reviewSchedules = await store.currentReviewSchedules() }
         catch { recordError(error, source: "WeeklyReview", message: "删除回顾计划失败") }
     }
 
@@ -1048,6 +1049,7 @@ final class RecallAppModel: ObservableObject {
         typingMessageID = nil
         typingMessageContent = ""
         chatEvidenceCount = nil
+        chatStatusMessage = RecallLocalization.both("正在理解这个问题…", "Reading the question…")
         let userMessage = ConversationMessage(role: .user, content: question)
         let isCommand = ChatCommand.isCommandInput(question)
         if isClear { state.messages = [] }
@@ -1066,6 +1068,9 @@ final class RecallAppModel: ObservableObject {
                 } onEvidenceReady: { [weak self] count in
                     guard let self, self.chatRequestID == requestID else { return }
                     self.chatEvidenceCount = count
+                } onStatus: { [weak self] text in
+                    guard let self, self.chatRequestID == requestID else { return }
+                    self.chatStatusMessage = text
                 } onPartial: { [weak self] text in
                     guard let self, self.chatRequestID == requestID else { return }
                     self.typingMessageContent = text
@@ -1076,6 +1081,7 @@ final class RecallAppModel: ObservableObject {
                 guard !Task.isCancelled, chatRequestID == requestID else { return }
                 let streamed = !typingMessageContent.isEmpty
                 isThinking = false
+                chatStatusMessage = nil
                 state = snapshot
                 if answer.role == .assistant, streamed {
                     typingMessageID = nil
@@ -1088,10 +1094,12 @@ final class RecallAppModel: ObservableObject {
             } catch is CancellationError {
                 guard chatRequestID == requestID else { return }
                 isThinking = false
+                chatStatusMessage = nil
                 chatTask = nil
             } catch {
                 guard !Task.isCancelled, chatRequestID == requestID else { return }
                 isThinking = false
+                chatStatusMessage = nil
                 chatTask = nil
                 recordDiagnostic(.error, source: "Chat", message: "问一问请求失败", metadata: ["error": recallSafeErrorCode(error)])
                 noticeMessage = "未能完成回答，请检查模型连接或重试。"
@@ -1105,7 +1113,7 @@ final class RecallAppModel: ObservableObject {
     func stopChat() {
         chatRequestID = UUID()
         chatTask?.cancel(); chatTask = nil
-        isThinking = false; typingMessageID = nil; typingMessageContent = ""
+        isThinking = false; chatStatusMessage = nil; typingMessageID = nil; typingMessageContent = ""
         noticeMessage = "已停止回答"
     }
 

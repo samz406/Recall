@@ -30,6 +30,7 @@ public final class MemoryAssistant {
         onUserMessageSaved: (@MainActor @Sendable () async -> Void)? = nil,
         onRetrievalWarning: (@MainActor @Sendable () -> Void)? = nil,
         onEvidenceReady: (@MainActor @Sendable (Int) -> Void)? = nil,
+        onStatus: (@MainActor @Sendable (String) -> Void)? = nil,
         model: (any LLMResponding)? = nil,
         onPartial: (@MainActor @Sendable (String) -> Void)? = nil,
         onStep: (@MainActor @Sendable (String, Int) -> Void)? = nil,
@@ -65,6 +66,11 @@ public final class MemoryAssistant {
             return answer
             }
         }
+        if let reply = ConversationalReply.reply(to: question) {
+            let answer = ConversationMessage(role: .assistant, content: reply, citations: [])
+            try await store.addMessage(answer, inConversation: conversation.id)
+            return answer
+        }
         let clock = ContinuousClock()
         let analysisStarted = clock.now
         let textIndex = await store.captureTextIndex()
@@ -75,7 +81,7 @@ public final class MemoryAssistant {
         if let answer = try await cloudAgentAnswer(
             question: question, conversationID: conversation.id, scope: scope,
             fullState: fullState, state: state, originalState: originalState, textIndex: textIndex,
-            model: model, limits: limits, onPartial: onPartial, onStep: onStep, onRetrievalWarning: onRetrievalWarning, onEvidenceReady: onEvidenceReady
+            model: model, limits: limits, onPartial: onPartial, onStatus: onStatus, onStep: onStep, onRetrievalWarning: onRetrievalWarning, onEvidenceReady: onEvidenceReady
         ) { return answer }
         let retrievalStarted = clock.now
 
@@ -288,6 +294,7 @@ public final class MemoryAssistant {
         model: (any LLMResponding)?,
         limits: AskLimits,
         onPartial: (@MainActor @Sendable (String) -> Void)?,
+        onStatus: (@MainActor @Sendable (String) -> Void)?,
         onStep: (@MainActor @Sendable (String, Int) -> Void)?,
         onRetrievalWarning: (@MainActor @Sendable () -> Void)?,
         onEvidenceReady: (@MainActor @Sendable (Int) -> Void)?
@@ -310,7 +317,7 @@ public final class MemoryAssistant {
             let responder = LiveMemoryResponder(base: base, store: store, original: originalState)
             outcome = try await AskAgent.answer(
                 question: question, state: fullState, scope: scope, textIndex: textIndex, responder: responder,
-                limits: limits, onPartial: onPartial, onStep: onStep
+                history: state.messages, limits: limits, onPartial: onPartial, onStatus: onStatus, onStep: onStep
             )
         } catch is CancellationError {
             throw CancellationError()
@@ -483,4 +490,32 @@ public final class MemoryAssistant {
         return emptyEvidencePhrases.contains { normalized.contains($0) }
     }
 
+}
+
+enum ConversationalReply {
+    static func reply(to question: String) -> String? {
+        let normalized = question
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.symbols).union(.whitespacesAndNewlines))
+        switch normalized {
+        case "hello", "hi", "hey", "hiya", "yo", "你好", "您好", "嗨", "哈喽", "在吗", "在么":
+            return RecallLocalization.both(
+                "你好。要查某天的记录、某件事的进展，或某段原文，直接说时间和关键词。",
+                "Hello. To look something up, give me a date and a keyword."
+            )
+        case "谢谢", "感谢", "thanks", "thank you", "thx":
+            return RecallLocalization.both(
+                "不客气。需要查记录的话，说时间和关键词就行。",
+                "You're welcome. A date and a keyword are enough when you want records."
+            )
+        case "你是谁", "who are you":
+            return RecallLocalization.both(
+                "我是 Recall。我可以根据你保存的本地记录回答；查具体事情时，先告诉我时间或关键词。",
+                "I'm Recall. I can answer from the records saved on this Mac. For a specific event, start with a date or keyword."
+            )
+        default:
+            return nil
+        }
+    }
 }

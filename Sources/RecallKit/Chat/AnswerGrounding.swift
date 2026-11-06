@@ -142,9 +142,9 @@ public struct AnswerGrounding: Sendable {
     }
     static func fallback(records: [CaptureRecord], rejected: Int = 1) -> Result {
         guard !records.isEmpty else { return Result(content: noEvidence, sourceIDs: [], rejectedCount: rejected) }
-        let selected = Array(records.prefix(3))
+        let selected = Array(records.prefix(2))
         let excerpts = selected.enumerated().map { index, record in
-            "[\(index + 1)] " + PrivacyEngine().redact(String((record.correctedText ?? record.ocrText).prefix(500)))
+            "[\(index + 1)] " + PrivacyEngine().redact(String((record.correctedText ?? record.ocrText).prefix(180)))
         }
         let prefix = RecallLocalization.both("已找到相关记录，但暂时无法可靠核对回答。以下是保存的原文，不代表事情已经完成：", "Related records were found, but I could not reliably verify the answer. Saved excerpts follow; they do not establish completion:")
         return Result(content: ([prefix] + excerpts).joined(separator: "\n\n"), sourceIDs: selected.map(\.id), rejectedCount: rejected)

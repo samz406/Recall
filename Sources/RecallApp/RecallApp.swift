@@ -17,6 +17,7 @@ struct RecallApp: App {
             } else {
                 Group {
                     if let model = startup.model { RecallRootView().environmentObject(model) }
+                    else if startup.failure == nil { LaunchView(startup: startup) }
                     else { ArchiveRecoveryView(startup: startup) }
                 }.recallColors().frame(minWidth: 980, minHeight: 680)
             }
@@ -25,6 +26,7 @@ struct RecallApp: App {
 
         MenuBarExtra("Recall", systemImage: startup.model?.isRecording == true ? "circle.dotted.circle" : "brain.head.profile") {
             if let model = startup.model { MenuBarPanel().environmentObject(model).recallColors() }
+            else if startup.failure == nil { Text(startup.phase) }
             else { Button(RecallLocalization.both("打开恢复页面", "Open recovery")) { RecallAppDelegate.activateMainWindow() } }
         }
 
@@ -34,6 +36,7 @@ struct RecallApp: App {
             } else {
                 Group {
                     if let model = startup.model { RecallSettingsView().environmentObject(model) }
+                    else if startup.failure == nil { LaunchView(startup: startup) }
                     else { ArchiveRecoveryView(startup: startup) }
                 }.recallColors().frame(width: 620, height: 560)
             }

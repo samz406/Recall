@@ -16,6 +16,7 @@ public struct RecallStorage: Sendable {
     public let recentlyDeletedScreenshotsURL: URL
     public let stateURL: URL
     public let intelligenceDatabaseURL: URL
+    public let reviewSchedulesURL: URL
 
     public init(fileManager: FileManager = .default) throws {
         guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
@@ -26,6 +27,7 @@ public struct RecallStorage: Sendable {
         recentlyDeletedScreenshotsURL = rootURL.appendingPathComponent("Recently Deleted/Screenshots", isDirectory: true)
         stateURL = rootURL.appendingPathComponent("recall-state.json")
         intelligenceDatabaseURL = rootURL.appendingPathComponent("recall-intelligence.sqlite")
+        reviewSchedulesURL = rootURL.appendingPathComponent("review-schedules.json")
         try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: rootURL.path)
         try fileManager.createDirectory(at: screenshotsURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -38,6 +40,7 @@ public struct RecallStorage: Sendable {
         recentlyDeletedScreenshotsURL = rootURL.appendingPathComponent("Recently Deleted/Screenshots", isDirectory: true)
         stateURL = rootURL.appendingPathComponent("recall-state.json")
         intelligenceDatabaseURL = rootURL.appendingPathComponent("recall-intelligence.sqlite")
+        reviewSchedulesURL = rootURL.appendingPathComponent("review-schedules.json")
         try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: rootURL.path)
         try fileManager.createDirectory(at: screenshotsURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -252,6 +255,10 @@ public struct RecallState: Codable, Sendable {
     }
 }
 
+private struct ReviewScheduleSidecar: Codable {
+    var reviewSchedules: [ReviewSchedule]
+}
+
 public actor FileMemoryStore {
     let storage: RecallStorage
     let credentials: any CredentialStore
@@ -275,12 +282,20 @@ public actor FileMemoryStore {
         try self.init(storage: RecallStorage())
     }
 
+    /// Reading, verifying and decoding a large archive must not block the main thread.
+    public static func open(storage: RecallStorage, deferMaintenance: Bool = false, credentials: any CredentialStore = KeychainCredentialStore.shared) async throws -> FileMemoryStore {
+        try await Task.detached(priority: .userInitiated) {
+            try FileMemoryStore(storage: storage, deferMaintenance: deferMaintenance, credentials: credentials)
+        }.value
+    }
+
     public init(storage: RecallStorage, deferMaintenance: Bool = false, credentials: any CredentialStore = KeychainCredentialStore.shared) throws {
         self.credentials = credentials
         self.storage = storage
         intelligenceIndex = try? SQLiteIntelligenceIndex(databaseURL: storage.intelligenceDatabaseURL)
         encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // Compact output keeps the archive smaller, so every load and save reads or writes fewer bytes.
+        encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -290,6 +305,7 @@ public actor FileMemoryStore {
             let data = try Data(contentsOf: storage.stateURL)
             initialDigest = ArchiveReliability.digest(data)
             var restoredState = try ArchiveReliability.decode(data)
+            Self.overlayNewerReviewSchedules(&restoredState, storage: storage, decoder: decoder)
             if !restoredState.llmConfiguration.apiKey.isEmpty {
                 var config = restoredState.llmConfiguration
                 // A pre-ID archive must find the same Keychain item after an interrupted migration.
@@ -385,6 +401,8 @@ public actor FileMemoryStore {
     }
 
     public func snapshot() -> RecallState { state }
+
+    public func currentReviewSchedules() -> [ReviewSchedule] { state.reviewSchedules }
 
     public func conversationSnapshot() -> (id: UUID, state: RecallState) {
         (conversationID, state)
@@ -666,15 +684,16 @@ public actor FileMemoryStore {
         value.nextRunAt = value.nextTrigger(after: now); value.retryAfter = nil
         value.failureCount = 0; value.lastReportID = nil
         state.reviewSchedules.removeAll { $0.id == value.id }; state.reviewSchedules.append(value)
-        // Only schedule settings changed. Do not reconcile the archive or synchronize its index.
-        do { try persistReviewState() } catch { state = before; throw error }
+        // The plan is a few hundred bytes. Rewriting the capture archive here blocks the save button
+        // for as long as it takes to encode and copy every stored record.
+        do { try writeReviewScheduleSidecar() } catch { state = before; throw error }
     }
 
     public func deleteReviewSchedule(id: UUID) throws {
         guard state.reviewSchedules.contains(where: { $0.id == id }) else { return }
         let before = state
         state.reviewSchedules.removeAll { $0.id == id }
-        do { try persistReviewState() } catch { state = before; throw error }
+        do { try writeReviewScheduleSidecar() } catch { state = before; throw error }
     }
 
     public func commitWeeklyReport(_ submitted: WeeklyReport, replacing id: UUID? = nil,
@@ -1547,6 +1566,32 @@ public actor FileMemoryStore {
         let data = try encoder.encode(state)
         _ = try ArchiveReliability.write(data, storage: RecallStorage(rootURL: url.deletingLastPathComponent()), expectedDigest: expectedDigest, requireMissing: requireMissing)
         return ArchiveReliability.digest(data)
+    }
+
+    /// A newer sidecar wins on the next launch. A full archive write is newer than the sidecar, so its copy is used instead.
+    private static func overlayNewerReviewSchedules(_ state: inout RecallState, storage: RecallStorage, decoder: JSONDecoder) {
+        let sidecar = storage.reviewSchedulesURL
+        guard FileManager.default.fileExists(atPath: sidecar.path),
+              let sideDate = try? sidecar.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+              let mainDate = try? storage.stateURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+              sideDate >= mainDate,
+              let data = try? Data(contentsOf: sidecar),
+              let saved = try? decoder.decode(ReviewScheduleSidecar.self, from: data) else { return }
+        state.reviewSchedules = saved.reviewSchedules
+    }
+
+    private func writeReviewScheduleSidecar() throws {
+        chatAnalysis = nil
+        let data = try encoder.encode(ReviewScheduleSidecar(reviewSchedules: state.reviewSchedules))
+        let url = storage.reviewSchedulesURL
+        try ArchiveReliability.exclusive(storage) {
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            try data.write(to: url, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }
     }
 
     private func writeState() throws {

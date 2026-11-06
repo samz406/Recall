@@ -56,7 +56,7 @@ extension RecallAppModel {
     }
     func prepareReminder(title: String, detail: String, sourceIDs: [UUID], candidateID: UUID? = nil) {
         let live = Set(state.captures.map(\.id))
-        guard !sourceIDs.isEmpty, Set(sourceIDs).isSubset(of: live) else { noticeMessage = "来源已变化，请更新回顾后再安排。"; return }
+        guard !sourceIDs.isEmpty, Set(sourceIDs).isSubset(of: live) else { noticeMessage = "来源已变化，请重新生成后再安排。"; return }
         if let existing = reminder(for: title, sourceIDs: sourceIDs, candidateID: candidateID) {
             if [.scheduled, .snoozed, .completed, .cancelled, .dismissed].contains(existing.status) {
                 destination = .reminder(existing.id); return

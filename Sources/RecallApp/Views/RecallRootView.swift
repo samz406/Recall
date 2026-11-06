@@ -1341,8 +1341,8 @@ private struct ThinkingCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Image(systemName: model.chatEvidenceCount == nil ? "magnifyingglass" : "checkmark.circle").foregroundStyle(RecallPalette.accent)
-                Text(model.chatEvidenceCount.map { RecallLocalization.both("已检索记忆（\($0) 条）· 正在整理回答", "Found \($0) sources · Writing an answer") } ?? RecallLocalization.both("正在检索记忆", "Searching your memory"))
+                Image(systemName: model.chatEvidenceCount == nil ? "text.bubble" : "checkmark.circle").foregroundStyle(RecallPalette.accent)
+                Text(model.chatStatusMessage ?? RecallLocalization.both("正在理解这个问题…", "Reading the question…"))
                     .font(.callout).foregroundStyle(RecallPalette.secondary)
                 ChatThinkingWave()
                 Spacer(minLength: 0)
