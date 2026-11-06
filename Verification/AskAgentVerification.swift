@@ -23,7 +23,9 @@ enum AskAgentVerification {
         try await greetingSkipsRetrieval()
         try await conversationalReplySkipsSearch()
         try await statusPrecedesLookup()
-        print("PASS: 13 ask-agent scenarios (stream, direct answer, tools, refusal, budget, fallback, deletion, cancellation, greeting, reply, status)")
+        try await weekOverviewSkipsPlanning()
+        try await reviewEvidenceKeepsOwnText()
+        print("PASS: 15 ask-agent scenarios (stream, direct answer, tools, refusal, budget, fallback, deletion, cancellation, greeting, reply, status)")
     }
 
     private static func streamLines() throws {
@@ -243,6 +245,37 @@ enum AskAgentVerification {
         try expect(status.contains("AtlasScopeToken"), "查找前没有把进度告诉用户")
         try expect(answer.content.contains("AtlasScopeToken"), "按查询条件检索后没有整理出回答")
         try expect(recorded.contains { $0.purpose == .chatPlanning } && recorded.last?.purpose == .answerVerification, "查询之后没有核对回答")
+    }
+
+    private static func weekOverviewSkipsPlanning() async throws {
+        let (storage, store, capture) = try await fixture("AtlasScopeToken was saved")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let script = ScriptedAskModel { request in
+            LLMAnswer(content: "本周记录显示 AtlasScopeToken 已保存 [1]", citedCaptureIDs: [])
+        }
+        var steps: [String] = []
+        let answer = try await MemoryAssistant(store: store).ask("总结本周进展", model: script, onStep: { name, _ in steps.append(name) })
+        let purposes = await script.recorded().map(\.purpose)
+        try expect(!purposes.contains(.chatPlanning), "总结本周进展仍先走了规划调用")
+        try expect(steps.contains("overview-local"), "概览问题没有走本地快速路径")
+        try expect(answer.citations == [capture.id] && answer.content.contains("AtlasScopeToken"), "概览回答没有保留本周来源")
+        let args = AskAgent.overviewArguments("Atlas 本周进展", now: .now, calendar: .current)
+        try expect(args == nil, "带主题的问题被当成纯时间概览")
+    }
+
+    private static func reviewEvidenceKeepsOwnText() async throws {
+        let (storage, store, capture) = try await fixture("AtlasScopeToken was saved")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let item = DailySummaryItem(section: .progress, title: "保存 Atlas", detail: "AtlasScopeToken", evidenceIDs: [capture.id],
+            knowledge: DailyItemKnowledge(topic: "Atlas", kind: .matter, status: "done", ownedByUser: true, quotes: ["AtlasScopeToken was saved"]))
+        let summary = DailySummary(day: .now, content: "", sourceCaptureIDs: [capture.id], todos: [], generationKind: .cloud, items: [item])
+        try await store.upsertDailySummary(summary)
+        let script = ScriptedAskModel { _ in LLMAnswer(content: "本周记录显示 AtlasScopeToken 已保存 [1]", citedCaptureIDs: []) }
+        _ = try await MemoryAssistant(store: store).ask("总结本周进展", model: script)
+        let answerRequest = await script.recorded().first { $0.purpose == .chat }
+        let supplementary = answerRequest?.supplementaryContext ?? ""
+        try expect(!supplementary.contains(capture.id.uuidString) || supplementary.contains("每日回顾"), "回顾结果没有按天组织")
+        try expect(answerRequest?.context.first?.ocrText.contains("AtlasScopeToken") == true, "回顾来源没有带上自己的原文")
     }
 
     private static func fixture(_ text: String) async throws -> (RecallStorage, FileMemoryStore, CaptureRecord) {

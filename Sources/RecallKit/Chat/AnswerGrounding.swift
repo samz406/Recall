@@ -17,7 +17,14 @@ public struct AnswerGrounding: Sendable {
         }
     }
     struct Audit: Codable { var claims: [Claim] }
-    public struct Result: Sendable { public var content: String; public var sourceIDs: [UUID]; public var rejectedCount: Int }
+    public struct Result: Sendable {
+        public var content: String; public var sourceIDs: [UUID]; public var rejectedCount: Int
+        /// Why the answer fell back to saved excerpts. Not shown to the user; used for timing and diagnostics.
+        public var reason: String?
+        public init(content: String, sourceIDs: [UUID], rejectedCount: Int, reason: String? = nil) {
+            self.content = content; self.sourceIDs = sourceIDs; self.rejectedCount = rejectedCount; self.reason = reason
+        }
+    }
 
     public static var noEvidence: String {
         RecallLocalization.both("在当前范围内没有找到可用的记录，无法确认这件事。检索不到不代表它没有发生；可以调整日期、来源或关键词再查。", "No usable records were found in this scope, so I cannot confirm this. Missing records do not mean it never happened. Try another date, source, or keyword.")
@@ -54,7 +61,7 @@ public struct AnswerGrounding: Sendable {
             used += copy.ocrText.count
             return copy
         }
-        guard !records.isEmpty else { return fallback(records: candidates) }
+        guard !records.isEmpty else { return fallback(records: candidates, reason: "no-checkable-text") }
         let instruction = """
         核对回答草稿，仅保留原文确实支持的结论；不补充草稿未提出的新事实。
         每项必须有 sourceID 和至少 8 字符的逐字 quote。引用必须取自给出的正文，不能引用 sourceID、记录时间或问题本身。
@@ -70,7 +77,7 @@ public struct AnswerGrounding: Sendable {
             var body = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if body.hasPrefix("```") { body = body.replacingOccurrences(of: "```json", with: "").replacingOccurrences(of: "```", with: "") }
             let object = try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any]
-            guard let rows = object?["claims"] as? [Any] else { return fallback(records: candidates) }
+            guard let rows = object?["claims"] as? [Any] else { return fallback(records: candidates, reason: "audit-format") }
             let claims = rows.prefix(24).compactMap { row -> Claim? in
                 guard JSONSerialization.isValidJSONObject(row), let data = try? JSONSerialization.data(withJSONObject: row) else { return nil }
                 return try? JSONDecoder().decode(Claim.self, from: data)
@@ -84,7 +91,7 @@ public struct AnswerGrounding: Sendable {
             if records.count < candidates.count { result.content += "\n\n" + RecallLocalization.both("本次仅核对了部分记录，未覆盖的内容不作结论。", "Only part of the retrieved material was checked; no conclusions are made about the rest.") }
             return result
         } catch is CancellationError { throw CancellationError() }
-        catch { return fallback(records: candidates) }
+        catch { return fallback(records: candidates, reason: "audit-call") }
     }
 
     public static func validate(_ claims: [Claim], records: [CaptureRecord], bindings: [IdentityBinding] = []) -> Result {
@@ -103,10 +110,14 @@ public struct AnswerGrounding: Sendable {
                       return item.quote.trimmingCharacters(in: .whitespacesAndNewlines).count >= 8 && item.quote.count <= 1_500 && body.contains(item.quote)
                   }) else { rejected += 1; continue }
             let quotes = references.map(\.quote).joined(separator: "\n")
-            let personal = claim.actor == "user" || statement.range(of: #"(?:你|本人|我(?:已|将|会|完成|负责)|\byou\b|\bI\s+(?:will|have|did))"#, options: [.regularExpression, .caseInsensitive]) != nil
+            let personal = claim.actor == "user" || hasPersonalPronoun(statement)
             if personal && !references.allSatisfy({ item in
                 guard let source = byID[item.sourceID] else { return false }
-                return SourceNormalizer.messages(for: source, bindings: bindings).contains { $0.speaker == .user && !$0.isReference && $0.text.contains(item.quote) }
+                let lines = SourceNormalizer.messages(for: source, bindings: bindings).filter { $0.text.contains(item.quote) }
+                // Screen text with no speaker labels says nothing about who acted; the claim must then be worded as
+                // "the record shows", which the first check below enforces. Labelled text still has to be the user's.
+                if lines.contains(where: { $0.speaker == .user && !$0.isReference }) { return true }
+                return !lines.isEmpty && lines.allSatisfy { $0.speaker == .unknown && $0.author == nil && !$0.isReference } && claim.actor == "unknown" && !hasPersonalPronoun(statement)
             }) { rejected += 1; continue }
             // A successful sub-step cannot promote the entire task to complete, remove a condition, or invent a date.
             let uncertain = #"尚未|未完成|未上线|没有完成|还没|待确认|如果|若|等.*后|not yet|not completed|not deployed|\bif\b|pending|waiting"#
@@ -118,16 +129,28 @@ public struct AnswerGrounding: Sendable {
             let assertedRelease = #"已上线|已发布|已部署|已经上线|already deployed|has been deployed|released to production"#
             if statement.range(of: assertedRelease, options: [.regularExpression, .caseInsensitive]) != nil,
                quotes.range(of: assertedRelease, options: [.regularExpression, .caseInsensitive]) == nil { rejected += 1; continue }
-            if !numbers(statement).isSubset(of: numbers(quotes)) || !dateTerms(statement).isSubset(of: dateTerms(quotes)) { rejected += 1; continue }
+            let stamps = references.compactMap { byID[$0.sourceID] }.map(recordedDateText).joined(separator: " ")
+            if !numbers(statement).isSubset(of: numbers(quotes + " " + stamps)) || !dateTerms(statement).isSubset(of: dateTerms(quotes + " " + stamps)) { rejected += 1; continue }
             let ids = references.map(\.sourceID).memoryUnique()
             for id in ids where !sources.contains(id) { sources.append(id) }
             let suffix = ids.compactMap { sources.firstIndex(of: $0).map { "[\($0 + 1)]" } }.joined()
             let label = claim.kind == "inference" ? RecallLocalization.both("可能：", "Possible: ") : ""
             accepted.append(label + statement + " " + suffix)
         }
-        guard !accepted.isEmpty else { return fallback(records: records, rejected: max(rejected, claims.count)) }
+        guard !accepted.isEmpty else { return fallback(records: records, rejected: max(rejected, claims.count), reason: claims.isEmpty ? "audit-empty" : "claims-rejected") }
         if rejected > 0 { accepted.append(RecallLocalization.both("部分结论依据不足，已省略。", "Some claims lacked support and were omitted.")) }
         return Result(content: accepted.joined(separator: "\n\n"), sourceIDs: sources, rejectedCount: rejected)
+    }
+    /// The record's own capture date in the forms a statement may use. Only the date of the evidence itself, never another day.
+    private static func recordedDateText(_ record: CaptureRecord) -> String {
+        let c = Calendar.current.dateComponents([.year, .month, .day], from: record.createdAt)
+        guard let y = c.year, let m = c.month, let d = c.day else { return "" }
+        let cn = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"]
+        let day = d <= 10 ? cn[d] : d < 20 ? "十" + cn[d - 10] : d == 20 ? "二十" : d < 30 ? "二十" + cn[d - 20] : d == 30 ? "三十" : "三十一"
+        return "\(y) \(m) \(d) \(m)月\(d)日 \(m)月\(d)号 \(cn[m])月\(day)日 \(cn[m])月\(day)号 \(cn[m])月"
+    }
+    private static func hasPersonalPronoun(_ text: String) -> Bool {
+        text.range(of: #"(?:你|本人|我(?:已|将|会|完成|负责)|\byou\b|\bI\s+(?:will|have|did))"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
     private static func dateTerms(_ text: String) -> Set<String> {
         let pattern = #"(?:今天|昨天|明天|后天|前天|当天|(?:周|星期|礼拜)[一二三四五六日天]|[一二三四五六七八九十]+月(?:[一二三四五六七八九十]+[日号])?|\b(?:today|yesterday|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b)"#
@@ -140,13 +163,20 @@ public struct AnswerGrounding: Sendable {
         let ns = text as NSString
         return Set(regex?.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range) } ?? [])
     }
-    static func fallback(records: [CaptureRecord], rejected: Int = 1) -> Result {
-        guard !records.isEmpty else { return Result(content: noEvidence, sourceIDs: [], rejectedCount: rejected) }
-        let selected = Array(records.prefix(2))
+    static func fallback(records: [CaptureRecord], rejected: Int = 1, reason: String? = nil) -> Result {
+        guard !records.isEmpty else { return Result(content: noEvidence, sourceIDs: [], rejectedCount: rejected, reason: reason) }
+        // One excerpt per day first, newest day first, so a multi-day question is not answered by a single day.
+        let calendar = Calendar.current
+        let sorted = records.sorted { $0.createdAt > $1.createdAt }
+        var seenDays: Set<Date> = []
+        var selected: [CaptureRecord] = []
+        for record in sorted where seenDays.insert(calendar.startOfDay(for: record.createdAt)).inserted && selected.count < 5 { selected.append(record) }
+        for record in sorted where selected.count < 3 && !selected.contains(where: { $0.id == record.id }) { selected.append(record) }
+        let formatter = DateFormatter(); formatter.dateFormat = "M/d HH:mm"
         let excerpts = selected.enumerated().map { index, record in
-            "[\(index + 1)] " + PrivacyEngine().redact(String((record.correctedText ?? record.ocrText).prefix(180)))
+            "[\(index + 1)] \(formatter.string(from: record.createdAt)) " + PrivacyEngine().redact(String((record.correctedText ?? record.ocrText).prefix(180)))
         }
         let prefix = RecallLocalization.both("已找到相关记录，但暂时无法可靠核对回答。以下是保存的原文，不代表事情已经完成：", "Related records were found, but I could not reliably verify the answer. Saved excerpts follow; they do not establish completion:")
-        return Result(content: ([prefix] + excerpts).joined(separator: "\n\n"), sourceIDs: selected.map(\.id), rejectedCount: rejected)
+        return Result(content: ([prefix] + excerpts).joined(separator: "\n\n"), sourceIDs: selected.map(\.id), rejectedCount: rejected, reason: reason)
     }
 }

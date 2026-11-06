@@ -79,8 +79,11 @@ final class RecallDiagnosticLogStore {
         }
         let entry = RecallDiagnosticEntry(level: level, source: source, message: message, metadata: safeMetadata)
         entries.insert(entry, at: 0)
-        if entries.count > Self.maximumEntryCount {
-            entries.removeLast(entries.count - Self.maximumEntryCount)
+        // Question timings are rare and the only record of why an answer was slow. Busy sources such as the
+        // daily review go first so they cannot push them out.
+        while entries.count > Self.maximumEntryCount {
+            if let index = entries.lastIndex(where: { $0.source != "Chat" }) { entries.remove(at: index) }
+            else { entries.removeLast() }
         }
         persist()
     }

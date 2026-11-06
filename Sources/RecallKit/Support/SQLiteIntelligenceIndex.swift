@@ -40,6 +40,9 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
         do {
             try execute("PRAGMA journal_mode=WAL;")
             try execute("PRAGMA synchronous=NORMAL;")
+            // The log was 350 MB beside a 196 MB database. Cap it so reads stay in cache.
+            try execute("PRAGMA journal_size_limit=67108864;")
+            try? execute("PRAGMA wal_checkpoint(TRUNCATE);")
             try execute("PRAGMA foreign_keys=ON;")
             try createSchema()
             termDigests = try loadTermDigests()

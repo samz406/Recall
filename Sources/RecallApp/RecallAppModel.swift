@@ -1192,7 +1192,8 @@ final class RecallAppModel: ObservableObject {
                     guard let self, self.chatRequestID == requestID else { return }
                     self.typingMessageContent = text
                 } onStep: { [weak self] name, ms in
-                    self?.recordDiagnostic(.info, source: "Chat", message: "问一问耗时", metadata: ["step": name, "ms": "\(ms)"])
+                    let isReason = name.hasPrefix("grounding:") || name.hasPrefix("agent-fallback:")
+                    self?.recordDiagnostic(isReason ? .warning : .info, source: "Chat", message: isReason ? "问一问回退原因" : "问一问耗时", metadata: ["step": name, "ms": "\(ms)"])
                 }
                 let snapshot = await store.snapshot()
                 guard !Task.isCancelled, chatRequestID == requestID else { return }
@@ -1217,6 +1218,7 @@ final class RecallAppModel: ObservableObject {
                 guard !Task.isCancelled, chatRequestID == requestID else { return }
                 isThinking = false
                 chatStatusMessage = nil
+                typingMessageContent = ""
                 chatTask = nil
                 recordDiagnostic(.error, source: "Chat", message: "问一问请求失败", metadata: ["error": recallSafeErrorCode(error)])
                 noticeMessage = "未能完成回答，请检查模型连接或重试。"
