@@ -125,6 +125,8 @@ struct RecallTaskStatusView: View {
             if model.canRetryTask(task) {
                 Button(RecallLocalization.text("重试")) { model.retryTask(task.id) }
                     .disabled(model.isGeneratingDailySummary || model.isGeneratingWeeklyReview || model.generatingTopicID != nil)
+                    .help(model.isGeneratingDailySummary || model.isGeneratingWeeklyReview || model.generatingTopicID != nil
+                        ? RecallLocalization.both("另一份回顾正在生成，完成后才能重试。", "Another review is generating. Retry when it finishes.") : "")
             }
         }.padding(16).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 12))
             .accessibilityElement(children: .contain)
