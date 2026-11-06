@@ -124,6 +124,7 @@ public struct RecallState: Codable, Sendable {
     public var understandingSettings = CaptureUnderstandingSettings()
     public var dailyReviewCheckpoints: [DailyReviewCheckpoint] = []
     public var pendingDailyReviewMaintenance: [UUID] = []
+    public var dailyReviewAttemptedDays: [Date] = []
     public var summaryFeedback: [SummaryFeedback] = []
     public var summaryFeedbackSettings = SummaryFeedbackSettings()
     public var topicGroups: [MemoryTopicGroup] = []
@@ -198,6 +199,7 @@ public struct RecallState: Codable, Sendable {
         case dataGeneration, pendingFileDeletions, pendingRecoveryCleanup
         case schemaVersion, workflow
         case topicReviews, understandingJobs, understandingSettings, dailyReviewCheckpoints, pendingDailyReviewMaintenance
+        case dailyReviewAttemptedDays
         case summaryFeedback, summaryFeedbackSettings
         case rules, captures, messages, reminders, reminderDiscoveryCheckpoint, reminderLearningProfile, dailySummaries, dailySummarySettings
         case privacy, llmConfiguration, conversationSummary, conversationSummaryCoveredMessageCount
@@ -220,6 +222,7 @@ public struct RecallState: Codable, Sendable {
         understandingSettings = try container.decodeIfPresent(CaptureUnderstandingSettings.self, forKey: .understandingSettings) ?? CaptureUnderstandingSettings()
         dailyReviewCheckpoints = try container.decodeIfPresent([DailyReviewCheckpoint].self, forKey: .dailyReviewCheckpoints) ?? []
         pendingDailyReviewMaintenance = try container.decodeIfPresent([UUID].self, forKey: .pendingDailyReviewMaintenance) ?? []
+        dailyReviewAttemptedDays = try container.decodeIfPresent([Date].self, forKey: .dailyReviewAttemptedDays) ?? []
         summaryFeedback = try container.decodeIfPresent([SummaryFeedback].self, forKey: .summaryFeedback) ?? []
         summaryFeedbackSettings = try container.decodeIfPresent(SummaryFeedbackSettings.self, forKey: .summaryFeedbackSettings) ?? SummaryFeedbackSettings()
         rules = try container.decodeIfPresent([EventRule].self, forKey: .rules) ?? EventRule.defaults()
@@ -267,6 +270,7 @@ public actor FileMemoryStore {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     var state: RecallState
+    var activeDailyReviewDays: Set<Date> = []
     // Runtime identity prevents an in-flight answer from repopulating a cleared session.
     private var conversationID = UUID()
     private let intelligenceIndex: SQLiteIntelligenceIndex?
@@ -362,28 +366,24 @@ public actor FileMemoryStore {
             backupPending = !FileManager.default.fileExists(atPath: storage.rootURL.appendingPathComponent("Recovery/latest-" + lastDiskDigest + ".json").path)
         }
         if pendingLegacyCredential != nil { indexNeedsRebuild = true; return }
+        // Withdraw invalid original sources before displaying or rebuilding the archive.
+        let loaded = state
+        let invalid = Set(loaded.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
+        let usable = Set(loaded.captures.filter {
+            !loaded.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") && !invalid.contains($0.id)
+        }.map(\.id))
+        let referenced = Set(loaded.dailySummaries.flatMap(\.sourceCaptureIDs))
+            .union(loaded.topicReviews.flatMap { $0.sourceVersions.keys })
+            .union(loaded.weeklyReports.flatMap { $0.sourceIDs })
+        state.invalidateMemoryOutputs(sourceIDs: referenced.subtracting(usable))
         if deferMaintenance {
-            // The saved state is authoritative. Only withdraw known missing/excluded
-            // sources before first display; synthesis, migrations and index rebuilding
-            // belong to the later maintenance cycle.
-            let loaded = state
-            let invalid = Set(loaded.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
-            let usable = Set(loaded.captures.filter {
-                !loaded.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") && !invalid.contains($0.id)
-            }.map(\.id))
-            let referenced = Set(loaded.dailySummaries.flatMap(\.sourceCaptureIDs))
-                .union(loaded.topicReviews.flatMap { $0.sourceVersions.keys })
-                .union(loaded.weeklyReports.flatMap { $0.sourceIDs })
-            state.invalidateMemoryOutputs(sourceIDs: referenced.subtracting(usable))
             startupMaintenancePending = true
             indexNeedsRebuild = true
             return
         }
         var organizedState = state
         let knowledge = MemoryKnowledgeEngine().reconcile(organizedState)
-        let withdrawn = MemoryKnowledgeEngine.withdrawnSourceIDs(from: organizedState.memoryKnowledge, to: knowledge)
-        organizedState.memoryKnowledge = knowledge
-        organizedState.invalidateMemoryOutputs(sourceIDs: withdrawn)
+        organizedState.applyReconciledKnowledge(knowledge)
         state = organizedState
         let migrationState = state
         for i in migrationState.weeklyReports.indices where migrationState.weeklyReports[i].isReadable {
@@ -545,7 +545,12 @@ public actor FileMemoryStore {
     }
 
     public func updatePrivacy(_ privacy: PrivacySettings) throws {
-        if state.privacy.excludedBundleIdentifiers != privacy.excludedBundleIdentifiers { state.pendingRecoveryCleanup = true }
+        if state.privacy.excludedBundleIdentifiers != privacy.excludedBundleIdentifiers {
+            let newlyExcluded = privacy.excludedBundleIdentifiers.subtracting(state.privacy.excludedBundleIdentifiers)
+            let sources = Set(state.captures.filter { newlyExcluded.contains($0.sourceBundleIdentifier ?? "") }.map(\.id))
+            invalidateMemoryOutputs(sourceIDs: sources)
+            state.pendingRecoveryCleanup = true
+        }
         state.privacy = privacy
         try persist()
     }
@@ -1232,6 +1237,7 @@ public actor FileMemoryStore {
         state.topicReviews = []
         state.dailyReviewCheckpoints = []
         state.pendingDailyReviewMaintenance = []
+        state.dailyReviewAttemptedDays = []
         state.pendingFileDeletions = ((state.pendingFileDeletions ?? []) + activePaths + deletedPaths.map { "Recently Deleted/Screenshots/" + URL(fileURLWithPath: $0).lastPathComponent } + managedScreenshotFiles()).memoryUnique()
         state.pendingRecoveryCleanup = true
         do { try persist() } catch { state = before; throw error }

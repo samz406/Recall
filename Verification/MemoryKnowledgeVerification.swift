@@ -25,6 +25,7 @@ enum MemoryKnowledgeVerification {
         try await organizationLifecycle()
         try await retention()
         try await dependencyRetraction()
+        try await reviewHistorySurvivesLedgerRebuild()
         try await canonicalReviews()
         try experiences()
         try incrementalIndex()
@@ -226,6 +227,49 @@ enum MemoryKnowledgeVerification {
         state = await store.snapshot()
         try expect(state.memoryKnowledge.claims.isEmpty && state.memoryKnowledge.entities.isEmpty, "彻底忘记后仍有派生记忆或人物内容")
     }
+    static func reviewHistorySurvivesLedgerRebuild() async throws {
+        let (storage, store) = try fixture()
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        let first = capture("[聊天·自己] 账单导出已定位，需要检查分页边界。",
+            day: calendar.date(byAdding: .day, value: -2, to: today)!.addingTimeInterval(43_200))
+        var second = capture("[聊天·自己] 通知订阅已验证通过。",
+            day: calendar.date(byAdding: .day, value: -1, to: today)!.addingTimeInterval(43_200), title: "通知订阅")
+        second.sourceBundleIdentifier = "test.memory.second"
+        try await store.addCapture(first)
+        try await store.addCapture(second)
+        try await store.updatePrivacy(PrivacySettings(cloudUseEnabled: true))
+        try await store.updateLLMConfiguration(LLMConfiguration(provider: .openAICompatible, model: "synthetic", apiKey: "verification-placeholder"))
+        try await store.organizeMemory(force: true)
+        let before = await store.snapshot()
+        let claims = before.memoryKnowledge.claims.filter { $0.kind == .event && $0.state == .active }
+        try expect(Set(claims.flatMap(\.sourceIDs)) == [first.id, second.id], "测试未从两个日期建立旧判断")
+
+        var saved: [DailySummary] = []
+        for record in [first, second] {
+            let day = calendar.startOfDay(for: record.createdAt)
+            let period = ReviewPeriod(start: day, end: calendar.date(byAdding: .day, value: 1, to: day)!)
+            let outcome = try await store.generateDirectDailyReview(day: day, period: period, responder: DirectDailyReviewVerification.Model())
+            saved.append(outcome.summary)
+        }
+        try await store.organizeMemory(force: true)
+        _ = try await store.prune()
+        let reopened = try verificationStore(storage: storage)
+        let after = await reopened.snapshot()
+        try expect(claims.allSatisfy { old in !after.memoryKnowledge.claims.contains { $0.id == old.id && $0.state == .active } },
+            "测试未触发旧记忆判断撤回")
+        try expect(Set(after.dailySummaries.map(\.id)) == Set(saved.map(\.id)), "后台整理或重启移除了两天已保存的回顾")
+
+        try await reopened.updatePrivacy(PrivacySettings(excludedBundleIdentifiers: ["test.memory.second"], cloudUseEnabled: true))
+        let excluded = await reopened.snapshot()
+        try expect(excluded.dailySummaries.map(\.id) == [saved[0].id], "隐私排除未撤回受影响的回顾，或移除了无关回顾")
+        _ = try await reopened.deleteCapture(id: first.id)
+        let deleted = await reopened.snapshot()
+        try expect(deleted.dailySummaries.isEmpty, "删除来源后仍保留其回顾")
+        print("PASS: saved daily reviews survive ledger replacement, maintenance and reopen; privacy exclusion and source deletion still retract them")
+    }
+
     static func canonicalReviews() async throws {
         let now = Date.now
         let owned = capture("[聊天·自己] 账单导出已定位，需要检查分页边界。\n[聊天·自己] 账单导出修复已验证通过。", day: now)
@@ -288,3 +332,4 @@ enum MemoryKnowledgeVerification {
         try expect(try index.captureIDs(matchingTerms: QuestionTerms.topicTerms("木刻练习"), limit: 10) == [saved.id], "原文更新后新词条未写入")
     }
 }
+

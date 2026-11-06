@@ -27,7 +27,7 @@ struct DailySummariesView: View {
                             showsCalendar = false
                         }
                     }
-                    Button(RecallLocalization.text("生成回顾")) { model.generateDailyReview(on: selectedDate) }
+                    Button(RecallLocalization.text(selected == nil ? "生成回顾" : "重新生成")) { model.generateDailyReview(on: selectedDate) }
                         .buttonStyle(.borderedProminent).disabled(model.isLoadingSavedState || model.isGeneratingDailySummary)
                 }
             }

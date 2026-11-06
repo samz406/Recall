@@ -122,7 +122,7 @@ struct RecallTaskStatusView: View {
             if task.isRunning, let cancel {
                 Button(task.isCancelling ? "取消中…" : "取消", action: cancel).disabled(task.isCancelling)
             }
-            if !task.isRunning, model.taskRetryActions[task.id] != nil {
+            if model.canRetryTask(task) {
                 Button(RecallLocalization.text("重试")) { model.retryTask(task.id) }
                     .disabled(model.isGeneratingDailySummary || model.isGeneratingWeeklyReview || model.generatingTopicID != nil)
             }

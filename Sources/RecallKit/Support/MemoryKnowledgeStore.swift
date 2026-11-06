@@ -113,9 +113,7 @@ extension FileMemoryStore {
     }
 
     func applyKnowledge(_ knowledge: MemoryKnowledge) {
-        let changedSources = MemoryKnowledgeEngine.withdrawnSourceIDs(from: state.memoryKnowledge, to: knowledge)
-        state.memoryKnowledge = knowledge
-        invalidateMemoryOutputs(sourceIDs: changedSources)
+        state.applyReconciledKnowledge(knowledge)
     }
 
     public func finishScreenshotCleanup(paths: [String]) throws {
@@ -126,10 +124,19 @@ extension FileMemoryStore {
 }
 
 extension RecallState {
-    mutating func invalidateMemoryOutputs(sourceIDs: Set<UUID>) {
-        dailyReviewCheckpoints.removeAll { !Set($0.sourceVersions.keys).isDisjoint(with: sourceIDs) }
+    mutating func applyReconciledKnowledge(_ knowledge: MemoryKnowledge) {
+        let withdrawn = MemoryKnowledgeEngine.withdrawnSourceIDs(from: memoryKnowledge, to: knowledge)
+        memoryKnowledge = knowledge
+        // The ledger is derived from the reviews. A change in the ledger alone doesn't invalidate their sources.
+        invalidateMemoryOutputs(sourceIDs: withdrawn, preservingDailyReviews: true)
+    }
+
+    mutating func invalidateMemoryOutputs(sourceIDs: Set<UUID>, preservingDailyReviews: Bool = false) {
         guard !sourceIDs.isEmpty else { return }
-        dailySummaries.removeAll { !Set($0.sourceCaptureIDs).isDisjoint(with: sourceIDs) }
+        if !preservingDailyReviews {
+            dailyReviewCheckpoints.removeAll { !Set($0.sourceVersions.keys).isDisjoint(with: sourceIDs) }
+            dailySummaries.removeAll { !Set($0.sourceCaptureIDs).isDisjoint(with: sourceIDs) }
+        }
         topicReviews.removeAll { !Set($0.sourceVersions.keys).isDisjoint(with: sourceIDs) }
         messages.removeAll { $0.role == .assistant && !Set($0.citations).isDisjoint(with: sourceIDs) }
         episodes.removeAll { !Set($0.evidenceIDs).isDisjoint(with: sourceIDs) }
@@ -144,3 +151,4 @@ extension RecallState {
         conversationSummaryCoveredMessageCount = messages.count
     }
 }
+

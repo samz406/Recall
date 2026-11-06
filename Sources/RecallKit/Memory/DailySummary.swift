@@ -895,6 +895,7 @@ public struct DailySummary: Identifiable, Codable, Hashable, Sendable {
 }
 
 public struct DailySummarySettings: Codable, Hashable, Sendable {
+    public static let automaticLookbackDays = 14
     public var isEnabled: Bool
     public var hour: Int
     public var minute: Int
@@ -1470,3 +1471,4 @@ public struct DailySummaryGenerator: Sendable {
         return min(score, 1)
     }
 }
+

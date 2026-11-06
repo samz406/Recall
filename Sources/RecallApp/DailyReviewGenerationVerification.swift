@@ -8,14 +8,19 @@ extension RecallLayoutPreviews {
     private actor DailyGenerationModel: LLMResponding {
         var calls = 0
         let pauseFirst: Bool
+        let invalidResponses: Int
         var waiting = false
         var waiter: CheckedContinuation<Void, Never>?
-        init(pauseFirst: Bool = false) { self.pauseFirst = pauseFirst }
+        init(pauseFirst: Bool = false, invalidResponses: Int = 0) {
+            self.pauseFirst = pauseFirst
+            self.invalidResponses = invalidResponses
+        }
         func count() -> Int { calls }
         func isWaiting() -> Bool { waiting }
         func release() { waiting = false; waiter?.resume(); waiter = nil }
         func answer(to request: LLMRequest) async throws -> LLMAnswer {
             calls += 1
+            if calls <= invalidResponses { return LLMAnswer(content: "{broken", citedCaptureIDs: []) }
             guard request.purpose == .reviewSynthesis, let context = request.context.first,
                   let docs = try JSONSerialization.jsonObject(with: Data(context.ocrText.utf8)) as? [[String: Any]],
                   let first = docs.first, let id = first["id"] as? String, let text = first["text"] as? String else {
@@ -67,9 +72,10 @@ extension RecallLayoutPreviews {
     @MainActor static func verifyDailyReviewGeneration() async throws {
         try await verifySingleDayIsolation()
         try await verifyStaleDailyQueue()
+        try await verifyFailedDailyTaskIsSuperseded()
         try await verifyExplicitDailyBatch()
         try await verifyDailyBatchCancellation()
-        print("PASS: native daily generation saved-date skip, manual isolation, same-date deduplication, date-scoped status, stale-queue revalidation, explicit batch and cancellation")
+        print("PASS: native daily generation saved-date skip, manual isolation, same-date deduplication, failed-task supersession, date-scoped status, stale-queue revalidation, explicit batch and cancellation")
     }
     @MainActor private static func verifySingleDayIsolation() async throws {
         let responder = DailyGenerationModel(pauseFirst: true)
@@ -119,14 +125,42 @@ extension RecallLayoutPreviews {
             throw DailyGenerationFailure.failed("队列执行前没有复查日期，已保存回顾被再次生成")
         }
     }
+    @MainActor private static func verifyFailedDailyTaskIsSuperseded() async throws {
+        let responder = DailyGenerationModel(invalidResponses: 2)
+        let model = try dailyGenerationFixture(responder: responder)
+        defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
+        let day = model.state.captures[1].createdAt
+        model.generateScheduledDailyReview(on: day)
+        try await waitForDailyGeneration(model)
+        guard let failed = model.dailyReviewTask(on: day), failed.state == .failed, model.canRetryTask(failed) else {
+            throw DailyGenerationFailure.failed("失败日期没有进入可手动重试状态")
+        }
+        for _ in 0..<3 { model.generateScheduledDailyReview(on: day) }
+        guard !model.isGeneratingDailySummary else { throw DailyGenerationFailure.failed("失败日期被自动重新排队") }
+
+        model.generateDailyReview(on: day)
+        model.generateDailyReview(on: day)
+        try await waitForDailyGeneration(model)
+        model.retryTask(failed.id)
+        model.generateScheduledDailyReview(on: day)
+        let calls = await responder.count()
+        let status = model.dailyReviewTask(on: day)?.state
+        guard calls == 3, model.state.dailySummaries.count == 1, model.tasks.count == 1,
+              status == .succeeded || status == .partial, model.taskRetryActions[failed.id] == nil,
+              !model.isGeneratingDailySummary else {
+            throw DailyGenerationFailure.failed("手动补生成后旧失败仍可执行，或同日期出现多份回顾/任务")
+        }
+    }
+
     @MainActor private static func verifyExplicitDailyBatch() async throws {
-        let responder = DailyGenerationModel(), model = try dailyGenerationFixture(responder: responder)
+        let responder = DailyGenerationModel(), model = try dailyGenerationFixture(savedYesterday: true, responder: responder)
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         let days = Array(model.state.captures.suffix(2).map(\.createdAt))
-        model.backfillDailyReviews(days + days)
+        let saved = model.state.dailySummaries[0]
+        model.backfillDailyReviews(days + days + [saved.day])
         try await waitForDailyGeneration(model)
         let count = await responder.count()
-        guard count == 2, model.state.dailySummaries.count == 2,
+        guard count == 2, model.state.dailySummaries.count == 3, model.state.dailySummaries.contains(saved),
               model.tasks.allSatisfy({ $0.state == .succeeded || $0.state == .partial }) else {
             throw DailyGenerationFailure.failed("明确选择多天后没有完整处理所选日期，或产生重复请求")
         }
@@ -143,7 +177,7 @@ extension RecallLayoutPreviews {
         let cancelledCount = await responder.count()
         guard cancelledCount == 1, model.state.dailySummaries.isEmpty, model.tasks.count == 1,
               model.tasks.first?.state == .cancelled else { throw DailyGenerationFailure.failed("取消后继续生成批次中的其他日期") }
-        model.generateDailyReview(on: days[0])
+        if let id = model.tasks.first?.id { model.retryTask(id) }
         try await waitForDailyGeneration(model)
         guard model.state.dailySummaries.count == 1 else { throw DailyGenerationFailure.failed("取消后无法手动重试") }
     }

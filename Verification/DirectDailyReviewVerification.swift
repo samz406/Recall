@@ -71,14 +71,17 @@ enum DirectDailyReviewVerification {
         try await cancellationDiscardsLateAnswer()
         try await sourceAndPrivacyRaces()
         try await failuresKeepOldReview()
+        try await failedScheduleRequiresExplicitRetry()
+        try await sameDateHasOneActiveGeneration()
         try await checkpointsWithdrawWithSources()
         try await maintenanceAndMigration()
-        print("PASS: 15 direct-daily-review scenarios (one-call normal path, bounded concurrency, reuse, restart, provenance, actions, cancellation and metrics)")
+        print("PASS: 17 direct-daily-review scenarios (one-call normal path, bounded concurrency, reuse, restart, provenance, actions, cancellation and metrics)")
     }
     static func generate(_ f: ModelReviewVerification.Fixture, model: Model, store: FileMemoryStore? = nil,
-                         limits: DailyReviewLimits = DailyReviewLimits(), metrics: MetricsLog? = nil) async throws -> DirectDailyReviewOutcome {
+                         limits: DailyReviewLimits = DailyReviewLimits(), metrics: MetricsLog? = nil,
+                         policy: DailyReviewGenerationPolicy = .replaceExisting) async throws -> DirectDailyReviewOutcome {
         try await (store ?? f.store).generateDirectDailyReview(day: f.records[0].createdAt, period: f.period, responder: model,
-            limits: limits, onMetrics: { await metrics?.add($0) })
+            policy: policy, limits: limits, onMetrics: { await metrics?.add($0) })
     }
     static func normalDayIsOneCall() async throws {
         let f = try await ModelReviewVerification.fixture(count: 36, raw: true)
@@ -242,6 +245,51 @@ enum DirectDailyReviewVerification {
                 && measured.count == 1 && measured[0].modelCalls == calls.count, "失败覆盖旧稿、无界重试或丢失统计")
         }
     }
+    static func failedScheduleRequiresExplicitRetry() async throws {
+        let f = try await ModelReviewVerification.fixture(raw: true)
+        defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
+        try await f.store.updateDailySummarySettings(DailySummarySettings(isEnabled: true))
+        let broken = Model("bad-json")
+        do {
+            _ = try await generate(f, model: broken, policy: .scheduled)
+            throw ModelReviewVerification.Failure(message: "无效回顾被保存")
+        } catch let error as ModelReviewError {
+            guard case .validation = error else { throw error }
+        }
+        let failedCalls = await broken.log()
+        try expect(failedCalls.count == 2, "格式修复不应超过一次")
+
+        let reopened = try verificationStore(storage: f.storage, deferMaintenance: true)
+        let retry = Model()
+        do {
+            _ = try await generate(f, model: retry, store: reopened, policy: .scheduled)
+            throw ModelReviewVerification.Failure(message: "重启后自动重跑了失败日期")
+        } catch DailyReviewSkipped.alreadyAttempted { }
+        let retried = try await generate(f, model: retry, store: reopened, policy: .fillMissing)
+        do {
+            _ = try await generate(f, model: retry, store: reopened, policy: .fillMissing)
+            throw ModelReviewVerification.Failure(message: "补生成覆盖了已保存回顾")
+        } catch DailyReviewSkipped.alreadySaved { }
+        let calls = await retry.log(), after = await reopened.snapshot()
+        try expect(calls.count == 1 && after.dailySummaries == [retried.summary], "同一天重启、手动重试后存在重复请求或重复回顾")
+        print("PASS: failed automatic daily review stays paused across reopen, and an explicit retry fills it once")
+    }
+
+    static func sameDateHasOneActiveGeneration() async throws {
+        let f = try await ModelReviewVerification.fixture(raw: true)
+        defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
+        let duplicate = Model()
+        let first = Model(hook: {
+            do {
+                _ = try await generate(f, model: duplicate, policy: .fillMissing)
+                throw ModelReviewVerification.Failure(message: "同一天同时启动了两次生成")
+            } catch DailyReviewSkipped.inProgress { }
+        })
+        let saved = try await generate(f, model: first, policy: .fillMissing)
+        let duplicateCalls = await duplicate.log(), after = await f.store.snapshot()
+        try expect(duplicateCalls.isEmpty && after.dailySummaries == [saved.summary], "重复请求发送模型调用或写入了第二份回顾")
+    }
+
     static func checkpointsWithdrawWithSources() async throws {
         let f = try await largeFixture()
         defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
@@ -269,7 +317,10 @@ enum DirectDailyReviewVerification {
             "后台维护没有完成或删除了新回顾")
         var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(RecallState())) as! [String: Any]
         object.removeValue(forKey: "dailyReviewCheckpoints"); object.removeValue(forKey: "pendingDailyReviewMaintenance")
+        object.removeValue(forKey: "dailyReviewAttemptedDays")
         let restored = try JSONDecoder().decode(RecallState.self, from: JSONSerialization.data(withJSONObject: object))
-        try expect(restored.dailyReviewCheckpoints.isEmpty && restored.pendingDailyReviewMaintenance.isEmpty, "旧数据无法兼容新链路")
+        try expect(restored.dailyReviewCheckpoints.isEmpty && restored.pendingDailyReviewMaintenance.isEmpty
+            && restored.dailyReviewAttemptedDays.isEmpty, "旧数据无法兼容新链路")
     }
 }
+
