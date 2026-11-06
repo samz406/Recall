@@ -580,7 +580,14 @@ final class RecallAppModel: ObservableObject {
                 }
                 return
             }
-            generateWeeklyReview(period: schedule.period(at: trigger), template: schedule.template, scope: schedule.scope,
+            let period = schedule.period(at: trigger)
+            // Weekly reviews are built from daily reviews; wait for them rather than failing and backing off.
+            let gaps = PeriodReviewFromDaily.gaps(in: state, period: period)
+            if gaps.reviewedDayCount == 0, gaps.hasMissingRecords {
+                weeklyReviewMessage = "到点了，但这段时间的每日回顾还没生成；生成后会自动补做这份周期回顾。"
+                return
+            }
+            generateWeeklyReview(period: period, template: schedule.template, scope: schedule.scope,
                 replacing: report?.id, schedule: schedule)
         case .refine(let report, let schedule):
             Task {

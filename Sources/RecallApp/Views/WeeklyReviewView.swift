@@ -263,8 +263,13 @@ struct WeeklyReviewView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Label(RecallLocalization.text("部分来源已删除或更正，这份回顾需要更新。"), systemImage: "exclamationmark.circle")
                     Text(RecallLocalization.text("失效内容已隐藏，避免重新显示你删除或更正的信息。")).font(.caption)
+                    let waitingForDaily = PeriodReviewFromDaily.gaps(in: model.state, period: report.period).reviewedDayCount == 0
+                    if waitingForDaily {
+                        Text(RecallLocalization.text("这段时间还没有每日回顾。周期回顾基于每日回顾生成，请先点上方“补生成这几天”。")).font(.caption)
+                    }
                     Button(RecallLocalization.text("重新生成（保留原版本）")) { regenerate(report) }
-                        .buttonStyle(.borderedProminent).disabled(model.isGeneratingWeeklyReview)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.isGeneratingWeeklyReview || model.isGeneratingDailySummary || waitingForDaily)
                 }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                     .foregroundStyle(RecallPalette.warning).background(RecallPalette.warning.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
             } else if let edited = report.editedMarkdown {
