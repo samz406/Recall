@@ -303,10 +303,14 @@ struct MatterWorkspaceView: View {
                 Text(RecallLocalization.text("最近记录 ") + file.latest.date.formatted(date: .abbreviated, time: .omitted) + RecallLocalization.both(" · \(file.evidenceIDs.count) 条来源", " · \(file.evidenceIDs.count) sources"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
                 Spacer(minLength: 6)
-                Button(RecallLocalization.text("补充")) { supplement(title: file.title) }.buttonStyle(.plain)
+                if file.latest.status.isOpenMatter {
+                    Button(RecallLocalization.text("完成")) { model.correctMatter(MatterCorrection(evidenceIDs: file.evidenceIDs, kind: .completed, text: file.title)) }
+                        .buttonStyle(.plain).help(RecallLocalization.text("标记为已完成；原始记录保留，可在“更正记录”中撤销"))
+                }
                 Button(RecallLocalization.text("接着问")) { continueChat(RecallLocalization.both("关于\(file.title)，请找回上次的进展、已确认的结论和仍缺少的信息。", "About \(file.title), find the last progress, confirmed conclusions and missing information.")) }.buttonStyle(.borderedProminent)
                 Menu {
                     Button(RecallLocalization.text("查看完整主题")) { selected = file }
+                    Button(RecallLocalization.text("补充")) { supplement(title: file.title) }
                     Button(model.state.topicReviews.contains { $0.id == file.id } ? "重新生成小结" : "生成主题小结") { model.generateTopicReview(file) }.disabled(model.generatingTopicID != nil)
                     if model.state.topicGroups.contains(where: { $0.id == file.id }) { Button(RecallLocalization.text("撤销合并")) { model.undoTopicMerge(file.id) } }
                     if model.generatingTopicID == file.id { Button(RecallLocalization.text("停止生成")) { model.cancelTopicReview() } }

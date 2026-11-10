@@ -96,6 +96,7 @@ public enum RecallLocalization {
         "查看主题的来源时，可以更正内容。原始记录会保留，所有调整都能在这里回看。": "Correct a topic while viewing its sources. Originals are kept, and you can review changes here.",
         "查看全部主题": "View all topics",
         "查看完整主题": "Open topic",
+        "标记为已完成；原始记录保留，可在“更正记录”中撤销": "Mark as done; original records are kept and this can be undone in Corrections",
         "查看当时记录": "Open original record",
         "根据已保存的每日回顾重建主题、进展与长期记忆；不会改写原文，也不调用模型": "Rebuild topics, progress and long-term memory from saved Daily Reviews. Originals stay unchanged; no model call.",
         "正在整理记录": "Organizing records",
