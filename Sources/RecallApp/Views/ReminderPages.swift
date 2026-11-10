@@ -186,7 +186,7 @@ struct RemindersView: View {
     }
 
     private var reminderDiscoveryFeedback: some View {
-        ReminderDiscoveryStatusView(openPending: { reminderTab = 1 })
+        ReminderDiscoveryStatusView()
     }
 
     @ViewBuilder
