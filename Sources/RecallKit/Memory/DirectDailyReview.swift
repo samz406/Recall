@@ -416,6 +416,8 @@ public struct DirectDailyReviewEngine: Sendable {
             let resolved = item.evidence.compactMap(resolve).filter { seen.insert($0.id + "\u{1}" + $0.quote).inserted }.prefix(8).map { $0 }
             // Fully unresolvable evidence is a fabrication signal: leave it for validation and its repair round.
             if !resolved.isEmpty { item.evidence = resolved }
+            // On the retry, an item that still has no verifiable quote is dropped (below) instead of failing the day.
+            if demoteOwnership, resolved.isEmpty { return nil }
             // Ownership must rest on the user's own words. A model that labels an item as the user's while
             // every quote is a reference, the other party or an unknown speaker is demoted to unknown; a
             // to-do that cannot be shown to be the user's commitment is dropped rather than failing the day.
@@ -433,6 +435,8 @@ public struct DirectDailyReviewEngine: Sendable {
             }
             return item
         }
+        // Never turn a failed review into an empty one: with nothing verifiable left, validation still rejects it.
+        if demoteOwnership, result.items.isEmpty { result.items = draft.items }
         if result.items.count > (final ? 7 : 16) { result.items = Array(result.items.prefix(final ? 7 : 16)) }
         if result.ledger?.isEmpty == true { result.ledger = nil }
         result.overview = Self.fittedOverview(result.overview, final: final)
