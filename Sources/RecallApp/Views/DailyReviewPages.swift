@@ -161,7 +161,6 @@ private struct DailySummaryCard: View {
                 }
                 if !summary.items.isEmpty {
                     DailyReviewContentView(summary: summary)
-                        .textSelection(.enabled)
                 } else if summary.generationKind == .cloud {
                     MarkdownDocumentView(markdown: displayContent)
                         .textSelection(.enabled)
@@ -188,7 +187,7 @@ private struct DailySummaryCard: View {
         }
         .padding(isExpanded ? 24 : 15)
         .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(RecallPalette.border, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(RecallPalette.border, lineWidth: 1).allowsHitTesting(false))
         .transition(.opacity.combined(with: .move(edge: .top)))
     }
 

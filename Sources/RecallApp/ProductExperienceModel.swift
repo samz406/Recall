@@ -79,18 +79,6 @@ extension RecallAppModel {
                 sourceCaptureIDs: sourceIDs, confidence: 1, origin: .discovered)
         }
     }
-    func completeSummaryAction(_ item: DailySummaryItem, summary: DailySummary) {
-        guard let action = summary.todos.first(where: { $0.id == item.actionCandidateID })
-            ?? summary.todos.first(where: { $0.title == item.title }) else { return }
-        if let existing = reminder(for: action.title, sourceIDs: action.sourceCaptureIDs, candidateID: action.id) {
-            completeReminder(existing)
-        } else {
-            var value = ReminderCandidate(id: action.id, title: action.title, detail: action.detail,
-                sourceCaptureIDs: action.sourceCaptureIDs, confidence: 1, status: .completed)
-            value.completedAt = .now
-            completeReminder(value)
-        }
-    }
     func openSources(_ ids: [UUID]) {
         if let record = state.captures.first(where: { ids.contains($0.id) }) { sourceToOpen = record }
         else { noticeMessage = "来源已删除或不再可用。" }

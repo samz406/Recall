@@ -7,19 +7,14 @@ struct DailyReviewContentView: View {
     let summary: DailySummary
     @State private var pendingCorrection: (item: DailySummaryItem, kind: MatterCorrectionKind)?
     private var items: [DailySummaryItem] {
-        let live = Set(model.state.captures.map(\.id))
-        let presented = summary.modelCoverage == nil ? DailySummaryItemParser.sanitized(summary.items) : DailySummaryItemParser.modelValidated(summary.items)
-        return presented.filter { item in
-            guard item.evidenceIDs.contains(where: live.contains) else { return false }
-            if item.section == .actions,
-               let reminder = model.reminder(for: item.title, sourceIDs: item.evidenceIDs, candidateID: item.actionCandidateID),
-               [.completed, .cancelled, .dismissed].contains(reminder.status) { return false }
-            return true
-        }
+        DailyReviewPresentation.items(in: summary, state: model.state)
     }
     var body: some View {
         let rows = items
         VStack(alignment: .leading, spacing: 30) {
+            if let message = model.dailyReviewActionMessages[summary.id] {
+                Label(message, systemImage: "info.circle").font(.callout).foregroundStyle(RecallPalette.secondary)
+            }
             if summary.formatVersion != 2 {
                 Text(RecallLocalization.text("这份回顾使用较早的整理规则，可以重新生成；原版本会保留。"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
@@ -73,28 +68,32 @@ struct DailyReviewContentView: View {
         switch status { case "completed": "已完成"; case "inProgress": "进行中"; case "blocked": "受阻"; case "pending": "待处理"; default: nil }
     }
     private func itemRow(_ item: DailySummaryItem) -> some View {
-        let text = ReviewContentQuality.presentation(item)
-        let action = summary.todos.first { $0.id == item.actionCandidateID || $0.title == item.title }
+        let action = DailyReviewPresentation.action(for: item, in: summary)
         return VStack(alignment: .leading, spacing: 8) {
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) { itemTitle(text.title); itemStatus(item); Spacer(minLength: 8); correctionMenu(item) }
-                VStack(alignment: .leading, spacing: 6) { HStack { itemTitle(text.title); Spacer(minLength: 8); correctionMenu(item) }; itemStatus(item) }
+                HStack(alignment: .firstTextBaseline, spacing: 10) { itemTitle(item.title); itemStatus(item); Spacer(minLength: 8); correctionMenu(item) }
+                VStack(alignment: .leading, spacing: 6) { HStack { itemTitle(item.title); Spacer(minLength: 8); correctionMenu(item) }; itemStatus(item) }
             }
-            if !text.detail.isEmpty {
-                Text(text.detail).font(RecallTypography.body).lineSpacing(5)
+            if !item.detail.isEmpty {
+                Text(item.detail).font(RecallTypography.body).lineSpacing(5)
                     .foregroundStyle(RecallPalette.text.opacity(0.85))
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             }
             if item.section == .actions, let action {
+                let reminder = DailyReviewPresentation.reminder(for: action, item: item, in: model.state)
                 HStack(spacing: 16) {
-                    if let reminder = model.reminder(for: action.title, sourceIDs: action.sourceCaptureIDs, candidateID: action.id), reminder.status == .proposed {
+                    if let reminder, reminder.status == .proposed {
                         Button(RecallLocalization.text("加入今天")) { model.addActionToToday(reminder.id) }
                     }
-                    Button(model.reminder(for: action.title, sourceIDs: action.sourceCaptureIDs, candidateID: action.id) == nil ? RecallLocalization.text("设为提醒") : RecallLocalization.text("查看提醒")) {
-                        model.prepareReminder(title: action.title, detail: action.detail, sourceIDs: action.sourceCaptureIDs, candidateID: action.id)
+                    Button(reminder == nil ? RecallLocalization.text("设为提醒") : RecallLocalization.text("查看提醒")) {
+                        model.prepareReminder(title: item.title, detail: item.detail, sourceIDs: Array(Set(action.sourceCaptureIDs + item.evidenceIDs)), candidateID: action.id)
                     }
-                    Button(RecallLocalization.text("已完成")) { model.completeSummaryAction(item, summary: summary) }
-                }.buttonStyle(.borderless).font(.caption).padding(.top, 2)
+                    Button(model.completingSummaryActionIDs.contains(item.id) ? RecallLocalization.both("保存中…", "Saving…") : RecallLocalization.both("标记完成", "Mark complete")) {
+                        Task { await model.completeSummaryAction(item, summary: summary) }
+                    }.accessibilityIdentifier("complete-daily-action-" + item.id.uuidString)
+                        .help(RecallLocalization.both("确认这条待办已处理，完成后从待处理列表移除。", "Confirm this action is done and remove it from pending actions."))
+                }.buttonStyle(.bordered).controlSize(.small).font(.caption).padding(.top, 2)
+                    .textSelection(.disabled).disabled(model.completingSummaryActionIDs.contains(item.id))
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
