@@ -16,6 +16,7 @@ enum DailyReviewActionVerification {
         var summary = DailySummary(day: date, createdAt: date, content: "", sourceCaptureIDs: [source.id], todos: [todo], generationKind: .cloud, items: [])
         summary.modelCoverage = try JSONDecoder().decode(ModelReviewCoverage.self, from: Data(#"{"version":1,"sourceCount":1,"factCount":1,"uncertainBlockCount":0,"createdAt":0}"#.utf8))
         summary.items = [item]
+        summary.todos = [todo]
         return RecallState(captures: [source], dailySummaries: [summary])
     }
     static func run() async throws {
@@ -46,6 +47,7 @@ enum DailyReviewActionVerification {
         try expect(!completion.reminder.sourceCaptureIDs.isEmpty && !completion.schedulesNextOccurrence, "旧待办的来源没有从回顾条目补齐")
         let first = try await store.completeDailyReviewAction(completion), repeated = try await store.completeDailyReviewAction(completion)
         let done = await store.snapshot()
+        try expect(done.dailySummaries.count == before.dailySummaries.count, "完成操作移除了每日回顾")
         try expect(first && !repeated && done.reminders.count == 1 && done.dailySummaries[0].todos[0].status == .completed, "完成未保存或重复执行")
         try expect(done.captures == before.captures && done.dailySummaries[0].items == before.dailySummaries[0].items && done.dailySummaries[0].id == before.dailySummaries[0].id,
             "完成操作删除了回顾或改写了原文")

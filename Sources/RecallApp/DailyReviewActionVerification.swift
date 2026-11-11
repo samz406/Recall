@@ -28,6 +28,7 @@ extension RecallLayoutPreviews {
         let repeated = Task { @MainActor in await model.completeSummaryAction(row, summary: summary) }
         let results = [await first.value, await repeated.value]
         guard results.filter({ $0 }).count == 1, model.completingSummaryActionIDs.isEmpty,
+              model.state.dailySummaries.count == 1,
               model.state.dailySummaries[0].todos[0].status == .completed,
               DailyReviewPresentation.items(in: model.state.dailySummaries[0], state: model.state).isEmpty,
               model.state.captures == before.captures, model.state.dailySummaries[0].items == before.dailySummaries[0].items,
