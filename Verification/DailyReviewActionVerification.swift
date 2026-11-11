@@ -28,6 +28,10 @@ enum DailyReviewActionVerification {
         sample.dailySummaries[0] = summary
         let visible = DailyReviewPresentation.items(in: summary, state: sample)
         try expect(visible.count == 1 && visible[0].title == item.title, "模型确认的条目变空，或无正文的条目仍显示状态/操作")
+        var legacy = sample
+        legacy.reminders = [ReminderCandidate(id: summary.todos[0].id, title: item.title, detail: item.detail, confidence: 1)]
+        let legacyCompletion = try DailyReviewActionCompletion(summaryID: summary.id, itemID: item.id, state: legacy)
+        try expect(legacyCompletion.reminder.sourceCaptureIDs == item.evidenceIDs, "旧提醒缺失的来源没有补齐，完成后将无法恢复")
         var duplicate = summary.todos[0]; duplicate.id = UUID()
         summary.todos.insert(duplicate, at: 0)
         try expect(DailyReviewPresentation.action(for: item, in: summary)?.id == item.actionCandidateID, "同名待办抢占了精确行动 ID")

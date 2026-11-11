@@ -63,6 +63,7 @@ public struct DailyReviewActionCompletion: Equatable, Sendable {
         var updated = previousReminder ?? ReminderCandidate(id: action.id, title: item.title, detail: item.detail,
             sourceCaptureIDs: ids.sorted { $0.uuidString < $1.uuidString }, confidence: 1, createdAt: now, updatedAt: now,
             semanticKey: DailyReviewPresentation.key(item.title))
+        updated.sourceCaptureIDs = Array(Set(updated.sourceCaptureIDs).union(ids)).sorted { $0.uuidString < $1.uuidString }
         updated.completedAt = now; updated.updatedAt = now
         if let due = updated.dueAt, updated.recurrence != .none, let next = updated.recurrence.nextDate(after: max(due, now)) {
             updated.dueAt = next; updated.status = .scheduled; updated.closedAt = nil
