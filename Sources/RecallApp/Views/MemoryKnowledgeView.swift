@@ -19,17 +19,21 @@ struct MemoryKnowledgeView: View {
     @State private var showsDiagnostics = false
 
     private var active: [MemoryClaim] {
-        model.state.memoryKnowledge.claims.filter { MemoryLibraryCategory.all.includes($0.kind) && $0.scope != .conversation && $0.usable() }
+        model.state.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.scope != .conversation && $0.usable() }
     }
     private var rows: [MemoryClaim] {
         model.state.memoryKnowledge.claims.filter {
-            category.includes($0.kind) && $0.scope != .conversation && ($0.usable() || includeHistory)
+            $0.kind.isPersonal && category.includes($0.kind) && $0.scope != .conversation && ($0.usable() || includeHistory)
                 && (query.isEmpty || ($0.title + $0.content).localizedCaseInsensitiveContains(query))
         }.sorted { $0.updatedAt > $1.updatedAt }
     }
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 20) {
-            Text(RecallLocalization.both("让 Recall 记住你的背景和习惯，减少反复交代。", "Help Recall remember your background and preferences.")).foregroundStyle(RecallPalette.secondary)
+            HStack(alignment: .top) {
+                Text(RecallLocalization.both("让 Recall 记住你的背景和习惯，减少反复交代。", "Help Recall remember your background and preferences.")).foregroundStyle(RecallPalette.secondary)
+                Spacer()
+                options
+            }
             if !model.state.memoryKnowledgeSettings.referencesEnabled {
                 Text(RecallLocalization.both("当前已暂停参考个人信息，可在设置 → 记忆整理中恢复。", "Personal context is paused. Resume it in Settings → Memory.")).font(.caption).foregroundStyle(RecallPalette.secondary)
             }
@@ -50,24 +54,20 @@ struct MemoryKnowledgeView: View {
                     Text(RecallLocalization.both("也可以在“问一问”中直接说“记住：……”", "You can also say “Remember: …” in Ask.")).font(.caption).foregroundStyle(RecallPalette.secondary)
                 }.recallSurface()
             }
-            HStack {
-                if active.count > 8 || !query.isEmpty {
+            if active.count > 8 || !query.isEmpty {
+                HStack {
                     TextField(RecallLocalization.both("搜索记住的内容", "Search memories"), text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 340)
-                    Menu(category.title) {
-                        ForEach(MemoryLibraryCategory.allCases, id: \.self) { value in Button(value.title) { category = value } }
+                    Menu(RecallLocalization.text(category.title)) {
+                        ForEach([MemoryLibraryCategory.all, .preferences, .agreements, .people], id: \.self) { value in Button(RecallLocalization.text(value.title)) { category = value } }
                     }.fixedSize()
+                    Spacer()
                 }
-                Spacer()
-                Menu {
-                    Toggle(RecallLocalization.both("显示已停止使用的内容", "Show inactive memories"), isOn: $includeHistory)
-                    Button(RecallLocalization.both("查看整理详情", "Organization details")) { showsDiagnostics = true }
-                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel(RecallLocalization.both("关于我的更多操作", "More personal memory actions"))
             }
             ForEach(Array(rows.prefix(visibleCount))) { claim in
                 VStack(alignment: .leading, spacing: 10) {
                     Text(claim.content).font(RecallTypography.body).textSelection(.enabled)
                     HStack(spacing: 10) {
-                        Text(claim.scope.title).font(.caption).foregroundStyle(RecallPalette.secondary)
+                        Text(RecallLocalization.text(claim.scope.title)).font(.caption).foregroundStyle(RecallPalette.secondary)
                         if !claim.usable() { Text(claim.state.title).font(.caption).foregroundStyle(RecallPalette.secondary) }
                         else if !model.state.memoryKnowledgeSettings.references(claim) { Text(RecallLocalization.both("已暂停参考", "Paused")).font(.caption).foregroundStyle(RecallPalette.secondary) }
                         Spacer()
@@ -102,6 +102,12 @@ struct MemoryKnowledgeView: View {
         .confirmationDialog(RecallLocalization.both("不再参考这条记忆？", "Stop using this memory?"), isPresented: Binding(get: { forgetting != nil }, set: { if !$0 { forgetting = nil } }), presenting: forgetting) { target in
             Button(RecallLocalization.both("不再记住", "Forget"), role: .destructive) { model.retireMemory(target); forgetting = nil }
         } message: { _ in Text(RecallLocalization.both("以后不再按这条信息回答。原始记录与已有回顾保留。", "Future answers will stop using this memory. Source records and saved reviews are kept.")) }
+    }
+    private var options: some View {
+        Menu {
+            Toggle(RecallLocalization.both("显示已停止使用的内容", "Show inactive memories"), isOn: $includeHistory)
+            Button(RecallLocalization.both("查看整理详情", "Organization details")) { showsDiagnostics = true }
+        } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel(RecallLocalization.both("关于我的更多操作", "More personal memory actions"))
     }
     private func editor(_ claim: MemoryClaim?) -> some View {
         MemoryAgreementEditor(claim: claim, topics: model.state.memoryKnowledge.entities.filter { $0.kind == "topic" }) { content, scope, scopeID, until in
@@ -228,7 +234,7 @@ struct MemoryAgreementEditor: View {
                 .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
             DisclosureGroup(RecallLocalization.both("适用范围与有效期", "Scope and expiry"), isExpanded: $advanced) {
             Picker(RecallLocalization.text("适用范围"), selection: Binding(get: { scope }, set: { scope = $0; scopeChanged = true })) {
-                ForEach(MemoryScope.allCases.filter { $0 != .conversation }, id: \.self) { Text($0.title).tag($0) }
+                ForEach(MemoryScope.allCases.filter { $0 != .conversation }, id: \.self) { Text(RecallLocalization.text($0.title)).tag($0) }
             }
             if scope == .project {
                 Picker(RecallLocalization.text("适用主题"), selection: $subjectID) {
