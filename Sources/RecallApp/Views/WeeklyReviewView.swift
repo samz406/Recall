@@ -31,7 +31,7 @@ struct WeeklyReviewView: View {
         return ReviewPeriod(start: c.startOfDay(for: customStart), end: end)
     }
     private var report: WeeklyReport? {
-        model.state.weeklyReports.first { $0.id == selectedID } ?? model.state.weeklyReports.first(where: \.isReadable) ?? model.state.weeklyReports.first
+        model.state.weeklyReports.first { $0.id == selectedID }
     }
     private var allTemplates: [ReviewTemplate] { ReviewTemplate.builtIns + model.state.reviewTemplates }
     var body: some View {
@@ -59,7 +59,15 @@ struct WeeklyReviewView: View {
                     }
                     if let message = model.weeklyReviewMessage, !message.isEmpty { Text(message).font(.caption).foregroundStyle(RecallPalette.secondary) }
                     if let report { reportBody(report) }
-                    else if !model.isGeneratingWeeklyReview { emptyState }
+                    else if !model.isGeneratingWeeklyReview {
+                        if model.state.weeklyReports.isEmpty { emptyState }
+                        else {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Image(systemName: "doc.text").font(.title).foregroundStyle(RecallPalette.accent)
+                                Text(RecallLocalization.both("从左侧选择一份回顾", "Choose a review on the left")).font(.headline)
+                            }.padding(32).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()
+                        }
+                    }
                 }.padding(.bottom, 24)
             }.clipped().id(report?.id)
         }
@@ -74,13 +82,20 @@ struct WeeklyReviewView: View {
             rangeNow = .now
             scope = ReviewScope()
             showsComposer = false
-            if let id = model.reviewTopicToOpen { openTopicReview(id) }
-            if let id = model.weeklyReportToOpen { selectedID = id }
+            if let id = model.reviewTopicToOpen { openTopicReview(id); return }
+            let reports = model.state.weeklyReports
+            if let id = model.weeklyReportToOpen, reports.contains(where: { $0.id == id }) { selectedID = id }
+            else if !reports.contains(where: { $0.id == selectedID }) {
+                selectedID = reports.first(where: \.isReadable)?.id ?? reports.first?.id
+            }
         }
         .onChange(of: model.reviewTopicToOpen) { _, id in
             if let id { openTopicReview(id) }
         }
-        .onChange(of: selectedID) { _, id in if let id { model.weeklyReportToOpen = id } }
+        .onChange(of: selectedID) { _, id in model.weeklyReportToOpen = id }
+        .onChange(of: model.state.weeklyReports.map(\.id)) { _, ids in
+            if let selectedID, !ids.contains(selectedID) { self.selectedID = nil }
+        }
         .onChange(of: customStart) { _, start in if customEnd < start { customEnd = start } }
         .onChange(of: model.memoryWorkspace?.revision) { _, _ in rangeNow = .now }
         .onChange(of: model.weeklyReportToOpen) { _, id in
@@ -93,13 +108,14 @@ struct WeeklyReviewView: View {
         .sheet(item: $editing) { ReviewEditSheet(reportID: $0.id).environmentObject(model) }
         .sheet(item: $exporting) { ReviewExportSheet(reportID: $0.id).environmentObject(model) }
         .sheet(item: $sourceItem) { ReviewSourcesSheet(item: $0, reportID: report?.id).environmentObject(model) }
-        .alert("删除这份回顾？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+        .alert("删除这份回顾？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { target in
             Button(RecallLocalization.text("取消"), role: .cancel) { deleting = nil }
             Button(RecallLocalization.text("删除回顾"), role: .destructive) {
-                if let id = deleting?.id { Task { await model.deleteWeeklyReport(id) } }
+                let id = target.id
                 deleting = nil
+                Task { await model.deleteWeeklyReport(id) }
             }
-        } message: { Text(RecallLocalization.text("原始记录会保留。这份回顾会进入最近删除，七天内可以恢复。")) }
+        } message: { _ in Text(RecallLocalization.text("原始记录会保留。这份回顾会进入最近删除，七天内可以恢复。")) }
     }
 
     private func openTopicReview(_ id: String) {
@@ -314,7 +330,10 @@ struct WeeklyReviewView: View {
                         .disabled(model.isGeneratingWeeklyReview)
                 }
                 Button(RecallLocalization.text("删除回顾"), role: .destructive) { deleting = report }
+                    .accessibilityIdentifier("delete-period-review-" + report.id.uuidString)
             } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
+                .disabled(model.deletingWeeklyReportIDs.contains(report.id))
+            if model.deletingWeeklyReportIDs.contains(report.id) { ProgressView().controlSize(.small) }
         }.fixedSize()
     }
     private func regenerate(_ report: WeeklyReport) {
@@ -392,7 +411,7 @@ struct WeeklyReviewView: View {
 private extension View {
     func reviewSurface() -> some View {
         background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(RecallPalette.text.opacity(0.075), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(RecallPalette.text.opacity(0.075), lineWidth: 1).allowsHitTesting(false))
     }
 }
 

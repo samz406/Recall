@@ -85,6 +85,7 @@ final class RecallAppModel: ObservableObject {
     @Published private(set) var isGeneratingWeeklyReview = false
     @Published var weeklyReviewMessage: String?
     @Published private(set) var savingReviewScheduleIDs: Set<UUID> = []
+    @Published private(set) var deletingWeeklyReportIDs: Set<UUID> = []
     @Published var reviewTopicToOpen: String?
     @Published var weeklyReportToOpen: UUID?
     private var weeklyReviewTask: Task<Void, Never>?
@@ -555,11 +556,28 @@ final class RecallAppModel: ObservableObject {
         catch { recordError(error, source: "WeeklyReview", message: "保存回顾修改失败"); return false }
     }
 
-    func deleteWeeklyReport(_ id: UUID) async {
+    @discardableResult
+    func deleteWeeklyReport(_ id: UUID) async -> Bool {
+        guard state.weeklyReports.contains(where: { $0.id == id }), deletingWeeklyReportIDs.insert(id).inserted else { return false }
+        defer { deletingWeeklyReportIDs.remove(id) }
         do {
-            deletionUndoNotice = try await store.deleteWeeklyReport(id: id)
-            await refresh()
-        } catch { recordError(error, source: "WeeklyReview", message: "删除一周回顾失败") }
+            let deleted = try await store.deleteWeeklyReport(id: id)
+            state = await store.snapshot()
+            archiveBackupPending = await store.backupPending
+            if let deleted { deletionUndoNotice = deleted }
+            if weeklyReportToOpen == id { weeklyReportToOpen = nil }
+            if destination == .review(id) { destination = nil }
+            weeklyReviewMessage = RecallLocalization.both("回顾已删除，可在最近删除中恢复。", "Review deleted. It can be restored from Recently Deleted.")
+            noticeMessage = weeklyReviewMessage
+            // Deletion only needs the saved report list. A full refresh also launches
+            // scheduled reviews and unrelated maintenance, obscuring this local action.
+            return true
+        } catch {
+            weeklyReviewMessage = RecallLocalization.both("未能删除回顾，请重试。", "Unable to delete this review. Please retry.")
+            noticeMessage = weeklyReviewMessage
+            recordError(error, source: "WeeklyReview", message: "删除一周回顾失败")
+            return false
+        }
     }
 
     private func armWeeklySchedules() {

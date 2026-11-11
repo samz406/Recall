@@ -83,6 +83,7 @@ enum RecallLayoutPreviews {
         try await verifyGlobalSearchWorkspace()
         try await verifyMemoryReminderActions()
         try await verifyDailyReviewAction()
+        try await verifyPeriodReviewDeletion()
         try await verifyTopicCompletionAction()
         try await verifyReviewScheduleSave()
         try await verifyDailyReviewGeneration()

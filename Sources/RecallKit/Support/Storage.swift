@@ -727,6 +727,10 @@ public actor FileMemoryStore {
                                    schedule expected: ReviewSchedule? = nil, categories: [String: ReviewCategory]? = nil,
                                    now: Date = .now) throws -> WeeklyReport {
         try Task.checkCancellation()
+        guard state.weeklyReports.contains(where: { $0.id == submitted.id })
+                || !state.recentlyDeletedMemories.contains(where: { $0.weeklyReports?.contains(where: { $0.id == submitted.id }) == true }) else {
+            throw WeeklyReviewError.changedSources
+        }
         guard submitted.feedbackRevision == nil || submitted.feedbackRevision == SummaryFeedbackLearning.revision(in: state) else { throw WeeklyReviewError.changedSources }
         guard WeeklyReviewEngine.sourcesUnchanged(submitted, in: state),
               categories == nil || categories == state.reviewCategories else { throw WeeklyReviewError.changedSources }
