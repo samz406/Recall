@@ -98,6 +98,7 @@ final class RecallAppModel: ObservableObject {
     private var memoryMaintenanceTask: Task<Void, Never>?
     private var memoryMaintenanceAfter: Date = .distantPast
     @Published private(set) var matterBuildMessage: String?
+    @Published private(set) var completingMatterIDs: Set<String> = []
     @Published private(set) var dismissingExperienceIDs: Set<String> = []
     private var matterBuildTask: Task<Void, Never>?
     @Published var isRecording = false
@@ -667,6 +668,30 @@ final class RecallAppModel: ObservableObject {
         return nil
     }
 
+    @discardableResult
+    func completeMatter(_ file: MatterFile) async -> Bool {
+        guard let current = matterFiles.first(where: { $0.id == file.id }), current.latest.status.isOpenMatter,
+              completingMatterIDs.insert(file.id).inserted else { return false }
+        defer { completingMatterIDs.remove(file.id) }
+        do {
+            try await store.saveMatterCorrection(MatterCorrection(evidenceIDs: current.evidenceIDs, kind: .completed,
+                text: current.title, topicID: current.id))
+            state = await store.snapshot()
+            // A card action only updates its projection; it must not start missed reviews,
+            // model analysis, reminder discovery or other full-refresh maintenance.
+            rebuildMatterFiles()
+            await matterBuildTask?.value
+            matterBuildMessage = RecallLocalization.both("已标记完成，可在“已完成”中查看。", "Marked complete. Find it in Completed.")
+            noticeMessage = matterBuildMessage
+            return true
+        } catch {
+            matterBuildMessage = RecallLocalization.both("未能保存完成状态，请重试。", "Unable to save completion. Please retry.")
+            noticeMessage = matterBuildMessage
+            recordError(error, source: "Memory", message: "保存主题完成状态失败")
+            return false
+        }
+    }
+
     func correctMatter(_ correction: MatterCorrection) {
         Task {
             do {
@@ -684,7 +709,16 @@ final class RecallAppModel: ObservableObject {
 
     func removeMatterCorrection(_ id: UUID) {
         Task {
-            do { try await store.removeMatterCorrection(id: id); await refresh() }
+            do {
+                let isTopicCompletion = state.matterCorrections.contains { $0.id == id && $0.isTopicCompletion }
+                try await store.removeMatterCorrection(id: id)
+                if isTopicCompletion {
+                    state = await store.snapshot()
+                    rebuildMatterFiles()
+                    await matterBuildTask?.value
+                    matterBuildMessage = RecallLocalization.both("已撤销完成标记。", "Completion undone.")
+                } else { await refresh() }
+            }
             catch { recordError(error, source: "Memory", message: "删除纠错失败") }
         }
     }

@@ -52,6 +52,7 @@ public enum RecallLocalization {
         "不是我说的": "Not mine",
         "内容不准确": "Inaccurate",
         "补生成这几天": "Generate the missing days",
+        "这段时间还没有每日回顾。周期回顾基于每日回顾生成，请先点上方“补生成这几天”。": "There are no daily reviews for this period yet. Period reviews use daily reviews; choose “Generate the missing days” above first.",
         "继续扫更早记录": "Scan earlier records",
         "指定主题": "Choose a topic",
         "所选主题": "Selected topic",

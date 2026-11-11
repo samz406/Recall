@@ -82,6 +82,7 @@ enum RecallLayoutPreviews {
         try await verifyChatSources()
         try await verifyGlobalSearchWorkspace()
         try await verifyMemoryReminderActions()
+        try await verifyTopicCompletionAction()
         try await verifyReviewScheduleSave()
         try await verifyDailyReviewGeneration()
         try await verifyMemoryReliabilityEntries()

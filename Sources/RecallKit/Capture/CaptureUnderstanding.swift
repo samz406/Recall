@@ -150,7 +150,7 @@ public enum CaptureUnderstandingEngine {
     public static func sourceVersion(_ source: CaptureRecord, in state: RecallState) -> String {
         var copy = SummaryFeedbackLearning.adjusted(source, in: state)
         copy.understanding = nil
-        return MemoryKnowledgeEngine.version(of: copy, corrections: state.matterCorrections)
+        return MemoryKnowledgeEngine.version(of: copy, corrections: state.matterCorrections.filter { !$0.isTopicCompletion })
     }
     public static func eligible(_ source: CaptureRecord, in state: RecallState) -> Bool {
         !source.ocrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

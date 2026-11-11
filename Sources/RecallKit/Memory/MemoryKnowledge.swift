@@ -384,6 +384,14 @@ public struct MemoryKnowledgeEngine: Sendable {
             for event in file.events {
                 let evidence = event.evidenceIDs.compactMap { sourceID -> MemoryEvidence? in
                     guard let source = sources[sourceID] else { return nil }
+                    if let correction = state.matterCorrections.last(where: {
+                        $0.isTopicCompletion && $0.topicID == file.id && $0.evidenceIDs.contains(sourceID)
+                            && event.status == .completed && event.detail.hasPrefix("用户已标记完成：")
+                    }) {
+                        var evidence = proof(source, quote: event.detail, ordinal: event.sequence, speaker: "用户更正", eventAt: event.eventAt)
+                        evidence.correctedBy = correction.id
+                        return evidence
+                    }
                     if !event.quotes.isEmpty {
                         let quote = event.quotes.first { source.ocrText.contains($0) } ?? event.quotes[0]
                         return proof(source, quote: quote, ordinal: event.sequence, speaker: "每日回顾（本人事项）", eventAt: event.eventAt)
@@ -398,7 +406,7 @@ public struct MemoryKnowledgeEngine: Sendable {
                     }
                     let ordinal = RecordedText.segments(in: source).first { $0.text == event.detail }?.ordinal ?? event.sequence
                     var evidence = proof(source, quote: event.detail, ordinal: ordinal, speaker: "自己", eventAt: event.eventAt)
-                    if let correction = state.matterCorrections.last(where: { $0.kind == .completed && $0.evidenceIDs.contains(sourceID) }) {
+                    if let correction = state.matterCorrections.last(where: { $0.kind == .completed && !$0.isTopicCompletion && $0.evidenceIDs.contains(sourceID) }) {
                         evidence.correctedBy = correction.id
                         evidence.speaker = "用户更正"
                         evidence.quote = correction.text.isEmpty ? "用户已标记完成" : correction.text
@@ -622,6 +630,7 @@ public struct MemoryKnowledgeEngine: Sendable {
         }
         for correction in state.matterCorrections.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
             feed(correction.id.uuidString); feed(correction.kind.rawValue); feed(correction.text)
+            feed(correction.topicID ?? "")
             feed(correction.evidenceIDs.map(\.uuidString).joined(separator: ","))
             feed(correction.eventAt.map { String($0.timeIntervalSince1970) } ?? "")
         }

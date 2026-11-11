@@ -437,6 +437,20 @@ public actor FileMemoryStore {
         let available = Set(state.captures.map(\.id))
         var correction = correction
         correction.evidenceIDs = correction.evidenceIDs.filter(available.contains)
+        if correction.isTopicCompletion {
+            guard !correction.evidenceIDs.isEmpty else { throw LLMError.serviceError("主题来源已变化，请更新记忆后重试。") }
+            guard !state.matterCorrections.contains(where: {
+                $0.isTopicCompletion && $0.topicID == correction.topicID && Set($0.evidenceIDs) == Set(correction.evidenceIDs)
+            }) else { return }
+            // Completion is a user-authored status overlay. Daily reviews and captured text
+            // remain historical evidence; deleting them would force a fresh model analysis.
+            state.matterCorrections.append(correction)
+            state.topicReviews.removeAll { $0.id == correction.topicID }
+            state.conversationSummary = nil
+            state.conversationSummaryCoveredMessageCount = state.messages.count
+            try persistReviewState()
+            return
+        }
         guard !correction.evidenceIDs.isEmpty else { return }
         state.pendingRecoveryCleanup = true
         state.matterCorrections.append(correction)
@@ -463,6 +477,14 @@ public actor FileMemoryStore {
     }
 
     public func removeMatterCorrection(id: UUID) throws {
+        if let correction = state.matterCorrections.first(where: { $0.id == id && $0.isTopicCompletion }) {
+            state.matterCorrections.removeAll { $0.id == id }
+            state.topicReviews.removeAll { $0.id == correction.topicID }
+            state.conversationSummary = nil
+            state.conversationSummaryCoveredMessageCount = state.messages.count
+            try persistReviewState()
+            return
+        }
         let sourceIDs = Set(state.matterCorrections.filter { $0.id == id }.flatMap(\.evidenceIDs))
         invalidateMemoryOutputs(sourceIDs: sourceIDs)
         state.matterCorrections.removeAll { $0.id == id }
