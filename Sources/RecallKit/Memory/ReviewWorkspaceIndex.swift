@@ -140,6 +140,14 @@ public struct MemoryWorkspaceProjection: Sendable {
     public let review: ReviewWorkspaceIndex
     public let summary: MemoryOrganizationSummary
     public let sources: [UUID: CaptureRecord]
+
+    /// Completing a topic changes its last event, not source text, dates, categories or coverage.
+    /// Reuse the prepared indexes instead of reparsing the archive for a card action.
+    public func applyingTopicCompletions(in state: RecallState) -> MemoryWorkspaceProjection {
+        let updated = matters.map { state.applyingTopicCompletion(to: $0) }
+        guard updated != matters else { return self }
+        return MemoryWorkspaceProjection(revision: UUID(), matters: updated, review: review, summary: summary, sources: sources)
+    }
 }
 
 /// Shared across tab lifetimes. Unrelated chat/report/settings refreshes do not reparse the archive.

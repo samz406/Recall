@@ -653,8 +653,11 @@ final class RecallAppModel: ObservableObject {
                 let job = Task.detached(priority: .utility) {
                     try await cache.prepare(in: snapshot)
                 }
-                let result = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
+                let prepared = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
                 try Task.checkCancellation()
+                // A completion can commit while this older snapshot is on the worker.
+                // Publish the latest user status, even when the archive build finishes later.
+                let result = prepared.applyingTopicCompletions(in: state)
                 if memoryWorkspace?.revision != result.revision {
                     matterFiles = result.matters
                     memoryWorkspace = result
@@ -697,10 +700,14 @@ final class RecallAppModel: ObservableObject {
             try await store.saveMatterCorrection(MatterCorrection(evidenceIDs: current.evidenceIDs, kind: .completed,
                 text: current.title, topicID: current.id))
             state = await store.snapshot()
-            // A card action only updates its projection; it must not start missed reviews,
-            // model analysis, reminder discovery or other full-refresh maintenance.
-            rebuildMatterFiles()
-            await matterBuildTask?.value
+            // Durable save is the completion boundary. Do not keep the button busy while
+            // OCR, all topics and the review index are rebuilt on a large archive.
+            if let projection = memoryWorkspace?.applyingTopicCompletions(in: state) {
+                matterFiles = projection.matters
+                memoryWorkspace = projection
+            } else {
+                matterFiles = matterFiles.map { state.applyingTopicCompletion(to: $0) }
+            }
             matterBuildMessage = RecallLocalization.both("已标记完成，可在“已完成”中查看。", "Marked complete. Find it in Completed.")
             noticeMessage = matterBuildMessage
             return true

@@ -35,6 +35,13 @@ enum TopicCompletionVerification {
         try await store.saveMatterCorrection(correction)
         try await store.saveMatterCorrection(correction)
         let saved = await store.snapshot(), projection = try await cache.prepare(in: saved)
+        let immediate = originalProjection.applyingTopicCompletions(in: saved)
+        try expect(immediate.matters == projection.matters && immediate.revision != originalProjection.revision,
+            "卡片完成的即时投影与完整重建结果不一致")
+        try expect(immediate.applyingTopicCompletions(in: saved).revision == immediate.revision
+            && immediate.sources == originalProjection.sources
+            && immediate.review.coverage(in: .make(.recentSeven)).textRecords == originalProjection.review.coverage(in: .make(.recentSeven)).textRecords,
+            "完成状态补丁重复重建、改变来源或破坏回顾索引")
         try expect(saved.matterCorrections.count == 1, "重复完成写入了重复更正")
         try expect(saved.captures == before.captures && saved.dailySummaries == before.dailySummaries, "完成主题删除或修改了原始记录/每日回顾")
         try expect(saved.correctedForAnalysis().dailySummaries == before.dailySummaries, "分析视图仍撤回已生成回顾")
