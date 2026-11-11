@@ -99,6 +99,8 @@ final class RecallAppModel: ObservableObject {
     private var memoryMaintenanceAfter: Date = .distantPast
     @Published private(set) var matterBuildMessage: String?
     @Published private(set) var completingMatterIDs: Set<String> = []
+    @Published private(set) var completingSummaryActionIDs: Set<UUID> = []
+    @Published private(set) var dailyReviewActionMessages: [UUID: String] = [:]
     @Published private(set) var dismissingExperienceIDs: Set<String> = []
     private var matterBuildTask: Task<Void, Never>?
     @Published var isRecording = false
@@ -1399,6 +1401,45 @@ final class RecallAppModel: ObservableObject {
             } catch {
                 recordError(error, source: "Reminders", message: "更新提醒状态失败")
             }
+        }
+    }
+
+    @discardableResult
+    func completeSummaryAction(_ item: DailySummaryItem, summary: DailySummary) async -> Bool {
+        guard completingSummaryActionIDs.insert(item.id).inserted else { return false }
+        defer { completingSummaryActionIDs.remove(item.id) }
+        var queued: DailyReviewActionCompletion?
+        do {
+            let snapshot = await store.snapshot()
+            guard let current = snapshot.dailySummaries.first(where: { $0.id == summary.id }),
+                  let action = DailyReviewPresentation.action(for: item, in: current) else { throw DailyReviewActionError.changed }
+            guard action.status == .pending || action.status == .inProgress else { return false }
+            let completion = try DailyReviewActionCompletion(summaryID: summary.id, itemID: item.id, state: snapshot)
+            if completion.schedulesNextOccurrence {
+                try await reminderCreationScheduler.schedule(completion.reminder)
+                queued = completion
+            }
+            try await store.completeDailyReviewAction(completion)
+            if !completion.schedulesNextOccurrence { reminderCreationScheduler.cancel(completion.reminder) }
+            state = await store.snapshot()
+            let message = completion.schedulesNextOccurrence
+                ? RecallLocalization.both("本次已标记完成，下次提醒时间已更新。", "This occurrence is complete. The next reminder has been updated.")
+                : RecallLocalization.both("已标记完成，已从待处理列表移除。", "Marked complete and removed from pending actions.")
+            dailyReviewActionMessages[summary.id] = message; noticeMessage = message
+            return true
+        } catch {
+            state = await store.snapshot()
+            if let queued {
+                reminderCreationScheduler.cancel(queued.reminder)
+                if let previous = queued.previousReminder, state.reminders.contains(previous),
+                   previous.status == .scheduled || previous.status == .snoozed {
+                    try? await reminderCreationScheduler.schedule(previous)
+                }
+            }
+            let message = RecallLocalization.both("未能保存完成状态，请重试。", "Unable to save completion. Please retry.")
+            dailyReviewActionMessages[summary.id] = message; noticeMessage = message
+            recordError(error, source: "DailySummary", message: "保存每日回顾待办完成状态失败")
+            return false
         }
     }
 
