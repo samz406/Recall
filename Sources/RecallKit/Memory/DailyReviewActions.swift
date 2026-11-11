@@ -65,7 +65,8 @@ public struct DailyReviewActionCompletion: Equatable, Sendable {
             semanticKey: DailyReviewPresentation.key(item.title))
         updated.sourceCaptureIDs = Array(Set(updated.sourceCaptureIDs).union(ids)).sorted { $0.uuidString < $1.uuidString }
         updated.completedAt = now; updated.updatedAt = now
-        if let due = updated.dueAt, updated.recurrence != .none, let next = updated.recurrence.nextDate(after: max(due, now)) {
+        let alreadyScheduled = updated.status == .scheduled || updated.status == .snoozed
+        if alreadyScheduled, let due = updated.dueAt, updated.recurrence != .none, let next = updated.recurrence.nextDate(after: max(due, now)) {
             updated.dueAt = next; updated.status = .scheduled; updated.closedAt = nil
         } else { updated.status = .completed; updated.closedAt = now }
         reminder = updated

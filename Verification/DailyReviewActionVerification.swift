@@ -78,6 +78,9 @@ enum DailyReviewActionVerification {
         let next = try DailyReviewActionCompletion(summaryID: recurring.dailySummaries[0].id, itemID: recurringItem.id, state: recurring, now: now)
         try expect(next.schedulesNextOccurrence && next.reminder.dueAt! > recurring.reminders[0].dueAt! && next.reminder.closedAt == nil,
             "完成本次行动关闭了重复提醒")
+        var unconfirmed = recurring; unconfirmed.reminders[0].status = .proposed
+        let unscheduled = try DailyReviewActionCompletion(summaryID: unconfirmed.dailySummaries[0].id, itemID: recurringItem.id, state: unconfirmed, now: now)
+        try expect(!unscheduled.schedulesNextOccurrence && unscheduled.reminder.status == .completed, "未启用的重复提醒因标记完成而被自动安排")
         var deleted = recurring; deleted.captures = []
         do { _ = try DailyReviewActionCompletion(summaryID: recurring.dailySummaries[0].id, itemID: recurringItem.id, state: deleted); throw Failure(errorDescription: "来源删除后仍允许完成旧条目") }
         catch is DailyReviewActionError {}
