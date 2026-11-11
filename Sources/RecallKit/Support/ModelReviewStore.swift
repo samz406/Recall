@@ -113,6 +113,8 @@ extension FileMemoryStore {
         guard state.privacy.cloudUseEnabled, state.privacy == expected.privacy,
               state.llmConfiguration == expected.llmConfiguration,
               state.matterCorrections == expected.matterCorrections,
+              state.memoryKnowledgeSettings == expected.memoryKnowledgeSettings,
+              state.memoryKnowledge.claims.filter({ $0.kind.isPersonal && $0.usable() }) == expected.memoryKnowledge.claims.filter({ $0.kind.isPersonal && $0.usable() }),
               SummaryFeedbackLearning.revision(in: state) == SummaryFeedbackLearning.revision(in: expected),
               DailyKnowledgeEngine().fingerprint(in: state.correctedForAnalysis()) == DailyKnowledgeEngine().fingerprint(in: expected.correctedForAnalysis())
         else { throw ModelReviewError.changed }

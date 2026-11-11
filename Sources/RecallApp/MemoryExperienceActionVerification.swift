@@ -25,6 +25,9 @@ extension RecallLayoutPreviews {
         }
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(5)) }
         guard let memory = model.state.memoryKnowledge.claims.first(where: { $0.kind.isPersonal && $0.usable() }) else { throw MemoryExperienceFailure(errorDescription: "保存成功后未显示个人信息") }
+        guard let personalSource = memory.sourceIDs.first, model.chatSources.record(id: personalSource)?.memoryDirective != nil else {
+            throw MemoryExperienceFailure(errorDescription: "记住的回执缺少来源或撤销入口")
+        }
         let sources = model.state.captures, revision = model.memoryWorkspace?.revision
         model.retireMemory(memory)
         for _ in 0..<500 {

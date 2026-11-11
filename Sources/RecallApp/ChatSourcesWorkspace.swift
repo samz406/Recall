@@ -18,7 +18,7 @@ final class ChatSourcesWorkspace: ObservableObject {
         let excluded = state.privacy.excludedBundleIdentifiers
         guard captures != state.captures || self.excluded != excluded || self.invalid != invalid else { return }
         captures = state.captures; self.excluded = excluded; self.invalid = invalid
-        index = ChatSourceIndex(captures: EvidenceAccess.records(state))
+        index = ChatSourceIndex(captures: PersonalMemoryContext.sourceRecords(in: state))
         cachedIDs.removeAll(); buildCount += 1; revision = UUID()
     }
     func availableIDs(_ citations: [UUID]) -> [UUID] {

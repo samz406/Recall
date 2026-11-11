@@ -20,7 +20,7 @@ public struct MemoryQueryScope: Hashable, Sendable {
         guard isRestricted else { return original }
         var state = original
         let topicSources: Set<UUID>? = topicID.map { id in
-            Set(original.memoryKnowledge.claims.filter { $0.subjectID == id }.flatMap(\.sourceIDs))
+            Set(original.memoryKnowledge.claims.filter { $0.subjectID == id || ($0.scope == .project && $0.scopeID == id) }.flatMap(\.sourceIDs))
                 .union(original.topicGroups.filter { $0.id == id }.flatMap { group in
                     original.memoryKnowledge.claims.filter { group.memberIDs.contains($0.subjectID) }.flatMap(\.sourceIDs)
                 })

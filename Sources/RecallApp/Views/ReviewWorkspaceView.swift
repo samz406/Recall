@@ -26,6 +26,10 @@ struct ReviewWorkspaceView: View {
         .onAppear { period = initialPeriod || model.weeklyReportToOpen != nil || model.reviewTopicToOpen != nil }
         .onChange(of: model.weeklyReportToOpen) { _, id in if id != nil { period = true } }
         .onChange(of: model.reviewTopicToOpen) { _, id in if id != nil { period = true } }
+        .onChange(of: model.navigationRevision) { _, _ in
+            if case .daily = model.destination { period = false }
+            if case .review = model.destination { period = true }
+        }
         .onChange(of: model.dailyToOpen) { _, id in if id != nil { period = false } }
     }
     private func choice(_ title: String, value: Bool) -> some View {

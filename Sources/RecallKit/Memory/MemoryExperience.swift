@@ -8,7 +8,9 @@ public struct TopicReading: Sendable {
     public let hasUpdatedSummary: Bool
 
     public static func fingerprint(_ file: MatterFile) -> String {
-        CaptureUnderstandingEngine.digest(file.events.map { $0.id.uuidString + $0.detail + $0.status.rawValue + $0.evidenceIDs.map(\.uuidString).sorted().joined() }.joined(separator: "\n"))
+        CaptureUnderstandingEngine.digest(file.id + file.title + file.events.map {
+            [$0.id.uuidString, $0.title, $0.detail, $0.status.rawValue, String(Int($0.date.timeIntervalSince1970)), $0.evidenceIDs.map(\.uuidString).sorted().joined()].joined(separator: "\u{1f}")
+        }.joined(separator: "\n"))
     }
     public init(file: MatterFile, review: TopicModelReview? = nil) {
         var seen = Set<String>()
@@ -17,10 +19,10 @@ public struct TopicReading: Sendable {
             return !text.isEmpty && seen.insert(text).inserted
         }
         let usable = review.flatMap { $0.id == file.id ? $0 : nil }
-        let resolvedOverview = usable?.overview.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-            ?? file.resumeText
+        let current = usable?.inputFingerprint == Self.fingerprint(file)
+        let resolvedOverview = current ? (usable?.overview.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? file.resumeText) : file.resumeText
         overview = resolvedOverview
-        if let usable { points = usable.points }
+        if let usable, current { points = usable.points }
         else {
             // Select actual milestones; no generated explanations or guessed decisions.
             var previous: WorkEpisodeStatus?
@@ -34,7 +36,7 @@ public struct TopicReading: Sendable {
                     detail: event.detail, section: "progress", sourceIDs: event.evidenceIDs)
             }
         }
-        hasUpdatedSummary = usable.map { $0.inputFingerprint != nil && Set($0.sourceVersions.keys) == Set(file.evidenceIDs) } ?? false
+        hasUpdatedSummary = current
     }
 }
 
@@ -75,8 +77,16 @@ public struct MemoryManagementCommand: Sendable {
 }
 
 public enum PersonalMemoryContext {
+    /// Includes explicit memory records, which are intentionally excluded from raw factual search.
+    public static func sourceRecords(in state: RecallState) -> [CaptureRecord] {
+        let invalid = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
+        return state.captures.filter {
+            !invalid.contains($0.id) && !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "")
+                && ($0.isMemoryEvidenceArchive != true || $0.memoryDirective != nil) && $0.eventTemplate != .dailyReview
+        }
+    }
     public static func text(in state: RecallState, question: String, topicIDs: Set<String> = [], conversationID: UUID? = nil) -> String {
-        let allowed = Set(EvidenceAccess.records(state).map(\.id))
+        let allowed = Set(sourceRecords(in: state).filter { source in state.rules.first { $0.template == source.eventTemplate }?.participatesInChat ?? true }.map(\.id))
         let claims = state.memoryKnowledge.claims.filter {
             $0.kind.isPersonal && $0.usable() && state.memoryKnowledgeSettings.references($0)
                 && !$0.sourceIDs.isEmpty && Set($0.sourceIDs).isSubset(of: allowed)

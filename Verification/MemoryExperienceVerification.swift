@@ -52,6 +52,12 @@ enum MemoryExperienceVerification {
         let afterAmbiguity = await reopened.snapshot().memoryKnowledge.claims.filter { $0.usable() }.map(\.id)
         try expect(ambiguous.content.contains("多条") && beforeAmbiguity == afterAmbiguity, "模糊指令批量修改了多条记忆")
         try expect(MemoryManagementCommand.parse("请问你能忘记以前的信息吗？") == nil, "普通问题触发了记忆修改")
+        let topicID = "topic:synthetic-context"
+        _ = try await another.ask("记住：这个主题的报告先给结论", scope: MemoryQueryScope(topicID: topicID))
+        let withProject = await reopened.snapshot()
+        let scoped = MemoryQueryScope(topicID: topicID).applying(to: withProject)
+        try expect(PersonalMemoryContext.text(in: scoped, question: "整理报告", topicIDs: [topicID]).contains("先给结论"), "主题内记住的要求在后续主题提问中被过滤")
+        try expect(PersonalMemoryContext.text(in: MemoryQueryScope(topicID: "topic:other").applying(to: withProject), question: "整理报告", topicIDs: ["topic:other"]).isEmpty, "指定主题的要求泄漏到其他主题")
         try await reopened.undoRemembering(sourceID: second.citations[0])
         state = await reopened.snapshot()
         try expect(state.memoryKnowledge.claims.contains { $0.usable() && $0.sourceIDs.contains(first.citations[0]) }
@@ -83,7 +89,15 @@ enum MemoryExperienceVerification {
         state.privacy.cloudUseEnabled = true
         state.memoryKnowledge = MemoryKnowledgeEngine().reconcile(state, force: true)
         let model = PeriodProbe()
-        _ = try await PeriodReviewFromDaily().generate(in: state, period: .make(.recentSeven), template: ReviewTemplate(kind: .work), responder: model)
+        let result = try await PeriodReviewFromDaily().generate(in: state, period: .make(.recentSeven), template: ReviewTemplate(kind: .work), responder: model).draft
+        let file = MatterMemoryEngine().files(in: state).first { $0.title == "Atlas 分页核对" }!
+        var summary = TopicModelReview(topicID: file.id, result: result)
+        summary.inputFingerprint = TopicReading.fingerprint(file)
+        try expect(TopicReading(file: file, review: summary).hasUpdatedSummary, "当前小结没有作为默认阅读内容")
+        var updated = file
+        updated.events.append(MatterEvent(id: UUID(), title: file.title, detail: "新增边界需继续核对。", recordedAt: now, status: .pending, evidenceIDs: [source.id]))
+        let reading = TopicReading(file: updated, review: summary)
+        try expect(!reading.hasUpdatedSummary && reading.overview == updated.resumeText, "旧小结遮住了新的主题进展")
         let requests = await model.log()
         try expect(requests.first?.question.contains(directive.content) == true, "工作周报没有实际读取长期写作约定")
         state.memoryKnowledgeSettings.referenceInChat = false

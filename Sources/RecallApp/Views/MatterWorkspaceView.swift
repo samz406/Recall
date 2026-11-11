@@ -174,6 +174,14 @@ struct TopicDetailView: View {
                                 if point.detail != point.title { Text(point.detail).foregroundStyle(RecallPalette.secondary).textSelection(.enabled) }
                             }
                         }
+                        if !reading.hasUpdatedSummary, let previous = model.state.topicReviews.first(where: { $0.id == topicID }) {
+                            DisclosureGroup(RecallLocalization.both("上次整理的小结", "Previous summary")) {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text(previous.overview).textSelection(.enabled)
+                                    ForEach(Array(previous.points.enumerated()), id: \.offset) { _, point in Text(point.detail).foregroundStyle(RecallPalette.secondary) }
+                                }.padding(.top, 12)
+                            }
+                        }
                         if model.generatingTopicID == topicID {
                             HStack { ProgressView().controlSize(.small); Text(RecallLocalization.both("正在更新小结，已有记录仍可阅读", "Updating the summary; saved records remain available")).font(.caption); Spacer(); Button(RecallLocalization.text("停止生成")) { model.cancelTopicReview() } }
                         }

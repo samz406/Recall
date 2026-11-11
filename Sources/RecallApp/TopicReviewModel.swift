@@ -36,9 +36,11 @@ extension RecallAppModel {
         })
         let keys = Set(([file.title] + file.events.map(\.title)).map(DailyKnowledgeEngine.topicKey))
         let modelStore = store
+        topicReviewIsAutomatic = automatic
         generatingTopicID = file.id; topicReviewStatusID = taskID
         topicReviewTask = Task {
             defer {
+                topicReviewIsAutomatic = false
                 generatingTopicID = nil; topicReviewTask = nil; topicReviewStatusID = nil
                 processNextDailySummary()
                 if automatic && !Task.isCancelled { scheduleAutomaticTopicReviews() }

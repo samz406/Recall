@@ -69,6 +69,7 @@ final class RecallAppModel: ObservableObject {
     @Published var showsSummaryFeedbackHistory = false
     @Published var generatingTopicID: String?
     var automaticTopicSummaryBudget = 3
+    var topicReviewIsAutomatic = false
     var topicSummaryAttempts: [String: String] = [:]
     var topicReviewTask: Task<Void, Never>?
     var topicReviewStatusID: UUID?
@@ -326,7 +327,8 @@ final class RecallAppModel: ObservableObject {
     }
 
     func updateMemorySettings(_ settings: MemoryKnowledgeSettings) {
-        if settings.automaticTopicSummaries != true || !settings.automaticOrganization { cancelTopicReview() }
+        if topicReviewIsAutomatic && (settings.automaticTopicSummaries != true || !settings.automaticOrganization) { cancelTopicReview() }
+        if settings.automaticTopicSummaries == true && state.memoryKnowledgeSettings.automaticTopicSummaries != true { automaticTopicSummaryBudget = 3; topicSummaryAttempts.removeAll() }
         Task {
             do { try await store.updateMemoryKnowledgeSettings(settings); state = await store.snapshot(); scheduleAutomaticTopicReviews() }
             catch { recordError(error, source: "Memory", message: "保存记忆设置失败") }
