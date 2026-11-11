@@ -208,7 +208,11 @@ public struct MemoryRetrievalEngine: Sendable {
 
     public func preferenceContext(question: String, claims: [MemoryClaim], conversationID: UUID?, entities: Set<String> = [], now: Date = .now) -> String? {
         let relevant = claims.filter { claim in
-            [.preference, .constraint, .workflow].contains(claim.kind) && claim.usable(at: now)
+            if [.person, .goal, .habit].contains(claim.kind) {
+                let terms = QuestionTerms.topicTerms(question)
+                guard terms.contains(where: { $0.count >= 2 && claim.content.localizedCaseInsensitiveContains($0) }) else { return false }
+            }
+            return [.preference, .constraint, .workflow, .goal, .habit, .person].contains(claim.kind) && claim.usable(at: now)
                 && MemoryPersonalization.applies(claim, question: question, entities: entities, conversationID: conversationID)
         }.sorted { a, b in
             func priority(_ item: MemoryClaim) -> Int {
@@ -226,6 +230,6 @@ public struct MemoryRetrievalEngine: Sendable {
             budget += item.content.count
         }
         guard !lines.isEmpty else { return nil }
-        return "当前任务适用的用户约定（只调整表达和组织；本次会话约定优先。不扩大采集、联网、通知、发送或执行权限；不把偏好写成当天成果）：\n" + lines.joined(separator: "\n")
+        return "当前任务适用的用户背景与约定（仅在相关时使用背景和目标；只调整表达和组织；本次会话约定优先。不扩大采集、联网、通知、发送或执行权限；这些背景和偏好不代表本期发生的事实或成果）：\n" + lines.joined(separator: "\n")
     }
 }

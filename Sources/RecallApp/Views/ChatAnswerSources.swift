@@ -10,6 +10,18 @@ struct ChatAnswerSources: View {
     var body: some View {
         let ids = workspace.availableIDs(citations)
         HStack(spacing: 8) {
+            let memories = model.state.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() && !Set($0.sourceIDs).isDisjoint(with: ids) }
+            if !memories.isEmpty {
+                Menu(RecallLocalization.both("参考的记忆（\(memories.count)）", "Memories (\(memories.count))")) {
+                    ForEach(memories) { claim in Button(claim.content) { model.knowledgeToOpen = claim.id; model.destination = .knowledge(claim.id) } }
+                }.font(.caption).fixedSize()
+            }
+            if ids.count == 1, let id = ids.first, workspace.record(id: id)?.memoryDirective != nil,
+               model.state.messages.last?.role == .assistant, model.state.messages.last?.content.hasPrefix("已记住：") == true,
+               model.state.messages.last?.citations == citations,
+               model.state.memoryKnowledge.claims.contains(where: { $0.usable() && $0.sourceIDs.contains(id) }) {
+                Button(RecallLocalization.both("撤销记住", "Undo remember")) { model.undoRemembering(id) }.font(.caption)
+            }
             ForEach(Array(ids.prefix(2)), id: \.self) { id in
                 if let record = workspace.record(id: id) {
                     Button { open(id) } label: {

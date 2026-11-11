@@ -362,18 +362,16 @@ public struct MatterMemoryEngine: Sendable {
 public extension RecallState {
     /// A completion applies to the evidence the user saw. New evidence can reopen the topic.
     func applyingTopicCompletion(to file: MatterFile) -> MatterFile {
-        guard let correction = matterCorrections.last(where: {
+        guard matterCorrections.last(where: {
             $0.isTopicCompletion && $0.topicID == file.id
                 && Set(file.evidenceIDs).isSubset(of: Set($0.evidenceIDs))
                 && file.latest.recordedAt <= $0.createdAt
-        }) else { return file }
+        }) != nil else { return file }
         var result = file
         let index = result.events.count - 1
         result.events[index].status = .completed
         result.events[index].resultStatus = .completed
         result.events[index].nextAction = nil
-        result.events[index].detail = "用户已标记完成：" + (correction.text.isEmpty ? file.title : correction.text)
-        result.events[index].quotes = []
         return result
     }
 

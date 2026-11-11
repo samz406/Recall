@@ -43,6 +43,7 @@ final class RecallAppModel: ObservableObject {
     @Published var credentialMaintenanceWarning: String?
     @Published var shortcutsReady = false
     @Published var openAskRequested = false
+    @Published var reviewsRequested = false
     @Published var pendingEvidenceURL: URL?
     @Published var showsOnboarding = false
     @Published var showsTextEntry = false
@@ -67,6 +68,8 @@ final class RecallAppModel: ObservableObject {
     @Published var summaryFeedbackTarget: SummaryFeedbackTarget?
     @Published var showsSummaryFeedbackHistory = false
     @Published var generatingTopicID: String?
+    var automaticTopicSummaryBudget = 3
+    var topicSummaryAttempts: [String: String] = [:]
     var topicReviewTask: Task<Void, Never>?
     var topicReviewStatusID: UUID?
     var captureUnderstandingTask: Task<Void, Never>?
@@ -247,6 +250,7 @@ final class RecallAppModel: ObservableObject {
         archiveBackupPending = await store.backupPending
         pendingFileCleanupCount = (state.pendingFileDeletions ?? []).count + (state.pendingRecoveryCleanup == true ? 1 : 0)
         guard !isFinishingStartup else { return }
+        automaticTopicSummaryBudget = 3
         rebuildMatterFiles()
         configureShortcuts()
         updateEnterKeyRecorder()
@@ -322,8 +326,9 @@ final class RecallAppModel: ObservableObject {
     }
 
     func updateMemorySettings(_ settings: MemoryKnowledgeSettings) {
+        if settings.automaticTopicSummaries != true || !settings.automaticOrganization { cancelTopicReview() }
         Task {
-            do { try await store.updateMemoryKnowledgeSettings(settings); await refresh() }
+            do { try await store.updateMemoryKnowledgeSettings(settings); state = await store.snapshot(); scheduleAutomaticTopicReviews() }
             catch { recordError(error, source: "Memory", message: "保存记忆设置失败") }
         }
     }
@@ -336,15 +341,17 @@ final class RecallAppModel: ObservableObject {
                 directive.scope = scope; directive.scopeID = scopeID; directive.validUntil = validUntil; directive.scopeExplicitlySet = true
                 _ = try await store.remember(directive)
             }
-            await refresh()
+            state = await store.snapshot()
+            rebuildMatterFiles()
+            noticeMessage = RecallLocalization.both("已记住，后续相关回答会参考。", "Remembered for relevant future answers.")
             return true
         } catch { recordError(error, source: "Memory", message: "保存记忆约定失败"); return false }
     }
 
     func retireMemory(_ claim: MemoryClaim) {
         Task {
-            do { try await store.retireMemory(id: claim.id); await refresh() }
-            catch { recordError(error, source: "Memory", message: "停用记忆失败") }
+            do { try await store.retireMemory(id: claim.id); state = await store.snapshot(); noticeMessage = RecallLocalization.both("已不再参考这条记忆。", "This memory is no longer used.") }
+            catch { noticeMessage = RecallLocalization.both("未能停止参考，请重试。", "Could not stop using this memory. Please retry."); recordError(error, source: "Memory", message: "停用记忆失败") }
         }
     }
 
@@ -663,6 +670,7 @@ final class RecallAppModel: ObservableObject {
                     memoryWorkspace = result
                 }
                 isBuildingMatters = false
+                scheduleAutomaticTopicReviews()
                 if let taskID { finishTask(taskID, state: .succeeded, message: "记忆已更新") }
                 if announce {
                     if snapshot.captures.isEmpty {
@@ -1102,6 +1110,12 @@ final class RecallAppModel: ObservableObject {
             guard current.recentlyDeletedMemories.contains(where: { $0.id == transaction.id }) else { return }
             enqueueDailyReviews(transaction.affectedDays, reason: .rebuildAfterDeletion)
         }
+    }
+
+    func startTopicConversation(_ topicID: String) {
+        guard matterFiles.contains(where: { $0.id == topicID }) else { return }
+        chatScope = MemoryQueryScope(topicID: topicID)
+        openAskRequested = true
     }
 
     func ask(_ question: String) {

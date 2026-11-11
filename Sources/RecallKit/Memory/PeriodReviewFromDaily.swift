@@ -211,7 +211,12 @@ public struct PeriodReviewFromDaily: Sendable {
         await onProgress?(ReviewGenerationProgress(.preparing, detail: "正在读取这段时间的每日回顾，直接复用已核对的结论。"))
         let prepared = try prepare(in: state, period: period, topicKeys: topicKeys, template: template)
         let kind: SummaryFeedbackKind = topic == nil ? .period : .period
-        let feedback = SummaryFeedbackLearning.context(in: state, kind: kind, templateID: template?.id)
+        let taskQuestion = (template?.kind == .work || template?.kind == .project ? "工作周报，" : "") + (topic ?? template?.name ?? "周期回顾")
+        let contextIDs = Set(state.memoryKnowledge.entities.filter { entity in
+            topicKeys?.contains(DailyKnowledgeEngine.topicKey(entity.name)) == true
+        }.map(\.id))
+        let feedback = [SummaryFeedbackLearning.context(in: state, kind: kind, templateID: template?.id),
+            PersonalMemoryContext.text(in: state, question: taskQuestion, topicIDs: contextIDs)].filter { !$0.isEmpty }.joined(separator: "\n")
         let itemLimit = template?.length.itemLimit ?? 6, detailLimit = template?.length.summaryLimit ?? 300
         let body = try directReviewJSON(prepared.rows)
         guard body.utf8.count <= 200_000 else { throw LLMResponseFailure(reason: .contextLimit) }

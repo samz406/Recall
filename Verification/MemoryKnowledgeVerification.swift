@@ -216,7 +216,7 @@ enum MemoryKnowledgeVerification {
         try expect(state.memoryKnowledge.dependencies.contains { $0.outputID == summary.id && $0.claimIDs.contains(claim.id) }, "派生结果缺少依赖关系")
         try await store.correctMemory(id: claim.id, content: "以后工作周报简洁一点", scope: .work)
         state = await store.snapshot()
-        try expect(state.dailySummaries.isEmpty && !state.messages.contains { $0.id == answer.id }, "更正后旧派生正文仍在线")
+        try expect(state.dailySummaries.contains { $0.id == summary.id } && !state.messages.contains { $0.id == answer.id }, "修改偏好未保留历史回顾或仍参考旧的对话要求")
         try expect(state.memoryKnowledge.claims.contains { $0.state == .retracted } && state.memoryKnowledge.claims.contains { $0.usable() && $0.content.contains("简洁") }, "更正没有保留旧版本与有效新版本")
         let live = state.memoryKnowledge.claims.first { $0.usable() }!
         try await store.retireMemory(id: live.id)

@@ -41,3 +41,9 @@ Recall keeps one checksum-validated local mirror of the current state, without A
 Ordinary text defaults to 90 days, screenshots to 7 days. Record management controls the periods. A record-detail switch can keep important text indefinitely without retaining its screenshots indefinitely. Explicit deletion overrides this switch.
 
 Cloud Ask drafts receive a separate bounded verification request using already authorised text. Unsupported claims are omitted independently; verification failures show source excerpts instead of unverified drafts. No usable evidence means a local explanation, not a model-created factual answer. Model and OCR accuracy remain imperfect.
+
+## Personal memory and topic summaries
+
+About me supports explicit remember, edit, pause, resume and stop-use commands. Stopping use does not delete source records or saved reviews; source deletion remains a separate record-management action. Personal context is scoped to the current task and can be inspected and changed.
+
+Automatic model topic summaries are a separate opt-in setting, off by default. They require an enabled model connection and permission to send redacted text. Only the changed topic's reviewed text is sent, with at most three topic updates per maintenance cycle. Saved content remains readable while updating or after failure. Pausing, cancellation, source changes and privacy changes prevent late results from committing. Local topic reading requires no model request.

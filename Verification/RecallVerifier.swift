@@ -24,6 +24,7 @@ struct RecallVerifier {
             try await DirectDailyReviewVerification.run()
             try KnowledgeProjectionVerification.run()
             try await TopicCompletionVerification.run()
+            try await MemoryExperienceVerification.run()
             try await SummaryAccuracyVerification.run()
             try await ReviewCapacityVerification.run()
             try await ReviewCancellationVerification.run()

@@ -232,8 +232,11 @@ struct MemoryReadTools: Sendable {
             MemoryLibraryCategory.all.includes(claim.kind) && state.memoryKnowledgeSettings.references(claim)
                 && claim.usable() && !claim.sourceIDs.isEmpty && Set(claim.sourceIDs).isSubset(of: allowedIDs)
         }
+        let inactivePersonalSources = Set(state.memoryKnowledge.claims.filter {
+            $0.kind.isPersonal && (!$0.usable() || !state.memoryKnowledgeSettings.references($0))
+        }.flatMap(\.sourceIDs))
         let saved = state.userMemories.filter { memory in
-            !memory.evidenceIDs.isEmpty && Set(memory.evidenceIDs).isSubset(of: allowedIDs)
+            Set(memory.evidenceIDs).isDisjoint(with: inactivePersonalSources) && !memory.evidenceIDs.isEmpty && Set(memory.evidenceIDs).isSubset(of: allowedIDs)
                 && (memory.status == .confirmed || (memory.status == .proposed && memory.confidence >= 0.75))
         }
         guard !claims.isEmpty || !saved.isEmpty else { return pack("没有可引用的长期记忆或约定。", sources: []) }

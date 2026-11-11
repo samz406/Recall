@@ -112,5 +112,14 @@ extension RecallLayoutPreviews {
             throw TopicCompletionFailure(errorDescription: "迟到的主题投影覆盖了已保存完成状态")
         }
         print("PASS: native topic completion saves 6351 records / 127 topics in \(elapsed), without archive projection or timeline rebuild; durable result, indexes, other topics and late-worker status preserved")
+        let personalStart = clock.now
+        let remembered = await model.saveMemoryAgreement(content: "以后回答先给结论，正文简洁一点", scope: .global)
+        let personalElapsed = personalStart.duration(to: clock.now)
+        guard remembered, personalElapsed < .seconds(3), model.state.captures.count == 6_352,
+              model.state.memoryKnowledge.claims.contains(where: { $0.kind.isPersonal && $0.usable() }), model.tasks.isEmpty else {
+            throw TopicCompletionFailure(errorDescription: "大型档案的一句话记住仍执行整库整理：\(personalElapsed)")
+        }
+        while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(5)) }
+        print("PASS: native About me save with 6351 existing records in \(personalElapsed), without global generation or factual source changes")
     }
 }

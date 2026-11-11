@@ -10,6 +10,8 @@ Connect moments you chose to save into a searchable history of your work.
 
 Core workflows support English and Simplified Chinese. See [workflow guide](docs/work-ledger-usage.md).
 
+Memory has two reading areas: **Topics** for ongoing context and past decisions, and **About me** for background and preferences used in relevant answers. The sidebar **Reviews** entry brings daily and weekly/monthly reviews together.
+
 ## Quick start
 
 There is no signed download and no App Store listing. Build Recall from this repository on your Mac.

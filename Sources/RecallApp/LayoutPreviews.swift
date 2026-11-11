@@ -85,6 +85,7 @@ enum RecallLayoutPreviews {
         try await verifyDailyReviewAction()
         try await verifyPeriodReviewDeletion()
         try await verifyTopicCompletionAction()
+        try await verifyMemoryExperienceActions()
         try await verifyReviewScheduleSave()
         try await verifyDailyReviewGeneration()
         try await verifyMemoryReliabilityEntries()
@@ -93,7 +94,7 @@ enum RecallLayoutPreviews {
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(10)) }
         let defaults = UserDefaults(suiteName: "im.recall.synthetic-layout")!
         defer { defaults.removePersistentDomain(forName: "im.recall.synthetic-layout") }
-        let names = ["global-search", "global-search-results", "global-search-dates", "global-search-calendar", "archive-recovery", "archive-safety", "record-retention", "preferences", "first-moment", "sample", "daily", "daily-long", "topics", "period", "period-stale", "review-schedule", "review-schedule-saving", "knowledge", "knowledge-empty", "rules", "reminders", "reminder-new", "reminder-calendar", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "chat-busy", "chat-sources", "navigation"]
+        let names = ["global-search", "global-search-results", "global-search-dates", "global-search-calendar", "archive-recovery", "archive-safety", "record-retention", "preferences", "first-moment", "sample", "daily", "daily-long", "topics", "topic-detail", "period", "period-stale", "review-schedule", "review-schedule-saving", "knowledge", "knowledge-empty", "rules", "reminders", "reminder-new", "reminder-calendar", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "chat-busy", "chat-sources", "navigation"]
         for mode in ["wide", "narrow", "dark", "english"] {
             UserDefaults.standard.set(mode == "english" ? "en" : "zh-Hans", forKey: RecallLocalization.languageKey)
             let width: CGFloat = mode == "narrow" ? 780 : 1050

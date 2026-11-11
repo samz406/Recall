@@ -43,7 +43,7 @@ extension FileMemoryStore {
 
     public func updateMemoryKnowledgeSettings(_ settings: MemoryKnowledgeSettings) throws {
         let previous = state
-        do { state.memoryKnowledgeSettings = settings; try persist() }
+        do { state.memoryKnowledgeSettings = settings; try persistReviewState(indexChanged: true) }
         catch { state = previous; throw error }
     }
 
@@ -60,15 +60,22 @@ extension FileMemoryStore {
             ocrText: directive.content, textOrigin: .userInput, memoryDirective: directive)
         do {
             state.captures.insert(record, at: 0)
+            // An explicit personal update does not require re-reading unrelated OCR or
+            // rebuilding factual history. Reconcile the personal evidence slice only.
+            let personalIDs = Set(state.memoryKnowledge.claims.filter { $0.kind.isPersonal }.flatMap(\.sourceIDs))
             var input = state
-            if !state.memoryKnowledgeSettings.automaticOrganization {
-                let knownIDs = Set(state.memoryKnowledge.sourceVersions.keys).union([record.id.uuidString])
-                input.captures = input.captures.filter { knownIDs.contains($0.id.uuidString) }
-            }
-            applyKnowledge(MemoryKnowledgeEngine().reconcile(input, force: true, now: now))
+            input.captures = state.captures.filter { $0.memoryDirective != nil || personalIDs.contains($0.id) }
+            let personal = MemoryKnowledgeEngine().reconcile(input, force: true, now: now)
+            state.memoryKnowledge.claims = state.memoryKnowledge.claims.filter { !$0.kind.isPersonal } + personal.claims.filter { $0.kind.isPersonal }
+            let existingEntities = Set(state.memoryKnowledge.entities.map(\.id))
+            state.memoryKnowledge.entities += personal.entities.filter { !existingEntities.contains($0.id) }
+            state.memoryKnowledge.sourceVersions[record.id.uuidString] = MemoryKnowledgeEngine.version(of: record, corrections: state.matterCorrections)
+            state.memoryKnowledge.updatedAt = now
+            if state.captures.count == input.captures.count { state.memoryKnowledge.organizationVersion = MemoryKnowledgeEngine.organizationVersion }
+            state.memoryKnowledge.ledgerInputStamp = nil
             state.conversationSummary = nil
             state.conversationSummaryCoveredMessageCount = state.messages.count
-            try persist()
+            try persistReviewState(indexChanged: true)
         } catch { state = previous; throw error }
         return record
     }
@@ -78,9 +85,12 @@ extension FileMemoryStore {
         let previous = state
         do {
             state.memoryKnowledge.suppressedKeys.append(claim.key)
-            invalidateMemoryOutputs(sourceIDs: Set(claim.sourceIDs))
-            applyKnowledge(MemoryKnowledgeEngine().reconcile(state, force: true, now: now))
-            try persist()
+            if let index = state.memoryKnowledge.claims.firstIndex(where: { $0.id == id }) {
+                state.memoryKnowledge.claims[index].state = .retracted
+            }
+            state.conversationSummary = nil
+            state.messages.removeAll { $0.role == .assistant && !Set($0.citations).isDisjoint(with: claim.sourceIDs) }
+            try persistReviewState(indexChanged: true)
         } catch { state = previous; throw error }
     }
 
@@ -90,7 +100,9 @@ extension FileMemoryStore {
         let oldDirective = state.captures.first { claim.sourceIDs.contains($0.id) }?.memoryDirective
         do {
             state.memoryKnowledge.suppressedKeys.append(claim.key)
-            invalidateMemoryOutputs(sourceIDs: Set(claim.sourceIDs))
+            if let index = state.memoryKnowledge.claims.firstIndex(where: { $0.id == id }) { state.memoryKnowledge.claims[index].state = .retracted }
+            state.messages.removeAll { $0.role == .assistant && !Set($0.citations).isDisjoint(with: claim.sourceIDs) }
+            state.conversationSummary = nil
             var directive = MemoryDirective(content: content, key: oldDirective?.key ?? claim.key,
                 kind: claim.kind, scope: scope, scopeID: scopeID, validUntil: validUntil)
             directive.scopeExplicitlySet = true
@@ -152,3 +164,46 @@ extension RecallState {
     }
 }
 
+
+extension FileMemoryStore {
+    /// Cancels an explicit remember operation without deleting its source or factual history.
+    public func undoRemembering(sourceID: UUID) throws {
+        guard let source = state.captures.first(where: { $0.id == sourceID }), let directive = source.memoryDirective,
+              let claim = state.memoryKnowledge.claims.first(where: { $0.usable() && $0.sourceIDs.contains(sourceID) && $0.kind.isPersonal }) else { return }
+        let before = state
+        do {
+            state.memoryKnowledge.suppressedKeys.append(claim.key)
+            if let i = state.memoryKnowledge.claims.firstIndex(where: { $0.id == claim.id }) { state.memoryKnowledge.claims[i].state = .retracted }
+            let prior = state.captures.filter { record in
+                guard record.createdAt < source.createdAt, let saved = record.memoryDirective else { return false }
+                return saved.key == directive.key && saved.scope == directive.scope && saved.scopeID == directive.scopeID
+            }.max { $0.createdAt < $1.createdAt }
+            if let previous = prior?.memoryDirective { _ = try remember(previous) }
+            else { try persistReviewState(indexChanged: true) }
+        } catch { state = before; throw error }
+    }
+
+    public func applyMemoryCommand(_ command: MemoryManagementCommand) throws -> String {
+        let matches = command.matches(in: state)
+        guard matches.count == 1, let target = matches.first else {
+            return matches.isEmpty ? "没有找到这条有效记忆。可以在‘记忆 → 关于我’查看并修改。" : "找到多条相关记忆，请写出要修改的完整内容：\n" + matches.prefix(5).map { "- " + $0.content }.joined(separator: "\n")
+        }
+        switch command.action {
+        case .forget:
+            try retireMemory(id: target.id)
+            return "已不再记住：" + target.content + "\n后续不再参考这条记忆。"
+        case .pause, .resume:
+            var settings = state.memoryKnowledgeSettings
+            var disabled = Set(settings.disabledClaimKeys ?? [])
+            if case .pause = command.action { disabled.insert(target.key) } else { disabled.remove(target.key) }
+            settings.disabledClaimKeys = Array(disabled).sorted()
+            let before = state
+            do { state.memoryKnowledgeSettings = settings; state.conversationSummary = nil; try persistReviewState() }
+            catch { state = before; throw error }
+            return (disabled.contains(target.key) ? "已暂停参考：" : "已恢复参考：") + target.content
+        case .replace(let content):
+            try correctMemory(id: target.id, content: content, scope: target.scope, scopeID: target.scopeID, validUntil: target.validUntil)
+            return "已更新记忆：" + content + "\n适用范围：" + target.scope.title
+        }
+    }
+}
