@@ -82,7 +82,7 @@ struct WeeklyReviewView: View {
             rangeNow = .now
             scope = ReviewScope()
             showsComposer = false
-            if let id = model.reviewTopicToOpen { openTopicReview(id) }
+            if let id = model.reviewTopicToOpen { openTopicReview(id); return }
             let reports = model.state.weeklyReports
             if let id = model.weeklyReportToOpen, reports.contains(where: { $0.id == id }) { selectedID = id }
             else if !reports.contains(where: { $0.id == selectedID }) {
