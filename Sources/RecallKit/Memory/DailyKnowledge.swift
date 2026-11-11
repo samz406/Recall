@@ -124,7 +124,7 @@ public struct DailyKnowledgeEngine: Sendable {
         }
         return groups.map { key, value in
             let ordered = value.events.sorted { $0.date == $1.date ? $0.recordedAt == $1.recordedAt ? $0.id.uuidString < $1.id.uuidString : $0.recordedAt < $1.recordedAt : $0.date < $1.date }
-            return MatterFile(id: key, title: value.name, events: ordered)
+            return state.applyingTopicCompletion(to: MatterFile(id: key, title: value.name, events: ordered))
         }.sorted { $0.latest.date == $1.latest.date ? $0.id < $1.id : $0.latest.date > $1.latest.date }
     }
 

@@ -70,11 +70,15 @@ public struct MatterCorrection: Identifiable, Codable, Equatable, Sendable {
     public var text: String
     public var eventAt: Date?
     public var createdAt: Date = .now
-    public init(evidenceIDs: [UUID], kind: MatterCorrectionKind, text: String = "", eventAt: Date? = nil) {
+    /// Card actions change one topic, rather than rewriting every fact in a shared screenshot.
+    public var topicID: String?
+    public var isTopicCompletion: Bool { kind == .completed && topicID != nil }
+    public init(evidenceIDs: [UUID], kind: MatterCorrectionKind, text: String = "", eventAt: Date? = nil, topicID: String? = nil) {
         self.evidenceIDs = evidenceIDs
         self.kind = kind
         self.text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         self.eventAt = eventAt
+        self.topicID = topicID
     }
 }
 
@@ -174,6 +178,7 @@ public struct MatterMemoryEngine: Sendable {
 
     public func files(in state: RecallState, calendar: Calendar = .current) -> [MatterFile] {
         MemoryTopicGroup.applying(state.topicGroups, to: MemoryKnowledgeEngine().files(in: state) ?? sourceFiles(in: state, calendar: calendar))
+            .map { state.applyingTopicCompletion(to: $0) }
     }
 
     /// Structured days contribute review matters. Days without a review keep observed evidence.
@@ -208,7 +213,7 @@ public struct MatterMemoryEngine: Sendable {
                 if $0.recordedAt != $1.recordedAt { return $0.recordedAt < $1.recordedAt }
                 return $0.sequence == $1.sequence ? $0.id.uuidString < $1.id.uuidString : $0.sequence < $1.sequence
             }
-            return MatterFile(id: "topic:" + key, title: value.title, events: ordered)
+            return state.applyingTopicCompletion(to: MatterFile(id: "topic:" + key, title: value.title, events: ordered))
         }.sorted { $0.latest.date == $1.latest.date ? $0.id < $1.id : $0.latest.date > $1.latest.date }
     }
 
@@ -235,7 +240,7 @@ public struct MatterMemoryEngine: Sendable {
         // Apply the same exclusions and corrections as automatically extracted evidence.
         for record in safe.captures {
             guard record.textOrigin == .userInput, let note = record.manualMatter, note.isValid else { continue }
-            let corrections = state.matterCorrections.filter { $0.evidenceIDs.contains(record.id) }
+            let corrections = state.matterCorrections.filter { !$0.isTopicCompletion && $0.evidenceIDs.contains(record.id) }
             let renamed = corrections.last { $0.kind == .separate && !$0.text.isEmpty }
             let title = renamed?.text ?? note.title
             let key = (renamed == nil ? "topic:" : "user:") + MatterEvidence.key(title)
@@ -254,7 +259,7 @@ public struct MatterMemoryEngine: Sendable {
                 let id = record.id
                 if record.manualMatter != nil && record.textOrigin == .userInput { continue }
                 let proposed = safe.episodes.first { $0.evidenceIDs.contains(id) }?.projectName ?? record.windowTitle ?? ""
-                let corrections = state.matterCorrections.filter { $0.evidenceIDs.contains(id) }
+                let corrections = state.matterCorrections.filter { !$0.isTopicCompletion && $0.evidenceIDs.contains(id) }
                 let separated = corrections.last { $0.kind == .separate && !$0.text.isEmpty }
                 if let understood = record.understanding {
                     for fact in understood.facts where fact.isPersonalEvent {
@@ -355,13 +360,31 @@ public struct MatterMemoryEngine: Sendable {
 }
 
 public extension RecallState {
+    /// A completion applies to the evidence the user saw. New evidence can reopen the topic.
+    func applyingTopicCompletion(to file: MatterFile) -> MatterFile {
+        guard let correction = matterCorrections.last(where: {
+            $0.isTopicCompletion && $0.topicID == file.id
+                && Set(file.evidenceIDs).isSubset(of: Set($0.evidenceIDs))
+                && file.latest.recordedAt <= $0.createdAt
+        }) else { return file }
+        var result = file
+        let index = result.events.count - 1
+        result.events[index].status = .completed
+        result.events[index].resultStatus = .completed
+        result.events[index].nextAction = nil
+        result.events[index].detail = "用户已标记完成：" + (correction.text.isEmpty ? file.title : correction.text)
+        result.events[index].quotes = []
+        return result
+    }
+
     /// Corrections invalidate derived claims, not original records. Call before inference/retrieval.
     func correctedForAnalysis() -> RecallState {
         var result = self
+        let sourceCorrections = matterCorrections.filter { !$0.isTopicCompletion }
         let invalid = Set(matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
         let usable = Set(captures.filter { !privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id)).subtracting(invalid)
         result.captures = captures.map { applyingAnalysisEdits($0, usable: usable) }
-        let touched = Set(matterCorrections.flatMap(\.evidenceIDs))
+        let touched = Set(sourceCorrections.flatMap(\.evidenceIDs))
         if !matterCorrections.isEmpty {
             let cutoff = matterCorrections.map(\.createdAt).max() ?? .distantPast
             result.messages.removeAll { $0.createdAt <= cutoff }
@@ -374,12 +397,12 @@ public extension RecallState {
         result.userMemories.removeAll { !Set($0.evidenceIDs).isDisjoint(with: touched) }
         result.insights.removeAll { !Set($0.evidenceIDs).isDisjoint(with: touched) }
         result.dailySummaries.removeAll { summary in
-            matterCorrections.contains { correction in
+            sourceCorrections.contains { correction in
                 correction.createdAt >= summary.createdAt && !Set(summary.sourceCaptureIDs).isDisjoint(with: correction.evidenceIDs)
             }
         }
         for i in result.episodes.indices {
-            let corrections = matterCorrections.filter { !Set($0.evidenceIDs).isDisjoint(with: result.episodes[i].evidenceIDs) }
+            let corrections = sourceCorrections.filter { !Set($0.evidenceIDs).isDisjoint(with: result.episodes[i].evidenceIDs) }
             if let eventDate = corrections.last(where: { $0.kind == .eventDate })?.eventAt {
                 result.episodes[i].startedAt = eventDate
                 result.episodes[i].endedAt = eventDate
@@ -413,7 +436,7 @@ public extension RecallState {
 
     private func applyingAnalysisEdits(_ capture: CaptureRecord, usable: Set<UUID>) -> CaptureRecord {
         var result = SummaryFeedbackLearning.adjusted(capture, in: self).scopingUnderstanding(to: usable)
-        let corrections = matterCorrections.filter { $0.evidenceIDs.contains(capture.id) }
+        let corrections = matterCorrections.filter { !$0.isTopicCompletion && $0.evidenceIDs.contains(capture.id) }
         if let eventDate = corrections.last(where: { $0.kind == .eventDate })?.eventAt {
             result.createdAt = eventDate
         }

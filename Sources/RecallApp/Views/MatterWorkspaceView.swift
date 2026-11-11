@@ -304,8 +304,12 @@ struct MatterWorkspaceView: View {
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
                 Spacer(minLength: 6)
                 if file.latest.status.isOpenMatter {
-                    Button(RecallLocalization.text("完成")) { model.correctMatter(MatterCorrection(evidenceIDs: file.evidenceIDs, kind: .completed, text: file.title)) }
-                        .buttonStyle(.plain).help(RecallLocalization.text("标记为已完成；原始记录保留，可在“更正记录”中撤销"))
+                    Button(model.completingMatterIDs.contains(file.id) ? RecallLocalization.both("保存中…", "Saving…") : RecallLocalization.text("完成")) {
+                        Task { await model.completeMatter(file) }
+                    }
+                    .buttonStyle(.plain).disabled(model.completingMatterIDs.contains(file.id))
+                    .accessibilityIdentifier("complete-topic-" + file.id)
+                    .help(RecallLocalization.text("标记为已完成；原始记录保留，可在“更正记录”中撤销"))
                 }
                 Button(RecallLocalization.text("接着问")) { continueChat(RecallLocalization.both("关于\(file.title)，请找回上次的进展、已确认的结论和仍缺少的信息。", "About \(file.title), find the last progress, confirmed conclusions and missing information.")) }.buttonStyle(.borderedProminent)
                 Menu {
