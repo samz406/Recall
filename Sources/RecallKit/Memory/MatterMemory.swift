@@ -190,6 +190,15 @@ public struct MatterMemoryEngine: Sendable {
         func manual(_ event: MatterEvent) -> Bool {
             event.evidenceIDs.contains { id in captures[id]?.textOrigin == .userInput && captures[id]?.manualMatter != nil }
         }
+        var reviewedAt: [String: [Date: Date]] = [:]
+        if !state.dailySummaries.isEmpty {
+            for entry in daily.entries(in: state) where entry.knowledge.kind == .matter && entry.knowledge.ownedByUser {
+                guard let title = entry.knowledge.topic else { continue }
+                let date = entry.sources.compactMap { captures[$0]?.createdAt }.min() ?? entry.summary.day
+                let key = DailyKnowledgeEngine.topicKey(title), day = calendar.startOfDay(for: date)
+                reviewedAt[key, default: [:]][day] = max(reviewedAt[key]?[day] ?? .distantPast, entry.summary.createdAt)
+            }
+        }
         var buckets: [String: (title: String, events: [MatterEvent])] = [:]
         func add(_ file: MatterFile, fromReview: Bool) {
             let key = DailyKnowledgeEngine.topicKey(file.title)
@@ -199,8 +208,20 @@ public struct MatterMemoryEngine: Sendable {
             for event in file.events {
                 let day = calendar.startOfDay(for: event.date)
                 if !fromReview && !manual(event) && structured.contains(day) { continue }
-                // A review already accounts for this topic today. Later handwritten notes the same day stay, so a newer classification is kept.
-                if !fromReview && manual(event) && bucket.events.contains(where: { review in calendar.isDate(review.date, inSameDayAs: day) && Set(event.evidenceIDs).isSubset(of: Set(review.evidenceIDs)) }) { continue }
+                // A pre-review note is part of that day's account. Keep its sources and
+                // any omitted user text without counting the topic twice. Notes saved after
+                // generation are genuinely new progress and remain separate events.
+                if !fromReview && manual(event), let index = bucket.events.lastIndex(where: { review in
+                    calendar.isDate(review.date, inSameDayAs: day)
+                        && (Set(event.evidenceIDs).isSubset(of: Set(review.evidenceIDs)) || event.recordedAt <= (reviewedAt[key]?[day] ?? .distantPast))
+                }) {
+                    bucket.events[index].evidenceIDs = Array(Set(bucket.events[index].evidenceIDs + event.evidenceIDs)).sorted { $0.uuidString < $1.uuidString }
+                    if !bucket.events[index].detail.contains(event.detail) && !bucket.events[index].quotes.contains(where: { $0.contains(event.detail) }) {
+                        bucket.events[index].detail += "\n" + event.detail
+                        bucket.events[index].quotes.append(event.detail)
+                    }
+                    continue
+                }
                 bucket.events.append(event)
             }
             if !bucket.events.isEmpty { buckets[key] = bucket }

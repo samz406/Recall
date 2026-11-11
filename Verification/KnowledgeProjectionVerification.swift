@@ -49,6 +49,15 @@ enum KnowledgeProjectionVerification {
         let duplicated = RecallState(captures: [shot, sameDay], dailySummaries: [summary])
         let export = MatterMemoryEngine().files(in: duplicated).first { $0.title == "账单导出" }
         try expect(export?.events.count == 1, "同一主题在同一天不应被回顾和手写各计一次")
+        try expect(export?.evidenceIDs.contains(sameDay.id) == true, "合并当天手写内容时丢失了来源")
+        let recent = Calendar.current.startOfDay(for: .now)
+        let initial = capture("[聊天·自己] Atlas 仍在核对方案。", at: recent.addingTimeInterval(10), title: "Atlas 新进展")
+        var earlier = review(day: recent, evidence: [initial.id], topic: "Atlas 新进展", quotes: [DailyLedgerQuote(text: "Atlas 仍在核对方案。", sourceIDs: [initial.id], speaker: "user")])
+        earlier.createdAt = recent.addingTimeInterval(30)
+        let newer = try ManualMatterNote(title: "Atlas 新进展", detail: "新增边界验证已经完成。", status: .completed, eventAt: recent.addingTimeInterval(40)).capture(recordedAt: recent.addingTimeInterval(50))
+        let fresh = MatterMemoryEngine().files(in: RecallState(captures: [initial, newer], dailySummaries: [earlier])).first { $0.title == "Atlas 新进展" }
+        try expect(fresh?.latest.detail.contains("新增边界验证") == true && fresh?.latest.status == .completed,
+            "同日回顾生成后的新进展被旧回顾覆盖")
     }
     static func deletingOneScreenshotKeepsTheMatter() throws {
         let day = Calendar.current.startOfDay(for: Date.now.addingTimeInterval(-86_400))
