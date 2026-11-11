@@ -19,7 +19,7 @@ public struct TopicReading: Sendable {
             return !text.isEmpty && seen.insert(text).inserted
         }
         let usable = review.flatMap { $0.id == file.id ? $0 : nil }
-        let current = usable?.inputFingerprint == Self.fingerprint(file)
+        let current = usable.map { $0.inputFingerprint == Self.fingerprint(file) && Set(file.evidenceIDs).isSubset(of: Set($0.sourceVersions.keys)) } ?? false
         let resolvedOverview = current ? (usable?.overview.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? file.resumeText) : file.resumeText
         overview = resolvedOverview
         if let usable, current { points = usable.points }

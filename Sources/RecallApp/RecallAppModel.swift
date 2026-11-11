@@ -69,6 +69,7 @@ final class RecallAppModel: ObservableObject {
     @Published var showsSummaryFeedbackHistory = false
     @Published var generatingTopicID: String?
     var automaticTopicSummaryBudget = 3
+    let topicReviewResponderOverride: (any LLMResponding)?
     var topicReviewIsAutomatic = false
     var topicSummaryAttempts: [String: String] = [:]
     var topicReviewTask: Task<Void, Never>?
@@ -152,8 +153,9 @@ final class RecallAppModel: ObservableObject {
     private var reminderActionObserver: NSObjectProtocol?
     private var appActiveObserver: NSObjectProtocol?
 
-    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil, storageOverride: RecallStorage? = nil, preloadedStore: FileMemoryStore? = nil, dailyReviewResponder: (any LLMResponding)? = nil) throws {
+    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil, storageOverride: RecallStorage? = nil, preloadedStore: FileMemoryStore? = nil, dailyReviewResponder: (any LLMResponding)? = nil, topicReviewResponder: (any LLMResponding)? = nil) throws {
         self.isPreview = previewState != nil
+        self.topicReviewResponderOverride = topicReviewResponder
         self.dailyReviewResponderOverride = dailyReviewResponder
         self.reminderCreationScheduler = reminderCreationScheduler ?? LocalNotificationScheduler()
         do {
@@ -339,13 +341,15 @@ final class RecallAppModel: ObservableObject {
         do {
             if let replacing { try await store.correctMemory(id: replacing.id, content: content, scope: scope, scopeID: scopeID, validUntil: validUntil) }
             else {
-                var directive = MemoryDirective.parse("记住：" + content) ?? MemoryDirective(content: content, key: "manual:" + UUID().uuidString)
+                var directive = MemoryDirective.fromUserInput(content) ?? MemoryDirective(content: content, key: "manual:" + UUID().uuidString)
                 directive.scope = scope; directive.scopeID = scopeID; directive.validUntil = validUntil; directive.scopeExplicitlySet = true
                 _ = try await store.remember(directive)
             }
             state = await store.snapshot()
             rebuildMatterFiles()
-            noticeMessage = RecallLocalization.both("已记住，后续相关回答会参考。", "Remembered for relevant future answers.")
+            noticeMessage = state.memoryKnowledgeSettings.referencesEnabled
+                ? RecallLocalization.both("已记住，后续相关回答会参考。", "Remembered for relevant future answers.")
+                : RecallLocalization.both("已记住，目前已暂停参考，可在设置中恢复。", "Remembered. Personal context is paused; resume it in Settings.")
             return true
         } catch { recordError(error, source: "Memory", message: "保存记忆约定失败"); return false }
     }
@@ -636,7 +640,8 @@ final class RecallAppModel: ObservableObject {
     func saveManualMatter(_ note: ManualMatterNote) async -> Bool {
         do {
             try await store.addManualMatter(note)
-            await refresh()
+            state = await store.snapshot()
+            rebuildMatterFiles()
             matterBuildMessage = "记录已保存，同名主题的相关内容会串联在一起。"
             return true
         } catch {

@@ -63,6 +63,9 @@ public struct MemoryDirective: Codable, Hashable, Sendable {
         self.scopeID = scopeID; self.replacesPrevious = replacesPrevious
         self.validUntil = validUntil
     }
+    public static func fromUserInput(_ text: String) -> MemoryDirective? {
+        parse(text) ?? parse("记住：" + text)
+    }
     /// Only explicitly requested memory operations are parsed here. Observed page text never calls this path.
     public static func parse(_ text: String, conversationID: UUID? = nil) -> MemoryDirective? {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)

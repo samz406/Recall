@@ -200,7 +200,7 @@ public struct MatterMemoryEngine: Sendable {
                 let day = calendar.startOfDay(for: event.date)
                 if !fromReview && !manual(event) && structured.contains(day) { continue }
                 // A review already accounts for this topic today. Later handwritten notes the same day stay, so a newer classification is kept.
-                if !fromReview && manual(event) && bucket.events.contains(where: { calendar.isDate($0.date, inSameDayAs: day) && !manual($0) }) { continue }
+                if !fromReview && manual(event) && bucket.events.contains(where: { review in calendar.isDate(review.date, inSameDayAs: day) && Set(event.evidenceIDs).isSubset(of: Set(review.evidenceIDs)) }) { continue }
                 bucket.events.append(event)
             }
             if !bucket.events.isEmpty { buckets[key] = bucket }

@@ -4,10 +4,10 @@ import RecallKit
 @MainActor
 extension RecallAppModel {
     func scheduleAutomaticTopicReviews() {
-        guard automaticTopicSummaryBudget > 0, !isPreview, state.memoryKnowledgeSettings.automaticTopicSummaries == true,
+        guard automaticTopicSummaryBudget > 0, (!isPreview || topicReviewResponderOverride != nil), state.memoryKnowledgeSettings.automaticTopicSummaries == true,
               state.memoryKnowledgeSettings.automaticOrganization, state.privacy.cloudUseEnabled,
               topicReviewTask == nil, !isGeneratingDailySummary, !isGeneratingWeeklyReview,
-              dailySummaryResponder() != nil else { return }
+              (topicReviewResponderOverride != nil || dailySummaryResponder() != nil) else { return }
         // Existing history/task entries make cancellation and failure sticky for unchanged inputs.
         let candidates = matterFiles.filter { file in
             let fingerprint = TopicReading.fingerprint(file)
@@ -26,7 +26,7 @@ extension RecallAppModel {
             if !automatic { noticeMessage = RecallLocalization.both("另一份回顾正在更新，请稍后重试。", "Another review is updating. Please try again shortly.") }
             return
         }
-        guard let responder = dailySummaryResponder() else {
+        guard let responder = topicReviewResponderOverride ?? dailySummaryResponder() else {
             if !automatic { noticeMessage = RecallLocalization.both("请在设置中连接模型并允许发送脱敏文本；已有记录仍可阅读。", "Connect a model and allow redacted text in Settings. Saved records remain readable.") }
             return
         }

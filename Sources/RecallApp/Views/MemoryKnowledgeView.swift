@@ -30,6 +30,9 @@ struct MemoryKnowledgeView: View {
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 20) {
             Text(RecallLocalization.both("让 Recall 记住你的背景和习惯，减少反复交代。", "Help Recall remember your background and preferences.")).foregroundStyle(RecallPalette.secondary)
+            if !model.state.memoryKnowledgeSettings.referencesEnabled {
+                Text(RecallLocalization.both("当前已暂停参考个人信息，可在设置 → 记忆整理中恢复。", "Personal context is paused. Resume it in Settings → Memory.")).font(.caption).foregroundStyle(RecallPalette.secondary)
+            }
             HStack(alignment: .top, spacing: 12) {
                 TextField(RecallLocalization.both("希望 Recall 以后记住什么？", "What should Recall remember for later?"), text: $draft, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).onSubmit { remember() }
@@ -109,11 +112,14 @@ struct MemoryKnowledgeView: View {
         let content = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !saving, !content.isEmpty, content.count <= 800 else { return }
         saving = true; message = nil
-        let directive = MemoryDirective.parse("记住：" + content)
+        let directive = MemoryDirective.fromUserInput(content)
+        if directive?.scope == .conversation {
+            saving = false; message = RecallLocalization.both("这次的要求请在“问一问”中输入。", "Use Ask for a one-time instruction."); return
+        }
         Task {
             defer { saving = false }
             if await model.saveMemoryAgreement(content: content, scope: directive?.scope ?? .global, scopeID: directive?.scopeID, validUntil: directive?.validUntil) {
-                draft = ""; message = RecallLocalization.both("已记住，后续相关回答会参考。", "Remembered for relevant future answers.")
+                draft = ""; message = model.noticeMessage
             } else { message = RecallLocalization.both("未能保存，请重试。", "Could not save. Please retry.") }
         }
     }
@@ -211,12 +217,12 @@ struct MemoryAgreementEditor: View {
     @State private var scopeChanged = false
     @State private var expiryChanged = false
     @State private var saveError: String?
-    private var suggested: MemoryDirective? { MemoryDirective.parse("记住：" + content) }
+    private var suggested: MemoryDirective? { MemoryDirective.fromUserInput(content) }
     private var conversationRequest: Bool { suggested?.scope == .conversation }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(claim == nil ? "记住一件事" : "更正记忆").font(.title2.bold())
-            Text(RecallLocalization.text("写下具体内容与适用范围。更正会保留旧版本，并停止使用依赖旧说法的结果。"))
+            Text(RecallLocalization.both("写下一句以后希望参考的信息，适用范围可按需调整。", "Write something to remember for later. Adjust the scope if needed."))
                 .foregroundStyle(RecallPalette.secondary)
             TextEditor(text: $content).font(.body).scrollContentBackground(.hidden).frame(height: 150).padding(10)
                 .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))

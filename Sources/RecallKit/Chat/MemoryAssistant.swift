@@ -68,8 +68,10 @@ public final class MemoryAssistant {
             let record = try await store.remember(directive)
             let includesTask = ["解释", "分析", "总结", "写一", "帮我", "告诉", "查一下", "看看", "怎么", "什么", "聊聊"].contains(where: question.contains)
             if directive.scope != .conversation || !includesTask {
+            let settings = await store.snapshot().memoryKnowledgeSettings
+            let usage = settings.referencesEnabled ? "后续相关回答会参考。" : "目前已暂停参考，可在设置中恢复。"
             let answer = ConversationMessage(role: .assistant,
-                content: "已记住：" + directive.content + "\n适用范围：" + directive.scope.title + "。后续相关回答会参考。可在‘记忆 → 关于我’修改或停止使用。",
+                content: "已记住：" + directive.content + "\n适用范围：" + directive.scope.title + "。" + usage + "可在‘记忆 → 关于我’修改或停止使用。",
                 citations: [record.id])
             try await store.addMessage(answer, inConversation: conversation.id)
             return answer
