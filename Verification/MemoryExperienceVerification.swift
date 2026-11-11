@@ -97,7 +97,7 @@ enum MemoryExperienceVerification {
         var updated = file
         updated.events.append(MatterEvent(id: UUID(), title: file.title, detail: "新增边界需继续核对。", recordedAt: now, status: .pending, evidenceIDs: [source.id]))
         let reading = TopicReading(file: updated, review: summary)
-        try expect(!reading.hasUpdatedSummary && reading.overview == updated.resumeText, "旧小结遮住了新的主题进展")
+        try expect(!reading.hasUpdatedSummary && reading.overview == updated.latest.detail, "旧小结遮住了新的主题进展")
         let requests = await model.log()
         try expect(requests.first?.question.contains(directive.content) == true, "工作周报没有实际读取长期写作约定")
         state.memoryKnowledgeSettings.referenceInChat = false

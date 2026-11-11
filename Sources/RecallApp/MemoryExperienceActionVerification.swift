@@ -93,7 +93,7 @@ extension RecallLayoutPreviews {
             try await Task.sleep(for: .milliseconds(5))
         }
         guard await probe.count() == 2, let current = model.matterFiles.first,
-              current.latest.detail.contains("新的边界用例"), model.state.topicReviews.first?.overview == old.overview else {
+              current.latest.detail.contains("新的边界用例"), TopicReading(file: current, review: model.state.topicReviews.first).overview.contains("新的边界用例"), model.state.topicReviews.first?.overview == old.overview else {
             throw MemoryExperienceFailure(errorDescription: "增量更新未启动，或旧小结/新进展在更新期间不可读")
         }
         settings.automaticTopicSummaries = false
