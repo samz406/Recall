@@ -670,11 +670,12 @@ final class RecallAppModel: ObservableObject {
 
     @discardableResult
     func completeMatter(_ file: MatterFile) async -> Bool {
-        guard file.latest.status.isOpenMatter, completingMatterIDs.insert(file.id).inserted else { return false }
+        guard let current = matterFiles.first(where: { $0.id == file.id }), current.latest.status.isOpenMatter,
+              completingMatterIDs.insert(file.id).inserted else { return false }
         defer { completingMatterIDs.remove(file.id) }
         do {
-            try await store.saveMatterCorrection(MatterCorrection(evidenceIDs: file.evidenceIDs, kind: .completed,
-                text: file.title, topicID: file.id))
+            try await store.saveMatterCorrection(MatterCorrection(evidenceIDs: current.evidenceIDs, kind: .completed,
+                text: current.title, topicID: current.id))
             state = await store.snapshot()
             // A card action only updates its projection; it must not start missed reviews,
             // model analysis, reminder discovery or other full-refresh maintenance.

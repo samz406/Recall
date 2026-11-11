@@ -19,7 +19,7 @@ enum TopicCompletionVerification {
             summary.ledger[0].section = "actions"
             summary.ledger.append(DailyMatterLedgerEntry(topic: "Nova 账单导出", kind: .matter, status: "inProgress", section: "progress",
                 title: "继续核对 Nova 账单导出", detail: "仍在检查分页边界。", ownedByUser: true,
-                quotes: [DailyLedgerQuote(text: source.ocrText, sourceIDs: [source.id], speaker: "user")], evidenceIDs: [source.id]))
+                quotes: [DailyLedgerQuote(text: source.ocrText, sourceIDs: [source.id], speaker: "user")], evidenceIDs: [source.id], occurredAt: source.createdAt))
             return summary
         }
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("topic-completion-" + UUID().uuidString))
@@ -41,7 +41,8 @@ enum TopicCompletionVerification {
         try expect(CaptureUnderstandingEngine.sourceVersion(saved.captures[0], in: saved) == sourceVersion, "完成主题使原始理解失效")
         try expect(projection.revision != originalProjection.revision && projection.matters.first { $0.id == target.id }?.latest.status == .completed,
             "缓存未刷新，完成主题仍留在进行中")
-        try expect(DailyKnowledgeEngine().matterFiles(in: saved).first { $0.id == target.id }?.latest.nextAction == nil,
+        let dailyTopic = DailyKnowledgeEngine().matterFiles(in: saved).first { $0.id == target.id }
+        try expect(dailyTopic?.latest.status == .completed && dailyTopic?.latest.nextAction == nil,
             "每日回顾投影保留了已完成主题的待办")
         try expect(engine.files(in: saved).first { $0.title == "Nova 账单导出" }?.latest.status == .progressed, "共享截图的另一个主题被误标完成")
         try await store.organizeMemory(force: true)

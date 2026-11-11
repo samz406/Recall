@@ -89,7 +89,7 @@ public struct ReviewWorkspaceIndex: Sendable {
         for correction in state.matterCorrections {
             for id in correction.evidenceIDs {
                 if correction.kind == .eventDate { eventDates[id] = correction.eventAt }
-                if correction.kind == .completed { completed.insert(id) }
+                if correction.kind == .completed && !correction.isTopicCompletion { completed.insert(id) }
             }
         }
         var records: [Date] = [], text: [Date] = []
