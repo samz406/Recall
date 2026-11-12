@@ -90,6 +90,9 @@ extension RecallLayoutPreviews {
             let model = try RecallAppModel(previewState: input, dailyReviewResponder: responder)
             defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
             let initial = await model.store.snapshot()
+            // Real startup publishes the decoded store snapshot. Previews initially keep their
+            // in-memory seed (including subsecond dates); align before checking failure stability.
+            model.state = initial
             let originalCaptures = initial.captures, originalDaily = initial.dailySummaries
             _ = await model.store.preparedForChat()
             model.generateWeeklyReview(period: period, template: ReviewTemplate(kind: .work), scope: ReviewScope())
@@ -98,7 +101,7 @@ extension RecallLayoutPreviews {
                 try await Task.sleep(for: .milliseconds(10))
             }
             guard !model.isGeneratingWeeklyReview, model.state.captures == originalCaptures, model.state.dailySummaries == originalDaily else {
-                throw PeriodGenerationFailure(errorDescription: "周期生成没有结束，或改写了已有每日回顾/原始记录")
+                throw PeriodGenerationFailure(errorDescription: "周期生成状态异常：\(mode)，running=\(model.isGeneratingWeeklyReview)，capturesSame=\(model.state.captures == originalCaptures)，dailySame=\(model.state.dailySummaries == originalDaily)")
             }
             if mode == .alwaysOmit || mode == .malformed {
                 guard await responder.count() == 2, model.state.weeklyReports == initial.weeklyReports,
