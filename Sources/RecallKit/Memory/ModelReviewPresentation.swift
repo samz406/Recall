@@ -59,7 +59,8 @@ public extension ModelReviewResult {
                     eventTimeKnown: false)
             }
             return ReviewItem(id: "model:" + CaptureUnderstandingEngine.digest(item.section + item.title + item.factIDs.joined()),
-                title: item.title, category: template.kind.requiresWorkScope ? .work : template.kind == .learning ? .learning : .unclassified,
+                title: item.title, category: item.category.flatMap(ReviewCategory.init(rawValue:))
+                    ?? (template.kind.requiresWorkScope ? .work : template.kind == .learning ? .learning : .unclassified),
                 section: section, previous: nil, excerpts: excerpts, featuredIDs: excerpts.map(\.id), nextAction: nil, nextActionSourceIDs: [], narrative: ReviewNarrative(title: item.title, summary: item.detail, evidenceIDs: excerpts.map(\.id)))
         }
         var report = WeeklyReport(createdAt: now, updatedAt: now, period: period, template: template, scope: scope,

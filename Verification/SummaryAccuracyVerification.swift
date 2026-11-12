@@ -35,7 +35,7 @@ enum SummaryAccuracyVerification {
         try await legacyLedgerIsRebuilt()
         try await overclaimedOwnershipIsDemoted()
         try await unmarkedScreenWorkIsTheUsers()
-        try await templatesSeparateTopicsByCategory()
+        try await templatesUseTheSameDailyInput()
         try timeRangesAreResolved()
         try await ledgerCurrencyCheckIsCheap()
         try await questionTermsAndTopicRetrieval()
@@ -303,7 +303,7 @@ extension SummaryAccuracyVerification {
 }
 
 extension SummaryAccuracyVerification {
-    static func templatesSeparateTopicsByCategory() async throws {
+    static func templatesUseTheSameDailyInput() async throws {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-template-" + UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
         let store = try verificationStore(storage: storage)
@@ -329,8 +329,7 @@ extension SummaryAccuracyVerification {
             return Set(prepared.titles())
         }
         let work = try topics(.work), learning = try topics(.learning), personal = try topics(.personal)
-        try expect(work == ["发布流程页面改版", "未能判断的事情"], "工作周报应保留未分类内容供模型核对，同时排除已知生活、学习：\(work)")
-        try expect(learning == ["英语口语练习", "未能判断的事情"], "学习回顾应保留未分类内容供模型核对，同时排除已知工作、生活：\(learning)")
+        try expect(work == personal && learning == personal, "模板不得在模型前分类或排除每日内容：工作\(work)，学习\(learning)，全部\(personal)")
         try expect(personal.count == 4, "我的一周没有覆盖全部主题：\(personal)")
         let prepared = try PeriodReviewFromDaily().prepare(in: state, period: period, template: ReviewTemplate(kind: .personal))
         try expect(prepared.categories().contains("work") && prepared.categories().contains("learning"), "类别没有进入传给模型的内容")
