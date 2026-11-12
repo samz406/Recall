@@ -1,6 +1,7 @@
 import Foundation
 
 public struct DailyReviewMetrics: Sendable {
+    public init() {}
     public var sourceCount = 0, documentCount = 0, reusedRecords = 0, modelCalls = 0, cacheHits = 0
     public var inputBytes = 0, readMilliseconds = 0, modelMilliseconds = 0, checkMilliseconds = 0, saveMilliseconds = 0, totalMilliseconds = 0
     public var diagnosticMetadata: [String: String] {
