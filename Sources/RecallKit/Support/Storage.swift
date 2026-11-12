@@ -761,7 +761,7 @@ public actor FileMemoryStore {
         state.weeklyReports.removeAll { $0.id == report.id }; state.weeklyReports.insert(report, at: 0)
         // Saving a derived report changes no original source or understanding. Its dependencies
         // were checked above; avoid reconciling every historical report and the entire archive again.
-        do { try Task.checkCancellation(); try persistReviewState(invalidateAnalysis: false) } catch { state = before; throw error }
+        do { try Task.checkCancellation(); try persistReviewState() } catch { state = before; throw error }
         return report
     }
 

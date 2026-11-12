@@ -91,6 +91,7 @@ extension RecallLayoutPreviews {
             defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
             let initial = await model.store.snapshot()
             let originalCaptures = initial.captures, originalDaily = initial.dailySummaries
+            _ = await model.store.preparedForChat()
             model.generateWeeklyReview(period: period, template: ReviewTemplate(kind: .work), scope: ReviewScope())
             for _ in 0..<600 {
                 if !model.isGeneratingWeeklyReview { break }
@@ -106,10 +107,12 @@ extension RecallLayoutPreviews {
                 }
             } else {
                 let expectedCalls = mode == .omitOnce ? 2 : 1
+                let chatSnapshot = await model.store.preparedForChat()
                 guard await responder.count() == expectedCalls, let report = model.state.weeklyReports.first,
                       report.modelAssisted, report.dailySynthesisVersion == PeriodReviewFromDaily.synthesisVersion,
                       report.digestRows.count == 8, report.coveredDayCount == 5,
                       report.items.filter({ $0.id.hasPrefix("reference:model:") && $0.section == .notes }).count == 2,
+                      chatSnapshot.weeklyReports.contains(where: { $0.id == report.id }),
                       model.weeklyReportToOpen == report.id,
                       model.tasks.contains(where: { $0.state == .succeeded }) else {
                     throw PeriodGenerationFailure(errorDescription: "真实周报入口没有调用模型、保存八项完整结果并打开，或仍被五项限制裁掉")
