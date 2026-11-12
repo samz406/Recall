@@ -726,6 +726,13 @@ public actor FileMemoryStore {
     public func commitWeeklyReport(_ submitted: WeeklyReport, replacing id: UUID? = nil,
                                    schedule expected: ReviewSchedule? = nil, categories: [String: ReviewCategory]? = nil,
                                    now: Date = .now) throws -> WeeklyReport {
+        try commitWeeklyReportMeasured(submitted, replacing: id, schedule: expected, categories: categories, now: now).report
+    }
+
+    public func commitWeeklyReportMeasured(_ submitted: WeeklyReport, replacing id: UUID? = nil,
+                                          schedule expected: ReviewSchedule? = nil, categories: [String: ReviewCategory]? = nil,
+                                          now: Date = .now) throws -> (report: WeeklyReport, metrics: WeeklyReviewSaveMetrics) {
+        let started = Date.now
         try Task.checkCancellation()
         guard state.weeklyReports.contains(where: { $0.id == submitted.id })
                 || !state.recentlyDeletedMemories.contains(where: { $0.weeklyReports?.contains(where: { $0.id == submitted.id }) == true }) else {
@@ -740,6 +747,7 @@ public actor FileMemoryStore {
                   submitted.period == expected.period(at: trigger),
                   submitted.template == expected.template, submitted.scope == expected.scope else { throw WeeklyReviewError.changedSources }
         }
+        let sourceCheckMs = Int(Date.now.timeIntervalSince(started) * 1000)
         let before = state
         var report = submitted
         if let id, !state.weeklyReports.contains(where: { $0.id == id }) { throw WeeklyReviewError.changedSources }
@@ -761,8 +769,11 @@ public actor FileMemoryStore {
         state.weeklyReports.removeAll { $0.id == report.id }; state.weeklyReports.insert(report, at: 0)
         // Saving a derived report changes no original source or understanding. Its dependencies
         // were checked above; avoid reconciling every historical report and the entire archive again.
-        do { try Task.checkCancellation(); try persistReviewState() } catch { state = before; throw error }
-        return report
+        let written: ArchiveWriteMetrics
+        do { try Task.checkCancellation(); written = try persistReviewStateMeasured() } catch { state = before; throw error }
+        return (report, WeeklyReviewSaveMetrics(sourceCheckMilliseconds: sourceCheckMs,
+            encodeMilliseconds: written.encodeMilliseconds, writeMilliseconds: written.writeMilliseconds,
+            archiveBytes: written.bytes, totalMilliseconds: Int(Date.now.timeIntervalSince(started) * 1000)))
     }
 
     public func commitWeeklyRefinement(_ submitted: WeeklyReport, expected original: WeeklyReport,
@@ -1582,12 +1593,17 @@ public actor FileMemoryStore {
     /// Only review-owned fields changed. Full reconciliation/index maintenance follows
     /// on the existing maintenance cycle; queries use their memory fallback meanwhile.
     func persistReviewState(indexChanged: Bool = false, invalidateAnalysis: Bool = true) throws {
+        _ = try persistReviewStateMeasured(indexChanged: indexChanged, invalidateAnalysis: invalidateAnalysis)
+    }
+
+    private func persistReviewStateMeasured(indexChanged: Bool = false, invalidateAnalysis: Bool = true) throws -> ArchiveWriteMetrics {
         do {
             if invalidateAnalysis { chatAnalysis = nil }
             guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
             try Task.checkCancellation()
-            try writeState()
+            let metrics = try writeState()
             if indexChanged { indexNeedsRebuild = true }
+            return metrics
         } catch {
             if let committedState { state = committedState }
             chatAnalysis = nil
@@ -1628,12 +1644,17 @@ public actor FileMemoryStore {
         }
     }
 
-    private func writeState() throws {
+    @discardableResult
+    private func writeState() throws -> ArchiveWriteMetrics {
         do {
+            let started = Date.now
             let data = try encoder.encode(state)
+            let encodeMs = Int(Date.now.timeIntervalSince(started) * 1000)
+            let writing = Date.now
             backupPending = try !ArchiveReliability.write(data, storage: storage, expectedDigest: lastDiskDigest)
             lastDiskDigest = ArchiveReliability.digest(data)
             committedState = state
+            return ArchiveWriteMetrics(encodeMilliseconds: encodeMs, writeMilliseconds: Int(Date.now.timeIntervalSince(writing) * 1000), bytes: data.count)
         } catch {
             if let committedState { state = committedState }
             if let lastDiskDigest { backupPending = !FileManager.default.fileExists(atPath: storage.rootURL.appendingPathComponent("Recovery/latest-" + lastDiskDigest + ".json").path) }

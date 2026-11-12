@@ -466,12 +466,18 @@ final class RecallAppModel: ObservableObject {
                       SummaryFeedbackLearning.revision(in: current) == SummaryFeedbackLearning.revision(in: snapshot) else { throw WeeklyReviewError.changedSources }
                 updateReviewTask(taskID, progress: ReviewGenerationProgress(.saving, detail: "核对完成，正在保存回顾。"))
                 let saveStarted = Date.now
-                let saved = try await store.commitWeeklyReport(report, replacing: replacing, schedule: schedule, categories: snapshot.reviewCategories)
+                let outcome = try await store.commitWeeklyReportMeasured(report, replacing: replacing, schedule: schedule, categories: snapshot.reviewCategories)
+                let saved = outcome.report
+                let publishing = Date.now
                 state = await store.snapshot()
+                let publishMs = Int(Date.now.timeIntervalSince(publishing) * 1000)
                 var metrics = generated.metrics
-                metrics.saveMilliseconds = Int(Date.now.timeIntervalSince(saveStarted) * 1000)
+                metrics.saveMilliseconds = outcome.metrics.totalMilliseconds
                 metrics.totalMilliseconds = Int(Date.now.timeIntervalSince(runStarted) * 1000)
                 var metadata = metrics.diagnosticMetadata
+                metadata.merge(outcome.metrics.diagnosticMetadata) { _, new in new }
+                metadata["saveWaitAndPublishMs"] = String(max(0, Int(Date.now.timeIntervalSince(saveStarted) * 1000) - metrics.saveMilliseconds))
+                metadata["publishMs"] = String(publishMs)
                 metadata["generation"] = "period-from-daily-v4"
                 metadata["sourceNotes"] = String(result.items.filter { $0.kind == "reference" }.count)
                 recordDiagnostic(.info, source: "WeeklyReview", message: "周期回顾处理统计", metadata: metadata)
@@ -480,8 +486,8 @@ final class RecallAppModel: ObservableObject {
                 finishTask(taskID, state: uncertain ? .partial : .succeeded,
                     message: uncertain ? "回顾已保存，部分原文暂无法确认" : "回顾已保存", destination: .review(saved.id),
                     detail: RecallLocalization.both(
-                        "共 \(metrics.sourceCount) 天 · \(metrics.documentCount) 项 · 模型请求 \(metrics.modelCalls) 次 · 模型等待 \(max(1, metrics.modelMilliseconds / 1000)) 秒 · 本地读取 \(metrics.readMilliseconds) 毫秒 · 核对 \(metrics.checkMilliseconds) 毫秒 · 保存 \(metrics.saveMilliseconds) 毫秒",
-                        "\(metrics.sourceCount) days · \(metrics.documentCount) items · \(metrics.modelCalls) model requests · Model \(max(1, metrics.modelMilliseconds / 1000))s · Read \(metrics.readMilliseconds)ms · Check \(metrics.checkMilliseconds)ms · Save \(metrics.saveMilliseconds)ms"))
+                        "共 \(metrics.sourceCount) 天 · \(metrics.documentCount) 项 · 模型请求 \(metrics.modelCalls) 次 · 模型等待 \(max(1, metrics.modelMilliseconds / 1000)) 秒 · 本地读取 \(metrics.readMilliseconds) 毫秒 · 核对 \(metrics.checkMilliseconds) 毫秒 · 保存 \(metrics.saveMilliseconds) 毫秒（来源校验 \(outcome.metrics.sourceCheckMilliseconds) · 编码 \(outcome.metrics.encodeMilliseconds) · 写入 \(outcome.metrics.writeMilliseconds)）· 界面刷新 \(publishMs) 毫秒",
+                        "\(metrics.sourceCount) days · \(metrics.documentCount) items · \(metrics.modelCalls) model requests · Model \(max(1, metrics.modelMilliseconds / 1000))s · Read \(metrics.readMilliseconds)ms · Check \(metrics.checkMilliseconds)ms · Save \(metrics.saveMilliseconds)ms (sources \(outcome.metrics.sourceCheckMilliseconds) · encode \(outcome.metrics.encodeMilliseconds) · write \(outcome.metrics.writeMilliseconds)) · UI \(publishMs)ms"))
                 weeklyReviewMessage = nil
                 if !Task.isCancelled, let schedule, schedule.notifyWhenReady, !saved.refinementPending, !saved.digestRows.isEmpty {
                     do { try await notificationScheduler.deliverWeeklyReview(saved) }

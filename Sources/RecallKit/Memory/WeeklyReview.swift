@@ -297,8 +297,8 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
     public var markdown: String {
         guard isReadable else { return "原始记录已删除或更正，请重新生成这份回顾。" }
         if let editedMarkdown { return editedMarkdown }
-        let digest = digestRows
-        var lines = ["# \(displayName)", "", period.label, "", overview, ""]
+        let digest = readingRows
+        var lines = ["# \(displayName)", "", period.label, "", readingOverview, ""]
         if digest.contains(where: \.isExtractive) {
             lines += ["部分小结来自明确归属的简短事实；完整过程保留在应用的整理依据中。", ""]
         }
@@ -578,7 +578,16 @@ public struct WeeklyReviewEngine: Sendable {
     }
 
     public static func sourcesUnchanged(_ report: WeeklyReport, in state: RecallState, knowledge: MemoryKnowledge? = nil) -> Bool {
-        (report.topicGrouping == nil || report.topicGrouping == state.topicGroups) && report.sourceVersions.allSatisfy { id, version in
+        if report.dailySynthesisVersion != nil, report.sourceVersions.values.allSatisfy({ $0.hasPrefix("memory2:") }) {
+            guard report.topicGrouping == nil || report.topicGrouping == state.topicGroups else { return false }
+            let ids = report.sourceIDs
+            let sources = Dictionary(uniqueKeysWithValues: state.captures.filter { ids.contains($0.id) }.map { ($0.id, $0) })
+            guard report.sourceVersions.allSatisfy({ id, version in
+                sources[id].map { sourceVersion($0, state: state) == version } == true
+            }) else { return false }
+            return MemoryKnowledgeEngine().dailyReviewSourcesUsable(ids, in: state, knowledge: knowledge)
+        }
+        return (report.topicGrouping == nil || report.topicGrouping == state.topicGroups) && report.sourceVersions.allSatisfy { id, version in
             version.hasPrefix("memory2:") ? sourceVersion(id: id, state: state) == version : legacySourceVersion(id: id, state: state) == version
         } && (knowledge.map { MemoryKnowledgeEngine().sourcesUsable(report.sourceIDs, in: state, knowledge: $0) }
             ?? MemoryKnowledgeEngine().sourcesUsable(report.sourceIDs, in: state))
