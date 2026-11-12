@@ -224,7 +224,7 @@ public struct MemoryKnowledgeEngine: Sendable {
         let states = Dictionary(uniqueKeysWithValues: current.claims.map { ($0.id, $0.state) })
         return Set(previous.claims.filter { $0.state == .active && !$0.kind.isPersonal && states[$0.id] != .active }.flatMap(\.sourceIDs))
     }
-    private struct SourceSnapshot: Encodable {
+    private struct SourceSnapshot: Encodable, Equatable {
         var text: String
         var recordedAt: Date
         var title: String?
@@ -290,13 +290,23 @@ public struct MemoryKnowledgeEngine: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        let snapshot = SourceSnapshot(text: capture.ocrText, recordedAt: capture.createdAt, title: capture.windowTitle,
+        let source = (try? encoder.encode(sourceSnapshot(capture))) ?? Data(capture.ocrText.utf8)
+        let changes = (try? encoder.encode(corrections.filter { $0.evidenceIDs.contains(capture.id) })) ?? Data()
+        return SHA256.hash(data: source + changes).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func sourceSnapshot(_ capture: CaptureRecord) -> SourceSnapshot {
+        SourceSnapshot(text: capture.ocrText, recordedAt: capture.createdAt, title: capture.windowTitle,
             origin: capture.textOrigin, app: capture.sourceAppName, bundle: capture.sourceBundleIdentifier,
             note: capture.manualMatter, directive: capture.memoryDirective, correctedText: capture.correctedText, understanding: capture.understanding,
             sourceMessages: capture.sourceMessages)
-        let source = (try? encoder.encode(snapshot)) ?? Data(capture.ocrText.utf8)
-        let changes = (try? encoder.encode(corrections.filter { $0.evidenceIDs.contains(capture.id) })) ?? Data()
-        return SHA256.hash(data: source + changes).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The same content that version() hashes, compared without serializing it on every preflight.
+    /// Background display tags/summaries do not invalidate an unchanged daily source.
+    static func sameSourceContent(_ lhs: CaptureRecord, _ rhs: CaptureRecord) -> Bool {
+        sourceSnapshot(lhs) == sourceSnapshot(rhs) && lhs.eventTemplate == rhs.eventTemplate
+            && lhs.isMemoryEvidenceArchive == rhs.isMemoryEvidenceArchive
     }
 
     public func sourcesUsable(_ ids: Set<UUID>, in state: RecallState) -> Bool {

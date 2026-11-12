@@ -216,6 +216,10 @@ enum PeriodReviewCoverageVerification {
         var unrelated = snapshot
         unrelated.captures.append(CaptureRecord(eventTemplate: .workCheckpoint, contentHash: "unrelated", ocrText: "另一条无关新记录"))
         try await store.validateDailyDerivedReview(unrelated)
+        var displayOnly = snapshot
+        displayOnly.captures[0].summary = "后台更新的展示摘要，不改变原文或理解。"
+        displayOnly.captures[0].tags = ["合成展示标签"]
+        try await store.validateDailyDerivedReview(displayOnly)
         for mutation in 0..<3 {
             var changed = snapshot
             if mutation == 0 { changed.dailySummaries[0].items[0].detail += "修正每日展示结论。" }

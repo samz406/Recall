@@ -125,7 +125,9 @@ extension FileMemoryStore {
         }).union(expected.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }.flatMap(\.sourceIDs))
         let before = Dictionary(uniqueKeysWithValues: expected.captures.filter { ids.contains($0.id) }.map { ($0.id, $0) })
         let live = Dictionary(uniqueKeysWithValues: state.captures.filter { ids.contains($0.id) }.map { ($0.id, $0) })
-        guard before == live else { throw ModelReviewError.changed }
+        guard before.count == live.count, before.allSatisfy({ id, source in
+            live[id].map { MemoryKnowledgeEngine.sameSourceContent(source, $0) } == true
+        }) else { throw ModelReviewError.changed }
     }
     public func commitModelDailySummary(_ summary: DailySummary, expected: RecallState, period: ReviewPeriod) throws {
         try Task.checkCancellation()
