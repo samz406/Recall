@@ -425,7 +425,7 @@ final class RecallAppModel: ObservableObject {
         let taskID = beginTask("周期回顾", target: period.label, phase: "准备记录", retry: { [weak self] in
             self?.generateWeeklyReview(period: period, template: template, scope: scope, replacing: replacing)
         })
-        guard let responder = dailySummaryResponder() else {
+        guard let responder = dailyReviewResponderOverride ?? dailySummaryResponder() else {
             isGeneratingWeeklyReview = false
             weeklyReviewMessage = ModelReviewError.unavailable.localizedDescription
             finishTask(taskID, state: .failed, message: ModelReviewError.unavailable.localizedDescription)
@@ -449,7 +449,7 @@ final class RecallAppModel: ObservableObject {
                     : nil
                 let snapshot = dailyState
                 state = snapshot
-                let generated = try await PeriodReviewFromDaily().generate(in: snapshot, period: period, template: template, topicKeys: topicKeys,
+                let generated = try await PeriodReviewFromDaily().generate(in: snapshot, period: period, template: template, scope: scope, topicKeys: topicKeys,
                     beforeCall: { try await modelStore.validateDailyDerivedReview(snapshot) },
                     onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder)
                 let result = generated.draft

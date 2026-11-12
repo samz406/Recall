@@ -89,6 +89,7 @@ enum RecallLayoutPreviews {
         try await verifyAutomaticTopicSummary()
         try await verifyReviewScheduleSave()
         try await verifyDailyReviewGeneration()
+        try await verifyPeriodReviewGeneration()
         try await verifyMemoryReliabilityEntries()
         let model = try RecallAppModel(previewState: try await fixture())
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }

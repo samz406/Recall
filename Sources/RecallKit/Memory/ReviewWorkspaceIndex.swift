@@ -113,7 +113,7 @@ public struct ReviewWorkspaceIndex: Sendable {
         var count = 0, eligible = 0
         for topic in topics where topic.occurs(in: period) {
             count += 1
-            if kind.includes(category: topic.category, topicID: topic.id, scope: scope) { eligible += 1 }
+            if kind.includesForModelReview(category: topic.category, topicID: topic.id, scope: scope) { eligible += 1 }
         }
         return ReviewRangePreview(coverage: coverage(in: period), topicCount: count, eligibleTopicCount: eligible)
     }

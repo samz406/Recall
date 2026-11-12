@@ -141,11 +141,10 @@ extension SummaryAccuracyVerification {
             bodies.append(request.context[0].ocrText)
             let rows = try JSONSerialization.jsonObject(with: Data(request.context[0].ocrText.utf8)) as! [[String: Any]]
             let own = rows.filter { ($0["kind"] as! String) == "matter" }
-            let first = own[0]
-            let quote = (first["title"] as! String)
             let item: [String: Any] = ["section": "progress", "title": "Atlas 分页验证从开始到完成", "detail": "三天内完成边界与空值验证，最后一天结果已保存。",
-                "evidence": [["id": first["id"]!, "quote": quote], ["id": own.last!["id"]!, "quote": "跨行\n" + (own.last!["title"] as! String)]]]
-            let value: [String: Any] = ["overview": "分页验证完成。", "items": [item]]
+                "evidence": own.map { ["id": $0["id"]!, "quote": "跨行\n" + ($0["title"] as! String)] }]
+            let coverage = rows.map { ["id": $0["id"]!, "disposition": "used", "category": "work"] }
+            let value: [String: Any] = ["overview": "分页验证完成。", "items": [item], "coverage": coverage]
             return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self), citedCaptureIDs: [])
         }
     }
@@ -330,8 +329,8 @@ extension SummaryAccuracyVerification {
             return Set(prepared.titles())
         }
         let work = try topics(.work), learning = try topics(.learning), personal = try topics(.personal)
-        try expect(work == ["发布流程页面改版"], "工作周报混入了生活、学习或未分类的主题：\(work)")
-        try expect(learning == ["英语口语练习"], "学习回顾混入了工作或生活的主题：\(learning)")
+        try expect(work == ["发布流程页面改版", "未能判断的事情"], "工作周报应保留未分类内容供模型核对，同时排除已知生活、学习：\(work)")
+        try expect(learning == ["英语口语练习", "未能判断的事情"], "学习回顾应保留未分类内容供模型核对，同时排除已知工作、生活：\(learning)")
         try expect(personal.count == 4, "我的一周没有覆盖全部主题：\(personal)")
         let prepared = try PeriodReviewFromDaily().prepare(in: state, period: period, template: ReviewTemplate(kind: .personal))
         try expect(prepared.categories().contains("work") && prepared.categories().contains("learning"), "类别没有进入传给模型的内容")
