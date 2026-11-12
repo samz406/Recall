@@ -35,6 +35,12 @@ public enum ReviewTemplateKind: String, Codable, CaseIterable, Identifiable, Sen
         }
         return self != .learning || category == .learning || (scope.useSelectedTopics && scope.topicIDs.contains(topicID))
     }
+    /// Unknown labels need a model decision, not silent removal before synthesis. Explicitly
+    /// personal/learning/work labels still protect the template boundary before any cloud call.
+    public func includesForModelReview(category: ReviewCategory, topicID: String, scope: ReviewScope) -> Bool {
+        if scope.useSelectedTopics && !scope.topicIDs.contains(topicID) { return false }
+        return category == .unclassified || includes(category: category, topicID: topicID, scope: scope)
+    }
 }
 
 public enum ReviewSection: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -247,6 +253,9 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
     public var modelAssisted: Bool = false
     public var modelCoverage: ModelReviewCoverage? = nil
     public var modelOverview: String? = nil
+    /// Complete synthesis of daily reviews: length controls detail, never which workstreams survive.
+    /// Nil is a legacy highlight report and remains readable until explicitly regenerated.
+    public var dailySynthesisVersion: Int? = nil
     public var topicGrouping: [MemoryTopicGroup]? = nil
     /// Selected reading topics; all candidates/evidence remain in items. Nil denotes a legacy report.
     public var digestTopicIDs: [String]? = nil

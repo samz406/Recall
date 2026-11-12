@@ -65,6 +65,7 @@ public extension ModelReviewResult {
         var report = WeeklyReport(createdAt: now, updatedAt: now, period: period, template: template, scope: scope,
             items: rows, sourceVersions: sourceVersions, modelAssisted: true)
         report.modelCoverage = coverage; report.modelOverview = overview
+        report.dailySynthesisVersion = dailySynthesisVersion
         report.digestTopicIDs = rows.map(\.id); report.feedbackRevision = SummaryFeedbackLearning.revision(in: state)
         report.topicGrouping = state.topicGroups
         return report

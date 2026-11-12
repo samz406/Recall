@@ -267,6 +267,14 @@ struct WeeklyReviewView: View {
                 VStack(alignment: .leading, spacing: 16) { reportHeading(report); reportActions(report) }
             }
             Divider()
+            if report.isReadable, report.dailySynthesisVersion == nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(RecallLocalization.both("这份回顾使用了旧版重点筛选，可按每日回顾重新生成，补全其他事项。", "This review used the earlier highlight selection. Regenerate it from daily reviews to include other matters."))
+                        .font(.callout).foregroundStyle(RecallPalette.secondary)
+                    Button(RecallLocalization.text("重新生成（保留原版本）")) { regenerate(report) }
+                        .buttonStyle(.bordered).disabled(model.isGeneratingWeeklyReview || model.isGeneratingDailySummary)
+                }
+            }
             if report.isReadable, let notice = report.modelCoverage?.notice {
                 Label(notice, systemImage: "info.circle").font(.callout).foregroundStyle(RecallPalette.secondary)
             }
@@ -308,7 +316,7 @@ struct WeeklyReviewView: View {
                     .buttonStyle(.bordered).controlSize(.small).disabled(model.isGeneratingDailySummary)
             }
             if report.isReadable {
-                Text("\(report.digestRows.count) 项重点 · 涵盖 \(report.coveredDayCount) 个记录日" + (report.editedMarkdown == nil ? "" : " · 已编辑"))
+                Text("\(report.digestRows.count) 项内容 · 涵盖 \(report.coveredDayCount) 个记录日" + (report.editedMarkdown == nil ? "" : " · 已编辑"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
         }

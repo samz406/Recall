@@ -5,7 +5,7 @@ public extension ReviewLength {
     var itemLimit: Int { switch self { case .brief: 3; case .standard: 5; case .detailed: 8 } }
     var summaryLimit: Int { switch self { case .brief: 120; case .standard: 180; case .detailed: 300 } }
     var bodyLimit: Int { switch self { case .brief: 800; case .standard: 1_400; case .detailed: 2_800 } }
-    var explanation: String { "整份最多 \(itemLimit) 项重点；每项正文不超过 \(summaryLimit) 字，完整过程在依据中查看。" }
+    var explanation: String { "按事项合并重复进展，覆盖各条主线；每项正文不超过 \(summaryLimit) 字。" }
 }
 
 public struct ReviewDigestRow: Identifiable, Sendable {
@@ -64,16 +64,16 @@ public enum ReviewDigest {
         return result
     }
 
-    public static func rows(items: [ReviewItem], selectedIDs: [String]?, period: ReviewPeriod, length: ReviewLength) -> [ReviewDigestRow] {
+    public static func rows(items: [ReviewItem], selectedIDs: [String]?, period: ReviewPeriod, length: ReviewLength, complete: Bool = false) -> [ReviewDigestRow] {
         let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let selected: [ReviewItem]
         if let selectedIDs { selected = selectedIDs.compactMap { byID[$0] } }
         else { selected = candidates(items, period: period, limit: items.count) }
         var rows: [ReviewDigestRow] = [], remaining = length.bodyLimit
         for item in selected {
-            if rows.count == length.itemLimit { break }
+            if !complete && rows.count == length.itemLimit { break }
             guard !rows.contains(where: { duplicate($0.item, item) }),
-                  let row = row(item, length: length), row.characterCount <= remaining else { continue }
+                  let row = row(item, length: length), complete || row.characterCount <= remaining else { continue }
             rows.append(row); remaining -= row.characterCount
         }
         return rows
@@ -141,7 +141,8 @@ public enum ReviewDigest {
 public extension WeeklyReport {
     var digestRows: [ReviewDigestRow] {
         guard isReadable else { return [] }
-        return ReviewDigest.rows(items: items, selectedIDs: digestTopicIDs, period: period, length: template.length)
+        return ReviewDigest.rows(items: items, selectedIDs: digestTopicIDs, period: period, length: template.length,
+                                 complete: dailySynthesisVersion != nil)
     }
     var coveredDayCount: Int {
         Set(items.flatMap(\.excerpts).map { period.calendar.startOfDay(for: $0.date) }).count

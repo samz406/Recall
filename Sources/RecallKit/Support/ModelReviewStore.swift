@@ -116,7 +116,7 @@ extension FileMemoryStore {
               state.memoryKnowledgeSettings == expected.memoryKnowledgeSettings,
               state.memoryKnowledge.claims.filter({ $0.kind.isPersonal && $0.usable() }) == expected.memoryKnowledge.claims.filter({ $0.kind.isPersonal && $0.usable() }),
               SummaryFeedbackLearning.revision(in: state) == SummaryFeedbackLearning.revision(in: expected),
-              DailyKnowledgeEngine().fingerprint(in: state.correctedForAnalysis()) == DailyKnowledgeEngine().fingerprint(in: expected.correctedForAnalysis())
+              DailyKnowledgeEngine().fingerprint(in: state.correctedForAnalysis(), includingHighlights: true) == DailyKnowledgeEngine().fingerprint(in: expected.correctedForAnalysis(), includingHighlights: true)
         else { throw ModelReviewError.changed }
     }
     public func commitModelDailySummary(_ summary: DailySummary, expected: RecallState, period: ReviewPeriod) throws {

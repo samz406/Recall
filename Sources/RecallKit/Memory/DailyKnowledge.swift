@@ -26,27 +26,40 @@ public struct DailyKnowledgeEngine: Sendable {
     /// An entry stays while at least one cited screenshot is still valid. Deleted or corrected
     /// screenshots are removed from its evidence. If the only first-person quote is gone, the entry
     /// is kept as a clue (not the user's own matter) instead of disappearing.
-    func entries(in state: RecallState, alreadyCorrected: Bool = false) -> [Entry] {
+    func entries(in state: RecallState, alreadyCorrected: Bool = false, includingHighlights: Bool = false) -> [Entry] {
         let captures = (alreadyCorrected ? state : state.correctedForAnalysis()).captures
             .filter { !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }
         let live = Set(captures.map(\.id))
         let recordedAt = Dictionary(uniqueKeysWithValues: captures.map { ($0.id, $0.createdAt) })
         let invalid = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
         return state.dailySummaries.flatMap { summary -> [Entry] in
-            if !summary.ledger.isEmpty {
-                return summary.ledger.compactMap { row in
+            let ledgerEntries = summary.ledger.compactMap { row in
                     makeEntry(summary: summary, id: row.id, section: row.section, title: row.title, detail: row.detail,
                         topic: row.topic, kind: row.kind, status: row.status, owned: row.ownedByUser, category: row.category,
                         quotes: row.quotes, evidenceIDs: row.evidenceIDs, live: live, invalid: invalid, recordedAt: recordedAt)
-                }
             }
-            return summary.items.compactMap { item in
+            guard ledgerEntries.isEmpty || includingHighlights else { return ledgerEntries }
+            let highlights = summary.items.compactMap { item -> Entry? in
                 guard let knowledge = item.knowledge else { return nil }
                 let quotes = knowledge.quotes.map { DailyLedgerQuote(text: $0, sourceIDs: item.evidenceIDs, speaker: knowledge.ownedByUser ? "user" : "unknown") }
                 return makeEntry(summary: summary, id: item.id, section: item.section.rawValue, title: item.title, detail: item.detail,
                     topic: knowledge.topic, kind: knowledge.kind, status: knowledge.status, owned: knowledge.ownedByUser, category: knowledge.category,
                     quotes: quotes, evidenceIDs: item.evidenceIDs, live: live, invalid: invalid, recordedAt: recordedAt,
                     reminderID: knowledge.reminderID, explicitCommitment: knowledge.explicitCommitment, condition: knowledge.condition, sourceVersions: knowledge.sourceVersions)
+            }
+            // The daily reading view and its ledger are written independently. A highlight missing
+            // from the ledger must still reach period synthesis. Only exact duplicates are removed;
+            // the model merges differently worded accounts without losing their sources.
+            return ledgerEntries + highlights.filter { highlight in
+                !ledgerEntries.contains { entry in
+                    entry.item.id == highlight.item.id || (entry.knowledge.topic == highlight.knowledge.topic
+                        && entry.knowledge.kind == highlight.knowledge.kind
+                        && entry.knowledge.ownedByUser == highlight.knowledge.ownedByUser
+                        && entry.knowledge.status == highlight.knowledge.status
+                        && entry.knowledge.category == highlight.knowledge.category
+                        && entry.item.title == highlight.item.title && entry.item.detail == highlight.item.detail
+                        && Set(entry.sources) == Set(highlight.sources))
+                }
             }
         }
     }
@@ -79,10 +92,12 @@ public struct DailyKnowledgeEngine: Sendable {
     }
 
     /// Changes when any structured daily item (or the evidence it depends on) changes.
-    public func fingerprint(in state: RecallState) -> String {
-        let rows = entries(in: state).map { entry in
+    public func fingerprint(in state: RecallState, includingHighlights: Bool = false) -> String {
+        let rows = entries(in: state, includingHighlights: includingHighlights).map { entry in
             [entry.item.id.uuidString, entry.knowledge.topic ?? "", entry.knowledge.kind.rawValue, entry.knowledge.status,
-             entry.item.title, entry.item.detail, String(entry.knowledge.ownedByUser)].joined(separator: "\u{1f}")
+             entry.item.title, entry.item.detail, String(entry.knowledge.ownedByUser), entry.knowledge.category ?? "",
+             String(entry.summary.day.timeIntervalSince1970), entry.sources.map(\.uuidString).sorted().joined(),
+             entry.knowledge.quotes.joined(separator: "\n")].joined(separator: "\u{1f}")
         }.sorted()
         return CaptureUnderstandingEngine.digest(rows.joined(separator: "\n"))
     }

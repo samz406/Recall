@@ -65,6 +65,7 @@ public struct ModelReviewResult: Sendable {
     public var facts: [ModelReviewFact]
     public var sourceVersions: [UUID: String]
     public var coverage: ModelReviewCoverage
+    public var dailySynthesisVersion: Int? = nil
     public func sourceIDs(for item: ModelReviewItem) -> [UUID] {
         Array(Set(facts.filter { item.factIDs.contains($0.id) }.flatMap(\.sourceIDs))).sorted { $0.uuidString < $1.uuidString }
     }
