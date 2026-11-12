@@ -136,7 +136,7 @@ struct TimelineCalendarPopover: View {
                 .monospacedDigit()
                 .foregroundStyle(isSelected ? RecallPalette.onAccent : dayColor)
                 .frame(width: 34, height: 34)
-                .background(isSelected ? RecallPalette.accent : (status == .missing && isCurrentMonth ? RecallPalette.warning.opacity(0.12) : Color.clear), in: Circle())
+                .background(isSelected ? RecallPalette.accent : (status == .missing && isCurrentMonth ? RecallPalette.warning.opacity(0.06) : Color.clear), in: Circle())
                 .overlay {
                     if isToday && !isSelected {
                         Circle().stroke(RecallPalette.accent.opacity(0.65), lineWidth: 1)
