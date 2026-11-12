@@ -1517,6 +1517,8 @@ extension RecallRootView {
         case "sample": AnyView(FirstMomentView(sampleMode: true))
         case "navigation": AnyView(RecallNavigationPreview())
         case "daily", "daily-long": AnyView(DailySummariesView())
+        case "daily-calendar", "daily-calendar-missing", "daily-calendar-empty":
+            AnyView(DailyReviewCalendarPreview(missingSelection: name.hasSuffix("missing"), empty: name.hasSuffix("empty")))
         case "period", "period-stale", "period-work": AnyView(ReviewWorkspaceView(initialPeriod: true))
         case "period-work-sources": AnyView(PeriodReviewMaterialsPreview())
         case "topic-detail": AnyView(TopicDetailView(topicID: "topic:atlas发布流程优化", continueChat: { _ in }))
