@@ -58,7 +58,8 @@ struct DailySummariesView: View {
                     Button { showsCalendar = true } label: {
                         Label(selectedDate.formatted(.dateTime.month().day()), systemImage: "calendar")
                     }.popover(isPresented: $showsCalendar) {
-                        TimelineCalendarPopover(selectedDay: selectedDate) { day in
+                        TimelineCalendarPopover(selectedDay: selectedDate,
+                            reviewDays: model.isLoadingSavedState ? nil : Set(model.state.dailySummaries.map(\.day))) { day in
                             selectedDate = day
                             selectedID = summaries.first { Calendar.current.isDate($0.day, inSameDayAs: day) }?.id
                             showsCalendar = false
@@ -94,6 +95,20 @@ struct DailySummariesView: View {
         if let id = model.dailyToOpen, summaries.contains(where: { $0.id == id }) { select(id) }
         else if let id = summaries.first?.id { select(id) }
         else { selectedID = nil }
+    }
+}
+
+/// Synthetic calendar-only layouts use the same saved-day projection as the daily page.
+struct DailyReviewCalendarPreview: View {
+    @EnvironmentObject private var model: RecallAppModel
+    var missingSelection = false
+    var empty = false
+    var body: some View {
+        TimelineCalendarPopover(selectedDay: missingSelection || empty
+            ? Calendar.current.date(byAdding: .day, value: -7, to: .now)!
+            : model.state.dailySummaries.first?.day ?? .now,
+            reviewDays: empty ? [] : Set(model.state.dailySummaries.map(\.day))) { _ in }
+            .padding(24)
     }
 }
 
