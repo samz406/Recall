@@ -175,6 +175,7 @@ enum PeriodReviewCoverageVerification {
             } catch ModelReviewError.validation { }
         }
         try await verifyAttributionRecovery(state, engine: engine)
+        try await verifyDailySourceWithdrawal(state, engine: engine)
         try await verifyOutputRecovery(state, engine: engine)
         try await verifyLargeArchivePreflight(state, engine: engine)
         try await verifyModelClassification(state, engine: engine)
@@ -243,7 +244,21 @@ enum PeriodReviewCoverageVerification {
                 throw Failure(errorDescription: "快速核对漏掉每日内容、原文修改或来源删除")
             } catch ModelReviewError.changed { }
         }
-        print("PASS: 6,333-record archive prepares only 26 daily inputs and checks dependencies three times in \(Int(elapsed * 1000))ms, rejects daily/source edits and deletion, and ignores unrelated captures")
+        let generated = try await engine.generate(in: snapshot, period: archivePeriod, template: ReviewTemplate(kind: .work), responder: Model())
+        let report = generated.draft.weeklyReport(period: archivePeriod, template: ReviewTemplate(kind: .work), scope: ReviewScope(), in: snapshot)
+        let saved = try await store.commitWeeklyReportMeasured(report)
+        let after = await store.snapshot()
+        try expect(saved.metrics.sourceCheckMilliseconds < 2_500 && saved.metrics.totalMilliseconds < 15_000
+            && saved.metrics.archiveBytes > 20_000_000, "实际大档案保存仍重建整库知识或未测量完整持久化：\(saved.metrics.diagnosticMetadata)")
+        try expect(after.captures == snapshot.captures && after.dailySummaries == snapshot.dailySummaries
+            && saved.report.digestRows.count == 9 && saved.report.readingRows.count == 8
+            && saved.report.supplementaryRows.count == 1 && saved.report.supplementaryMarkdown.contains("Cetus")
+            && !saved.report.markdown.contains("Cetus"), "保存或正文简化丢掉了来源，或把补充记录继续混入工作周报")
+        let reopened = try FileMemoryStore(storage: storage, deferMaintenance: true, credentials: InMemoryCredentialStore())
+        let reopenedReport = await reopened.snapshot().weeklyReports.first { $0.id == saved.report.id }
+        try expect(reopenedReport?.markdown == saved.report.markdown
+            && reopenedReport?.supplementaryMarkdown == saved.report.supplementaryMarkdown, "大档案重启后丢掉正文或来源记录")
+        print("PASS: 6,333-record archive prepares/checks in \(Int(elapsed * 1000))ms and commits a real \(saved.metrics.archiveBytes)-byte archive in \(saved.metrics.totalMilliseconds)ms (sources \(saved.metrics.sourceCheckMilliseconds), encode \(saved.metrics.encodeMilliseconds), write \(saved.metrics.writeMilliseconds)); sources, notes and reopen remain intact")
     }
 
     private static func verifyOutputRecovery(_ state: RecallState, engine: PeriodReviewFromDaily) async throws {
@@ -288,7 +303,8 @@ enum PeriodReviewCoverageVerification {
             try expect(sourceItem.section == "notes" && sourceItem.kind == "reference" && sourceItem.ownedByUser == false
                 && note.item.section == .notes && note.action == nil, "来源记录变成了用户成果或个人待办")
             try expect(note.title.hasPrefix("相关记录：") && note.summary.hasPrefix("来源记录提到：")
-                && report.markdown.contains("来源记录提到：") && !report.overview.contains("用户已完成"),
+                && report.supplementaryMarkdown.contains("来源记录提到：") && !report.markdown.contains("Cetus")
+                && !report.overview.contains("用户已完成"),
                 "页面、导出或概览仍无条件声称归属不明的事情由用户完成")
             let facts = result.facts.filter { sourceItem.factIDs.contains($0.id) }
             try expect(!facts.isEmpty && facts.allSatisfy { $0.kind == "reference" && !$0.isAction && $0.attribution == "speaker=unknown" },
@@ -296,9 +312,52 @@ enum PeriodReviewCoverageVerification {
             try expect(report.digestRows.count == 9 && report.items.first(where: { $0.title.hasPrefix("Atlas") })?.section == .progress,
                 "恢复来源记录时丢掉其他工作或把已确认的工作也降级")
             let reopened = try JSONDecoder().decode(WeeklyReport.self, from: JSONEncoder().encode(report))
-            try expect(reopened.markdown == report.markdown, "重启后来源限定丢失")
+            try expect(reopened.markdown == report.markdown && reopened.supplementaryMarkdown == report.supplementaryMarkdown,
+                "重启后来源限定丢失")
+            var personal = report; personal.template = ReviewTemplate(kind: .personal)
+            try expect(personal.markdown.contains("Cetus"), "工作正文简化错误地删掉了个人回顾的学习或资料内容")
+            var customized = report; customized.template.headings["notes"] = "我保留的背景"
+            try expect(customized.markdown.contains("Cetus"), "用户明确自定义的背景栏目被擅自隐藏")
         }
         print("PASS: period attribution recovery keeps unknown/reference progress and plans as source-qualified notes in one model call, with no personal action or unsafe overview and no loss after export/reopen")
+    }
+
+    private static func verifyDailySourceWithdrawal(_ state: RecallState, engine: PeriodReviewFromDaily) async throws {
+        let generated = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .work), responder: Model())
+        let report = generated.draft.weeklyReport(period: period, template: ReviewTemplate(kind: .work), scope: ReviewScope(), in: state)
+        let directive = MemoryDirective.parse("记住：以后回答简洁一点")!
+        let seed = CaptureRecord(eventTemplate: .manualMoment, contentHash: "synthetic-policy", ocrText: directive.content,
+            textOrigin: .userInput, memoryDirective: directive)
+        guard var claim = MemoryKnowledgeEngine().reconcile(RecallState(captures: [seed]), force: true).claims.first,
+              let source = state.captures.first(where: { $0.ocrText.hasPrefix("Cetus") }) else {
+            throw Failure(errorDescription: "无法建立合成来源撤回测试")
+        }
+        claim.kind = .reference; claim.state = .active; claim.validUntil = nil
+        claim.evidence[0].captureID = source.id; claim.evidence[0].quote = source.ocrText
+        claim.evidence[0].sourceVersion = MemoryKnowledgeEngine.version(of: source)
+        var live = state; live.memoryKnowledge.claims = [claim]
+        try expect(WeeklyReviewEngine.sourcesUnchanged(report, in: live), "快速校验拒绝了未变的有效来源")
+        for mutation in 0..<5 {
+            var changed = live
+            switch mutation {
+            case 0: changed.memoryKnowledge.claims[0].state = .retracted
+            case 1: changed.memoryKnowledge.claims[0].validUntil = .now.addingTimeInterval(-1)
+            case 2: changed.memoryKnowledge.suppressedKeys = [claim.key]
+            case 3: changed.captures.removeAll { $0.id == source.id }
+            default:
+                let index = changed.captures.firstIndex { $0.id == source.id }!
+                changed.captures[index].ocrText += "修改后的来源。"
+            }
+            try expect(!WeeklyReviewEngine.sourcesUnchanged(report, in: changed), "快速校验绕过了来源撤回、到期、停用、删除或更正")
+        }
+        var withdrawn = live
+        withdrawn.memoryKnowledge.claims[0].state = .retracted
+        let index = withdrawn.captures.firstIndex { $0.id == source.id }!
+        withdrawn.captures[index].ocrText += "编辑不代表恢复使用。"
+        var rebuilt = report
+        rebuilt.sourceVersions[source.id] = WeeklyReviewEngine.sourceVersion(id: source.id, state: withdrawn)
+        try expect(!WeeklyReviewEngine.sourcesUnchanged(rebuilt, in: withdrawn), "来源编辑或重建版本号自动恢复了明确撤回的资料")
+        print("PASS: daily-derived source validation respects live reference evidence, retraction, expiry, suppression, deletion and correction without rebuilding unrelated knowledge")
     }
 
     private static func verifyModelClassification(_ state: RecallState, engine: PeriodReviewFromDaily) async throws {
