@@ -1,4 +1,5 @@
 import SwiftUI
+import RecallKit
 
 /// A spacious month grid, kept separate from the timeline's day-filtering logic.
 struct TimelineCalendarPopover: View {
@@ -7,20 +8,34 @@ struct TimelineCalendarPopover: View {
     let earliestDay: Date?
     /// Nil permits future dates, for reminder scheduling. Browsing still defaults to today.
     let latestDay: Date?
+    /// Nil leaves shared date pickers unmarked; an empty set means no saved daily reviews.
+    private let reviewDays: Set<Date>?
     let selectDay: (Date) -> Void
     @State private var displayedMonth: Date
     @Environment(\.dismiss) private var dismiss
 
-    init(selectedDay: Date, earliestDay: Date? = nil, latestDay: Date? = .now, selectDay: @escaping (Date) -> Void) {
+    init(selectedDay: Date, earliestDay: Date? = nil, latestDay: Date? = .now, reviewDays: Set<Date>? = nil, selectDay: @escaping (Date) -> Void) {
         self.selectedDay = selectedDay
         self.earliestDay = earliestDay.map { Calendar.current.startOfDay(for: $0) }
         self.latestDay = latestDay.map { Calendar.current.startOfDay(for: $0) }
+        self.reviewDays = reviewDays.map { Set($0.map { Calendar.current.startOfDay(for: $0) }) }
         self.selectDay = selectDay
         _displayedMonth = State(initialValue: Calendar.current.dateInterval(of: .month, for: selectedDay)?.start ?? selectedDay)
     }
 
     private var calendar: Calendar { Calendar.current }
     private var today: Date { calendar.startOfDay(for: .now) }
+    private enum ReviewStatus: Hashable {
+        case saved, missing
+        var title: String { RecallLocalization.both(self == .saved ? "已有回顾" : "暂无回顾", self == .saved ? "Review saved" : "No review") }
+        @MainActor var color: Color { self == .saved ? RecallPalette.accent : RecallPalette.warning }
+    }
+    private func reviewStatus(on day: Date) -> ReviewStatus? {
+        let day = calendar.startOfDay(for: day)
+        guard let reviewDays, day <= today,
+              earliestDay.map({ day >= $0 }) ?? true, latestDay.map({ day <= $0 }) ?? true else { return nil }
+        return reviewDays.contains(day) ? .saved : .missing
+    }
     private var monthTitle: String {
         let parts = calendar.dateComponents([.year, .month], from: displayedMonth)
         return "\(parts.year ?? 0)年 \(parts.month ?? 1)月"
@@ -67,6 +82,16 @@ struct TimelineCalendarPopover: View {
                     dayButton(day)
                 }
             }
+            if reviewDays != nil {
+                HStack(spacing: 18) {
+                    ForEach([ReviewStatus.saved, .missing], id: \.self) { status in
+                        HStack(spacing: 6) {
+                            reviewMarker(status)
+                            Text(status.title).foregroundStyle(RecallPalette.secondary)
+                        }
+                    }
+                }.font(.caption).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8)
+            }
         }
         .padding(16)
         .frame(width: 336)
@@ -97,6 +122,11 @@ struct TimelineCalendarPopover: View {
         let isCurrentMonth = calendar.isDate(day, equalTo: displayedMonth, toGranularity: .month)
         let isTooLate = latestDay.map { day > $0 } ?? false
         let isTooEarly = earliestDay.map { calendar.startOfDay(for: day) < $0 } ?? false
+        let status = reviewStatus(on: day)
+        let dayColor = isCurrentMonth && !isTooLate && !isTooEarly ? (status?.color ?? RecallPalette.text) : RecallPalette.secondary.opacity(0.6)
+        let description = ([day.formatted(date: .complete, time: .omitted)] + (status.map { [$0.title] } ?? [])).joined(separator: " · ")
+        let accessibilityStatus = [isSelected ? RecallLocalization.both("已选择", "Selected") : nil,
+                                   isToday ? RecallLocalization.both("今天", "Today") : nil, status?.title].compactMap { $0 }.joined(separator: " · ")
         return Button {
             selectDay(day)
             dismiss()
@@ -104,22 +134,29 @@ struct TimelineCalendarPopover: View {
             Text("\(calendar.component(.day, from: day))")
                 .font(.system(size: 16, weight: .semibold))
                 .monospacedDigit()
-                .foregroundStyle(isSelected ? RecallPalette.onAccent : (isCurrentMonth && !isTooLate && !isTooEarly ? RecallPalette.text : RecallPalette.secondary.opacity(0.6)))
+                .foregroundStyle(isSelected ? RecallPalette.onAccent : dayColor)
                 .frame(width: 34, height: 34)
-                .background(isSelected ? RecallPalette.accent : Color.clear, in: Circle())
+                .background(isSelected ? RecallPalette.accent : (status == .missing && isCurrentMonth ? RecallPalette.warning.opacity(0.12) : Color.clear), in: Circle())
                 .overlay {
                     if isToday && !isSelected {
                         Circle().stroke(RecallPalette.accent.opacity(0.65), lineWidth: 1)
                     }
                 }
-                .frame(maxWidth: .infinity, minHeight: 38)
+                .overlay(alignment: .bottom) {
+                    if let status { reviewMarker(status).offset(y: 6).accessibilityHidden(true) }
+                }
+                .frame(maxWidth: .infinity, minHeight: reviewDays == nil ? 38 : 46)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(isTooLate || isTooEarly)
         .accessibilityLabel(day.formatted(.dateTime.year().month().day().weekday(.wide)))
-        .accessibilityValue(isSelected ? "已选择" : (isToday ? "今天" : ""))
-        .help(day.formatted(date: .complete, time: .omitted))
+        .accessibilityValue(accessibilityStatus)
+        .help(description)
+    }
+    private func reviewMarker(_ status: ReviewStatus) -> some View {
+        Circle().fill(status == .saved ? status.color : Color.clear)
+            .overlay(Circle().stroke(status.color, lineWidth: 1.5)).frame(width: 6, height: 6)
     }
 }
 
