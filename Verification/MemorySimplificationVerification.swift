@@ -42,8 +42,13 @@ enum MemorySimplificationVerification {
             try expect(ReviewCategoryIndex.inferredCategory(title: title, details: []) == .unclassified, "拿不准的主题不再靠页面、代码或接口等词猜成工作")
         }
         let files = engine.topics(in: state), index = ReviewWorkspaceIndex(state: state, topics: files)
-        try expect(index.preview(in: period, kind: .work, scope: ReviewScope()).eligibleTopicCount == work.items.count, "生成按钮预览与实际自动分类必须一致")
+        for kind in ReviewTemplateKind.allCases {
+            try expect(index.preview(in: period, kind: kind, scope: ReviewScope()).eligibleTopicCount == all.items.count,
+                "模型前的范围预览应包含全部类别，不能沿用历史本地回顾的分类筛选")
+        }
         let selected = ReviewScope(topicIDs: [files.first { $0.evidenceIDs.contains(records[0].id) }!.id])
+        try expect(index.preview(in: period, kind: .work, scope: selected).eligibleTopicCount == 1,
+            "不做业务分类预筛时，仍须尊重用户明确选择的主题范围")
         let specific = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .project), scope: selected, now: now)
         try expect(specific.sourceIDs == [records[0].id], "主题详情中的单独回顾不得带入别的事")
         let learningID = files.first { $0.evidenceIDs.contains(records[2].id) }!.id
