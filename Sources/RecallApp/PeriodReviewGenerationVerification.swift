@@ -48,9 +48,12 @@ extension RecallLayoutPreviews {
             }
         }
         let period = ReviewPeriod(start: calendar.date(byAdding: .day, value: -7, to: today)!, end: today)
+        var previous: WeeklyReport?
         for omit in [false, true] {
             let responder = PeriodGenerationModel(omit: omit)
-            let model = try RecallAppModel(previewState: state, dailyReviewResponder: responder)
+            var input = state
+            if let previous { input.weeklyReports = [previous] }
+            let model = try RecallAppModel(previewState: input, dailyReviewResponder: responder)
             defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
             let originalCaptures = model.state.captures, originalDaily = model.state.dailySummaries
             model.generateWeeklyReview(period: period, template: ReviewTemplate(kind: .work), scope: ReviewScope())
@@ -62,7 +65,7 @@ extension RecallLayoutPreviews {
                 throw PeriodGenerationFailure(errorDescription: "周期生成没有结束，或改写了已有每日回顾/原始记录")
             }
             if omit {
-                guard await responder.count() == 2, model.state.weeklyReports.isEmpty,
+                guard await responder.count() == 2, model.state.weeklyReports == [previous!],
                       model.tasks.contains(where: { $0.state == .failed }) else {
                     throw PeriodGenerationFailure(errorDescription: "遗漏仍被当作周报保存，或未提供失败状态")
                 }
@@ -80,6 +83,8 @@ extension RecallLayoutPreviews {
                 guard export?.components(separatedBy: "\n### ").count == 9, saved.weeklyReports.first?.digestRows.count == 8 else {
                     throw PeriodGenerationFailure(errorDescription: "导出或重启之后再次漏掉第五项之后的内容")
                 }
+                previous = report
+                previous?.editedMarkdown = "# 用户已编辑的原周报\n\n这段合成修订在生成失败后必须保留。"
             }
         }
         print("PASS: native period generation calls the model with all daily items, saves/renders/exports/reopens >5 workstreams, and rejects incomplete results after bounded repair without changing daily/source records")

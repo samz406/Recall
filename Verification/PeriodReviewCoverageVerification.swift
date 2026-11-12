@@ -55,7 +55,8 @@ enum PeriodReviewCoverageVerification {
             }
             var review = DailySummary(day: day(offset), content: "合成的每日回顾", sourceCaptureIDs: sources,
                 todos: [], generationKind: .cloud, items: items)
-            review.items = items; review.ledger = ledger; state.dailySummaries.append(review)
+            // Keep the archive's local day rather than the CI host's default timezone.
+            review.day = day(offset); review.items = items; review.ledger = ledger; state.dailySummaries.append(review)
         }
         return state
     }
@@ -104,6 +105,8 @@ enum PeriodReviewCoverageVerification {
         let prepared = try engine.prepare(in: state, period: period, template: ReviewTemplate(kind: .work))
         try expect(prepared.itemCount == 24 && prepared.dayCount == 5, "周报未合并完整账本和展示条目，或产生重复输入：\(prepared.itemCount)")
         try expect(prepared.titles().contains("Vega 地区列表") && prepared.titles().contains("Lyra 前台权限"), "缺失分类或只在每日展示中的事项在模型前消失")
+        let gaps = PeriodReviewFromDaily.gaps(in: state, period: period, now: period.end)
+        try expect(gaps.reviewedDayCount == 5, "周期统计没有使用档案所在时区的每日回顾")
         for length in ReviewLength.allCases {
             var template = ReviewTemplate(kind: .work); template.length = length
             let probe = Model()

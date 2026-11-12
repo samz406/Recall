@@ -32,12 +32,13 @@ public struct PeriodReviewFromDaily: Sendable {
             guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
             day = next
         }
-        let reviewed = Set(DailyKnowledgeEngine().structuredDays(in: state, calendar: calendar))
+        let reviewed = Set(DailyKnowledgeEngine().entries(in: state, includingHighlights: true).map { calendar.startOfDay(for: $0.summary.day) })
         let recorded = Set(ModelReviewEvidence.records(in: state, period: period).map { calendar.startOfDay(for: $0.createdAt) })
         let reviewedCount = span.filter { reviewed.contains($0) }.count
         let missing = span.filter { recorded.contains($0) && !reviewed.contains($0) }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = calendar.timeZone
         formatter.dateFormat = "M/d"
         let label = span.count == 7 ? "本周" : "本期"
         var headline = "\(label) \(reviewedCount)/\(max(span.count, 1)) 天有回顾"
