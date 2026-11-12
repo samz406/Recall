@@ -109,8 +109,10 @@ extension RecallLayoutPreviews {
                 guard export?.components(separatedBy: "\n### ").count == 9, saved.weeklyReports.first?.digestRows.count == 8 else {
                     throw PeriodGenerationFailure(errorDescription: "导出或重启之后再次漏掉第五项之后的内容")
                 }
-                guard export?.contains("来源记录提到：") == true,
-                      model.tasks.contains(where: { $0.state == .succeeded && $0.detail?.contains("模型请求 1 次") == true }),
+                let sourceLabel = RecallLocalization.both("来源记录提到：", "The source record says: ")
+                let requestLabel = RecallLocalization.both("模型请求 1 次", "1 model requests")
+                guard export?.contains(sourceLabel) == true,
+                      model.tasks.contains(where: { $0.state == .succeeded && $0.detail?.contains(requestLabel) == true }),
                       model.diagnosticEntries.contains(where: { $0.source == "WeeklyReview" && $0.metadata["generation"] == "period-from-daily-v4"
                           && $0.metadata["modelCalls"] == "1" && $0.metadata["sourceNotes"] == "2" }) else {
                     throw PeriodGenerationFailure(errorDescription: "归属恢复后仍重复请求、缺少来源限定或未记录实际耗时/请求统计")

@@ -95,9 +95,10 @@ enum PeriodReviewCoverageVerification {
                 if mode == .falseReceipt, topic.hasPrefix("Nova") { continue }
                 groups[topic.hasPrefix("Atlas") ? "Atlas 核心功能" : topic, default: []].append(row)
             }
+            let referenceSection = mode == .referenceAsPlan ? "plans" : mode == .referenceAsProgress ? "progress" : "notes"
             let items = groups.keys.sorted().map { key -> [String: Any] in
                 let reference = groups[key]!.allSatisfy { ($0["kind"] as? String)?.contains("reference") == true }
-                let section = reference && mode == .referenceAsPlan ? "plans" : reference && mode != .referenceAsProgress ? "notes" : "progress"
+                let section = reference ? referenceSection : "progress"
                 return ["section": section, "title": key + (reference ? "相关信息已记录" : "已完成阶段核对"),
                  "detail": reference ? "记录谈及服务维护安排，尚未核实实际影响，不表示用户已经完成该工作。" : key + "的验证结果已记录，边界条件保留，生产发布仍待确认。",
                  "evidence": groups[key]!.map { ["id": $0["id"]!, "quote": $0["title"]!] }]
