@@ -42,6 +42,11 @@ enum TopicCompletionVerification {
             && immediate.sources == originalProjection.sources
             && immediate.review.coverage(in: .make(.recentSeven)).textRecords == originalProjection.review.coverage(in: .make(.recentSeven)).textRecords,
             "完成状态补丁重复重建、改变来源或破坏回顾索引")
+        try expect(projection.matters.first { $0.id == target.id }?.latest.detail == target.latest.detail
+            && projection.matters.first { $0.id == target.id }?.latest.quotes == target.latest.quotes,
+            "完成状态覆盖了原有进展或引用")
+        try expect(TopicReading(file: projection.matters.first { $0.id == target.id }!).overview != "用户已标记完成：" + target.title,
+            "完成主题详情仍只有状态文案")
         try expect(saved.matterCorrections.count == 1, "重复完成写入了重复更正")
         try expect(saved.captures == before.captures && saved.dailySummaries == before.dailySummaries, "完成主题删除或修改了原始记录/每日回顾")
         try expect(saved.correctedForAnalysis().dailySummaries == before.dailySummaries, "分析视图仍撤回已生成回顾")

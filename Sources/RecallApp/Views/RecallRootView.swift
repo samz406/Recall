@@ -23,13 +23,13 @@ struct RecallRootView: View {
         } detail: {
             Group {
                 switch section ?? .timeline {
-                case .matters: MatterWorkspaceView { question in
+                case .matters: MatterWorkspaceView { topicID in
+                    model.startTopicConversation(topicID)
                     section = .chat
-                    model.ask(question)
                 }
                 case .timeline: TimelineView()
                 case .chat: ChatView()
-                case .dailySummaries: DailySummariesView()
+                case .dailySummaries: ReviewWorkspaceView()
                 case .reminders: RemindersView()
                 case .rules: EventRulesView()
                 case .privacy: PrivacyAndModelView()
@@ -65,6 +65,7 @@ struct RecallRootView: View {
             if model.openAskRequested { section = .chat; model.openAskRequested = false }
         }
         .onChange(of: model.openAskRequested) { _, requested in if requested { section = .chat; model.openAskRequested = false } }
+        .onChange(of: model.reviewsRequested) { _, requested in if requested { section = .dailySummaries; model.reviewsRequested = false } }
         .onReceive(NotificationCenter.default.publisher(for: .recallOpenAsk)) { _ in section = .chat }
         .onOpenURL { url in
             model.pendingEvidenceURL = url; model.resolveEvidenceURL()
@@ -83,7 +84,7 @@ struct RecallRootView: View {
             case .record: section = .timeline
             case .topic(let id): model.topicToOpen = id; section = .matters
             case .daily(let id): model.dailyToOpen = id; section = .dailySummaries
-            case .review(let id): model.weeklyReportToOpen = id; section = .matters
+            case .review(let id): model.weeklyReportToOpen = id; section = .dailySummaries
             case .reminder: section = .reminders
             case .knowledge(let id): model.knowledgeToOpen = id; section = .matters
             }
@@ -197,7 +198,7 @@ private struct RecallSidebarView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 25) {
                     Text("Recall").font(.system(size: 18, weight: .bold)).padding(.horizontal, 12).padding(.top, 14)
-                    sidebarGroup("回看", entries: [(.matters, "记忆", "square.stack.3d.up"), (.dailySummaries, "每日回顾", "calendar.badge.clock"), (.timeline, "时间线", "clock.arrow.circlepath")])
+                    sidebarGroup("回看", entries: [(.matters, "记忆", "square.stack.3d.up"), (.dailySummaries, "回顾", "calendar.badge.clock"), (.timeline, "时间线", "clock.arrow.circlepath")])
                     sidebarGroup("行动", entries: [(.reminders, "提醒", "bell"), (.chat, "问一问", "bubble.left.and.bubble.right")])
                     sidebarGroup("管理", entries: [(.rules, "记录管理", "checklist"), (.privacy, "设置", "gearshape")])
                     Spacer(minLength: 24)
@@ -1059,6 +1060,13 @@ private struct ChatView: View {
             VStack(spacing: 0) {
                 chatHeader
                 Divider().opacity(0.55)
+                if model.chatScope.topicID != nil {
+                    HStack {
+                        Label(RecallLocalization.both("正在围绕“\(scopeTitle)”提问", "Asking about “\(scopeTitle)”"), systemImage: "square.stack.3d.up").font(.caption).foregroundStyle(RecallPalette.secondary)
+                        Spacer()
+                        Button(RecallLocalization.both("取消限定", "Use all memories")) { model.chatScope = .all }.font(.caption)
+                    }.padding(.horizontal, 28).padding(.vertical, 8)
+                }
                 if !hasChatMessages && !model.isThinking {
                     ChatReadingColumn {
                         ChatWelcomeView(receipt: model.state.messages.last.flatMap { $0.role == .system ? $0.content : nil })
@@ -1105,7 +1113,7 @@ private struct ChatView: View {
             if !model.matterFiles.isEmpty {
                 Menu(RecallLocalization.text("指定主题")) {
                     ForEach(model.matterFiles) { file in
-                        Button(file.title) { model.chatScope = MemoryQueryScope(topicID: file.id) }
+                        Button(file.title) { model.chatScope = MemoryQueryScope(topicID: file.id, topicEvidenceIDs: Set(file.evidenceIDs)) }
                     }
                 }
             }
@@ -1509,7 +1517,9 @@ extension RecallRootView {
         case "sample": AnyView(FirstMomentView(sampleMode: true))
         case "navigation": AnyView(RecallNavigationPreview())
         case "daily", "daily-long": AnyView(DailySummariesView())
-        case "topics", "period", "period-stale", "knowledge", "knowledge-empty": AnyView(MatterWorkspaceView(continueChat: { _ in }))
+        case "period", "period-stale": AnyView(ReviewWorkspaceView(initialPeriod: true))
+        case "topic-detail": AnyView(TopicDetailView(topicID: "topic:atlas发布流程优化", continueChat: { _ in }))
+        case "topics", "knowledge", "knowledge-empty": AnyView(MatterWorkspaceView(continueChat: { _ in }))
         case "rules": AnyView(EventRulesView())
         case "reminders": AnyView(RemindersView())
         case "reminder-new": AnyView(NewReminderSheet(preferredHour: 9, onCreate: { _, _, _, _ in }))

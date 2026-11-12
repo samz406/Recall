@@ -6,21 +6,25 @@ public struct MemoryQueryScope: Hashable, Sendable {
     public var end: Date?
     public var topicID: String?
     public var recentDays: Int?
+    /// Sources of the topic the user actually opened, available before ledger maintenance.
+    public var topicEvidenceIDs: Set<UUID>?
     public static let all = MemoryQueryScope()
-    public init(start: Date? = nil, end: Date? = nil, topicID: String? = nil, recentDays: Int? = nil) {
+    public init(start: Date? = nil, end: Date? = nil, topicID: String? = nil, recentDays: Int? = nil, topicEvidenceIDs: Set<UUID>? = nil) {
         self.start = start; self.end = end; self.topicID = topicID; self.recentDays = recentDays
+        self.topicEvidenceIDs = topicID == nil ? nil : topicEvidenceIDs
     }
     public var isRestricted: Bool { start != nil || end != nil || topicID != nil || recentDays != nil }
     public func applying(to original: RecallState) -> RecallState {
         if let days = recentDays {
             let now = Date.now
             let first = Calendar.current.date(byAdding: .day, value: -(max(1, days) - 1), to: Calendar.current.startOfDay(for: now)) ?? now
-            return Self(start: first, end: now, topicID: topicID).applying(to: original)
+            return Self(start: first, end: now, topicID: topicID, topicEvidenceIDs: topicEvidenceIDs).applying(to: original)
         }
         guard isRestricted else { return original }
         var state = original
         let topicSources: Set<UUID>? = topicID.map { id in
-            Set(original.memoryKnowledge.claims.filter { $0.subjectID == id }.flatMap(\.sourceIDs))
+            Set(original.memoryKnowledge.claims.filter { $0.subjectID == id || ($0.scope == .project && $0.scopeID == id) }.flatMap(\.sourceIDs))
+                .union(topicEvidenceIDs ?? [])
                 .union(original.topicGroups.filter { $0.id == id }.flatMap { group in
                     original.memoryKnowledge.claims.filter { group.memberIDs.contains($0.subjectID) }.flatMap(\.sourceIDs)
                 })

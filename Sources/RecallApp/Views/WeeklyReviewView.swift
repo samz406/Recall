@@ -46,9 +46,6 @@ struct WeeklyReviewView: View {
                             warning: item.isReadable ? nil : "待更新") { selectedID = item.id }
                     }
                     if model.state.weeklyReports.count > historyCount { Button(RecallLocalization.text("更早的回顾")) { historyCount += 20 } }
-                    Button { showsComposer = true } label: {
-                        Label(RecallLocalization.text("模板与时间范围"), systemImage: "slider.horizontal.3").font(.caption).frame(maxWidth: .infinity).padding(.vertical, 10)
-                    }.buttonStyle(.bordered).padding(.top, 4)
                     utilityActions.padding(.top, 4)
                 }
             }.frame(width: 218).clipped()
@@ -140,12 +137,10 @@ struct WeeklyReviewView: View {
         }
     }
     private var utilityActions: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button { showsTemplates = true } label: { Label(RecallLocalization.text("调整输出格式"), systemImage: "slider.horizontal.3") }
-            Button { showsSchedules = true } label: {
-                Label(model.state.reviewSchedules.contains(where: \.isEnabled) ? "定时已开启" : "定时生成", systemImage: "clock")
-            }
-        }.fixedSize()
+        Menu {
+            Button(RecallLocalization.text("调整输出格式")) { showsTemplates = true }
+            Button(RecallLocalization.text("定时生成")) { showsSchedules = true }
+        } label: { Label(RecallLocalization.both("回顾选项", "Review options"), systemImage: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
     }
     private func composer(range: ReviewPeriod, preview: ReviewRangePreview) -> some View {
         VStack(alignment: .leading, spacing: 18) {

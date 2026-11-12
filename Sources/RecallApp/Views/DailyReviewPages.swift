@@ -5,6 +5,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 struct DailySummariesView: View {
+    var embedded = false
     @EnvironmentObject private var model: RecallAppModel
     @State private var selectedID: UUID?
     @State private var selectedDate = Calendar.current.date(byAdding: .day, value: -1, to: .now) ?? .now
@@ -16,21 +17,9 @@ struct DailySummariesView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            RecallPageHeader(title: "每日回顾", subtitle: "回看一天里值得记住的事") {
-                HStack(spacing: 10) {
-                    Button { showsCalendar = true } label: {
-                        Label(selectedDate.formatted(.dateTime.month().day()), systemImage: "calendar")
-                    }.popover(isPresented: $showsCalendar) {
-                        TimelineCalendarPopover(selectedDay: selectedDate) { day in
-                            selectedDate = day
-                            selectedID = summaries.first { Calendar.current.isDate($0.day, inSameDayAs: day) }?.id
-                            showsCalendar = false
-                        }
-                    }
-                    Button(RecallLocalization.text(selected == nil ? "生成回顾" : "重新生成")) { model.generateDailyReview(on: selectedDate) }
-                        .buttonStyle(.borderedProminent).disabled(model.isLoadingSavedState || model.isGeneratingDailySummary)
-                }
-            }
+            if embedded { HStack { Spacer(); dailyActions }.padding(.horizontal, 24).padding(.vertical, 12) }
+            else { RecallPageHeader(title: "每日回顾", subtitle: "回看一天里值得记住的事") { dailyActions } }
+
             if model.isLoadingSavedState {
                 ProgressView("正在读取已保存的回顾…").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -63,6 +52,21 @@ struct DailySummariesView: View {
             }
             .onChange(of: model.navigationRevision) { _, _ in if case .daily(let id) = model.destination { select(id) } }
             .sheet(item: $managing) { DailySummaryManagementSheet(summary: $0).environmentObject(model) }
+    }
+    private var dailyActions: some View {
+                HStack(spacing: 10) {
+                    Button { showsCalendar = true } label: {
+                        Label(selectedDate.formatted(.dateTime.month().day()), systemImage: "calendar")
+                    }.popover(isPresented: $showsCalendar) {
+                        TimelineCalendarPopover(selectedDay: selectedDate) { day in
+                            selectedDate = day
+                            selectedID = summaries.first { Calendar.current.isDate($0.day, inSameDayAs: day) }?.id
+                            showsCalendar = false
+                        }
+                    }
+                    Button(RecallLocalization.text(selected == nil ? "生成回顾" : "重新生成")) { model.generateDailyReview(on: selectedDate) }
+                        .buttonStyle(.borderedProminent).disabled(model.isLoadingSavedState || model.isGeneratingDailySummary)
+                }
     }
     private var dateList: some View {
         ScrollView {

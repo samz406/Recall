@@ -55,12 +55,23 @@ public final class MemoryAssistant {
         try await store.addMessage(userMessage, inConversation: conversation.id)
         await onUserMessageSaved?()
         try Task.checkCancellation()
-        if let directive = MemoryDirective.parse(question, conversationID: conversation.id) {
+        if let command = MemoryManagementCommand.parse(question) {
+            let result = try await store.applyMemoryCommand(command)
+            let answer = ConversationMessage(role: .assistant, content: result)
+            try await store.addMessage(answer, inConversation: conversation.id)
+            return answer
+        }
+        if var directive = MemoryDirective.parse(question, conversationID: conversation.id) {
+            if directive.scope == .global, directive.scopeExplicitlySet != true, let topicID = scope.topicID {
+                directive.scope = .project; directive.scopeID = topicID
+            }
             let record = try await store.remember(directive)
             let includesTask = ["解释", "分析", "总结", "写一", "帮我", "告诉", "查一下", "看看", "怎么", "什么", "聊聊"].contains(where: question.contains)
             if directive.scope != .conversation || !includesTask {
+            let settings = await store.snapshot().memoryKnowledgeSettings
+            let usage = settings.referencesEnabled ? "后续相关回答会参考。" : "目前已暂停参考，可在设置中恢复。"
             let answer = ConversationMessage(role: .assistant,
-                content: "已记住：" + directive.content + "\n适用范围：" + directive.scope.title + "。你可以在‘记忆 → 长期记忆’中修改或停用。",
+                content: "已记住：" + directive.content + "\n适用范围：" + directive.scope.title + "。" + usage + "可在‘记忆 → 关于我’修改或停止使用。",
                 citations: [record.id])
             try await store.addMessage(answer, inConversation: conversation.id)
             return answer
@@ -316,7 +327,7 @@ public final class MemoryAssistant {
             let base = if let model { model } else { try await store.modelResponder() }
             let responder = LiveMemoryResponder(base: base, store: store, original: originalState)
             outcome = try await AskAgent.answer(
-                question: question, state: fullState, scope: scope, textIndex: textIndex, responder: responder,
+                question: question, conversationID: conversationID, state: fullState, scope: scope, textIndex: textIndex, responder: responder,
                 history: state.messages, limits: limits, onPartial: onPartial, onStatus: onStatus, onStep: onStep
             )
         } catch is CancellationError {

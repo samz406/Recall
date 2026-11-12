@@ -43,6 +43,7 @@ final class RecallAppModel: ObservableObject {
     @Published var credentialMaintenanceWarning: String?
     @Published var shortcutsReady = false
     @Published var openAskRequested = false
+    @Published var reviewsRequested = false
     @Published var pendingEvidenceURL: URL?
     @Published var showsOnboarding = false
     @Published var showsTextEntry = false
@@ -67,6 +68,10 @@ final class RecallAppModel: ObservableObject {
     @Published var summaryFeedbackTarget: SummaryFeedbackTarget?
     @Published var showsSummaryFeedbackHistory = false
     @Published var generatingTopicID: String?
+    var automaticTopicSummaryBudget = 3
+    let topicReviewResponderOverride: (any LLMResponding)?
+    var topicReviewIsAutomatic = false
+    var topicSummaryAttempts: [String: String] = [:]
     var topicReviewTask: Task<Void, Never>?
     var topicReviewStatusID: UUID?
     var captureUnderstandingTask: Task<Void, Never>?
@@ -148,8 +153,9 @@ final class RecallAppModel: ObservableObject {
     private var reminderActionObserver: NSObjectProtocol?
     private var appActiveObserver: NSObjectProtocol?
 
-    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil, storageOverride: RecallStorage? = nil, preloadedStore: FileMemoryStore? = nil, dailyReviewResponder: (any LLMResponding)? = nil) throws {
+    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil, storageOverride: RecallStorage? = nil, preloadedStore: FileMemoryStore? = nil, dailyReviewResponder: (any LLMResponding)? = nil, topicReviewResponder: (any LLMResponding)? = nil) throws {
         self.isPreview = previewState != nil
+        self.topicReviewResponderOverride = topicReviewResponder
         self.dailyReviewResponderOverride = dailyReviewResponder
         self.reminderCreationScheduler = reminderCreationScheduler ?? LocalNotificationScheduler()
         do {
@@ -247,6 +253,7 @@ final class RecallAppModel: ObservableObject {
         archiveBackupPending = await store.backupPending
         pendingFileCleanupCount = (state.pendingFileDeletions ?? []).count + (state.pendingRecoveryCleanup == true ? 1 : 0)
         guard !isFinishingStartup else { return }
+        automaticTopicSummaryBudget = 3
         rebuildMatterFiles()
         configureShortcuts()
         updateEnterKeyRecorder()
@@ -322,8 +329,10 @@ final class RecallAppModel: ObservableObject {
     }
 
     func updateMemorySettings(_ settings: MemoryKnowledgeSettings) {
+        if topicReviewIsAutomatic && (settings.automaticTopicSummaries != true || !settings.automaticOrganization) { cancelTopicReview() }
+        if settings.automaticTopicSummaries == true && state.memoryKnowledgeSettings.automaticTopicSummaries != true { automaticTopicSummaryBudget = 3; topicSummaryAttempts.removeAll() }
         Task {
-            do { try await store.updateMemoryKnowledgeSettings(settings); await refresh() }
+            do { try await store.updateMemoryKnowledgeSettings(settings); state = await store.snapshot(); scheduleAutomaticTopicReviews() }
             catch { recordError(error, source: "Memory", message: "保存记忆设置失败") }
         }
     }
@@ -332,19 +341,23 @@ final class RecallAppModel: ObservableObject {
         do {
             if let replacing { try await store.correctMemory(id: replacing.id, content: content, scope: scope, scopeID: scopeID, validUntil: validUntil) }
             else {
-                var directive = MemoryDirective.parse("记住：" + content) ?? MemoryDirective(content: content, key: "manual:" + UUID().uuidString)
+                var directive = MemoryDirective.fromUserInput(content) ?? MemoryDirective(content: content, key: "manual:" + UUID().uuidString)
                 directive.scope = scope; directive.scopeID = scopeID; directive.validUntil = validUntil; directive.scopeExplicitlySet = true
                 _ = try await store.remember(directive)
             }
-            await refresh()
+            state = await store.snapshot()
+            rebuildMatterFiles()
+            noticeMessage = state.memoryKnowledgeSettings.referencesEnabled
+                ? RecallLocalization.both("已记住，后续相关回答会参考。", "Remembered for relevant future answers.")
+                : RecallLocalization.both("已记住，目前已暂停参考，可在设置中恢复。", "Remembered. Personal context is paused; resume it in Settings.")
             return true
         } catch { recordError(error, source: "Memory", message: "保存记忆约定失败"); return false }
     }
 
     func retireMemory(_ claim: MemoryClaim) {
         Task {
-            do { try await store.retireMemory(id: claim.id); await refresh() }
-            catch { recordError(error, source: "Memory", message: "停用记忆失败") }
+            do { try await store.retireMemory(id: claim.id); state = await store.snapshot(); noticeMessage = RecallLocalization.both("已不再参考这条记忆。", "This memory is no longer used.") }
+            catch { noticeMessage = RecallLocalization.both("未能停止参考，请重试。", "Could not stop using this memory. Please retry."); recordError(error, source: "Memory", message: "停用记忆失败") }
         }
     }
 
@@ -627,7 +640,8 @@ final class RecallAppModel: ObservableObject {
     func saveManualMatter(_ note: ManualMatterNote) async -> Bool {
         do {
             try await store.addManualMatter(note)
-            await refresh()
+            state = await store.snapshot()
+            rebuildMatterFiles()
             matterBuildMessage = "记录已保存，同名主题的相关内容会串联在一起。"
             return true
         } catch {
@@ -663,6 +677,7 @@ final class RecallAppModel: ObservableObject {
                     memoryWorkspace = result
                 }
                 isBuildingMatters = false
+                scheduleAutomaticTopicReviews()
                 if let taskID { finishTask(taskID, state: .succeeded, message: "记忆已更新") }
                 if announce {
                     if snapshot.captures.isEmpty {
@@ -1102,6 +1117,12 @@ final class RecallAppModel: ObservableObject {
             guard current.recentlyDeletedMemories.contains(where: { $0.id == transaction.id }) else { return }
             enqueueDailyReviews(transaction.affectedDays, reason: .rebuildAfterDeletion)
         }
+    }
+
+    func startTopicConversation(_ topicID: String) {
+        guard let file = matterFiles.first(where: { $0.id == topicID }) else { return }
+        chatScope = MemoryQueryScope(topicID: topicID, topicEvidenceIDs: Set(file.evidenceIDs))
+        openAskRequested = true
     }
 
     func ask(_ question: String) {

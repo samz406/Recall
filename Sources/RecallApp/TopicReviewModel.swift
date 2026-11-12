@@ -3,58 +3,99 @@ import RecallKit
 
 @MainActor
 extension RecallAppModel {
-    func generateTopicReview(_ file: MatterFile) {
-        guard topicReviewTask == nil, !isGeneratingDailySummary, !isGeneratingWeeklyReview else { noticeMessage = "另一份回顾正在生成，完成后可以继续。"; return }
+    func scheduleAutomaticTopicReviews() {
+        guard automaticTopicSummaryBudget > 0, (!isPreview || topicReviewResponderOverride != nil), state.memoryKnowledgeSettings.automaticTopicSummaries == true,
+              state.memoryKnowledgeSettings.automaticOrganization, state.privacy.cloudUseEnabled,
+              topicReviewTask == nil, !isGeneratingDailySummary, !isGeneratingWeeklyReview,
+              (topicReviewResponderOverride != nil || dailySummaryResponder() != nil) else { return }
+        // Existing history/task entries make cancellation and failure sticky for unchanged inputs.
+        let candidates = matterFiles.filter { file in
+            let fingerprint = TopicReading.fingerprint(file)
+            return topicSummaryAttempts[file.id] != fingerprint
+                && state.topicReviews.first(where: { $0.id == file.id })?.inputFingerprint != fingerprint
+                && file.events.contains { !$0.quotes.isEmpty }
+        }
+        guard let file = candidates.first else { return }
+        topicSummaryAttempts[file.id] = TopicReading.fingerprint(file)
+        automaticTopicSummaryBudget -= 1
+        generateTopicReview(file, automatic: true)
+    }
+
+    func generateTopicReview(_ file: MatterFile, automatic: Bool = false) {
+        guard topicReviewTask == nil, !isGeneratingDailySummary, !isGeneratingWeeklyReview else {
+            if !automatic { noticeMessage = RecallLocalization.both("另一份回顾正在更新，请稍后重试。", "Another review is updating. Please try again shortly.") }
+            return
+        }
+        guard let responder = topicReviewResponderOverride ?? dailySummaryResponder() else {
+            if !automatic { noticeMessage = RecallLocalization.both("请在设置中连接模型并允许发送脱敏文本；已有记录仍可阅读。", "Connect a model and allow redacted text in Settings. Saved records remain readable.") }
+            return
+        }
         let taskID = beginTask("主题小结", target: file.title, phase: "准备记录", retry: { [weak self] in
             guard let self, let current = self.matterFiles.first(where: { $0.id == file.id }) else { return }
             self.generateTopicReview(current)
         })
-        guard let responder = dailySummaryResponder() else {
-            finishTask(taskID, state: .failed, message: ModelReviewError.unavailable.localizedDescription); return
-        }
-        let ids = Set(file.evidenceIDs)
-        let dates = state.captures.filter { ids.contains($0.id) }.map(\.createdAt)
-        guard let start = dates.min() else { finishTask(taskID, state: .failed, message: "来源已变化，请更新主题"); return }
+        let keys = Set(([file.title] + file.events.map(\.title)).map(DailyKnowledgeEngine.topicKey))
         let modelStore = store
-        generatingTopicID = file.id
-        topicReviewStatusID = taskID
+        topicReviewIsAutomatic = automatic
+        generatingTopicID = file.id; topicReviewStatusID = taskID
         topicReviewTask = Task {
-            defer { generatingTopicID = nil; topicReviewTask = nil; topicReviewStatusID = nil; processNextDailySummary() }
+            defer {
+                topicReviewIsAutomatic = false
+                generatingTopicID = nil; topicReviewTask = nil; topicReviewStatusID = nil
+                processNextDailySummary()
+                if automatic && !Task.isCancelled { scheduleAutomaticTopicReviews() }
+            }
             do {
                 let current = await modelStore.snapshot()
-                let dailyKey = Set([DailyKnowledgeEngine.topicKey(file.title)])
-                guard let daily = DailyKnowledgeEngine().matterFiles(in: current).first(where: { DailyKnowledgeEngine.topicKey($0.title) == DailyKnowledgeEngine.topicKey(file.title) }) else {
-                    throw WeeklyReviewError.noDailyReviews
-                }
-                let prepared = current
-                let target = daily
-                state = prepared
-                let span = ReviewPeriod(start: Calendar.current.startOfDay(for: daily.events.map(\.date).min() ?? start),
-                    end: .now.addingTimeInterval(1))
-                let result = try await PeriodReviewFromDaily().generate(in: prepared, period: span, template: nil, topic: file.title,
-                    topicKeys: dailyKey, beforeCall: { try await modelStore.validateDailyDerivedReview(current) },
-                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder).draft
+                let events = DailyKnowledgeEngine().matterFiles(in: current).filter { keys.contains(DailyKnowledgeEngine.topicKey($0.title)) }.flatMap(\.events)
+                guard let start = events.map(\.date).min() else { throw WeeklyReviewError.noDailyReviews }
+                let span = ReviewPeriod(start: Calendar.current.startOfDay(for: start), end: .now.addingTimeInterval(1))
+                let result = try await PeriodReviewFromDaily().generate(in: current, period: span, template: nil, topic: file.title,
+                    topicKeys: keys, beforeCall: {
+                        if automatic {
+                            let latest = await modelStore.snapshot()
+                            guard latest.memoryKnowledgeSettings.automaticTopicSummaries == true,
+                                  latest.memoryKnowledgeSettings.automaticOrganization else { throw CancellationError() }
+                        }
+                        try await modelStore.validateDailyDerivedReview(current)
+                    }, onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder).draft
                 try Task.checkCancellation()
                 guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
                 try await modelStore.validateDailyDerivedReview(current)
-                try await modelStore.commitTopicReview(TopicModelReview(topicID: target.id, result: result))
+                var summary = TopicModelReview(topicID: file.id, result: result)
+                summary.inputFingerprint = TopicReading.fingerprint(file)
+                try await modelStore.commitTopicReview(summary)
                 state = await modelStore.snapshot()
-                rebuildMatterFiles()
-                finishTask(taskID, state: result.coverage.uncertainBlockCount > 0 ? .partial : .succeeded,
-                    message: result.coverage.uncertainBlockCount > 0 ? "小结已更新，部分原文暂无法确认" : "主题小结已更新", destination: .topic(target.id))
+                finishTask(taskID, state: .succeeded, message: "主题小结已更新", destination: .topic(file.id))
             } catch {
                 let cancelled = ModelCallCancellation.isCancellation(error)
                 finishTask(taskID, state: cancelled ? .cancelled : .failed,
-                    message: cancelled ? "已取消，原小结保持不变" : error.localizedDescription,
-                    detail: (error as? ReviewPreparationFailure)?.detail)
+                    message: cancelled ? "已停止更新，已有内容可继续阅读" : "更新未完成，已有内容可继续阅读", detail: (error as? ReviewPreparationFailure)?.detail)
                 if !cancelled { recordError(error, source: "TopicReview", message: "主题小结未完成，原内容保留") }
-                state = await modelStore.snapshot()
-                rebuildMatterFiles()
             }
         }
     }
     func cancelTopicReview() {
         guard let id = topicReviewStatusID, requestTaskCancellation(id) else { return }
         topicReviewTask?.cancel()
+    }
+    func undoTopicCompletion(_ topicID: String) {
+        Task {
+            do {
+                let ids = state.matterCorrections.filter { $0.isTopicCompletion && $0.topicID == topicID }.map(\.id)
+                for id in ids { try await store.removeMatterCorrection(id: id) }
+                state = await store.snapshot(); rebuildMatterFiles()
+                noticeMessage = RecallLocalization.both("已撤销完成标记。", "Completion undone.")
+            } catch { recordError(error, source: "Memory", message: "撤销完成失败") }
+        }
+    }
+    func undoRemembering(_ sourceID: UUID) {
+        Task {
+            do {
+                try await store.undoRemembering(sourceID: sourceID)
+                state = await store.snapshot()
+                noticeMessage = RecallLocalization.both("已撤销这次记住的内容。", "This remember operation was undone.")
+            } catch { recordError(error, source: "Memory", message: "撤销记忆失败") }
+        }
     }
 }

@@ -93,6 +93,7 @@ public struct TopicModelReview: Codable, Hashable, Identifiable, Sendable {
     public var points: [TopicReviewPoint]
     public var sourceVersions: [UUID: String]
     public var coverage: ModelReviewCoverage
+    public var inputFingerprint: String? = nil
     public init(topicID: String, result: ModelReviewResult, now: Date = .now) {
         id = topicID; createdAt = now; overview = result.overview; sourceVersions = result.sourceVersions; coverage = result.coverage
         points = result.items.map { TopicReviewPoint(title: $0.title, detail: $0.detail, section: $0.section, sourceIDs: result.sourceIDs(for: $0)) }
@@ -111,6 +112,6 @@ extension FileMemoryStore {
         guard report.sourcesUnchanged(in: state) else { throw ModelReviewError.changed }
         let before = state
         state.topicReviews.removeAll { $0.id == report.id }; state.topicReviews.append(report)
-        do { try Task.checkCancellation(); try persist() } catch { state = before; throw error }
+        do { try Task.checkCancellation(); try persistReviewState() } catch { state = before; throw error }
     }
 }

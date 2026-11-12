@@ -43,6 +43,21 @@ public enum RecallLocalization {
         return "\nOutput human-readable titles, details and overview in " + (outputCode == "en" ? "English" : "Simplified Chinese") + ". Never translate quotes, IDs, enum values or the JSON schema. Use complete concise titles, never truncate mid-sentence."
     }
     private static let english: [String: String] = [
+        "人物信息": "People",
+        "目标与约定": "Goals and agreements",
+        "偏好与习惯": "Preferences and habits",
+        "本次会话": "This conversation",
+        "学习": "Learning",
+        "生活": "Personal",
+        "工作": "Work",
+        "所有场景": "All contexts",
+        "定时生成": "Scheduled reviews",
+        "在问答和回顾中参考关于我的信息": "Use personal memories in answers and reviews",
+        "自动更新主题小结": "Update topic summaries automatically",
+        "回看一天、一周或一个月里值得记住的变化": "Read meaningful changes from a day, week or month",
+        "找回一件事的经过，让 Recall 更了解你": "Pick up a topic and help Recall understand you",
+        "回顾": "Reviews",
+        "关于我": "About me",
         "依据": "Evidence",
         "纠正归属": "Correct attribution",
         "纠正内容": "Correct content",

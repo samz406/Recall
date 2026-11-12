@@ -63,6 +63,9 @@ public struct MemoryDirective: Codable, Hashable, Sendable {
         self.scopeID = scopeID; self.replacesPrevious = replacesPrevious
         self.validUntil = validUntil
     }
+    public static func fromUserInput(_ text: String) -> MemoryDirective? {
+        parse(text) ?? parse("记住：" + text)
+    }
     /// Only explicitly requested memory operations are parsed here. Observed page text never calls this path.
     public static func parse(_ text: String, conversationID: UUID? = nil) -> MemoryDirective? {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -92,6 +95,9 @@ public struct MemoryDirective: Codable, Hashable, Sendable {
             scopeID: oneTurn ? conversationID?.uuidString : nil)
         if let context = MemoryPersonalization.namedContext(content), !oneTurn {
             directive.scope = .project; directive.scopeID = context.id
+        }
+        if ["所有对话", "所有项目", "任何场景", "全局"].contains(where: content.contains) {
+            directive.scope = .global; directive.scopeID = nil; directive.scopeExplicitlySet = true
         }
         // A dated request is not a permanent preference even when introduced by “记住”.
         if !oneTurn && MemoryPersonalization.isTemporary(content) {
@@ -166,6 +172,9 @@ public struct MemoryEntity: Identifiable, Codable, Hashable, Sendable {
     public var aliases: [String]
     public var kind: String
     public var sourceIDs: [UUID]
+    public init(id: String, name: String, aliases: [String], kind: String, sourceIDs: [UUID]) {
+        self.id = id; self.name = name; self.aliases = aliases; self.kind = kind; self.sourceIDs = sourceIDs
+    }
 }
 
 public struct MemoryDependency: Codable, Hashable, Sendable {
@@ -196,6 +205,7 @@ public struct MemoryKnowledge: Codable, Sendable {
 public struct MemoryKnowledgeSettings: Codable, Hashable, Sendable {
     public var automaticOrganization = true
     public var retainExplicitMemories = true
+    public var automaticTopicSummaries: Bool? = nil
     public var referenceInChat: Bool? = nil
     public var disabledClaimKeys: [String]? = nil
     public var referencesEnabled: Bool { referenceInChat ?? true }
@@ -206,12 +216,13 @@ public struct MemoryKnowledgeSettings: Codable, Hashable, Sendable {
 }
 
 public struct MemoryKnowledgeEngine: Sendable {
+    /// 7: topic completion preserves original content; personal updates retain factual history.
     /// 6: one activation rule at merge time. Durable wording only shortens the day requirement,
     /// people expire, and days without a structured review stay in the topic list.
-    public static let organizationVersion = 6
+    public static let organizationVersion = 7
     static func withdrawnSourceIDs(from previous: MemoryKnowledge, to current: MemoryKnowledge) -> Set<UUID> {
         let states = Dictionary(uniqueKeysWithValues: current.claims.map { ($0.id, $0.state) })
-        return Set(previous.claims.filter { $0.state == .active && states[$0.id] != .active }.flatMap(\.sourceIDs))
+        return Set(previous.claims.filter { $0.state == .active && !$0.kind.isPersonal && states[$0.id] != .active }.flatMap(\.sourceIDs))
     }
     private struct SourceSnapshot: Encodable {
         var text: String
@@ -386,9 +397,10 @@ public struct MemoryKnowledgeEngine: Sendable {
                     guard let source = sources[sourceID] else { return nil }
                     if let correction = state.matterCorrections.last(where: {
                         $0.isTopicCompletion && $0.topicID == file.id && $0.evidenceIDs.contains(sourceID)
-                            && event.status == .completed && event.detail.hasPrefix("用户已标记完成：")
+                            && event.id == file.latest.id && event.status == .completed
+                            && Set(file.evidenceIDs).isSubset(of: Set($0.evidenceIDs)) && event.recordedAt <= $0.createdAt
                     }) {
-                        var evidence = proof(source, quote: event.detail, ordinal: event.sequence, speaker: "用户更正", eventAt: event.eventAt)
+                        var evidence = proof(source, quote: "用户已标记完成：" + correction.text, ordinal: event.sequence, speaker: "用户更正", eventAt: event.eventAt)
                         evidence.correctedBy = correction.id
                         return evidence
                     }
