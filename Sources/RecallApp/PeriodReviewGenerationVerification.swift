@@ -55,7 +55,8 @@ extension RecallLayoutPreviews {
             if let previous { input.weeklyReports = [previous] }
             let model = try RecallAppModel(previewState: input, dailyReviewResponder: responder)
             defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
-            let originalCaptures = model.state.captures, originalDaily = model.state.dailySummaries
+            let initial = await model.store.snapshot()
+            let originalCaptures = initial.captures, originalDaily = initial.dailySummaries
             model.generateWeeklyReview(period: period, template: ReviewTemplate(kind: .work), scope: ReviewScope())
             for _ in 0..<600 {
                 if !model.isGeneratingWeeklyReview { break }
@@ -65,7 +66,7 @@ extension RecallLayoutPreviews {
                 throw PeriodGenerationFailure(errorDescription: "周期生成没有结束，或改写了已有每日回顾/原始记录")
             }
             if omit {
-                guard await responder.count() == 2, model.state.weeklyReports == [previous!],
+                guard await responder.count() == 2, model.state.weeklyReports == initial.weeklyReports,
                       model.tasks.contains(where: { $0.state == .failed }) else {
                     throw PeriodGenerationFailure(errorDescription: "遗漏仍被当作周报保存，或未提供失败状态")
                 }
