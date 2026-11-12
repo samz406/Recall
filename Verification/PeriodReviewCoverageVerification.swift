@@ -64,7 +64,7 @@ enum PeriodReviewCoverageVerification {
     }
 
     private actor Model: LLMResponding {
-        enum Mode { case complete, omitOnce, alwaysOmit, falseReceipt, unsupportedExclusion, invalidExclusion }
+        enum Mode { case complete, omitOnce, alwaysOmit, falseReceipt, unsupportedExclusion, invalidExclusion, referenceAsProgress, referenceAsPlan }
         let mode: Mode
         var requests: [LLMRequest] = []
         init(_ mode: Mode = .complete) { self.mode = mode }
@@ -95,13 +95,16 @@ enum PeriodReviewCoverageVerification {
                 if mode == .falseReceipt, topic.hasPrefix("Nova") { continue }
                 groups[topic.hasPrefix("Atlas") ? "Atlas 核心功能" : topic, default: []].append(row)
             }
+            let referenceSection = mode == .referenceAsPlan ? "plans" : mode == .referenceAsProgress ? "progress" : "notes"
             let items = groups.keys.sorted().map { key -> [String: Any] in
                 let reference = groups[key]!.allSatisfy { ($0["kind"] as? String)?.contains("reference") == true }
-                return ["section": reference ? "notes" : "progress", "title": key + (reference ? "相关信息已记录" : "已完成阶段核对"),
+                let section = reference ? referenceSection : "progress"
+                return ["section": section, "title": key + (reference ? "相关信息已记录" : "已完成阶段核对"),
                  "detail": reference ? "记录谈及服务维护安排，尚未核实实际影响，不表示用户已经完成该工作。" : key + "的验证结果已记录，边界条件保留，生产发布仍待确认。",
                  "evidence": groups[key]!.map { ["id": $0["id"]!, "quote": $0["title"]!] }]
             }
-            let value: [String: Any] = ["overview": groups.isEmpty ? "所选内容中没有符合当前模板的事项。" : "各条事项的进展与当前状态均已按用途整理。",
+            let overview = mode == .referenceAsProgress || mode == .referenceAsPlan ? "用户已完成所有维护，后续工作已明确由用户处理。" : groups.isEmpty ? "所选内容中没有符合当前模板的事项。" : "各条事项的进展与当前状态均已按用途整理。"
+            let value: [String: Any] = ["overview": overview,
                 "items": items, "coverage": coverage]
             return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self), citedCaptureIDs: [])
         }
@@ -148,6 +151,7 @@ enum PeriodReviewCoverageVerification {
                 throw Failure(errorDescription: "遗漏、假覆盖回执或无依据排除仍被当作完整周报保存")
             } catch ModelReviewError.validation { }
         }
+        try await verifyAttributionRecovery(state, engine: engine)
         try await verifyModelClassification(state, engine: engine)
         try await verifyStructuralFilters(state, engine: engine)
         // A selected mislabelled topic is not filtered with its historical personal category.
@@ -162,6 +166,34 @@ enum PeriodReviewCoverageVerification {
             "生成中每日展示内容变化没有进入并发校验")
         print("PASS: complete period synthesis covers all daily ledger/reading items and workstreams, model classification, >5 rendered/exported items, 15 merged sources, omission repair/rejection and scoped mislabelled topics and fully model-led classification")
     }
+    private static func verifyAttributionRecovery(_ state: RecallState, engine: PeriodReviewFromDaily) async throws {
+        for mode in [Model.Mode.referenceAsProgress, .referenceAsPlan] {
+            let probe = Model(mode)
+            let generated = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .work), responder: probe)
+            let result = generated.draft
+            let report = result.weeklyReport(period: period, template: ReviewTemplate(kind: .work), scope: ReviewScope(), in: state)
+            guard let sourceItem = result.items.first(where: { $0.title.hasPrefix("Cetus") }),
+                  let note = report.digestRows.first(where: { $0.item.title.hasPrefix("Cetus") }) else {
+                throw Failure(errorDescription: "归属不明的来源内容在恢复时丢失")
+            }
+            let log = await probe.log()
+            try expect(log.count == 1 && generated.metrics.modelCalls == 1, "来源条目的栏目不一致仍触发整份周报二次生成")
+            try expect(sourceItem.section == "notes" && sourceItem.kind == "reference" && sourceItem.ownedByUser == false
+                && note.item.section == .notes && note.action == nil, "来源记录变成了用户成果或个人待办")
+            try expect(note.title.hasPrefix("相关记录：") && note.summary.hasPrefix("来源记录提到：")
+                && report.markdown.contains("来源记录提到：") && !report.overview.contains("用户已完成"),
+                "页面、导出或概览仍无条件声称归属不明的事情由用户完成")
+            let facts = result.facts.filter { sourceItem.factIDs.contains($0.id) }
+            try expect(!facts.isEmpty && facts.allSatisfy { $0.kind == "reference" && !$0.isAction && $0.attribution == "speaker=unknown" },
+                "底层来源仍被记录为本人行动或确定他人身份")
+            try expect(report.digestRows.count == 9 && report.items.first(where: { $0.title.hasPrefix("Atlas") })?.section == .progress,
+                "恢复来源记录时丢掉其他工作或把已确认的工作也降级")
+            let reopened = try JSONDecoder().decode(WeeklyReport.self, from: JSONEncoder().encode(report))
+            try expect(reopened.markdown == report.markdown, "重启后来源限定丢失")
+        }
+        print("PASS: period attribution recovery keeps unknown/reference progress and plans as source-qualified notes in one model call, with no personal action or unsafe overview and no loss after export/reopen")
+    }
+
     private static func verifyModelClassification(_ state: RecallState, engine: PeriodReviewFromDaily) async throws {
         let workInput = try engine.prepare(in: state, period: period, template: ReviewTemplate(kind: .work))
         for kind in ReviewTemplateKind.allCases {

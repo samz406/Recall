@@ -58,7 +58,8 @@ public extension ModelReviewResult {
                     date: fact.recordedAt, text: fact.detail, status: Self.status(fact.status), sourceIDs: fact.sourceIDs,
                     eventTimeKnown: false)
             }
-            return ReviewItem(id: "model:" + CaptureUnderstandingEngine.digest(item.section + item.title + item.factIDs.joined()),
+            let prefix = item.kind == "reference" && item.ownedByUser == false ? "reference:model:" : "model:"
+            return ReviewItem(id: prefix + CaptureUnderstandingEngine.digest(item.section + item.title + item.factIDs.joined()),
                 title: item.title, category: item.category.flatMap(ReviewCategory.init(rawValue:))
                     ?? (template.kind.requiresWorkScope ? .work : template.kind == .learning ? .learning : .unclassified),
                 section: section, previous: nil, excerpts: excerpts, featuredIDs: excerpts.map(\.id), nextAction: nil, nextActionSourceIDs: [], narrative: ReviewNarrative(title: item.title, summary: item.detail, evidenceIDs: excerpts.map(\.id)))

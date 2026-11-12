@@ -6,7 +6,7 @@ import Foundation
 /// review apply: every conclusion must cite a daily item and quote text that exists in it.
 public struct PeriodReviewFromDaily: Sendable {
     public init() {}
-    public static let synthesisVersion = 3
+    public static let synthesisVersion = 4
 
     public struct Row: Codable, Sendable {
         var id: String; var date: String; var topic: String?; var category: String?; var kind: String; var status: String
@@ -152,6 +152,7 @@ public struct PeriodReviewFromDaily: Sendable {
 
     func validate(_ draft: Draft, prepared: Prepared, itemLimit: Int, detailLimit: Int, template: ReviewTemplate?, complete: Bool) throws -> Draft {
         var result = draft
+        var recoveredReference = false
         guard draft.overview.count <= 160, draft.items.count <= itemLimit else { throw ModelReviewError.validation(.structure) }
         let allowed = Set((template?.sections ?? ReviewSection.allCases).map(\.rawValue))
         let rowByID = Dictionary(prepared.rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -178,7 +179,13 @@ public struct PeriodReviewFromDaily: Sendable {
             if complete && item.evidence.allSatisfy({ evidence in
                 guard let entry = prepared.entries[evidence.id] else { return true }
                 return !entry.knowledge.ownedByUser || entry.knowledge.kind == .reference
-            }), item.section != "notes" { throw ModelReviewError.validation(.attribution) }
+            }), item.section != "notes" {
+                // A source-bound account is still useful. Keep its text and evidence as a note,
+                // rather than rejecting the whole week and paying for another full synthesis.
+                // It never becomes the user's accomplishment or personal plan.
+                item.section = "notes"
+                recoveredReference = true
+            }
             // A plan must rest on at least one of the user's own, still-open items.
             if item.section == "plans" {
                 let own = item.evidence.contains { evidence in
@@ -191,6 +198,21 @@ public struct PeriodReviewFromDaily: Sendable {
             result.items[i] = item
         }
         result.overview = DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: DailySummaryContentFormatter.removingCitationMarkers(from: draft.overview)).trimmingCharacters(in: .whitespacesAndNewlines)
+        if recoveredReference {
+            // The original overview may repeat an unsafe ownership claim. Reuse complete model
+            // headlines with an explicit record scope, instead of inventing a replacement narrative.
+            var headlines: [String] = []
+            for item in result.items {
+                let sourceOnly = item.evidence.allSatisfy { evidence in
+                    guard let entry = prepared.entries[evidence.id] else { return true }
+                    return !entry.knowledge.ownedByUser || entry.knowledge.kind == .reference
+                }
+                let headline = (sourceOnly ? "相关记录：" : "") + item.title
+                if (headlines + [headline]).joined(separator: "；").count > 150 { break }
+                headlines.append(headline)
+            }
+            result.overview = headlines.isEmpty ? "" : "本期记录：" + headlines.joined(separator: "；") + "。"
+        }
         if complete { try validateCoverage(result, prepared: prepared, template: template) }
         return result
     }
@@ -248,6 +270,7 @@ public struct PeriodReviewFromDaily: Sendable {
         let outputBudget = complete ? min(24_000, max(8_000, prepared.itemCount * 120)) : 8_000
         var repair = "", metrics = DailyReviewMetrics()
         metrics.sourceCount = prepared.dayCount; metrics.documentCount = prepared.itemCount; metrics.inputBytes = body.utf8.count
+        metrics.readMilliseconds = Int(Date.now.timeIntervalSince(start) * 1000)
         for attempt in 0..<2 {
             try Task.checkCancellation(); try await beforeCall()
             await onProgress?(ReviewGenerationProgress(.generating, detail: "正在汇总 \(prepared.dayCount) 天的 \(prepared.itemCount) 条已核对结论。"))
@@ -257,6 +280,9 @@ public struct PeriodReviewFromDaily: Sendable {
                 let answer = try await responder.answerCancellably(to: LLMRequest(question: instructions + repair, context: [context],
                     purpose: .reviewSynthesis, outputTokenLimit: attempt == 0 ? outputBudget : min(32_000, outputBudget + 4_000)))
                 metrics.modelCalls += 1; metrics.modelMilliseconds += Int(Date.now.timeIntervalSince(called) * 1000)
+                await onProgress?(ReviewGenerationProgress(.checking, detail: RecallLocalization.both(
+                    "模型第 \(metrics.modelCalls) 次请求已返回，累计等待 \(max(1, metrics.modelMilliseconds / 1000)) 秒；正在核对来源与覆盖。",
+                    "Model request \(metrics.modelCalls) returned after \(max(1, metrics.modelMilliseconds / 1000))s total. Checking sources and coverage.")))
                 guard let open = answer.content.firstIndex(of: "{"), let close = answer.content.lastIndex(of: "}"), open <= close,
                       let draft = try? JSONDecoder().decode(Draft.self, from: Data(answer.content[open...close].utf8)) else {
                     throw ModelReviewError.validation(.format)
@@ -288,17 +314,22 @@ public struct PeriodReviewFromDaily: Sendable {
             var ids: [String] = []
             for evidence in item.evidence {
                 guard let entry = prepared.entries[evidence.id] else { continue }
+                let own = entry.knowledge.ownedByUser && entry.knowledge.kind != .reference
                 let id = CaptureUnderstandingEngine.digest(evidence.id + evidence.quote + entry.sources.map(\.uuidString).sorted().joined())
                 facts[id] = ModelReviewFact(id: id, title: entry.item.title, detail: evidence.quote,
-                    attribution: entry.knowledge.ownedByUser ? "speaker=user" : "speaker=other",
-                    kind: entry.item.section.canonical == .actions ? "commitment" : "event", status: entry.knowledge.status,
+                    attribution: own ? "speaker=user" : "speaker=unknown",
+                    kind: own ? (entry.item.section.canonical == .actions ? "commitment" : "event") : "reference", status: entry.knowledge.status,
                     recordedAt: entry.summary.day, eventTime: nil, condition: nil, deadline: nil,
-                    sourceIDs: entry.sources, quotes: [evidence.quote], isAction: entry.item.section.canonical == .actions)
+                    sourceIDs: entry.sources, quotes: [evidence.quote], isAction: own && entry.item.section.canonical == .actions)
                 ids.append(id)
             }
             let found = Set(item.evidence.compactMap { categories[$0.id] })
+            let own = item.evidence.contains { evidence in
+                guard let entry = prepared.entries[evidence.id] else { return false }
+                return entry.knowledge.ownedByUser && entry.knowledge.kind != .reference
+            }
             items.append(ModelReviewItem(section: item.section, title: item.title, detail: item.detail, factIDs: Array(Set(ids)).sorted(),
-                category: found.count == 1 ? found.first : nil))
+                kind: own ? nil : "reference", ownedByUser: own, category: found.count == 1 ? found.first : nil))
         }
         return ModelReviewResult(overview: draft.overview, items: items, facts: facts.values.sorted { $0.id < $1.id },
             sourceVersions: prepared.sourceVersions,
