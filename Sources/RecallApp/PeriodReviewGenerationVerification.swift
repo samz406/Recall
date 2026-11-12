@@ -135,7 +135,8 @@ extension RecallLayoutPreviews {
                       model.diagnosticEntries.contains(where: { $0.source == "WeeklyReview" && $0.metadata["generation"] == "period-from-daily-v4"
                           && $0.metadata["modelCalls"] == String(expectedCalls) && $0.metadata["sourceNotes"] == "2"
                           && $0.metadata["saveSourceCheckMs"] != nil && $0.metadata["saveEncodeMs"] != nil
-                          && $0.metadata["saveWriteMs"] != nil && $0.metadata["publishMs"] != nil }) else {
+                          && $0.metadata["saveWriteMs"] != nil && $0.metadata["publishMs"] != nil
+                          && $0.metadata["saveQueueMs"] != nil && $0.metadata["saveTransactionMs"] != nil }) else {
                     throw PeriodGenerationFailure(errorDescription: "归属恢复后仍重复请求、缺少来源限定或未记录实际耗时/请求统计")
                 }
                 if mode == .omitOnce {

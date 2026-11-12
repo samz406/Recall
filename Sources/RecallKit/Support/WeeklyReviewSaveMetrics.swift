@@ -8,7 +8,7 @@ public struct WeeklyReviewSaveMetrics: Sendable {
     public let totalMilliseconds: Int
     public var diagnosticMetadata: [String: String] {
         ["saveSourceCheckMs": String(sourceCheckMilliseconds), "saveEncodeMs": String(encodeMilliseconds),
-         "saveWriteMs": String(writeMilliseconds), "archiveBytes": String(archiveBytes), "saveMs": String(totalMilliseconds)]
+         "saveWriteMs": String(writeMilliseconds), "archiveBytes": String(archiveBytes), "saveTransactionMs": String(totalMilliseconds)]
     }
 }
 
