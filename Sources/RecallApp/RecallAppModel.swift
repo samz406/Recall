@@ -1120,8 +1120,8 @@ final class RecallAppModel: ObservableObject {
     }
 
     func startTopicConversation(_ topicID: String) {
-        guard matterFiles.contains(where: { $0.id == topicID }) else { return }
-        chatScope = MemoryQueryScope(topicID: topicID)
+        guard let file = matterFiles.first(where: { $0.id == topicID }) else { return }
+        chatScope = MemoryQueryScope(topicID: topicID, topicEvidenceIDs: Set(file.evidenceIDs))
         openAskRequested = true
     }
 

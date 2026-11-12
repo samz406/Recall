@@ -1113,7 +1113,7 @@ private struct ChatView: View {
             if !model.matterFiles.isEmpty {
                 Menu(RecallLocalization.text("指定主题")) {
                     ForEach(model.matterFiles) { file in
-                        Button(file.title) { model.chatScope = MemoryQueryScope(topicID: file.id) }
+                        Button(file.title) { model.chatScope = MemoryQueryScope(topicID: file.id, topicEvidenceIDs: Set(file.evidenceIDs)) }
                     }
                 }
             }

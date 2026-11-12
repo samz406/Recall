@@ -13,6 +13,7 @@ extension RecallLayoutPreviews {
         let messages = model.state.messages
         model.startTopicConversation(topic.id)
         guard model.chatScope.topicID == topic.id, model.openAskRequested,
+              model.chatScope.applying(to: model.state).captures.contains(where: { $0.id == note.id }),
               model.state.messages == messages, !model.isThinking else {
             throw MemoryExperienceFailure(errorDescription: "继续问未携带主题，或自动发送了固定问题")
         }
