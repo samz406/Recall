@@ -295,7 +295,7 @@ struct WeeklyReviewView: View {
                     .font(.system(size: 15)).lineSpacing(7)
                 DisclosureGroup(RecallLocalization.text("查看自动整理的小结")) { reportSections(report).padding(.top, 18) }
             } else {
-                Text(report.overview).font(.system(size: 16, weight: .medium)).lineSpacing(7)
+                Text(report.readingOverview).font(.system(size: 16, weight: .medium)).lineSpacing(7)
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 reportSections(report)
             }
@@ -315,7 +315,7 @@ struct WeeklyReviewView: View {
                     .buttonStyle(.bordered).controlSize(.small).disabled(model.isGeneratingDailySummary)
             }
             if report.isReadable {
-                Text("\(report.digestRows.count) 项内容 · 涵盖 \(report.coveredDayCount) 个记录日" + (report.editedMarkdown == nil ? "" : " · 已编辑"))
+                Text("\(report.readingRows.count) 项内容 · 涵盖 \(report.coveredDayCount) 个记录日" + (report.editedMarkdown == nil ? "" : " · 已编辑"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
         }
@@ -325,7 +325,7 @@ struct WeeklyReviewView: View {
             Button { editing = report } label: { Label(RecallLocalization.text("编辑"), systemImage: "pencil") }.disabled(!report.isReadable)
             Button { exporting = report } label: { Label(RecallLocalization.text("复制与导出"), systemImage: "square.and.arrow.up") }.disabled(!report.isReadable)
             Menu {
-                Button(RecallLocalization.text("查看本期来源")) { materials = report }.disabled(!report.isReadable)
+                Button(RecallLocalization.both("查看来源与相关记录", "View sources and related records")) { materials = report }.disabled(!report.isReadable)
                 if report.isReadable {
                     Divider()
                     Button(RecallLocalization.text("重新生成（保留原版本）")) { regenerate(report) }
@@ -342,7 +342,7 @@ struct WeeklyReviewView: View {
         model.generateWeeklyReview(period: report.period, template: report.template, scope: report.scope, replacing: nil)
     }
     private func reportSections(_ report: WeeklyReport) -> some View {
-        let rows = report.digestRows
+        let rows = report.readingRows
         return LazyVStack(alignment: .leading, spacing: 30) {
             ForEach(report.template.sections) { section in
                 let items = rows.filter { $0.item.section == section }
@@ -554,6 +554,13 @@ private struct ReviewExportSheet: View {
 }
 
 /// Materials are deliberately outside the report body and paginated. They are not summaries.
+struct PeriodReviewMaterialsPreview: View {
+    @EnvironmentObject private var model: RecallAppModel
+    var body: some View {
+        if let report = model.state.weeklyReports.first { ReviewMaterialsSheet(reportID: report.id) }
+    }
+}
+
 private struct ReviewMaterialsSheet: View {
     @EnvironmentObject private var model: RecallAppModel
     @Environment(\.dismiss) private var dismiss
@@ -563,7 +570,8 @@ private struct ReviewMaterialsSheet: View {
     @State private var selected: ReviewItem?
     private var report: WeeklyReport? { model.state.weeklyReports.first { $0.id == reportID && $0.isReadable } }
     var body: some View {
-        let rows = report?.items.filter { $0.memberTopicIDs == nil && (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)) } ?? []
+        let rows = report?.items.filter { $0.memberTopicIDs == nil && (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
+            || $0.narrative?.summary.localizedCaseInsensitiveContains(query) == true) } ?? []
         VStack(alignment: .leading, spacing: 18) {
             HStack { Text(RecallLocalization.text("本期整理依据")).font(.title2.bold()); Spacer(); Button(RecallLocalization.text("完成")) { dismiss() } }
             Text(RecallLocalization.text("这里保留本期的候选材料与完整过程，包含未进入回顾正文的零碎记录；材料标题不代表已确认的真实事项。"))
@@ -578,6 +586,10 @@ private struct ReviewMaterialsSheet: View {
                         Button { selected = item } label: {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(item.title).font(.headline).lineLimit(2)
+                                if report?.separatesSupplementaryRecords == true, item.section == .notes, let text = item.narrative?.summary {
+                                    Text(RecallLocalization.both("相关记录 · ", "Related record · ") + text)
+                                        .font(.callout).foregroundStyle(RecallPalette.secondary).lineLimit(3)
+                                }
                                 Text("\(item.sourceIDs.count) 条来源 · 查看完整过程").font(.caption).foregroundStyle(RecallPalette.secondary)
                             }.padding(14).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()
                         }.buttonStyle(.plain)
@@ -603,14 +615,18 @@ private struct ReviewSourcesSheet: View {
         return WeeklyReviewEngine.sourcesUnchanged(report, in: model.state)
     }
     var body: some View {
+        let sourceIsCurrent = current
         VStack(alignment: .leading, spacing: 18) {
-            HStack { Text(current ? item.title : "依据已变化").font(.title2.bold()); Spacer(); Button(RecallLocalization.text("完成")) { dismiss() } }
+            HStack { Text(sourceIsCurrent ? item.title : "依据已变化").font(.title2.bold()); Spacer(); Button(RecallLocalization.text("完成")) { dismiss() } }
             Text(RecallLocalization.text("回看原始记录，核对发生时间、归属与前后变化。")) .foregroundStyle(RecallPalette.secondary)
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
-                    if !current { Text(RecallLocalization.text("来源已删除或更正，请关闭后重新生成。")).foregroundStyle(RecallPalette.secondary) }
+                    if !sourceIsCurrent { Text(RecallLocalization.text("来源已删除或更正，请关闭后重新生成。")).foregroundStyle(RecallPalette.secondary) }
                     else {
+                        if let narrative = item.narrative {
+                            Text(narrative.summary).textSelection(.enabled).padding(.bottom, 4)
+                        }
                         ForEach((item.previous.map { [$0] } ?? []) + item.excerpts) { entry in
                             VStack(alignment: .leading, spacing: 10) {
                                 Text((entry.eventTimeKnown == true ? "发生于 " : "记录于 ") + entry.date.formatted()).font(.caption).foregroundStyle(RecallPalette.secondary)

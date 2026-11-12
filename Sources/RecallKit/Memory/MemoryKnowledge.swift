@@ -313,6 +313,42 @@ public struct MemoryKnowledgeEngine: Sendable {
         sourcesUsable(ids, in: state, knowledge: reconcile(state))
     }
 
+    /// Daily-derived reports already have authoritative, quoted daily facts. Validate withdrawal
+    /// and live evidence only for their dependencies; do not discover/rebuild the entire ledger
+    /// merely to save or open one report. Legacy reports keep the full reconciliation path.
+    func dailyReviewSourcesUsable(_ ids: Set<UUID>, in state: RecallState, knowledge: MemoryKnowledge? = nil) -> Bool {
+        let sources = Dictionary(uniqueKeysWithValues: state.captures.filter { ids.contains($0.id) }.map { ($0.id, $0) })
+        let invalid = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
+        guard sources.count == ids.count, ids.isDisjoint(with: invalid),
+              sources.values.allSatisfy({ !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }) else { return false }
+        let suppressed = Set(state.memoryKnowledge.suppressedKeys)
+        let withdrawn = state.memoryKnowledge.claims.filter {
+            $0.kind == .reference && ($0.state == .retracted || suppressed.contains($0.key))
+        }.flatMap { $0.evidence.map(\.captureID) }
+        guard ids.isDisjoint(with: withdrawn) else { return false }
+        if let knowledge { return sourcesUsable(ids, in: state, knowledge: knowledge) }
+        let directives = Set(sources.values.filter { $0.memoryDirective != nil }.map(\.id))
+        let relevant = state.memoryKnowledge.claims.filter { claim in
+            (claim.kind == .reference || claim.evidence.contains { directives.contains($0.captureID) })
+                && claim.evidence.contains { ids.contains($0.captureID) }
+        }
+        if relevant.isEmpty { return directives.isEmpty }
+        let analysis = state.analysisCaptures(for: ids)
+        var versions: [UUID: String] = [:], active = Set<UUID>(), retired = Set<UUID>()
+        for claim in relevant {
+            let usable = claim.usable() && !suppressed.contains(claim.key)
+            for evidence in claim.evidence where ids.contains(evidence.captureID) {
+                let id = evidence.captureID
+                guard let source = analysis[id] else { continue }
+                if versions[id] == nil { versions[id] = Self.version(of: source, corrections: state.matterCorrections) }
+                guard evidence.sourceVersion == versions[id] else { continue }
+                if usable { active.insert(id) }
+                else if claim.kind == .reference { retired.insert(id) }
+            }
+        }
+        return ids.allSatisfy { !retired.contains($0) && (!directives.contains($0) || active.contains($0)) }
+    }
+
     /// `knowledge` must be `reconcile(state)` for this exact state; callers checking several
     /// reports against one state compute it once because reconciling scans the whole archive.
     public func sourcesUsable(_ ids: Set<UUID>, in state: RecallState, knowledge: MemoryKnowledge) -> Bool {

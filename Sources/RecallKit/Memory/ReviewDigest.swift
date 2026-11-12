@@ -151,6 +151,27 @@ public extension WeeklyReport {
     var coveredDayCount: Int {
         Set(items.flatMap(\.excerpts).map { period.calendar.startOfDay(for: $0.date) }).count
     }
+    /// Work readers want outcomes, open issues and arrangements. Context remains in the existing
+    /// source viewer; an explicitly customized notes heading keeps the user's chosen layout.
+    var separatesSupplementaryRecords: Bool {
+        template.kind.requiresWorkScope && template.headings[ReviewSection.notes.rawValue] == nil
+    }
+    var readingRows: [ReviewDigestRow] {
+        digestRows.filter { !separatesSupplementaryRecords || $0.item.section != .notes }
+    }
+    var supplementaryRows: [ReviewDigestRow] {
+        separatesSupplementaryRecords ? digestRows.filter { $0.item.section == .notes } : []
+    }
+    var readingOverview: String {
+        guard !supplementaryRows.isEmpty else { return overview }
+        let titles = readingRows.prefix(3).map(\.title)
+        return titles.isEmpty
+            ? RecallLocalization.both("本期的相关记录保留在“查看来源”中。", "Related records for this period are available under View sources.")
+            : RecallLocalization.both("本期重点：", "Period highlights: ") + titles.joined(separator: "；") + "。"
+    }
+    var supplementaryMarkdown: String {
+        supplementaryRows.map { "### " + $0.title + "\n\n" + $0.summary }.joined(separator: "\n\n")
+    }
     var digestOverview: String {
         let titles = digestRows.prefix(3).map(\.title)
         guard !titles.isEmpty else { return "本期记录暂未形成可靠的小结。可以查看整理依据，或重新生成回顾。" }
