@@ -194,6 +194,12 @@ enum PeriodReviewCoverageVerification {
 
     private static func verifyLargeArchivePreflight(_ fixture: RecallState, engine: PeriodReviewFromDaily) async throws {
         var state = fixture
+        // Persist this fixture as a current model-validated daily review. Legacy insight cleanup
+        // intentionally removes its synthetic announcement; that migration is not this benchmark.
+        for i in state.dailySummaries.indices {
+            state.dailySummaries[i].modelCoverage = ModelReviewCoverage(sourceCount: state.dailySummaries[i].sourceCaptureIDs.count,
+                factCount: state.dailySummaries[i].items.count, uncertainBlockCount: 0)
+        }
         let decoy = String(repeating: "合成的范围外历史记录，不属于这次周报。", count: 80)
         for i in state.captures.count..<6_333 {
             state.captures.append(CaptureRecord(eventTemplate: .workCheckpoint, createdAt: period.start.addingTimeInterval(-100_000),
@@ -212,7 +218,7 @@ enum PeriodReviewCoverageVerification {
         for _ in 0..<3 { try await store.validateDailyDerivedReview(snapshot) }
         let elapsed = Date.now.timeIntervalSince(started)
         try expect(prepared.itemCount == 26 && prepared.sourceVersions.count == fixture.captures.count && elapsed < 10,
-            "6,333 条档案的每日派生准备仍扫描理解全部原文，或混入范围外内容：\(elapsed)s")
+            "6,333 条档案准备异常：\(prepared.itemCount) 项、\(prepared.sourceVersions.count)/\(fixture.captures.count) 来源、\(elapsed)s")
         var unrelated = snapshot
         unrelated.captures.append(CaptureRecord(eventTemplate: .workCheckpoint, contentHash: "unrelated", ocrText: "另一条无关新记录"))
         try await store.validateDailyDerivedReview(unrelated)
