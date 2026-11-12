@@ -182,7 +182,7 @@ struct WeeklyReviewView: View {
                 Text(RecallLocalization.text("请选择不超过 31 天的有效日期范围。"))
                     .font(.caption).foregroundStyle(RecallPalette.warning)
             } else if !model.isBuildingMatters && preview.eligibleTopicCount == 0 {
-                Text(RecallLocalization.text("这段时间暂无可回顾的内容，可以换个日期。"))
+                Text(RecallLocalization.both("这段时间暂无可回顾的内容，可以换个日期。", "No review content is available in this range. Try different dates."))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
         }.padding(22).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()
