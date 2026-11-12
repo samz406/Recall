@@ -121,12 +121,14 @@ enum ModelResponseVerification {
 
     private static func understandingExtendedAllowance() async throws {
         for provider in [LLMProviderKind.openAICompatible, .anthropicCompatible] {
-            let (responder, session) = try client(provider, replies: [reply(provider, text: "{\"facts\":[],\"coverage\":[]}")])
-            defer { session.invalidateAndCancel() }
-            _ = try await responder.answer(to: LLMRequest(question: "合成最小片段理解", context: [],
-                purpose: .captureUnderstanding, outputTokenLimit: 16_000))
-            let used = try budgets()
-            try expect(used == [16_000], "HTTP 适配器仍将明确的记录理解预算截为 8000")
+            for (purpose, limit) in [(LLMRequestPurpose.captureUnderstanding, 16_000), (.reviewSynthesis, 24_000), (.reviewSynthesis, 32_000)] {
+                let (responder, session) = try client(provider, replies: [reply(provider, text: "{\"facts\":[],\"coverage\":[]}")])
+                defer { session.invalidateAndCancel() }
+                _ = try await responder.answer(to: LLMRequest(question: "合成结构化输出预算", context: [],
+                    purpose: purpose, outputTokenLimit: limit))
+                let used = try budgets()
+                try expect(used == [limit], "HTTP 适配器仍静默截小记录理解或完整周期输出预算")
+            }
         }
     }
 

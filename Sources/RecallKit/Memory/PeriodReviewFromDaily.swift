@@ -268,7 +268,7 @@ public struct PeriodReviewFromDaily: Sendable {
 
     /// Synthesize once; repair format once or fill only unresolved coverage in bounded batches.
     public func generate(in state: RecallState, period: ReviewPeriod, template: ReviewTemplate? = nil, scope: ReviewScope = ReviewScope(), topic: String? = nil,
-                         topicKeys: Set<String>? = nil, beforeCall: @Sendable () async throws -> Void = {},
+                         topicKeys: Set<String>? = nil, beforeCall: @escaping @Sendable () async throws -> Void = {},
                          onProgress: (@Sendable (ReviewGenerationProgress) async -> Void)? = nil,
                          onMetrics: (@Sendable (DailyReviewMetrics) async -> Void)? = nil,
                          responder: any LLMResponding) async throws -> (draft: ModelReviewResult, metrics: DailyReviewMetrics) {

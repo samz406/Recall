@@ -202,7 +202,7 @@ enum PeriodReviewCoverageVerification {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("period-preflight-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let storage = RecallStorage(rootURL: root)
+        let storage = try RecallStorage(rootURL: root)
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(state).write(to: storage.stateURL)
         let store = try FileMemoryStore(storage: storage, deferMaintenance: true, credentials: InMemoryCredentialStore())
