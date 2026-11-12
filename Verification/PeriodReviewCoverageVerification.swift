@@ -197,8 +197,10 @@ enum PeriodReviewCoverageVerification {
         // Persist this fixture as a current model-validated daily review. Legacy insight cleanup
         // intentionally removes its synthetic announcement; that migration is not this benchmark.
         for i in state.dailySummaries.indices {
-            state.dailySummaries[i].modelCoverage = ModelReviewCoverage(sourceCount: state.dailySummaries[i].sourceCaptureIDs.count,
-                factCount: state.dailySummaries[i].items.count, uncertainBlockCount: 0)
+            let marker: [String: Any] = ["version": 1, "sourceCount": state.dailySummaries[i].sourceCaptureIDs.count,
+                "factCount": state.dailySummaries[i].items.count, "uncertainBlockCount": 0, "createdAt": Date.now.timeIntervalSinceReferenceDate]
+            state.dailySummaries[i].modelCoverage = try JSONDecoder().decode(ModelReviewCoverage.self,
+                from: JSONSerialization.data(withJSONObject: marker))
         }
         let decoy = String(repeating: "合成的范围外历史记录，不属于这次周报。", count: 80)
         for i in state.captures.count..<6_333 {
