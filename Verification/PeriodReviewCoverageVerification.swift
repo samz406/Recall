@@ -215,8 +215,13 @@ enum PeriodReviewCoverageVerification {
         try encoder.encode(state).write(to: storage.stateURL)
         let store = try FileMemoryStore(storage: storage, deferMaintenance: true, credentials: InMemoryCredentialStore())
         let snapshot = await store.snapshot()
+        // DailySummary decodes in the archive host's local calendar. Keep this storage/performance
+        // fixture in that same calendar; the separate in-memory tests exercise Asia/Shanghai scope.
+        let archiveStart = Calendar.current.startOfDay(for: period.start)
+        let archivePeriod = ReviewPeriod(start: archiveStart, end: archiveStart.addingTimeInterval(7 * 86_400),
+            timeZoneIdentifier: Calendar.current.timeZone.identifier)
         let started = Date.now
-        let prepared = try engine.prepare(in: snapshot, period: period, template: ReviewTemplate(kind: .work))
+        let prepared = try engine.prepare(in: snapshot, period: archivePeriod, template: ReviewTemplate(kind: .work))
         for _ in 0..<3 { try await store.validateDailyDerivedReview(snapshot) }
         let elapsed = Date.now.timeIntervalSince(started)
         try expect(prepared.itemCount == 26 && prepared.sourceVersions.count == fixture.captures.count && elapsed < 10,
