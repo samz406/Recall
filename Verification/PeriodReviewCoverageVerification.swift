@@ -47,6 +47,11 @@ enum PeriodReviewCoverageVerification {
                 append("HIDDEN-PERSONAL 合成家庭记录", category: "personal")
                 append("HIDDEN-LEARNING 合成练习记录", category: "learning")
                 append("Orion 待核对分类", category: nil, detail: "Orion 邻居聚会的出行与餐食已经安排，属于私人活动。")
+                // Old daily items without semantic metadata stay visible as source-bound notes.
+                let capture = CaptureRecord(eventTemplate: .workCheckpoint, createdAt: day(offset).addingTimeInterval(40_000),
+                    contentHash: UUID().uuidString, ocrText: "Cetus 服务公告：服务端将在维护窗口停用部分入口，需另行核实。")
+                state.captures.append(capture); sources.append(capture.id)
+                items.append(DailySummaryItem(section: .insights, title: "Cetus 服务维护公告", detail: capture.ocrText, evidenceIDs: [capture.id]))
             }
             var review = DailySummary(day: day(offset), content: "合成的每日回顾", sourceCaptureIDs: sources,
                 todos: [], generationKind: .cloud, items: items)
@@ -66,7 +71,7 @@ enum PeriodReviewCoverageVerification {
             let rows = try JSONSerialization.jsonObject(with: Data(request.context[0].ocrText.utf8)) as! [[String: Any]]
             var groups: [String: [[String: Any]]] = [:], coverage: [[String: Any]] = []
             for row in rows {
-                let topic = row["topic"] as! String, id = row["id"] as! String
+                let topic = row["topic"] as? String ?? (row["title"] as! String), id = row["id"] as! String
                 if topic.hasPrefix("Orion") {
                     coverage.append(["id": id, "disposition": "outOfScope", "category": "personal",
                         "reason": mode == .invalidExclusion ? "" : "邻居聚会是私人活动，与工作无关", "quote": row["detail"]!])
@@ -83,8 +88,9 @@ enum PeriodReviewCoverageVerification {
                 groups[topic.hasPrefix("Atlas") ? "Atlas 核心功能" : topic, default: []].append(row)
             }
             let items = groups.keys.sorted().map { key -> [String: Any] in
-                ["section": "progress", "title": key + "已完成阶段核对",
-                 "detail": key + "的验证结果已记录，边界条件保留，生产发布仍待确认。",
+                let reference = groups[key]!.allSatisfy { ($0["kind"] as? String)?.contains("reference") == true }
+                return ["section": reference ? "notes" : "progress", "title": key + (reference ? "相关信息已记录" : "已完成阶段核对"),
+                 "detail": reference ? "记录谈及服务维护安排，尚未核实实际影响，不表示用户已经完成该工作。" : key + "的验证结果已记录，边界条件保留，生产发布仍待确认。",
                  "evidence": groups[key]!.map { ["id": $0["id"]!, "quote": $0["title"]!] }]
             }
             let value: [String: Any] = ["overview": "Atlas、Nova、Vega 与 Lyra 各条工作主线均有进展，生产发布尚待确认。",
@@ -96,7 +102,7 @@ enum PeriodReviewCoverageVerification {
     static func run() async throws {
         let state = fixture(), engine = PeriodReviewFromDaily()
         let prepared = try engine.prepare(in: state, period: period, template: ReviewTemplate(kind: .work))
-        try expect(prepared.itemCount == 23 && prepared.dayCount == 5, "周报未合并完整账本和展示条目，或产生重复输入：\(prepared.itemCount)")
+        try expect(prepared.itemCount == 24 && prepared.dayCount == 5, "周报未合并完整账本和展示条目，或产生重复输入：\(prepared.itemCount)")
         try expect(prepared.titles().contains("Vega 地区列表") && prepared.titles().contains("Lyra 前台权限"), "缺失分类或只在每日展示中的事项在模型前消失")
         for length in ReviewLength.allCases {
             var template = ReviewTemplate(kind: .work); template.length = length
@@ -108,19 +114,21 @@ enum PeriodReviewCoverageVerification {
             try expect(!sent.contains("HIDDEN-PERSONAL") && !sent.contains("HIDDEN-LEARNING"), "已知生活和学习内容越过工作模板边界")
             try expect(report.modelAssisted && report.dailySynthesisVersion == PeriodReviewFromDaily.synthesisVersion,
                 "完整周期总结缺少模型或版本标记")
-            try expect(report.items.count == 8 && report.digestRows.count == 8 && report.coveredDayCount == 5,
+            try expect(report.items.count == 9 && report.digestRows.count == 9 && report.coveredDayCount == 5,
                 "显示层仍裁掉第五项之后的独立工作，或遗漏记录日")
             try expect(report.markdown.contains("Vega") && report.markdown.contains("Lyra") && !report.markdown.contains("Orion"), "模型分类后的事项或排除结果没有正确呈现")
+            try expect(report.items.first(where: { $0.title.hasPrefix("Cetus") })?.section == .notes,
+                "旧每日条目没有进入周报，或未知归属被升级为本人工作成果")
             let atlas = report.items.first { $0.title.hasPrefix("Atlas") }!
             try expect(atlas.excerpts.count == 15, "合并同一项目时只保留六或八条来源，导致前几天的内容丢失")
             let reopened = try JSONDecoder().decode(WeeklyReport.self, from: JSONEncoder().encode(report))
-            try expect(reopened.digestRows.count == 8 && reopened.markdown == report.markdown,
+            try expect(reopened.digestRows.count == 9 && reopened.markdown == report.markdown,
                 "重启或导出后重新套用旧的重点数量限制")
         }
         let repairing = Model(.omitOnce)
         let repaired = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .work), responder: repairing)
         let repairedCalls = await repairing.log().count
-        try expect(repairedCalls == 2 && repaired.draft.items.count == 8, "遗漏工作主线没有触发补齐与重新核对")
+        try expect(repairedCalls == 2 && repaired.draft.items.count == 9, "遗漏工作主线没有触发补齐与重新核对")
         for mode in [Model.Mode.alwaysOmit, .falseReceipt, .excludeKnownWork, .invalidExclusion] {
             do {
                 _ = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .work), responder: Model(mode))

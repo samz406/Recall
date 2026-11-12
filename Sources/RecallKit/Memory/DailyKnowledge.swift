@@ -33,14 +33,17 @@ public struct DailyKnowledgeEngine: Sendable {
         let recordedAt = Dictionary(uniqueKeysWithValues: captures.map { ($0.id, $0.createdAt) })
         let invalid = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
         return state.dailySummaries.flatMap { summary -> [Entry] in
-            let ledgerEntries = summary.ledger.compactMap { row in
-                    makeEntry(summary: summary, id: row.id, section: row.section, title: row.title, detail: row.detail,
-                        topic: row.topic, kind: row.kind, status: row.status, owned: row.ownedByUser, category: row.category,
-                        quotes: row.quotes, evidenceIDs: row.evidenceIDs, live: live, invalid: invalid, recordedAt: recordedAt)
+            let ledgerEntries: [Entry] = summary.ledger.compactMap { row in
+                makeEntry(summary: summary, id: row.id, section: row.section, title: row.title, detail: row.detail,
+                    topic: row.topic, kind: row.kind, status: row.status, owned: row.ownedByUser, category: row.category,
+                    quotes: row.quotes, evidenceIDs: row.evidenceIDs, live: live, invalid: invalid, recordedAt: recordedAt)
             }
             guard ledgerEntries.isEmpty || includingHighlights else { return ledgerEntries }
             let highlights = summary.items.compactMap { item -> Entry? in
-                guard let knowledge = item.knowledge else { return nil }
+                // Older daily reading items may predate topic/ownership metadata. Period reviews
+                // still account for their text, as references; never invent first-person ownership.
+                guard let knowledge = item.knowledge ?? (includingHighlights ? DailyItemKnowledge(topic: nil, kind: .reference,
+                    status: "unknown", ownedByUser: false, quotes: [item.title, item.detail]) : nil) else { return nil }
                 let quotes = knowledge.quotes.map { DailyLedgerQuote(text: $0, sourceIDs: item.evidenceIDs, speaker: knowledge.ownedByUser ? "user" : "unknown") }
                 return makeEntry(summary: summary, id: item.id, section: item.section.rawValue, title: item.title, detail: item.detail,
                     topic: knowledge.topic, kind: knowledge.kind, status: knowledge.status, owned: knowledge.ownedByUser, category: knowledge.category,
@@ -93,11 +96,13 @@ public struct DailyKnowledgeEngine: Sendable {
 
     /// Changes when any structured daily item (or the evidence it depends on) changes.
     public func fingerprint(in state: RecallState, includingHighlights: Bool = false) -> String {
-        let rows = entries(in: state, includingHighlights: includingHighlights).map { entry in
-            [entry.item.id.uuidString, entry.knowledge.topic ?? "", entry.knowledge.kind.rawValue, entry.knowledge.status,
-             entry.item.title, entry.item.detail, String(entry.knowledge.ownedByUser), entry.knowledge.category ?? "",
-             String(entry.summary.day.timeIntervalSince1970), entry.sources.map(\.uuidString).sorted().joined(),
-             entry.knowledge.quotes.joined(separator: "\n")].joined(separator: "\u{1f}")
+        let rows = entries(in: state, includingHighlights: includingHighlights).map { entry -> String in
+            var fields: [String] = [entry.item.id.uuidString, entry.knowledge.topic ?? "", entry.knowledge.kind.rawValue, entry.knowledge.status]
+            fields += [entry.item.title, entry.item.detail, String(entry.knowledge.ownedByUser), entry.knowledge.category ?? ""]
+            fields.append(String(entry.summary.day.timeIntervalSince1970))
+            fields.append(entry.sources.map(\.uuidString).sorted().joined())
+            fields.append(entry.knowledge.quotes.joined(separator: "\n"))
+            return fields.joined(separator: "\u{1f}")
         }.sorted()
         return CaptureUnderstandingEngine.digest(rows.joined(separator: "\n"))
     }

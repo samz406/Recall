@@ -50,8 +50,8 @@ enum ReviewPerformanceVerification {
         let selected = ReviewScope(topicIDs: Set(files.prefix(8).map(\.id)))
         try expect(index.preview(in: period, kind: .work, scope: selected).eligibleTopicCount == 8,
             "工作回顾未保留用户明确选择的未分类主题")
-        try expect(index.preview(in: period, kind: .work, scope: ReviewScope()).eligibleTopicCount == 0,
-            "未分类主题被自动混入工作周报")
+        try expect(index.preview(in: period, kind: .work, scope: ReviewScope()).eligibleTopicCount == topicCount,
+            "未分类候选应交给模型核对，范围预览不能提前将它们清零")
     }
 
     private static func categoryAndDateParity() throws {
