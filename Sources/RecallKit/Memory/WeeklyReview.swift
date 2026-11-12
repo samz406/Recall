@@ -562,6 +562,10 @@ public struct WeeklyReviewEngine: Sendable {
 
     public static func sourceVersion(id: UUID, state: RecallState) -> String? {
         guard let source = state.captures.first(where: { $0.id == id }) else { return nil }
+        return sourceVersion(source, state: state)
+    }
+
+    static func sourceVersion(_ source: CaptureRecord, state: RecallState) -> String {
         return "memory2:" + MemoryKnowledgeEngine.version(of: SummaryFeedbackLearning.adjusted(source, in: state), corrections: state.matterCorrections)
     }
 

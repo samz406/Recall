@@ -4,27 +4,36 @@ import RecallKit
 extension RecallLayoutPreviews {
     private struct PeriodGenerationFailure: LocalizedError { let errorDescription: String? }
     private actor PeriodGenerationModel: LLMResponding {
-        let omit: Bool
+        enum Mode { case complete, omitOnce, alwaysOmit, malformed }
+        let mode: Mode
         var calls = 0
-        init(omit: Bool = false) { self.omit = omit }
+        var sizes: [Int] = []
+        init(_ mode: Mode = .complete) { self.mode = mode }
         func count() -> Int { calls }
+        func inputSizes() -> [Int] { sizes }
         func answer(to request: LLMRequest) async throws -> LLMAnswer {
             calls += 1
             guard request.purpose == .reviewSynthesis, let body = request.context.first?.ocrText,
-                  let rows = try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [[String: Any]], rows.count == 11 else {
+                  let rows = try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [[String: Any]], !rows.isEmpty else {
                 throw PeriodGenerationFailure(errorDescription: "周期回顾没有把混合类别的十一条每日事项完整交给模型")
             }
-            guard rows.contains(where: { ($0["topic"] as? String)?.hasPrefix("Atlas") == true && ($0["category"] as? String) == "personal" }),
-                  rows.contains(where: { ($0["topic"] as? String)?.hasPrefix("Atlas") == true && ($0["category"] as? String) == "learning" }) else {
-                throw PeriodGenerationFailure(errorDescription: "错误的旧分类仍在模型前排除了真实工作")
+            sizes.append(rows.count)
+            if calls == 1 {
+                guard rows.count == 11,
+                      rows.contains(where: { ($0["topic"] as? String)?.hasPrefix("Atlas") == true && ($0["category"] as? String) == "personal" }),
+                      rows.contains(where: { ($0["topic"] as? String)?.hasPrefix("Atlas") == true && ($0["category"] as? String) == "learning" }) else {
+                    throw PeriodGenerationFailure(errorDescription: "错误的旧分类仍在模型前排除了真实工作")
+                }
             }
             let work = rows.filter { ($0["topic"] as? String)?.hasPrefix("Atlas") == true }
-            let selected = omit ? Array(work.prefix(5)) : work
-            let items = selected.map { row -> [String: Any] in
+            let omit = mode == .alwaysOmit || (mode == .omitOnce && calls == 1)
+            let selected = omit ? Array(work.dropLast(min(3, work.count))) : work
+            var items = selected.map { row -> [String: Any] in
                 ["section": "progress", "title": (row["topic"] as! String) + "验证已完成",
                  "detail": "合成验证的边界条件已核对并记录，生产发布尚待确认。",
                  "evidence": [["id": row["id"]!, "quote": row["title"]!]]]
             }
+            if mode == .malformed { items[0].removeValue(forKey: "detail") }
             // A dishonest used receipt without its evidence must not bypass completeness checks.
             let coverage = rows.map { row -> [String: Any] in
                 let topic = row["topic"] as! String
@@ -33,7 +42,8 @@ extension RecallLayoutPreviews {
                     "reason": "原文记录的是私人活动或语言学习，与工作交付无关", "quote": row["detail"]!]
             }
             let value: [String: Any] = ["overview": "八项合成工作均有验证进展，发布仍待确认。", "items": items, "coverage": coverage]
-            return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self), citedCaptureIDs: [])
+            let json = String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self)
+            return LLMAnswer(content: "```json\n{\"result\":" + json + "}\n```", citedCaptureIDs: [])
         }
     }
     @MainActor static func verifyPeriodReviewGeneration() async throws {
@@ -73,8 +83,8 @@ extension RecallLayoutPreviews {
         }
         let period = ReviewPeriod(start: calendar.date(byAdding: .day, value: -7, to: today)!, end: today)
         var previous: WeeklyReport?
-        for omit in [false, true] {
-            let responder = PeriodGenerationModel(omit: omit)
+        for mode in [PeriodGenerationModel.Mode.complete, .omitOnce, .alwaysOmit, .malformed] {
+            let responder = PeriodGenerationModel(mode)
             var input = state
             if let previous { input.weeklyReports = [previous] }
             let model = try RecallAppModel(previewState: input, dailyReviewResponder: responder)
@@ -89,13 +99,14 @@ extension RecallLayoutPreviews {
             guard !model.isGeneratingWeeklyReview, model.state.captures == originalCaptures, model.state.dailySummaries == originalDaily else {
                 throw PeriodGenerationFailure(errorDescription: "周期生成没有结束，或改写了已有每日回顾/原始记录")
             }
-            if omit {
+            if mode == .alwaysOmit || mode == .malformed {
                 guard await responder.count() == 2, model.state.weeklyReports == initial.weeklyReports,
-                      model.tasks.contains(where: { $0.state == .failed }) else {
+                      model.tasks.contains(where: { $0.state == .failed && ($0.detail?.contains("Read") == true || $0.detail?.contains("读取") == true) }) else {
                     throw PeriodGenerationFailure(errorDescription: "遗漏仍被当作周报保存，或未提供失败状态")
                 }
             } else {
-                guard await responder.count() == 1, let report = model.state.weeklyReports.first,
+                let expectedCalls = mode == .omitOnce ? 2 : 1
+                guard await responder.count() == expectedCalls, let report = model.state.weeklyReports.first,
                       report.modelAssisted, report.dailySynthesisVersion == PeriodReviewFromDaily.synthesisVersion,
                       report.digestRows.count == 8, report.coveredDayCount == 5,
                       report.items.filter({ $0.id.hasPrefix("reference:model:") && $0.section == .notes }).count == 2,
@@ -110,17 +121,22 @@ extension RecallLayoutPreviews {
                     throw PeriodGenerationFailure(errorDescription: "导出或重启之后再次漏掉第五项之后的内容")
                 }
                 let sourceLabel = RecallLocalization.both("来源记录提到：", "The source record says: ")
-                let requestLabel = RecallLocalization.both("模型请求 1 次", "1 model requests")
+                let requestLabel = RecallLocalization.both("模型请求 \(expectedCalls) 次", "\(expectedCalls) model requests")
                 guard export?.contains(sourceLabel) == true,
                       model.tasks.contains(where: { $0.state == .succeeded && $0.detail?.contains(requestLabel) == true }),
                       model.diagnosticEntries.contains(where: { $0.source == "WeeklyReview" && $0.metadata["generation"] == "period-from-daily-v4"
-                          && $0.metadata["modelCalls"] == "1" && $0.metadata["sourceNotes"] == "2" }) else {
+                          && $0.metadata["modelCalls"] == String(expectedCalls) && $0.metadata["sourceNotes"] == "2" }) else {
                     throw PeriodGenerationFailure(errorDescription: "归属恢复后仍重复请求、缺少来源限定或未记录实际耗时/请求统计")
+                }
+                if mode == .omitOnce {
+                    guard await responder.inputSizes() == [11, 3] else {
+                        throw PeriodGenerationFailure(errorDescription: "原生重试仍然发送整周而不是补齐三条遗漏")
+                    }
                 }
                 previous = report
                 previous?.editedMarkdown = "# 用户已编辑的原周报\n\n这段合成修订在生成失败后必须保留。"
             }
         }
-        print("PASS: native period generation corrects wrong labels, recovers unknown-owner progress in one model call with timing metrics, saves/exports/reopens >5 items, and preserves daily/source records and edited reports on genuine failure")
+        print("PASS: native period generation decodes wrapped results, patches only three omitted inputs, records success/failure timing, preserves unknown attribution and >5 exported/reopened items, and retains edited reports on persistent omission/missing fields")
     }
 }

@@ -33,7 +33,19 @@ public struct PeriodReviewFromDaily: Sendable {
             day = next
         }
         let reviewed = Set(DailyKnowledgeEngine().entries(in: state, includingHighlights: true).map { calendar.startOfDay(for: $0.summary.day) })
-        let recorded = Set(ModelReviewEvidence.records(in: state, period: period).map { calendar.startOfDay(for: $0.createdAt) })
+        let invalid = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
+        var correctedDates: [UUID: Date] = [:]
+        for correction in state.matterCorrections where !correction.isTopicCompletion && correction.kind == .eventDate {
+            if let date = correction.eventAt { for id in correction.evidenceIDs { correctedDates[id] = date } }
+        }
+        let recorded = Set(state.captures.compactMap { source -> Date? in
+            let date = correctedDates[source.id] ?? source.createdAt
+            guard period.contains(date), !invalid.contains(source.id), source.eventTemplate != .dailyReview,
+                  source.memoryDirective == nil, source.isMemoryEvidenceArchive != true,
+                  !(source.correctedText ?? source.ocrText).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !state.privacy.excludedBundleIdentifiers.contains(source.sourceBundleIdentifier ?? "") else { return nil }
+            return calendar.startOfDay(for: date)
+        })
         let reviewedCount = span.filter { reviewed.contains($0) }.count
         let missing = span.filter { recorded.contains($0) && !reviewed.contains($0) }
         let formatter = DateFormatter()
@@ -100,12 +112,13 @@ public struct PeriodReviewFromDaily: Sendable {
             .sorted { $0.summary.day == $1.summary.day ? $0.item.id.uuidString < $1.item.id.uuidString : $0.summary.day < $1.summary.day }
         guard !entries.isEmpty else { throw periodEntries.isEmpty ? WeeklyReviewError.noDailyReviews : WeeklyReviewError.noEvidence }
         var rows: [Row] = [], byID: [String: DailyKnowledgeEngine.Entry] = [:], versions: [UUID: String] = [:]
+        let sources = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
         for (index, entry) in entries.enumerated() {
             let id = "i\(index + 1)"
             byID[id] = entry
-            for source in entry.sources {
-                guard let version = WeeklyReviewEngine.sourceVersion(id: source, state: state) else { throw ModelReviewError.changed }
-                versions[source] = version
+            for id in entry.sources where versions[id] == nil {
+                guard let source = sources[id] else { throw ModelReviewError.changed }
+                versions[id] = WeeklyReviewEngine.sourceVersion(source, state: state)
             }
             rows.append(Row(id: id, date: formatter.string(from: entry.summary.day), topic: entry.knowledge.topic.map { PrivacyEngine().redact($0) },
                 category: entry.knowledge.category.map { PrivacyEngine().redact($0) },
@@ -146,11 +159,13 @@ public struct PeriodReviewFromDaily: Sendable {
         每项给出 evidence：id 必须是输入条目 id，quote 必须逐字摘自该条目的 title、detail 或 quotes 中的连续片段（4–180字）。合并多天或子主题时引用所有被合并的条目，不限制为六条来源。不要输出 Markdown、引用数字、置信度或算法术语。
         \(topic == nil ? "每个输入 id 恰好返回一条 coverage：used（已在某条成文的 evidence 中引用），或 outOfScope（不属于当前模板）。不得以 background、低频、重复或篇幅不足丢弃事项；重复内容合并成文并保留各 id 引用。每条 coverage 都给出根据实际内容判断的 category=work/personal/learning/unclassified，不受输入历史标签约束。outOfScope 仅用于经内容核对确属模板之外的条目，须给出具体 reason 和逐字支持分类的 quote（4–180字）；不得因为原标签不符合模板、低频或篇幅不足而排除。工作/项目模板纳入 work，学习模板纳入 learning；我的一周涵盖所有类别，不得排除输入。" : "")
         用户已生效的纠错要求：\(PrivacyEngine().redact(feedback))
+        格式检查：只返回一个 JSON 对象；所有字段名与字符串用英文双引号，字符串内换行须转义。overview 必须为字符串（没有则空字符串）；items、evidence、coverage 均为数组（没有则 []，不是 null）。每项必须包含 section/title/detail/evidence；每条 evidence 必须包含字符串 id/quote。coverage 的 used 条目包含 id/disposition/category；outOfScope 还必须包含 reason 和逐字 quote。不能只列 id 清单或用省略号代替内容。
         输出：{"overview":"概括","items":[{"section":"progress","title":"完整标题","detail":"完整摘要","evidence":[{"id":"i1","quote":"逐字片段"}]}],"coverage":[{"id":"i1","disposition":"used","category":"work"}]}
         """
     }
 
-    func validate(_ draft: Draft, prepared: Prepared, itemLimit: Int, detailLimit: Int, template: ReviewTemplate?, complete: Bool) throws -> Draft {
+    func validate(_ draft: Draft, prepared: Prepared, itemLimit: Int, detailLimit: Int, template: ReviewTemplate?, complete: Bool,
+                  checkCoverage: Bool = true) throws -> Draft {
         var result = draft
         var recoveredReference = false
         guard draft.overview.count <= 160, draft.items.count <= itemLimit else { throw ModelReviewError.validation(.structure) }
@@ -213,42 +228,49 @@ public struct PeriodReviewFromDaily: Sendable {
             }
             result.overview = headlines.isEmpty ? "" : "本期记录：" + headlines.joined(separator: "；") + "。"
         }
-        if complete { try validateCoverage(result, prepared: prepared, template: template) }
+        if complete && checkCoverage { try validateCoverage(result, prepared: prepared, template: template) }
         return result
     }
 
     private func validateCoverage(_ draft: Draft, prepared: Prepared, template: ReviewTemplate?) throws {
-        let rows = Dictionary(uniqueKeysWithValues: prepared.rows.map { ($0.id, $0) })
-        guard let receipts = draft.coverage, receipts.count == rows.count, Set(receipts.map(\.id)) == Set(rows.keys) else {
-            throw ModelReviewError.validation(.coverage)
+        guard coverageIssueIDs(draft, prepared: prepared, template: template).isEmpty else {
+            throw ModelReviewError.validation(.importantContentMissing)
         }
+    }
+
+    func coverageIssueIDs(_ draft: Draft, prepared: Prepared, template: ReviewTemplate?) -> Set<String> {
+        let rows = Dictionary(uniqueKeysWithValues: prepared.rows.map { ($0.id, $0) })
+        let receipts = Dictionary(grouping: draft.coverage ?? [], by: \.id)
+        if !Set(receipts.keys).isSubset(of: Set(rows.keys)) { return Set(rows.keys) }
         let used = Set(draft.items.flatMap { $0.evidence.map(\.id) })
         let requiredCategory: ReviewCategory? = template?.kind.requiresWorkScope == true ? .work : template?.kind == .learning ? .learning : nil
-        for receipt in receipts {
-            guard let row = rows[receipt.id] else { throw ModelReviewError.validation(.coverage) }
+        return Set(prepared.rows.compactMap { row -> String? in
+            guard let values = receipts[row.id], values.count == 1 else { return row.id }
+            let receipt = values[0]
             let category = receipt.category.flatMap(ReviewCategory.init(rawValue:))
             switch receipt.disposition {
             case "used":
-                guard used.contains(receipt.id) else { throw ModelReviewError.validation(.importantContentMissing) }
-                guard let category else { throw ModelReviewError.validation(.coverage) }
-                if let requiredCategory, category != requiredCategory { throw ModelReviewError.validation(.coverage) }
+                guard used.contains(receipt.id), let category else { return row.id }
+                if let requiredCategory, category != requiredCategory { return row.id }
             case "outOfScope":
                 guard !used.contains(receipt.id), let requiredCategory,
                       let category, category != .unclassified, category != requiredCategory,
                       (4...160).contains(receipt.reason?.trimmingCharacters(in: .whitespacesAndNewlines).count ?? 0),
                       let quote = receipt.quote, (4...180).contains(quote.count),
                       ([row.title, row.detail] + row.quotes).contains(where: { $0.contains(quote) }) else {
-                    throw ModelReviewError.validation(.importantContentMissing)
+                    return row.id
                 }
-            default: throw ModelReviewError.validation(.coverage)
+            default: return row.id
             }
-        }
+            return nil
+        })
     }
 
-    /// Single synthesis with one repair round for a recoverable validation or format problem.
+    /// Synthesize once; repair format once or fill only unresolved coverage in bounded batches.
     public func generate(in state: RecallState, period: ReviewPeriod, template: ReviewTemplate? = nil, scope: ReviewScope = ReviewScope(), topic: String? = nil,
                          topicKeys: Set<String>? = nil, beforeCall: @Sendable () async throws -> Void = {},
                          onProgress: (@Sendable (ReviewGenerationProgress) async -> Void)? = nil,
+                         onMetrics: (@Sendable (DailyReviewMetrics) async -> Void)? = nil,
                          responder: any LLMResponding) async throws -> (draft: ModelReviewResult, metrics: DailyReviewMetrics) {
         let start = Date.now
         await onProgress?(ReviewGenerationProgress(.preparing, detail: "正在读取这段时间的每日回顾，直接复用已核对的结论。"))
@@ -268,40 +290,50 @@ public struct PeriodReviewFromDaily: Sendable {
         let instructions = prompt(label: period.label, template: template, topic: topic, feedback: feedback,
                                   itemLimit: itemLimit, detailLimit: detailLimit)
         let outputBudget = complete ? min(24_000, max(8_000, prepared.itemCount * 120)) : 8_000
-        var repair = "", metrics = DailyReviewMetrics()
-        metrics.sourceCount = prepared.dayCount; metrics.documentCount = prepared.itemCount; metrics.inputBytes = body.utf8.count
-        metrics.readMilliseconds = Int(Date.now.timeIntervalSince(start) * 1000)
-        for attempt in 0..<2 {
-            try Task.checkCancellation(); try await beforeCall()
-            await onProgress?(ReviewGenerationProgress(.generating, detail: "正在汇总 \(prepared.dayCount) 天的 \(prepared.itemCount) 条已核对结论。"))
-            do {
-                let context = CaptureRecord(eventTemplate: .manualMoment, contentHash: "period-from-daily", ocrText: body)
-                let called = Date.now
-                let answer = try await responder.answerCancellably(to: LLMRequest(question: instructions + repair, context: [context],
-                    purpose: .reviewSynthesis, outputTokenLimit: attempt == 0 ? outputBudget : min(32_000, outputBudget + 4_000)))
-                metrics.modelCalls += 1; metrics.modelMilliseconds += Int(Date.now.timeIntervalSince(called) * 1000)
-                await onProgress?(ReviewGenerationProgress(.checking, detail: RecallLocalization.both(
-                    "模型第 \(metrics.modelCalls) 次请求已返回，累计等待 \(max(1, metrics.modelMilliseconds / 1000)) 秒；正在核对来源与覆盖。",
-                    "Model request \(metrics.modelCalls) returned after \(max(1, metrics.modelMilliseconds / 1000))s total. Checking sources and coverage.")))
-                guard let open = answer.content.firstIndex(of: "{"), let close = answer.content.lastIndex(of: "}"), open <= close,
-                      let draft = try? JSONDecoder().decode(Draft.self, from: Data(answer.content[open...close].utf8)) else {
-                    throw ModelReviewError.validation(.format)
+        var run = PeriodReviewRun(started: start, beforeCall: beforeCall, onProgress: onProgress, onMetrics: onMetrics)
+        run.metrics.sourceCount = prepared.dayCount; run.metrics.documentCount = prepared.itemCount; run.metrics.inputBytes = body.utf8.count
+        run.metrics.readMilliseconds = Int(Date.now.timeIntervalSince(start) * 1000)
+        var repair = "", accepted: Draft?
+        do {
+            for attempt in 0..<2 {
+                do {
+                    let context = CaptureRecord(eventTemplate: .manualMoment, contentHash: "period-from-daily", ocrText: body)
+                    let text = try await run.call(LLMRequest(question: instructions + repair, context: [context],
+                        purpose: .reviewSynthesis, outputTokenLimit: attempt == 0 ? outputBudget : min(32_000, outputBudget + 4_000)),
+                        detail: "正在汇总 \(prepared.dayCount) 天的 \(prepared.itemCount) 条已核对结论。" + (attempt == 0 ? "" : " 正在修正返回格式与条目。"), responder: responder)
+                    let checking = Date.now
+                    accepted = try validate(decodeOutput(text), prepared: prepared, itemLimit: itemLimit, detailLimit: detailLimit,
+                                            template: template, complete: complete, checkCoverage: false)
+                    run.metrics.checkMilliseconds += Int(Date.now.timeIntervalSince(checking) * 1000)
+                    break
+                } catch let error as PeriodReviewOutputFailure {
+                    guard attempt == 0 else { throw error }
+                    repair = "\n" + error.repairInstruction
+                } catch let error as ModelReviewError {
+                    guard attempt == 0, case .validation(let issue) = error else { throw error }
+                    repair = "\n本地校验发现：\(issue.explanation)。\(issue.repairInstruction) 仅修正该问题，返回完整 JSON。"
+                } catch let error as LLMResponseFailure {
+                    guard attempt == 0, [.truncated, .reasoningOnly, .structuredFormat].contains(error.reason) else { throw error }
+                    repair = "\n上次没有返回完整结果，精简措辞但保留重要信息，返回完整规定 JSON。"
                 }
-                let checked = try validate(draft, prepared: prepared, itemLimit: itemLimit, detailLimit: detailLimit, template: template, complete: complete)
-                try Task.checkCancellation(); try await beforeCall()
-                metrics.totalMilliseconds = Int(Date.now.timeIntervalSince(start) * 1000)
-                var result = result(checked, prepared: prepared)
-                result.dailySynthesisVersion = complete ? Self.synthesisVersion : nil
-                return (result, metrics)
-            } catch let error as ModelReviewError {
-                guard attempt == 0, case .validation(let issue) = error else { throw error }
-                repair = "\n本地校验发现：\(issue.explanation)。\(issue.repairInstruction) 仅修正该问题，返回完整 JSON。"
-            } catch let error as LLMResponseFailure {
-                guard attempt == 0, [.truncated, .reasoningOnly, .structuredFormat].contains(error.reason) else { throw error }
-                repair = "\n上次没有返回完整结果，精简措辞但保留重要信息，返回完整规定 JSON。"
             }
+            guard var draft = accepted else { throw ModelReviewError.invalid }
+            if complete {
+                draft = try await repairCoverage(draft, prepared: prepared, instructions: instructions, template: template,
+                                                 detailLimit: detailLimit, run: &run, responder: responder)
+            }
+            let checking = Date.now
+            let checked = try validate(draft, prepared: prepared, itemLimit: itemLimit, detailLimit: detailLimit, template: template, complete: complete)
+            try Task.checkCancellation(); try await beforeCall()
+            run.metrics.checkMilliseconds += Int(Date.now.timeIntervalSince(checking) * 1000)
+            var result = result(checked, prepared: prepared)
+            result.dailySynthesisVersion = complete ? Self.synthesisVersion : nil
+            await run.publish()
+            return (result, run.metrics)
+        } catch {
+            await run.publish()
+            throw error
         }
-        throw ModelReviewError.invalid
     }
 
     func result(_ draft: Draft, prepared: Prepared) -> ModelReviewResult {

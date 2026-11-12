@@ -2,12 +2,12 @@ import Foundation
 
 public struct DailyReviewMetrics: Sendable {
     public var sourceCount = 0, documentCount = 0, reusedRecords = 0, modelCalls = 0, cacheHits = 0
-    public var inputBytes = 0, readMilliseconds = 0, modelMilliseconds = 0, saveMilliseconds = 0, totalMilliseconds = 0
+    public var inputBytes = 0, readMilliseconds = 0, modelMilliseconds = 0, checkMilliseconds = 0, saveMilliseconds = 0, totalMilliseconds = 0
     public var diagnosticMetadata: [String: String] {
         ["generation": "direct-daily-v1", "sources": "\(sourceCount)", "documents": "\(documentCount)",
          "reusedRecords": "\(reusedRecords)", "modelCalls": "\(modelCalls)", "cacheHits": "\(cacheHits)",
          "inputBytes": "\(inputBytes)", "readMs": "\(readMilliseconds)", "modelMs": "\(modelMilliseconds)",
-         "saveMs": "\(saveMilliseconds)", "totalMs": "\(totalMilliseconds)"]
+         "checkMs": "\(checkMilliseconds)", "saveMs": "\(saveMilliseconds)", "totalMs": "\(totalMilliseconds)"]
     }
     public var detail: String { "用时 \(max(1, totalMilliseconds / 1000)) 秒 · 模型请求 \(modelCalls) 次 · 复用 \(cacheHits) 组已完成材料" }
 }
