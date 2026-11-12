@@ -48,8 +48,8 @@ extension RecallLayoutPreviews {
                 contentHash: UUID().uuidString, ocrText: title + "已经验证，生产发布尚待确认。")
             state.captures.append(capture)
             let item = DailySummaryItem(section: .progress, title: title + "完成验证", detail: capture.ocrText,
-                evidenceIDs: [capture.id], knowledge: DailyItemKnowledge(topic: title, kind: .matter, status: "completed",
-                    ownedByUser: true, quotes: [capture.ocrText], category: index == 0 ? "personal" : index == 1 ? "learning" : index == 7 ? nil : "work"))
+                evidenceIDs: [capture.id], knowledge: DailyItemKnowledge(topic: title, kind: index == 2 || index == 3 ? .reference : .matter, status: "completed",
+                    ownedByUser: index != 2 && index != 3, quotes: [capture.ocrText], category: index == 0 ? "personal" : index == 1 ? "learning" : index == 7 ? nil : "work"))
             if let existing = state.dailySummaries.firstIndex(where: { $0.day == day }) {
                 state.dailySummaries[existing].items.append(item); state.dailySummaries[existing].sourceCaptureIDs.append(capture.id)
             } else {
@@ -98,6 +98,7 @@ extension RecallLayoutPreviews {
                 guard await responder.count() == 1, let report = model.state.weeklyReports.first,
                       report.modelAssisted, report.dailySynthesisVersion == PeriodReviewFromDaily.synthesisVersion,
                       report.digestRows.count == 8, report.coveredDayCount == 5,
+                      report.items.filter({ $0.id.hasPrefix("reference:model:") && $0.section == .notes }).count == 2,
                       model.weeklyReportToOpen == report.id,
                       model.tasks.contains(where: { $0.state == .succeeded }) else {
                     throw PeriodGenerationFailure(errorDescription: "真实周报入口没有调用模型、保存八项完整结果并打开，或仍被五项限制裁掉")
@@ -108,10 +109,16 @@ extension RecallLayoutPreviews {
                 guard export?.components(separatedBy: "\n### ").count == 9, saved.weeklyReports.first?.digestRows.count == 8 else {
                     throw PeriodGenerationFailure(errorDescription: "导出或重启之后再次漏掉第五项之后的内容")
                 }
+                guard export?.contains("来源记录提到：") == true,
+                      model.tasks.contains(where: { $0.state == .succeeded && $0.detail?.contains("模型请求 1 次") == true }),
+                      model.diagnosticEntries.contains(where: { $0.source == "WeeklyReview" && $0.metadata["generation"] == "period-from-daily-v4"
+                          && $0.metadata["modelCalls"] == "1" && $0.metadata["sourceNotes"] == "2" }) else {
+                    throw PeriodGenerationFailure(errorDescription: "归属恢复后仍重复请求、缺少来源限定或未记录实际耗时/请求统计")
+                }
                 previous = report
                 previous?.editedMarkdown = "# 用户已编辑的原周报\n\n这段合成修订在生成失败后必须保留。"
             }
         }
-        print("PASS: native period generation calls the model with all daily items, corrects wrong historical work/life/learning labels, saves/renders/exports/reopens >5 workstreams, and rejects incomplete results after bounded repair without changing daily/source records")
+        print("PASS: native period generation corrects wrong labels, recovers unknown-owner progress in one model call with timing metrics, saves/exports/reopens >5 items, and preserves daily/source records and edited reports on genuine failure")
     }
 }

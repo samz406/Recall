@@ -107,7 +107,11 @@ public enum ReviewDigest {
         let action = item.nextAction.map(clean).flatMap { value in
             value.count <= 120 && readable(value) && value != summary && value != title ? value : nil
         }
-        return ReviewDigestRow(item: item, title: title, summary: summary, action: action, isExtractive: extractive)
+        let sourceOnly = item.id.hasPrefix("reference:model:")
+        return ReviewDigestRow(item: item,
+            title: sourceOnly ? RecallLocalization.both("相关记录：", "Source record: ") + title : title,
+            summary: sourceOnly ? RecallLocalization.both("来源记录提到：", "The source record says: ") + summary : summary,
+            action: sourceOnly ? nil : action, isExtractive: extractive)
     }
 
     public static func meaningfulTitle(_ raw: String) -> Bool {

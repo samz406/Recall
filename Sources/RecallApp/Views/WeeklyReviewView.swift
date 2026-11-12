@@ -268,7 +268,7 @@ struct WeeklyReviewView: View {
             Divider()
             if report.isReadable, (report.dailySynthesisVersion ?? 0) < PeriodReviewFromDaily.synthesisVersion {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(RecallLocalization.both("这份回顾使用了旧版内容筛选，可重新生成，让模型基于完整每日回顾整理。", "This review used earlier content filtering. Regenerate it so the model can use the complete daily reviews."))
+                    Text(RecallLocalization.both("这份回顾由旧版规则生成，可重新生成，按完整每日回顾整理。", "This review used earlier rules. Regenerate it from the complete daily reviews."))
                         .font(.callout).foregroundStyle(RecallPalette.secondary)
                     Button(RecallLocalization.text("重新生成（保留原版本）")) { regenerate(report) }
                         .buttonStyle(.bordered).disabled(model.isGeneratingWeeklyReview || model.isGeneratingDailySummary)

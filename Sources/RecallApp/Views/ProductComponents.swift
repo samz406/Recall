@@ -111,6 +111,13 @@ struct RecallTaskStatusView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(task.kind + " · " + task.target).font(.subheadline.weight(.medium))
                 Text(task.phase).font(.callout).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
+                if task.isRunning {
+                    TimelineView(.periodic(from: task.startedAt, by: 1)) { context in
+                        let seconds = max(0, Int(context.date.timeIntervalSince(task.startedAt)))
+                        Text(RecallLocalization.both("已用时 \(seconds) 秒", "Elapsed \(seconds)s"))
+                            .font(.caption.monospacedDigit()).foregroundStyle(RecallPalette.secondary)
+                    }
+                }
                 if let detail = task.detail, !detail.isEmpty {
                     DisclosureGroup(RecallLocalization.text("处理详情")) {
                         Text(RecallLocalization.text(detail)).font(.caption).foregroundStyle(RecallPalette.secondary)
