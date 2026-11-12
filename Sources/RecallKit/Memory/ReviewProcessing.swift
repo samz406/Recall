@@ -68,6 +68,7 @@ public struct ReviewPreparationFailure: LocalizedError, Sendable {
 
 public enum ReviewProcessingDiagnostics {
     public static func code(for error: Error) -> String {
+        if let error = error as? PeriodReviewOutputFailure { return "review.output." + error.reason.rawValue }
         if let failure = error as? ReviewPreparationFailure { return failure.code }
         if let error = error as? CaptureUnderstandingError, case .validation(let issue) = error { return "understanding." + issue.rawValue }
         if let error = error as? CaptureUnderstandingError, case .outputCapacity = error { return "understanding.outputCapacity" }

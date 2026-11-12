@@ -95,6 +95,7 @@ final class RecallAppModel: ObservableObject {
     @Published var weeklyReportToOpen: UUID?
     private var weeklyReviewTask: Task<Void, Never>?
     private var weeklyReviewStatusID: UUID?
+    private var weeklyReviewMetrics: DailyReviewMetrics?
     private var weeklyScheduleTimer: Timer?
     private var weeklyWakeObserver: NSObjectProtocol?
     @Published private(set) var isBuildingMatters = false
@@ -437,8 +438,9 @@ final class RecallAppModel: ObservableObject {
         }
         let scheduledTrigger = schedule?.effectiveTrigger(at: .now)
         weeklyReviewStatusID = taskID
+        weeklyReviewMetrics = nil
         weeklyReviewTask = Task {
-            defer { isGeneratingWeeklyReview = false; weeklyReviewTask = nil; weeklyReviewStatusID = nil; processNextDailySummary() }
+            defer { isGeneratingWeeklyReview = false; weeklyReviewTask = nil; weeklyReviewStatusID = nil; weeklyReviewMetrics = nil; processNextDailySummary() }
             let runStarted = Date.now
             do {
                 let modelStore = store
@@ -449,10 +451,10 @@ final class RecallAppModel: ObservableObject {
                     ? Set(matterFiles.filter { scope.topicIDs.contains(WeeklyReviewEngine.topicID(for: $0)) }.map { DailyKnowledgeEngine.topicKey($0.title) })
                     : nil
                 let snapshot = dailyState
-                state = snapshot
                 let generated = try await PeriodReviewFromDaily().generate(in: snapshot, period: period, template: template, scope: scope, topicKeys: topicKeys,
                     beforeCall: { try await modelStore.validateDailyDerivedReview(snapshot) },
-                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) }, responder: responder)
+                    onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) },
+                    onMetrics: { metrics in await self.updateWeeklyReviewMetrics(metrics, taskID: taskID) }, responder: responder)
                 let result = generated.draft
                 try Task.checkCancellation()
                 guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
@@ -478,8 +480,8 @@ final class RecallAppModel: ObservableObject {
                 finishTask(taskID, state: uncertain ? .partial : .succeeded,
                     message: uncertain ? "回顾已保存，部分原文暂无法确认" : "回顾已保存", destination: .review(saved.id),
                     detail: RecallLocalization.both(
-                        "共 \(metrics.sourceCount) 天 · \(metrics.documentCount) 项 · 模型请求 \(metrics.modelCalls) 次 · 模型等待 \(max(1, metrics.modelMilliseconds / 1000)) 秒 · 本地读取 \(metrics.readMilliseconds) 毫秒 · 保存 \(metrics.saveMilliseconds) 毫秒",
-                        "\(metrics.sourceCount) days · \(metrics.documentCount) items · \(metrics.modelCalls) model requests · Model \(max(1, metrics.modelMilliseconds / 1000))s · Read \(metrics.readMilliseconds)ms · Save \(metrics.saveMilliseconds)ms"))
+                        "共 \(metrics.sourceCount) 天 · \(metrics.documentCount) 项 · 模型请求 \(metrics.modelCalls) 次 · 模型等待 \(max(1, metrics.modelMilliseconds / 1000)) 秒 · 本地读取 \(metrics.readMilliseconds) 毫秒 · 核对 \(metrics.checkMilliseconds) 毫秒 · 保存 \(metrics.saveMilliseconds) 毫秒",
+                        "\(metrics.sourceCount) days · \(metrics.documentCount) items · \(metrics.modelCalls) model requests · Model \(max(1, metrics.modelMilliseconds / 1000))s · Read \(metrics.readMilliseconds)ms · Check \(metrics.checkMilliseconds)ms · Save \(metrics.saveMilliseconds)ms"))
                 weeklyReviewMessage = nil
                 if !Task.isCancelled, let schedule, schedule.notifyWhenReady, !saved.refinementPending, !saved.digestRows.isEmpty {
                     do { try await notificationScheduler.deliverWeeklyReview(saved) }
@@ -489,20 +491,26 @@ final class RecallAppModel: ObservableObject {
                 finishTask(taskID, state: .cancelled, message: "已取消，已有回顾保持不变")
                 weeklyReviewMessage = nil
                 if let schedule {
-                    do { try await store.deferReviewSchedule(schedule, noEvidence: true) }
+                    do { try await store.deferReviewSchedule(schedule, noEvidence: true); state = await store.snapshot() }
                     catch { recordError(error, source: "WeeklyReview", message: "记录本期取消状态失败") }
                 }
-                state = await store.snapshot()
             } catch {
                 let trace = (error as? ReviewPreparationFailure)?.detail ?? tasks.first(where: { $0.id == taskID })?.detail
                 let elapsed = max(1, Int(Date.now.timeIntervalSince(runStarted)))
+                let metrics = weeklyReviewMetrics ?? DailyReviewMetrics()
+                let format = (error as? PeriodReviewOutputFailure)?.detail
+                let timing = RecallLocalization.both(
+                    "模型请求 \(metrics.modelCalls) 次 · 等待 \(metrics.modelMilliseconds) 毫秒 · 读取 \(metrics.readMilliseconds) 毫秒 · 核对 \(metrics.checkMilliseconds) 毫秒",
+                    "\(metrics.modelCalls) model requests · Model \(metrics.modelMilliseconds)ms · Read \(metrics.readMilliseconds)ms · Check \(metrics.checkMilliseconds)ms")
                 finishTask(taskID, state: .failed, message: error.localizedDescription,
-                    detail: [trace, RecallLocalization.both("本次用时 \(elapsed) 秒，原回顾已保留。", "Elapsed \(elapsed)s. The previous review is preserved.")].compactMap { $0 }.joined(separator: "\n"))
-                recordDiagnostic(.warning, source: "WeeklyReview", message: "周期回顾未完成", metadata: [
-                    "generation": "period-from-daily-v4", "elapsedMs": String(Int(Date.now.timeIntervalSince(runStarted) * 1000)),
-                    "failureCode": ReviewProcessingDiagnostics.code(for: error)])
+                    detail: [trace, format, timing, RecallLocalization.both("本次用时 \(elapsed) 秒，原回顾已保留。", "Elapsed \(elapsed)s. The previous review is preserved.")].compactMap { $0 }.joined(separator: "\n"))
+                var metadata = metrics.diagnosticMetadata
+                metadata["generation"] = "period-from-daily-v4"
+                metadata["elapsedMs"] = String(Int(Date.now.timeIntervalSince(runStarted) * 1000))
+                metadata["failureCode"] = ReviewProcessingDiagnostics.code(for: error)
+                if let failure = error as? PeriodReviewOutputFailure { metadata["formatField"] = failure.field }
+                recordDiagnostic(.warning, source: "WeeklyReview", message: "周期回顾未完成", metadata: metadata)
                 weeklyReviewMessage = nil
-                state = await store.snapshot()
                 recordError(error, source: "WeeklyReview", message: "一周回顾生成失败")
                 if let schedule {
                     let skip = (error as? WeeklyReviewError) == .noEvidence || (error as? WeeklyReviewError) == .noWorkScope || (error as? WeeklyReviewError) == .invalidPeriod
@@ -511,6 +519,11 @@ final class RecallAppModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func updateWeeklyReviewMetrics(_ metrics: DailyReviewMetrics, taskID: UUID) {
+        guard weeklyReviewStatusID == taskID else { return }
+        weeklyReviewMetrics = metrics
     }
 
     func weeklyMarkdownForExport(_ id: UUID) async -> String? {

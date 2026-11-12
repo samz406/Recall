@@ -27,11 +27,19 @@ public struct DailyKnowledgeEngine: Sendable {
     /// screenshots are removed from its evidence. If the only first-person quote is gone, the entry
     /// is kept as a clue (not the user's own matter) instead of disappearing.
     func entries(in state: RecallState, alreadyCorrected: Bool = false, includingHighlights: Bool = false) -> [Entry] {
-        let captures = (alreadyCorrected ? state : state.correctedForAnalysis()).captures
-            .filter { !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }
-        let live = Set(captures.map(\.id))
-        let recordedAt = Dictionary(uniqueKeysWithValues: captures.map { ($0.id, $0.createdAt) })
         let invalid = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
+        // This projection only needs source existence and dates, not OCR overlays or understood
+        // facts. Reprocessing every capture here made each period preflight scan the entire archive.
+        var dates: [UUID: Date] = [:]
+        if !alreadyCorrected {
+            for correction in state.matterCorrections where !correction.isTopicCompletion && correction.kind == .eventDate {
+                if let date = correction.eventAt { for id in correction.evidenceIDs { dates[id] = date } }
+            }
+        }
+        let captures = state.captures.filter { !invalid.contains($0.id)
+            && !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }
+        let live = Set(captures.map(\.id))
+        let recordedAt = Dictionary(uniqueKeysWithValues: captures.map { ($0.id, dates[$0.id] ?? $0.createdAt) })
         return state.dailySummaries.flatMap { summary -> [Entry] in
             let ledgerEntries: [Entry] = summary.ledger.compactMap { row in
                 makeEntry(summary: summary, id: row.id, section: row.section, title: row.title, detail: row.detail,

@@ -116,8 +116,18 @@ extension FileMemoryStore {
               state.memoryKnowledgeSettings == expected.memoryKnowledgeSettings,
               state.memoryKnowledge.claims.filter({ $0.kind.isPersonal && $0.usable() }) == expected.memoryKnowledge.claims.filter({ $0.kind.isPersonal && $0.usable() }),
               SummaryFeedbackLearning.revision(in: state) == SummaryFeedbackLearning.revision(in: expected),
-              DailyKnowledgeEngine().fingerprint(in: state.correctedForAnalysis(), includingHighlights: true) == DailyKnowledgeEngine().fingerprint(in: expected.correctedForAnalysis(), includingHighlights: true)
+              state.dailySummaries == expected.dailySummaries
         else { throw ModelReviewError.changed }
+        // Compare the actual dependencies without rebuilding the whole knowledge graph (twice)
+        // for every model request. New unrelated captures are harmless; edits/deletions are not.
+        let ids = Set(expected.dailySummaries.flatMap { summary in
+            summary.sourceCaptureIDs + summary.items.flatMap(\.evidenceIDs) + summary.ledger.flatMap(\.evidenceIDs)
+        }).union(expected.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }.flatMap(\.sourceIDs))
+        let before = Dictionary(uniqueKeysWithValues: expected.captures.filter { ids.contains($0.id) }.map { ($0.id, $0) })
+        let live = Dictionary(uniqueKeysWithValues: state.captures.filter { ids.contains($0.id) }.map { ($0.id, $0) })
+        guard before.count == live.count, before.allSatisfy({ id, source in
+            live[id].map { MemoryKnowledgeEngine.sameSourceContent(source, $0) } == true
+        }) else { throw ModelReviewError.changed }
     }
     public func commitModelDailySummary(_ summary: DailySummary, expected: RecallState, period: ReviewPeriod) throws {
         try Task.checkCancellation()

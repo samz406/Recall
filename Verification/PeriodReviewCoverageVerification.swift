@@ -64,7 +64,8 @@ enum PeriodReviewCoverageVerification {
     }
 
     private actor Model: LLMResponding {
-        enum Mode { case complete, omitOnce, alwaysOmit, falseReceipt, unsupportedExclusion, invalidExclusion, referenceAsProgress, referenceAsPlan }
+        enum Mode { case complete, omitOnce, alwaysOmit, falseReceipt, unsupportedExclusion, invalidExclusion, referenceAsProgress, referenceAsPlan
+            case wrapped, trailingComma, singleEvidence, missingCoverage, missingDetail, ambiguous, truncated }
         let mode: Mode
         var requests: [LLMRequest] = []
         init(_ mode: Mode = .complete) { self.mode = mode }
@@ -104,9 +105,28 @@ enum PeriodReviewCoverageVerification {
                  "evidence": groups[key]!.map { ["id": $0["id"]!, "quote": $0["title"]!] }]
             }
             let overview = mode == .referenceAsProgress || mode == .referenceAsPlan ? "用户已完成所有维护，后续工作已明确由用户处理。" : groups.isEmpty ? "所选内容中没有符合当前模板的事项。" : "各条事项的进展与当前状态均已按用途整理。"
-            let value: [String: Any] = ["overview": overview,
+            var value: [String: Any] = ["overview": overview,
                 "items": items, "coverage": coverage]
-            return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self), citedCaptureIDs: [])
+            if mode == .missingCoverage && requests.count == 1 { value.removeValue(forKey: "coverage") }
+            if mode == .missingDetail {
+                var broken = items
+                broken[0].removeValue(forKey: "detail"); broken[0]["synthetic-private-field"] = "must not enter diagnostics"
+                value["items"] = broken
+            }
+            if mode == .singleEvidence {
+                value["overview"] = NSNull()
+                value["items"] = items.map { item -> [String: Any] in
+                    var result = item
+                    if let proof = item["evidence"] as? [[String: Any]], proof.count == 1 { result["evidence"] = proof[0] }
+                    return result
+                }
+            }
+            var text = String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), as: UTF8.self)
+            if mode == .wrapped { text = "说明 {not-json}\n```json\n{\"result\":" + text + "}\n```\n结束 {ignored}" }
+            if mode == .trailingComma { text = String(text.dropLast()) + ",}" }
+            if mode == .ambiguous { text += "\n另一个版本\n" + text }
+            if mode == .truncated { text = String(text.dropLast(10)) }
+            return LLMAnswer(content: text, citedCaptureIDs: [])
         }
     }
 
@@ -145,6 +165,9 @@ enum PeriodReviewCoverageVerification {
         let repaired = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .work), responder: repairing)
         let repairedCalls = await repairing.log().count
         try expect(repairedCalls == 2 && repaired.draft.items.count == 9, "遗漏工作主线没有触发补齐与重新核对")
+        let repairRows = try JSONSerialization.jsonObject(with: Data((await repairing.log())[1].context[0].ocrText.utf8)) as! [[String: Any]]
+        try expect(repairRows.count == 5 && repairRows.allSatisfy { ($0["topic"] as? String)?.hasPrefix("Nova") == true },
+            "补齐遗漏仍然把已通过的整周内容重新发给模型")
         for mode in [Model.Mode.alwaysOmit, .falseReceipt, .unsupportedExclusion, .invalidExclusion] {
             do {
                 _ = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .work), responder: Model(mode))
@@ -152,6 +175,8 @@ enum PeriodReviewCoverageVerification {
             } catch ModelReviewError.validation { }
         }
         try await verifyAttributionRecovery(state, engine: engine)
+        try await verifyOutputRecovery(state, engine: engine)
+        try await verifyLargeArchivePreflight(state, engine: engine)
         try await verifyModelClassification(state, engine: engine)
         try await verifyStructuralFilters(state, engine: engine)
         // A selected mislabelled topic is not filtered with its historical personal category.
@@ -165,6 +190,88 @@ enum PeriodReviewCoverageVerification {
         try expect(DailyKnowledgeEngine().fingerprint(in: state, includingHighlights: true) != DailyKnowledgeEngine().fingerprint(in: changed, includingHighlights: true),
             "生成中每日展示内容变化没有进入并发校验")
         print("PASS: complete period synthesis covers all daily ledger/reading items and workstreams, model classification, >5 rendered/exported items, 15 merged sources, omission repair/rejection and scoped mislabelled topics and fully model-led classification")
+    }
+
+    private static func verifyLargeArchivePreflight(_ fixture: RecallState, engine: PeriodReviewFromDaily) async throws {
+        var state = fixture
+        // Persist this fixture as a current model-validated daily review. Legacy insight cleanup
+        // intentionally removes its synthetic announcement; that migration is not this benchmark.
+        for i in state.dailySummaries.indices {
+            let marker: [String: Any] = ["version": 1, "sourceCount": state.dailySummaries[i].sourceCaptureIDs.count,
+                "factCount": state.dailySummaries[i].items.count, "uncertainBlockCount": 0, "createdAt": Date.now.timeIntervalSinceReferenceDate]
+            state.dailySummaries[i].modelCoverage = try JSONDecoder().decode(ModelReviewCoverage.self,
+                from: JSONSerialization.data(withJSONObject: marker))
+        }
+        let decoy = String(repeating: "合成的范围外历史记录，不属于这次周报。", count: 80)
+        for i in state.captures.count..<6_333 {
+            state.captures.append(CaptureRecord(eventTemplate: .workCheckpoint, createdAt: period.start.addingTimeInterval(-100_000),
+                contentHash: "synthetic-outside-\(i)", ocrText: decoy))
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("period-preflight-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let storage = try RecallStorage(rootURL: root)
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(state).write(to: storage.stateURL)
+        let store = try FileMemoryStore(storage: storage, deferMaintenance: true, credentials: InMemoryCredentialStore())
+        let snapshot = await store.snapshot()
+        // DailySummary decodes in the archive host's local calendar. Keep this storage/performance
+        // fixture in that same calendar; the separate in-memory tests exercise Asia/Shanghai scope.
+        let archiveStart = Calendar.current.startOfDay(for: period.start)
+        let archivePeriod = ReviewPeriod(start: archiveStart, end: archiveStart.addingTimeInterval(7 * 86_400),
+            timeZoneIdentifier: Calendar.current.timeZone.identifier)
+        let started = Date.now
+        let prepared = try engine.prepare(in: snapshot, period: archivePeriod, template: ReviewTemplate(kind: .work))
+        for _ in 0..<3 { try await store.validateDailyDerivedReview(snapshot) }
+        let elapsed = Date.now.timeIntervalSince(started)
+        try expect(prepared.itemCount == 26 && prepared.sourceVersions.count == fixture.captures.count && elapsed < 10,
+            "6,333 条档案准备异常：\(prepared.itemCount) 项、\(prepared.sourceVersions.count)/\(fixture.captures.count) 来源、\(elapsed)s")
+        var unrelated = snapshot
+        unrelated.captures.append(CaptureRecord(eventTemplate: .workCheckpoint, contentHash: "unrelated", ocrText: "另一条无关新记录"))
+        try await store.validateDailyDerivedReview(unrelated)
+        var displayOnly = snapshot
+        displayOnly.captures[0].summary = "后台更新的展示摘要，不改变原文或理解。"
+        displayOnly.captures[0].tags = ["合成展示标签"]
+        try await store.validateDailyDerivedReview(displayOnly)
+        for mutation in 0..<3 {
+            var changed = snapshot
+            if mutation == 0 { changed.dailySummaries[0].items[0].detail += "修正每日展示结论。" }
+            if mutation == 1 { changed.captures[0].ocrText += "来源已经更正。" }
+            if mutation == 2 { changed.captures.removeFirst() }
+            do {
+                try await store.validateDailyDerivedReview(changed)
+                throw Failure(errorDescription: "快速核对漏掉每日内容、原文修改或来源删除")
+            } catch ModelReviewError.changed { }
+        }
+        print("PASS: 6,333-record archive prepares only 26 daily inputs and checks dependencies three times in \(Int(elapsed * 1000))ms, rejects daily/source edits and deletion, and ignores unrelated captures")
+    }
+
+    private static func verifyOutputRecovery(_ state: RecallState, engine: PeriodReviewFromDaily) async throws {
+        for mode in [Model.Mode.wrapped, .trailingComma, .singleEvidence] {
+            let probe = Model(mode)
+            let generated = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .work), responder: probe)
+            let calls = await probe.log().count
+            try expect(calls == 1 && generated.draft.items.count == 9, "JSON 包装或单条字段形态仍触发整周重跑或丢失内容")
+        }
+        let withoutCoverage = Model(.missingCoverage)
+        let repaired = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .work), responder: withoutCoverage)
+        let requests = await withoutCoverage.log()
+        let sizes = try requests.map { try (JSONSerialization.jsonObject(with: Data($0.context[0].ocrText.utf8)) as! [Any]).count }
+        try expect(sizes == [26, 24, 2] && repaired.draft.items.count >= 9,
+            "缺少核对回执没有分组由模型补齐所有输入，或再次丢弃第五项之后的事项")
+        for mode in [Model.Mode.missingDetail, .ambiguous, .truncated] {
+            let probe = Model(mode)
+            do {
+                _ = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .work), responder: probe)
+                throw Failure(errorDescription: "缺少事实字段、多个报告或被截断的回答仍被保存")
+            } catch let error as PeriodReviewOutputFailure {
+                let calls = await probe.log().count
+                try expect(calls == 2 && !error.detail.contains("synthetic-private"), "格式失败未封顶或泄露模型字段")
+                if mode == .missingDetail { try expect(error.reason == .missingField && error.field.contains("detail"), "格式失败没有定位必需字段") }
+                if mode == .ambiguous { try expect(error.reason == .ambiguous, "两个完整模型版本被静默选取") }
+            }
+        }
+        print("PASS: period output recovery accepts wrappers/singleton evidence/trailing commas in one call, patches only five omitted inputs or bounded 24+2 coverage batches, and rejects missing fields, ambiguity and truncation with safe diagnostics")
     }
     private static func verifyAttributionRecovery(_ state: RecallState, engine: PeriodReviewFromDaily) async throws {
         for mode in [Model.Mode.referenceAsProgress, .referenceAsPlan] {

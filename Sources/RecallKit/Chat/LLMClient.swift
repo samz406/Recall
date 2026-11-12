@@ -541,7 +541,9 @@ public struct CompatibleLLM: LLMResponding {
     }
 
     private func outputLimit(for request: LLMRequest) -> Int {
-        let ceiling = [.captureUnderstanding, .captureUnderstandingAudit, .reviewSynthesis].contains(request.purpose) ? 16_000 : 8_000
+        // Period synthesis explicitly requests up to 32K for all daily items and their coverage.
+        // A hidden 16K clamp made its larger repair budget ineffective and could cut the JSON again.
+        let ceiling = request.purpose == .reviewSynthesis ? 32_000 : [.captureUnderstanding, .captureUnderstandingAudit].contains(request.purpose) ? 16_000 : 8_000
         return min(ceiling, max(256, request.outputTokenLimit ?? configuration.maxOutputTokens))
     }
 
