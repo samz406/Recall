@@ -11,17 +11,27 @@ extension RecallLayoutPreviews {
         func answer(to request: LLMRequest) async throws -> LLMAnswer {
             calls += 1
             guard request.purpose == .reviewSynthesis, let body = request.context.first?.ocrText,
-                  let rows = try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [[String: Any]], rows.count == 8 else {
-                throw PeriodGenerationFailure(errorDescription: "周期回顾没有把八个工作事项完整交给模型")
+                  let rows = try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [[String: Any]], rows.count == 11 else {
+                throw PeriodGenerationFailure(errorDescription: "周期回顾没有把混合类别的十一条每日事项完整交给模型")
             }
-            let selected = omit ? Array(rows.prefix(5)) : rows
+            guard rows.contains(where: { ($0["topic"] as? String)?.hasPrefix("Atlas") == true && ($0["category"] as? String) == "personal" }),
+                  rows.contains(where: { ($0["topic"] as? String)?.hasPrefix("Atlas") == true && ($0["category"] as? String) == "learning" }) else {
+                throw PeriodGenerationFailure(errorDescription: "错误的旧分类仍在模型前排除了真实工作")
+            }
+            let work = rows.filter { ($0["topic"] as? String)?.hasPrefix("Atlas") == true }
+            let selected = omit ? Array(work.prefix(5)) : work
             let items = selected.map { row -> [String: Any] in
                 ["section": "progress", "title": (row["topic"] as! String) + "验证已完成",
                  "detail": "合成验证的边界条件已核对并记录，生产发布尚待确认。",
                  "evidence": [["id": row["id"]!, "quote": row["title"]!]]]
             }
             // A dishonest used receipt without its evidence must not bypass completeness checks.
-            let coverage = rows.map { ["id": $0["id"]!, "disposition": "used", "category": "work"] }
+            let coverage = rows.map { row -> [String: Any] in
+                let topic = row["topic"] as! String
+                if topic.hasPrefix("Atlas") { return ["id": row["id"]!, "disposition": "used", "category": "work"] }
+                return ["id": row["id"]!, "disposition": "outOfScope", "category": topic.hasPrefix("Learning") ? "learning" : "personal",
+                    "reason": "原文记录的是私人活动或语言学习，与工作交付无关", "quote": row["detail"]!]
+            }
             let value: [String: Any] = ["overview": "八项合成工作均有验证进展，发布仍待确认。", "items": items, "coverage": coverage]
             return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self), citedCaptureIDs: [])
         }
@@ -39,13 +49,27 @@ extension RecallLayoutPreviews {
             state.captures.append(capture)
             let item = DailySummaryItem(section: .progress, title: title + "完成验证", detail: capture.ocrText,
                 evidenceIDs: [capture.id], knowledge: DailyItemKnowledge(topic: title, kind: .matter, status: "completed",
-                    ownedByUser: true, quotes: [capture.ocrText], category: index == 7 ? nil : "work"))
+                    ownedByUser: true, quotes: [capture.ocrText], category: index == 0 ? "personal" : index == 1 ? "learning" : index == 7 ? nil : "work"))
             if let existing = state.dailySummaries.firstIndex(where: { $0.day == day }) {
                 state.dailySummaries[existing].items.append(item); state.dailySummaries[existing].sourceCaptureIDs.append(capture.id)
             } else {
                 var summary = DailySummary(day: day, content: "合成每日回顾", sourceCaptureIDs: [capture.id], todos: [], generationKind: .cloud, items: [item])
                 summary.items = [item]; state.dailySummaries.append(summary)
             }
+        }
+        for (topic, text, category) in [
+            ("Life 合成聚会", "陪家人参加聚会，已安排往返行程和餐食。", "personal"),
+            ("Learning 合成练习", "完成英语跟读练习，保留发音笔记与练习录音的文字说明。", "learning"),
+            ("Orion 错误标签", "邻居聚会的出行与餐食已安排，这是私人活动。", "work")
+        ] {
+            let day = state.dailySummaries[0].day
+            let source = CaptureRecord(eventTemplate: .workCheckpoint, createdAt: day.addingTimeInterval(40_000),
+                contentHash: UUID().uuidString, ocrText: text)
+            state.captures.append(source)
+            state.dailySummaries[0].sourceCaptureIDs.append(source.id)
+            state.dailySummaries[0].items.append(DailySummaryItem(section: .progress, title: topic, detail: text,
+                evidenceIDs: [source.id], knowledge: DailyItemKnowledge(topic: topic, kind: .matter, status: "completed",
+                    ownedByUser: true, quotes: [text], category: category)))
         }
         let period = ReviewPeriod(start: calendar.date(byAdding: .day, value: -7, to: today)!, end: today)
         var previous: WeeklyReport?
@@ -88,6 +112,6 @@ extension RecallLayoutPreviews {
                 previous?.editedMarkdown = "# 用户已编辑的原周报\n\n这段合成修订在生成失败后必须保留。"
             }
         }
-        print("PASS: native period generation calls the model with all daily items, saves/renders/exports/reopens >5 workstreams, and rejects incomplete results after bounded repair without changing daily/source records")
+        print("PASS: native period generation calls the model with all daily items, corrects wrong historical work/life/learning labels, saves/renders/exports/reopens >5 workstreams, and rejects incomplete results after bounded repair without changing daily/source records")
     }
 }

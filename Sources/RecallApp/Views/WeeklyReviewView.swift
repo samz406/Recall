@@ -117,8 +117,9 @@ struct WeeklyReviewView: View {
 
     private func openTopicReview(_ id: String) {
         scope = ReviewScope(topicIDs: [id])
-        let category = model.reviewIndex.topics.first { $0.id == id }?.category
-        template = ReviewTemplate(kind: category == .work ? .project : (category == .learning ? .learning : .personal))
+        // Opening a topic means reviewing all of it. Historical labels must not silently select
+        // a work/learning template; the user can choose a narrower output purpose explicitly.
+        template = ReviewTemplate(kind: .personal)
         showsComposer = true
         // Consume navigation intent: revisiting the ordinary tab must not inherit it.
         model.reviewTopicToOpen = nil
@@ -181,9 +182,7 @@ struct WeeklyReviewView: View {
                 Text(RecallLocalization.text("请选择不超过 31 天的有效日期范围。"))
                     .font(.caption).foregroundStyle(RecallPalette.warning)
             } else if !model.isBuildingMatters && preview.eligibleTopicCount == 0 {
-                Text(template.kind.requiresWorkScope && preview.topicCount > 0
-                     ? "这段时间暂未找到可回顾的工作内容，可以换个模板或日期。"
-                     : "这段时间暂无可回顾的内容，可以换个日期。")
+                Text(RecallLocalization.both("这段时间暂无可回顾的内容，可以换个日期。", "No review content is available in this range. Try different dates."))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
         }.padding(22).frame(maxWidth: .infinity, alignment: .leading).reviewSurface()
@@ -267,9 +266,9 @@ struct WeeklyReviewView: View {
                 VStack(alignment: .leading, spacing: 16) { reportHeading(report); reportActions(report) }
             }
             Divider()
-            if report.isReadable, report.dailySynthesisVersion == nil {
+            if report.isReadable, (report.dailySynthesisVersion ?? 0) < PeriodReviewFromDaily.synthesisVersion {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(RecallLocalization.both("这份回顾使用了旧版重点筛选，可按每日回顾重新生成，补全其他事项。", "This review used the earlier highlight selection. Regenerate it from daily reviews to include other matters."))
+                    Text(RecallLocalization.both("这份回顾使用了旧版内容筛选，可重新生成，让模型基于完整每日回顾整理。", "This review used earlier content filtering. Regenerate it so the model can use the complete daily reviews."))
                         .font(.callout).foregroundStyle(RecallPalette.secondary)
                     Button(RecallLocalization.text("重新生成（保留原版本）")) { regenerate(report) }
                         .buttonStyle(.bordered).disabled(model.isGeneratingWeeklyReview || model.isGeneratingDailySummary)

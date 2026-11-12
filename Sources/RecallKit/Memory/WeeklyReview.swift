@@ -35,11 +35,10 @@ public enum ReviewTemplateKind: String, Codable, CaseIterable, Identifiable, Sen
         }
         return self != .learning || category == .learning || (scope.useSelectedTopics && scope.topicIDs.contains(topicID))
     }
-    /// Unknown labels need a model decision, not silent removal before synthesis. Explicitly
-    /// personal/learning/work labels still protect the template boundary before any cloud call.
+    /// All categories reach the model. Only an explicitly selected topic scope restricts input;
+    /// historical or locally inferred labels never decide which daily items the model sees.
     public func includesForModelReview(category: ReviewCategory, topicID: String, scope: ReviewScope) -> Bool {
-        if scope.useSelectedTopics && !scope.topicIDs.contains(topicID) { return false }
-        return category == .unclassified || includes(category: category, topicID: topicID, scope: scope)
+        !scope.useSelectedTopics || scope.topicIDs.contains(topicID)
     }
 }
 

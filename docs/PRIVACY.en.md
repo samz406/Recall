@@ -14,6 +14,8 @@ API Keys are stored in the macOS login Keychain through SecItem, without iCloud 
 
 Cloud text use is off by default. After you connect a provider and allow it, AI features may send task-relevant, basically redacted text: questions and retrieved excerpts for Ask, selected-period material for reviews, opted-in record understanding, correction feedback, or manually requested action discovery. Connection testing sends no saved memory. Reusing a Daily Review to propose an action makes no extra model request.
 
+Period reviews send the complete valid daily items and quotes within the selected dates and any explicit topic scope, including work, personal and learning content. The model classifies and summarizes them for the chosen output template; historical category labels do not filter input. Deleted, invalidated and privacy-excluded sources are removed, text is redacted, and screenshots are not sent by this review flow.
+
 These text features do not upload screenshots. The API Key is used to authenticate with your configured API service, never included in model prompts or diagnostic logs. Changing the server host requires entering the credential for that host again. Redaction is an extra safeguard, not a guarantee that every sensitive item is removed. Provider retention and training policies depend on the provider and account you choose; Recall cannot promise a universal third-party training opt-out. This feature set adds no remote content telemetry or model-training collection.
 
 ## Actions, deletion and export

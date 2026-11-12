@@ -74,9 +74,9 @@ enum ReviewPerformanceVerification {
         try expect(index.topics.first { $0.id == workID }?.category == .work,
             "分类索引没有采用最新手动记录的有效分类")
         for kind in ReviewTemplateKind.allCases {
-            let items = try engine.items(in: state, period: period, template: ReviewTemplate(kind: kind), scope: ReviewScope())
-            try expect(index.preview(in: period, kind: kind, scope: ReviewScope()).eligibleTopicCount == items.count,
-                "预览与实际生成的日期、分类或筛选范围不同")
+            let count = index.topics.filter { $0.occurs(in: period) }.count
+            try expect(index.preview(in: period, kind: kind, scope: ReviewScope()).eligibleTopicCount == count,
+                "范围预览不能根据模板或本地类别排除候选；仅限制日期与明确的主题范围")
         }
         let legacy = ReviewRecordCoverage(state: state, period: period), current = index.coverage(in: period)
         try expect(current.totalRecords == legacy.totalRecords && current.periodRecords == legacy.periodRecords
