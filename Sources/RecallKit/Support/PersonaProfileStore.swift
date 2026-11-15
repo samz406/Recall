@@ -91,6 +91,7 @@ extension FileMemoryStore {
         state.conversationSummary = nil
         state.pendingRecoveryCleanup = true
         try persist()
+        _ = try? retryPendingFileCleanup()
     }
     public func retryPersonaRefresh() throws {
         for i in state.personaRefreshJobs.indices where state.personaRefreshJobs[i].status == .failed {
@@ -116,6 +117,7 @@ extension FileMemoryStore {
         state.personaProfileRevision = UUID(); state.conversationSummary = nil; state.personaMatchHistory = []
         state.pendingRecoveryCleanup = true
         try persist()
+        _ = try? retryPendingFileCleanup()
     }
     public func dismissPersonaMatch() throws {
         guard let current = state.personaMatch else { return }

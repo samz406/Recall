@@ -11,6 +11,7 @@ enum PersonaInsightVerification {
         try evidenceAndAttribution()
         try conservativeArchetypes()
         try await refreshFeedbackAndPersonalization()
+        try await restoreHiddenMatch()
         try await failuresResumeAndRegeneration()
         try await deletionAndPrivacyRaces()
         try await cancellationAndCoalescing()
@@ -116,7 +117,10 @@ enum PersonaInsightVerification {
             if mode == "malformed" { return LLMAnswer(content: "{broken", citedCaptureIDs: []) }
             if mode == "empty" { return LLMAnswer(content: "{\"traits\":[]}", citedCaptureIDs: []) }
             let proof = try JSONDecoder().decode([PersonaInsightEngine.Evidence].self, from: Data(request.context[0].ocrText.utf8))[0]
-            let entries: [[String: Any]] = [("decisionStyle", "cautious_verifying"), ("learningStyle", "systematic_research"), ("workPace", "deep_focus")].map { dimension, value in
+            let pairs = mode == "planner"
+                ? [("decisionStyle", "cautious_verifying"), ("learningStyle", "systematic_research"), ("stressResponse", "breakdown_planning")]
+                : [("decisionStyle", "cautious_verifying"), ("learningStyle", "systematic_research"), ("workPace", "deep_focus")]
+            let entries: [[String: Any]] = pairs.map { dimension, value in
                 ["dimension": dimension, "value": value, "evidenceID": proof.id, "evidence": proof.quote, "confidence": 0.8]
             }
             return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: ["traits": entries]), as: UTF8.self), citedCaptureIDs: [])
@@ -137,6 +141,17 @@ enum PersonaInsightVerification {
         try expect(state.confirmedPersonaTraits.count == 3, "三天观察未在完整流程生效")
         try expect(!PersonaPersonalization.text(in: state).isEmpty, "未接入个性化上下文")
         try expect(PersonalMemoryContext.text(in: state, question: "给些建议").contains("当次要求与用户明确表达的偏好优先"), "缺少明确要求优先约束")
+        var explicit = state
+        let directive = MemoryDirective.parse("记住：以后回答详细一点，说明验证过程")!
+        explicit.captures.append(CaptureRecord(eventTemplate: .manualMoment, sourceAppName: "明确约定", contentHash: "synthetic-explicit", ocrText: directive.content, textOrigin: .userInput, memoryDirective: directive))
+        explicit.memoryKnowledge = MemoryKnowledgeEngine().reconcile(explicit, force: true)
+        let context = PersonalMemoryContext.text(in: explicit, question: "给些建议")
+        try expect(context.contains(directive.content), "明确偏好没有进入实际共用上下文")
+        if let preferred = context.range(of: directive.content), let inferred = context.range(of: "近期行为观察") {
+            try expect(preferred.lowerBound < inferred.lowerBound, "自动观察排在明确偏好之前")
+        } else { throw Failure(errorDescription: "个性化上下文缺失") }
+        var paused = state; paused.memoryKnowledgeSettings.referencesEnabled = false
+        try expect(PersonaPersonalization.text(in: paused).isEmpty, "总参考开关未约束自动观察")
         try await f.store.dismissPersonaTrait(.workPace)
         state = await f.store.snapshot(); try expect(!state.personaTraits.contains { $0.dimension == .workPace }, "停用维度仍显示")
         try await f.store.resumePersonaTrait(.workPace)
@@ -150,6 +165,18 @@ enum PersonaInsightVerification {
         state = await f.store.snapshot(); try expect(state.personaTraitObservations.isEmpty && state.personaMatchHistory.isEmpty && !state.personaProfileSettings.enabled, "清空后残留历史或继续排队")
         try await f.store.clearPersonaProfile(rebuild: true)
         state = await f.store.snapshot(); try expect(state.pendingPersonaRefresh.count == 3, "重建未对已有每日回顾补齐")
+    }
+    static func restoreHiddenMatch() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
+        try await drain(f.store, Model("planner"))
+        let before = await f.store.snapshot()
+        guard let label = before.personaMatch else { throw Failure(errorDescription: "匹配恢复夹具没有形成形象") }
+        try await f.store.dismissPersonaMatch()
+        let hidden = await f.store.snapshot()
+        try expect(hidden.personaMatch == nil, "同一依据立即换了另一个标签")
+        try await f.store.restorePersonaMatches()
+        let restored = await f.store.snapshot()
+        try expect(restored.personaMatch?.archetypeID == label.archetypeID, "被收起的形象无法恢复")
     }
     static func failuresResumeAndRegeneration() async throws {
         let f = try fixture(days: 2); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
@@ -242,7 +269,9 @@ enum PersonaInsightVerification {
         PersonaPriorityProtocol.reset()
         let client = CompatibleLLM(configuration: LLMConfiguration(provider: .openAICompatible, baseURLString: "https://synthetic.invalid/v1", model: "synthetic"), apiKey: "synthetic-test-only", session: session)
         let background = Task { try await client.answer(to: LLMRequest(question: "synthetic background", context: [], purpose: .personaInsight)) }
+        defer { background.cancel() }
         for _ in 0..<200 { if PersonaPriorityProtocol.count() > 0 { break }; try await Task.sleep(for: .milliseconds(5)) }
+        try expect(PersonaPriorityProtocol.count() == 1, "后台请求没有进入受控传输")
         let answer = try await client.answer(to: LLMRequest(question: "synthetic foreground", context: [], purpose: .chat))
         try expect(answer.content == "synthetic response", "主动请求等待后台分析")
         do { _ = try await background.value; throw Failure(errorDescription: "主动请求未抢占后台调用") } catch is CancellationError { }
