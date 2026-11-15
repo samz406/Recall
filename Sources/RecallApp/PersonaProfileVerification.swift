@@ -52,6 +52,8 @@ extension RecallLayoutPreviews {
             try await Task.sleep(for: .milliseconds(10))
         }
         guard model.state.confirmedPersonaTraits.count == 3 else { throw Failure.failed("真实入口未累积三个独立观察日") }
+        model.refreshPersonaProfileIfNeeded()
+        guard !model.isRefreshingPersonaProfile else { throw Failure.failed("空队列仍初始化模型连接或凭据访问") }
         _ = await model.updatePersonaProfile(.personalizes(false))
         guard PersonaPersonalization.text(in: model.state).isEmpty else { throw Failure.failed("暂停参考未生效") }
         let evidence = model.state.personaTraitObservations.first!
@@ -61,6 +63,6 @@ extension RecallLayoutPreviews {
         let reopened = try FileMemoryStore(storage: model.storage, deferMaintenance: true, credentials: InMemoryCredentialStore())
         let after = await reopened.snapshot()
         guard after.personaTraitObservations.isEmpty, !after.personaProfileSettings.enabled, model.state.personaRefreshJobs.isEmpty else { throw Failure.failed("清空停止未持久化") }
-        print("PASS: native persona actions use an independent responder, accumulate independent dates, pause personalization, retract evidence and persist clear-and-stop across restart")
+        print("PASS: native persona actions use an independent responder, accumulate independent dates, pause personalization, retract evidence skip empty-queue credential access and persist clear-and-stop across restart")
     }
 }

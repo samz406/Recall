@@ -1995,6 +1995,10 @@ final class RecallAppModel: ObservableObject {
         }
         guard !isRefreshingPersonaProfile, !isUpdatingPersonaProfile, state.personaProfileSettings.enabled,
               state.privacy.cloudUseEnabled, !isThinking, !isGeneratingDailySummary, !isGeneratingWeeklyReview else { return }
+        // Do not read Keychain or construct a model connection when the queue is empty or backed off.
+        guard state.personaRefreshJobs.contains(where: {
+            $0.status == .queued || ($0.status == .failed && $0.attempts < 3 && ($0.retryAt ?? .distantFuture) <= .now)
+        }) else { return }
         isRefreshingPersonaProfile = true
         personaProfileTask = Task(priority: .utility) {
             defer { isRefreshingPersonaProfile = false; personaProfileTask = nil }
