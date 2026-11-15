@@ -97,6 +97,8 @@ public struct PersonaTraitObservation: Identifiable, Codable, Hashable, Sendable
     public var day: Date
     public var sourceDailySummaryID: UUID
     public var createdAt: Date
+    public var sourceVersion: String? = nil
+    public var evidenceID: String? = nil
 
     public init(
         id: UUID = UUID(),
@@ -148,7 +150,33 @@ public struct PersonaTraitState: Identifiable, Codable, Hashable, Sendable {
         self.updatedAt = updatedAt
     }
 
-    public var isConfirmed: Bool { observationDays >= Self.minimumObservationDaysToSurface }
+    public var isConfirmed: Bool { observationDays >= Self.minimumObservationDaysToSurface && strength >= 0.7 }
+}
+
+public struct PersonaProfileSettings: Codable, Hashable, Sendable {
+    /// Still requires the existing cloud permission and a configured model.
+    public var enabled = true
+    public var personalizesResponses = true
+    public var showsArchetype = true
+    public init() {}
+}
+
+public enum PersonaRefreshStatus: String, Codable, Sendable {
+    case queued, running, completed, insufficientEvidence, failed
+}
+
+/// One checkpoint per current review revision. Failures contain only a safe category, never model text.
+public struct PersonaRefreshJob: Identifiable, Codable, Hashable, Sendable {
+    public var id: UUID { summaryID }
+    public var summaryID: UUID
+    public var sourceVersion: String
+    public var status: PersonaRefreshStatus = .queued
+    public var attempts = 0
+    public var retryAt: Date? = nil
+    public var failure: String? = nil
+    public init(summaryID: UUID, sourceVersion: String) {
+        self.summaryID = summaryID; self.sourceVersion = sourceVersion
+    }
 }
 
 /// A named archetype the trait state can be matched against. Purely local, hand-authored and

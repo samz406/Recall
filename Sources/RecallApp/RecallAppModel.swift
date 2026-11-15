@@ -144,7 +144,11 @@ final class RecallAppModel: ObservableObject {
     private var isPurgingRecentlyDeleted = false
     @Published private(set) var isGeneratingDailySummary = false
     private var generatingDailyReviewDay: Date?
-    private var isRefreshingPersonaProfile = false
+    @Published private(set) var isRefreshingPersonaProfile = false
+    private var personaProfileTask: Task<Void, Never>?
+    private var personaProfileTimer: Timer?
+    private let personaResponderOverride: (any LLMResponding)?
+    @Published private(set) var isUpdatingPersonaProfile = false
     private var dailyReviewTask: Task<Void, Never>?
     private let dailyReviewResponderOverride: (any LLMResponding)?
     private var dailyReviewStatusID: UUID?
@@ -155,8 +159,9 @@ final class RecallAppModel: ObservableObject {
     private var reminderActionObserver: NSObjectProtocol?
     private var appActiveObserver: NSObjectProtocol?
 
-    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil, storageOverride: RecallStorage? = nil, preloadedStore: FileMemoryStore? = nil, dailyReviewResponder: (any LLMResponding)? = nil, topicReviewResponder: (any LLMResponding)? = nil) throws {
+    init(previewState: RecallState? = nil, reminderCreationScheduler: (any ReminderCreationScheduling)? = nil, storageOverride: RecallStorage? = nil, preloadedStore: FileMemoryStore? = nil, dailyReviewResponder: (any LLMResponding)? = nil, topicReviewResponder: (any LLMResponding)? = nil, personaResponder: (any LLMResponding)? = nil) throws {
         self.isPreview = previewState != nil
+        self.personaResponderOverride = personaResponder
         self.topicReviewResponderOverride = topicReviewResponder
         self.dailyReviewResponderOverride = dailyReviewResponder
         self.reminderCreationScheduler = reminderCreationScheduler ?? LocalNotificationScheduler()
@@ -1701,6 +1706,7 @@ final class RecallAppModel: ObservableObject {
     }
 
     func updatePrivacy(_ privacy: PrivacySettings) {
+        if !privacy.cloudUseEnabled { personaProfileTask?.cancel() }
         state.privacy = privacy
         updateEnterKeyRecorder()
         Task {
@@ -1979,29 +1985,58 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
-    /// Drains `pendingPersonaRefresh` one day at a time in the background. Safe to call often:
-    /// it is a no-op while already running or when there is nothing queued, and each day it
-    /// processes is best-effort (a failure drops that day rather than blocking later ones).
+    /// Optional work is separately injected in previews and yields to active user-facing tasks.
     func refreshPersonaProfileIfNeeded() {
-        guard !isRefreshingPersonaProfile else { return }
+        guard !isPreview || personaResponderOverride != nil else { return }
+        if !isPreview && personaProfileTimer == nil {
+            personaProfileTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.refreshPersonaProfileIfNeeded() }
+            }
+        }
+        guard !isRefreshingPersonaProfile, !isUpdatingPersonaProfile, state.personaProfileSettings.enabled,
+              state.privacy.cloudUseEnabled, !isThinking, !isGeneratingDailySummary, !isGeneratingWeeklyReview else { return }
         isRefreshingPersonaProfile = true
-        Task {
-            defer { isRefreshingPersonaProfile = false }
-            guard let responder = dailyReviewResponderOverride ?? dailySummaryResponder() else { return }
-            var processedAny = false
-            while true {
+        personaProfileTask = Task(priority: .utility) {
+            defer { isRefreshingPersonaProfile = false; personaProfileTask = nil }
+            // Do not reuse a daily-review test responder for a different request purpose.
+            guard let responder = personaResponderOverride ?? dailySummaryResponder() else { return }
+            for _ in 0..<3 {
+                guard !Task.isCancelled, !isThinking, !isGeneratingDailySummary, !isGeneratingWeeklyReview else { break }
                 do {
                     let didWork = try await store.refreshPersonaProfile(responder: responder)
-                    guard didWork else { break }
-                    processedAny = true
-                } catch is CancellationError {
-                    break
-                } catch {
-                    recordError(error, source: "PersonaProfile", message: "个人特征提炼失败")
-                    break
-                }
+                    state = await store.snapshot()
+                    if !didWork { break }
+                } catch is CancellationError { break }
+                catch { recordError(error, source: "PersonaProfile", message: "行为观察未完成，已保留进度"); break }
             }
-            if processedAny { await refresh() }
+        }
+    }
+
+    enum PersonaProfileAction {
+        case enabled(Bool), personalizes(Bool), retry, rebuild, clear, restoreMatches, reject(Set<UUID>)
+    }
+    @discardableResult
+    func updatePersonaProfile(_ action: PersonaProfileAction) async -> Bool {
+        guard !isUpdatingPersonaProfile else { return false }
+        isUpdatingPersonaProfile = true
+        defer { isUpdatingPersonaProfile = false; refreshPersonaProfileIfNeeded() }
+        if let worker = personaProfileTask { worker.cancel(); await worker.value }
+        do {
+            switch action {
+            case .enabled(let enabled): try await store.setPersonaProfileEnabled(enabled)
+            case .personalizes(let enabled): try await store.setPersonaPersonalization(enabled)
+            case .retry: try await store.retryPersonaRefresh()
+            case .rebuild: try await store.clearPersonaProfile(rebuild: true)
+            case .clear: try await store.clearPersonaProfile()
+            case .restoreMatches: try await store.restorePersonaMatches()
+            case .reject(let ids): try await store.rejectPersonaEvidence(ids)
+            }
+            state = await store.snapshot()
+            return true
+        } catch {
+            recordError(error, source: "PersonaProfile", message: "保存行为观察设置失败")
+            noticeMessage = RecallLocalization.both("保存失败，原有观察和设置已保留，请重试。", "Couldn't save. Your previous observations and settings were kept. Try again.")
+            return false
         }
     }
 
@@ -2009,7 +2044,7 @@ final class RecallAppModel: ObservableObject {
         Task {
             do {
                 try await store.dismissPersonaTrait(dimension)
-                await refresh()
+                state = await store.snapshot()
                 noticeMessage = RecallLocalization.both("已停止根据“\(RecallLocalization.text(dimension.title))”推断你的特征。", "Recall will stop using “\(RecallLocalization.text(dimension.title))” to judge you.")
             } catch {
                 recordError(error, source: "PersonaProfile", message: "更新个人特征失败")
@@ -2021,7 +2056,7 @@ final class RecallAppModel: ObservableObject {
         Task {
             do {
                 try await store.resumePersonaTrait(dimension)
-                await refresh()
+                state = await store.snapshot()
             } catch {
                 recordError(error, source: "PersonaProfile", message: "更新个人特征失败")
             }
@@ -2032,8 +2067,8 @@ final class RecallAppModel: ObservableObject {
         Task {
             do {
                 try await store.dismissPersonaMatch()
-                await refresh()
-                noticeMessage = "好的，Recall 会重新判断更贴近你的形象。"
+                state = await store.snapshot()
+                noticeMessage = RecallLocalization.both("已收起这个形象。你可以查看依据并更正，新的观察积累后再判断。", "This label is hidden. Review or correct its evidence; new observations may support a later assessment.")
             } catch {
                 recordError(error, source: "PersonaProfile", message: "更新形象判断失败")
             }
