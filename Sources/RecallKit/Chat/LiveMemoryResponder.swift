@@ -15,6 +15,8 @@ struct LiveMemoryResponder: LLMResponding {
               live.memoryKnowledgeSettings == original.memoryKnowledgeSettings,
               live.workflow.identityBindings == original.workflow.identityBindings,
               live.dataGeneration == original.dataGeneration,
+              live.personaProfileRevision == original.personaProfileRevision,
+              live.dismissedPersonaDimensions == original.dismissedPersonaDimensions,
               live.memoryKnowledge.suppressedKeys == original.memoryKnowledge.suppressedKeys,
               SummaryFeedbackLearning.revision(in: live) == SummaryFeedbackLearning.revision(in: original) else {
             throw LLMError.serviceError(RecallLocalization.both("记忆或隐私设置已变化，请重新提问。", "Memory or privacy settings changed. Ask again to use the current scope."))

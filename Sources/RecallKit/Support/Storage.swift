@@ -139,6 +139,12 @@ public struct RecallState: Codable, Sendable {
     public var personaMatchHistory: [PersonaMatch] = []
     public var dismissedPersonaDimensions: [PersonaDimension] = []
     public var dismissedPersonaArchetypeIDs: [String] = []
+    public var personaProfileSettings = PersonaProfileSettings()
+    public var personaRefreshJobs: [PersonaRefreshJob] = []
+    public var personaProfileRevision = UUID()
+    public var personaProfileVersion = 0
+    public var rejectedPersonaEvidence: [String] = []
+    public var rejectedPersonaMatchStamp: String? = nil
 
     public init(
         rules: [EventRule] = EventRule.defaults(),
@@ -214,6 +220,7 @@ public struct RecallState: Codable, Sendable {
         case episodes, projects, userMemories, insights, insightFeedback, learnedRoutines
         case recentlyDeletedMemories, memorySuppressionRules, matterCorrections, dismissedExperienceIDs, experienceHintsEnabled, topicGroups
         case pendingPersonaRefresh, personaTraitObservations, personaTraits, personaMatch, personaMatchHistory
+        case personaProfileSettings, personaRefreshJobs, personaProfileRevision, personaProfileVersion, rejectedPersonaEvidence, rejectedPersonaMatchStamp
         case dismissedPersonaDimensions, dismissedPersonaArchetypeIDs
     }
 
@@ -269,6 +276,12 @@ public struct RecallState: Codable, Sendable {
         personaTraits = try container.decodeIfPresent([PersonaTraitState].self, forKey: .personaTraits) ?? []
         personaMatch = try container.decodeIfPresent(PersonaMatch.self, forKey: .personaMatch)
         personaMatchHistory = try container.decodeIfPresent([PersonaMatch].self, forKey: .personaMatchHistory) ?? []
+        personaProfileSettings = try container.decodeIfPresent(PersonaProfileSettings.self, forKey: .personaProfileSettings) ?? PersonaProfileSettings()
+        personaRefreshJobs = try container.decodeIfPresent([PersonaRefreshJob].self, forKey: .personaRefreshJobs) ?? []
+        personaProfileRevision = try container.decodeIfPresent(UUID.self, forKey: .personaProfileRevision) ?? UUID()
+        personaProfileVersion = try container.decodeIfPresent(Int.self, forKey: .personaProfileVersion) ?? 0
+        rejectedPersonaEvidence = try container.decodeIfPresent([String].self, forKey: .rejectedPersonaEvidence) ?? []
+        rejectedPersonaMatchStamp = try container.decodeIfPresent(String.self, forKey: .rejectedPersonaMatchStamp)
         dismissedPersonaDimensions = try container.decodeIfPresent([PersonaDimension].self, forKey: .dismissedPersonaDimensions) ?? []
         dismissedPersonaArchetypeIDs = try container.decodeIfPresent([String].self, forKey: .dismissedPersonaArchetypeIDs) ?? []
     }
@@ -292,6 +305,7 @@ public actor FileMemoryStore {
     private let intelligenceIndex: SQLiteIntelligenceIndex?
     private var indexNeedsRebuild = false
     /// Corrected copy reused by 问一问 until a memory write. Chat messages do not clear it.
+    var personaRefreshInFlight = false
     private var chatAnalysis: RecallState?
     private var startupMaintenancePending = false
     private var committedState: RecallState?
@@ -392,6 +406,7 @@ public actor FileMemoryStore {
             .union(loaded.topicReviews.flatMap { $0.sourceVersions.keys })
             .union(loaded.weeklyReports.flatMap { $0.sourceIDs })
         state.invalidateMemoryOutputs(sourceIDs: referenced.subtracting(usable))
+        state.reconcilePersonaProfile(recoveringInterrupted: true)
         if deferMaintenance {
             startupMaintenancePending = true
             indexNeedsRebuild = true
@@ -416,7 +431,10 @@ public actor FileMemoryStore {
         if let lastDiskDigest { backupPending = !FileManager.default.fileExists(atPath: storage.rootURL.appendingPathComponent("Recovery/latest-" + lastDiskDigest + ".json").path) }
     }
 
-    public func snapshot() -> RecallState { state }
+    public func snapshot() -> RecallState {
+        state.reconcilePersonaProfile()
+        return state
+    }
 
     public func currentReviewSchedules() -> [ReviewSchedule] { state.reviewSchedules }
 
@@ -962,12 +980,6 @@ public actor FileMemoryStore {
         invalidateMemoryOutputs(sourceIDs: [id])
         state.dailySummaries.removeAll { $0.id == id }
         state.pendingPersonaRefresh.removeAll { $0 == id }
-        if state.personaTraitObservations.contains(where: { $0.sourceDailySummaryID == id }) {
-            state.personaTraitObservations.removeAll { $0.sourceDailySummaryID == id }
-            let keep = state.personaTraitObservations.filter { !state.dismissedPersonaDimensions.contains($0.dimension) }
-            state.personaTraits = PersonaProfileEngine.rebuild(from: keep)
-            state.personaMatch = PersonaProfileEngine.match(state.personaTraits, excludingArchetypeIDs: Set(state.dismissedPersonaArchetypeIDs))
-        }
         try persist()
     }
 
@@ -1307,6 +1319,8 @@ public actor FileMemoryStore {
         state.personaMatchHistory = []
         state.dismissedPersonaDimensions = []
         state.dismissedPersonaArchetypeIDs = []
+        state.personaRefreshJobs = []; state.personaProfileRevision = UUID()
+        state.rejectedPersonaEvidence = []; state.rejectedPersonaMatchStamp = nil
         state.pendingFileDeletions = ((state.pendingFileDeletions ?? []) + activePaths + deletedPaths.map { "Recently Deleted/Screenshots/" + URL(fileURLWithPath: $0).lastPathComponent } + managedScreenshotFiles()).memoryUnique()
         state.pendingRecoveryCleanup = true
         do { try persist() } catch { state = before; throw error }
@@ -1677,6 +1691,7 @@ public actor FileMemoryStore {
     @discardableResult
     private func writeState() throws -> ArchiveWriteMetrics {
         do {
+            state.reconcilePersonaProfile()
             let started = Date.now
             let data = try encoder.encode(state)
             let encodeMs = Int(Date.now.timeIntervalSince(started) * 1000)

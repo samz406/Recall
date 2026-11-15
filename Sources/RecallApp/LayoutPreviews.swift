@@ -89,6 +89,7 @@ enum RecallLayoutPreviews {
         try await verifyAutomaticTopicSummary()
         try await verifyReviewScheduleSave()
         try await verifyDailyReviewGeneration()
+        try await verifyPersonaProfileActions()
         try await verifyPeriodReviewGeneration()
         try await verifyMemoryReliabilityEntries()
         let model = try RecallAppModel(previewState: try await fixture())
@@ -96,7 +97,7 @@ enum RecallLayoutPreviews {
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(10)) }
         let defaults = UserDefaults(suiteName: "im.recall.synthetic-layout")!
         defer { defaults.removePersistentDomain(forName: "im.recall.synthetic-layout") }
-        let names = ["global-search", "global-search-results", "global-search-dates", "global-search-calendar", "archive-recovery", "archive-safety", "record-retention", "preferences", "first-moment", "sample", "daily", "daily-long", "daily-calendar", "daily-calendar-missing", "daily-calendar-empty", "topics", "topic-detail", "period", "period-stale", "period-work", "period-work-sources", "review-schedule", "review-schedule-saving", "knowledge", "knowledge-empty", "rules", "reminders", "reminder-new", "reminder-calendar", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "chat-busy", "chat-sources", "navigation"]
+        let names = ["global-search", "global-search-results", "global-search-dates", "global-search-calendar", "archive-recovery", "archive-safety", "record-retention", "preferences", "first-moment", "sample", "daily", "daily-long", "daily-calendar", "daily-calendar-missing", "daily-calendar-empty", "topics", "topic-detail", "period", "period-stale", "period-work", "period-work-sources", "review-schedule", "review-schedule-saving", "knowledge", "knowledge-empty", "knowledge-persona", "knowledge-persona-paused", "knowledge-persona-failed", "persona-evidence", "rules", "reminders", "reminder-new", "reminder-calendar", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "chat-busy", "chat-sources", "navigation"]
         for mode in ["wide", "narrow", "dark", "english"] {
             UserDefaults.standard.set(mode == "english" ? "en" : "zh-Hans", forKey: RecallLocalization.languageKey)
             let width: CGFloat = mode == "narrow" ? 780 : 1050
@@ -123,6 +124,14 @@ enum RecallLayoutPreviews {
                 }
                 if name == "reminder-history-empty" { model.state.reminders.removeAll { $0.status.isHistory } }
                 if name == "knowledge-empty" { model.state.memoryKnowledge.claims = [] }
+                if name.hasPrefix("knowledge-persona") || name == "persona-evidence" {
+                    model.state = personaFixtureState(seeded: true)
+                    if name.hasSuffix("paused") { model.state.personaProfileSettings.enabled = false }
+                    if name.hasSuffix("failed") {
+                        model.state.personaTraitObservations = []; model.state.reconcilePersonaProfile()
+                        for i in model.state.personaRefreshJobs.indices { model.state.personaRefreshJobs[i].status = .failed }
+                    }
+                }
                 if name == "chat-empty" { model.state.messages = [ConversationMessage(role: .system, content: "已清空当前会话，可以开始新的对话。")] }
                 if name == "chat-busy" { model.isThinking = true }
                 if name == "daily-long", let first = model.state.dailySummaries.first {

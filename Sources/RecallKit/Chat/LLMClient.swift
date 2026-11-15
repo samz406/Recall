@@ -404,6 +404,16 @@ public struct CompatibleLLM: LLMResponding {
     }
 
     public func answer(to request: LLMRequest) async throws -> LLMAnswer {
+        if request.purpose == .personaInsight {
+            return try await ModelRequestPriority.shared.backgroundAnswer { try await BackgroundAdapter(client: self).answerCancellably(to: request) }
+        }
+        return try await ModelRequestPriority.shared.foregroundAnswer { try await self.performAnswer(to: request) }
+    }
+    private struct BackgroundAdapter: LLMResponding {
+        let client: CompatibleLLM
+        func answer(to request: LLMRequest) async throws -> LLMAnswer { try await client.performAnswer(to: request) }
+    }
+    private func performAnswer(to request: LLMRequest) async throws -> LLMAnswer {
         try Task.checkCancellation()
         switch configuration.provider {
         case .openAICompatible:
@@ -416,6 +426,10 @@ public struct CompatibleLLM: LLMResponding {
     }
 
     public func answerStream(to request: LLMRequest, onText: @escaping @Sendable (String) async -> Void) async throws -> LLMAnswer {
+        return try await ModelRequestPriority.shared.foregroundAnswer { try await self.performStream(to: request, onText: onText) }
+    }
+
+    private func performStream(to request: LLMRequest, onText: @escaping @Sendable (String) async -> Void) async throws -> LLMAnswer {
         try Task.checkCancellation()
         switch configuration.provider {
         case .openAICompatible:

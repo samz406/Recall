@@ -91,6 +91,7 @@ public enum PersonalMemoryContext {
             $0.kind.isPersonal && $0.usable() && state.memoryKnowledgeSettings.references($0)
                 && !$0.sourceIDs.isEmpty && Set($0.sourceIDs).isSubset(of: allowed)
         }
-        return MemoryRetrievalEngine().preferenceContext(question: question, claims: claims, conversationID: conversationID, entities: topicIDs) ?? ""
+        let explicit = MemoryRetrievalEngine().preferenceContext(question: question, claims: claims, conversationID: conversationID, entities: topicIDs) ?? ""
+        return [explicit, PersonaPersonalization.text(in: state)].filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 }
