@@ -24,7 +24,7 @@ extension FileMemoryStore {
         try persistReviewState()
         let context = CaptureRecord(eventTemplate: .manualMoment, contentHash: "persona-" + job.sourceVersion,
             ocrText: engine.text(evidence))
-        let request = LLMRequest(question: engine.prompt(excluding: Set(state.dismissedPersonaDimensions)), context: [context], purpose: .personaInsight, outputTokenLimit: 1_200)
+        let request = LLMRequest(question: engine.prompt(excluding: Set(state.dismissedPersonaDimensions)), context: [context], purpose: .personaInsight, outputTokenLimit: 1_600)
         do {
             try validatePersonaJob(job, baseline: baseline)
             let answer = try await responder.answerCancellably(to: request)

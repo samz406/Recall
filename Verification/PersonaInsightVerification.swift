@@ -60,6 +60,12 @@ enum PersonaInsightVerification {
                 detail: String(repeating: "合成", count: 400), ownedByUser: true,
                 quotes: [DailyLedgerQuote(text: own.quote, sourceIDs: own.sourceIDs, speaker: "user")], evidenceIDs: own.sourceIDs, occurredAt: nil)
         }
+        var oldState = RecallState(); oldState.captures = [CaptureRecord(eventTemplate: .manualMoment, contentHash: "old", ocrText: quote)]
+        // Test only the temporal boundary; the source need not be sent to a model.
+        summary.day = Calendar.current.startOfDay(for: .now).addingTimeInterval(-40 * 86_400)
+        summary.sourceCaptureIDs = oldState.captures.map(\.id); oldState.dailySummaries = [summary]
+        oldState.reconcilePersonaProfile()
+        try expect(oldState.pendingPersonaRefresh.isEmpty, "过期回顾被排队外发")
         let bounded = engine.evidence(for: summary)
         try expect(bounded.count <= 16 && bounded.reduce(0, { $0 + $1.title.count + $1.detail.count + $1.quote.count }) <= 6_000, "输入预算未生效")
     }
@@ -203,12 +209,14 @@ enum PersonaInsightVerification {
         try expect(state.personaRefreshJobs.first?.status == .completed, "取消后无法继续")
     }
     static func deletionCorrectionsAndWriteFailure() async throws {
-        for scenario in ["delete", "exclude", "write"] {
+        for scenario in ["delete", "exclude", "correction", "write"] {
             let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
             try await drain(f.store, Model())
             let before = await f.store.snapshot()
             if scenario == "delete" {
                 _ = try await f.store.deleteCapture(id: before.captures[0].id)
+            } else if scenario == "correction" {
+                try await f.store.saveMatterCorrection(MatterCorrection(evidenceIDs: [before.captures[0].id], kind: .notMine))
             } else if scenario == "exclude" {
                 var privacy = before.privacy; privacy.excludedBundleIdentifiers.insert("synthetic.persona")
                 try await f.store.updatePrivacy(privacy)

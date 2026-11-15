@@ -72,6 +72,22 @@ struct PersonaEvidenceSheet: View {
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
+                    ForEach(model.state.personaRefreshJobs.filter { $0.status == .failed }) { job in
+                        VStack(alignment: .leading, spacing: 6) {
+                            if let summary = model.state.dailySummaries.first(where: { $0.id == job.summaryID }) {
+                                Text(summary.day.formatted(date: .abbreviated, time: .omitted)).font(.headline)
+                            }
+                            Text(job.failure == "format"
+                                ? RecallLocalization.both("模型返回格式或依据未通过校验。", "The response format or evidence did not pass validation.")
+                                : RecallLocalization.both("模型服务暂未完成请求，可能是网络或超时。", "The model request did not finish, possibly due to connectivity or timeout."))
+                            HStack {
+                                Text(RecallLocalization.both("已尝试 \(job.attempts)/3 次；已有观察保留。", "Attempted \(job.attempts)/3 times. Existing observations are kept.")).font(.caption)
+                                Spacer()
+                                Button(RecallLocalization.both("重试未完成的分析", "Retry incomplete analysis")) { Task { await model.updatePersonaProfile(.retry) } }
+                                    .disabled(model.isUpdatingPersonaProfile)
+                            }
+                        }.recallSurface(padding: 16)
+                    }
                     if observations.isEmpty {
                         Text(RecallLocalization.both("还没有有效观察。新回顾或重新分析后会显示有依据的内容；没有足够证据时保留为空。", "No valid observations yet. New or reanalyzed reviews can supply evidence; insufficient evidence leaves this empty."))
                             .foregroundStyle(RecallPalette.secondary)
