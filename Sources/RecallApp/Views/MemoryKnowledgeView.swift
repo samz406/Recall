@@ -37,6 +37,7 @@ struct MemoryKnowledgeView: View {
             if !model.state.memoryKnowledgeSettings.referencesEnabled {
                 Text(RecallLocalization.both("当前已暂停参考个人信息，可在设置 → 记忆整理中恢复。", "Personal context is paused. Resume it in Settings → Memory.")).font(.caption).foregroundStyle(RecallPalette.secondary)
             }
+            personaSection
             HStack(alignment: .top, spacing: 12) {
                 TextField(RecallLocalization.both("希望 Recall 以后记住什么？", "What should Recall remember for later?"), text: $draft, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).onSubmit { remember() }
@@ -107,7 +108,24 @@ struct MemoryKnowledgeView: View {
         Menu {
             Toggle(RecallLocalization.both("显示已停止使用的内容", "Show inactive memories"), isOn: $includeHistory)
             Button(RecallLocalization.both("查看整理详情", "Organization details")) { showsDiagnostics = true }
+            if !model.state.dismissedPersonaDimensions.isEmpty {
+                Menu(RecallLocalization.both("恢复已停用的行为判断", "Restore stopped trait judgments")) {
+                    ForEach(model.state.dismissedPersonaDimensions, id: \.self) { dimension in
+                        Button(RecallLocalization.text(dimension.title)) { model.resumePersonaTrait(dimension) }
+                    }
+                }
+            }
         } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel(RecallLocalization.both("关于我的更多操作", "More personal memory actions"))
+    }
+    @ViewBuilder private var personaSection: some View {
+        let traits = model.state.personaTraits.filter { $0.isConfirmed }.sorted { $0.strength > $1.strength }
+        if model.state.personaMatch != nil || !traits.isEmpty {
+            PersonaCardView(match: model.state.personaMatch, traits: traits, dismissedCount: model.state.dismissedPersonaDimensions.count,
+                onDismissTrait: { model.dismissPersonaTrait($0) }, onDismissMatch: { model.dismissPersonaMatch() })
+        } else if !model.state.pendingPersonaRefresh.isEmpty {
+            Text(RecallLocalization.both("Recall 正在从每日回顾里了解你，积累几天后会显示在这里。", "Recall is getting to know you from your daily reviews. This will appear after a few days."))
+                .font(.caption).foregroundStyle(RecallPalette.secondary)
+        }
     }
     private func editor(_ claim: MemoryClaim?) -> some View {
         MemoryAgreementEditor(claim: claim, topics: model.state.memoryKnowledge.entities.filter { $0.kind == "topic" }) { content, scope, scopeID, until in
@@ -304,3 +322,67 @@ struct MemoryAliasEditor: View {
         }.padding(28).frame(width: 560).onAppear { text = entity.aliases.joined(separator: "，") }
     }
 }
+
+/// Shows the current matched persona (if any confident enough) plus the confirmed traits behind it.
+/// Every control here is reversible and local — dismissing a trait or a match never deletes the
+/// underlying daily reviews, it only tells Recall to stop drawing that particular conclusion.
+struct PersonaCardView: View {
+    let match: PersonaMatch?
+    let traits: [PersonaTraitState]
+    let dismissedCount: Int
+    let onDismissTrait: (PersonaDimension) -> Void
+    let onDismissMatch: () -> Void
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let match {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(RecallLocalization.both("Recall 眼中的你", "How Recall sees you")).font(.caption).foregroundStyle(RecallPalette.secondary)
+                        Text(RecallLocalization.text(match.name)).font(.title3.bold())
+                        Text(RecallLocalization.text(match.tagline)).foregroundStyle(RecallPalette.secondary)
+                    }
+                    Spacer()
+                    Menu {
+                        Button(RecallLocalization.both("这不像我", "This isn't quite me"), role: .destructive) { onDismissMatch() }
+                    } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
+                }
+                if let alternateID = match.alternateArchetypeID, let alternate = PersonaArchetype.catalog.first(where: { $0.id == alternateID }) {
+                    Text(RecallLocalization.both("也有点像「\(RecallLocalization.text(alternate.name))」，还在持续观察中。", "A bit like “\(RecallLocalization.text(alternate.name))” too — Recall is still watching for more signal."))
+                        .font(.caption).foregroundStyle(RecallPalette.secondary)
+                }
+            }
+            if !traits.isEmpty {
+                Button { expanded.toggle() } label: {
+                    HStack {
+                        Text(RecallLocalization.both("支撑这个判断的行为特征（\(traits.count)）", "Traits behind this (\(traits.count))")).font(.caption.bold())
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption)
+                    }
+                }.buttonStyle(.plain).foregroundStyle(RecallPalette.accent)
+                if expanded {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(traits) { trait in
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(RecallLocalization.text(trait.dimension.title)).font(.caption).foregroundStyle(RecallPalette.secondary)
+                                    Text(RecallLocalization.text(trait.dimension.valueTitle(trait.value))).font(RecallTypography.body)
+                                }
+                                Spacer()
+                                Button(RecallLocalization.both("不再用这条判断", "Stop using this")) { onDismissTrait(trait.dimension) }
+                                    .buttonStyle(.plain).font(.caption).foregroundStyle(RecallPalette.secondary)
+                            }
+                        }
+                        if dismissedCount > 0 {
+                            Text(RecallLocalization.both("已停用 \(dismissedCount) 项判断，可在需要时重新开启。", "\(dismissedCount) judgments are turned off. You can turn them back on anytime."))
+                                .font(.caption2).foregroundStyle(RecallPalette.secondary)
+                        }
+                    }
+                }
+            }
+            Text(RecallLocalization.both("这些判断只来自你每天已经生成的回顾文本，随日常使用自动更新。", "This only uses text already in your daily reviews, and updates automatically over time."))
+                .font(.caption2).foregroundStyle(RecallPalette.secondary)
+        }.recallSurface(padding: 18)
+    }
+}
+

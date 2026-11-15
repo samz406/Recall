@@ -118,6 +118,8 @@ extension FileMemoryStore {
             let liveSummaries = Set(state.dailySummaries.map(\.id))
             state.pendingDailyReviewMaintenance.removeAll { !liveSummaries.contains($0) }
             state.pendingDailyReviewMaintenance.append(saved.id)
+            state.pendingPersonaRefresh.removeAll { !liveSummaries.contains($0) }
+            state.pendingPersonaRefresh.append(saved.id)
             let reminders = DailyReviewReminderEngine.reconcile(&state)
             do { try persistReviewState(indexChanged: true) } catch { state = previous; throw error }
             let metrics = await meter.finish(start: start, saveMilliseconds: DailyReviewMeter.milliseconds(since: saveStart))
@@ -165,6 +167,7 @@ extension FileMemoryStore {
     func reconcileDailyReviewCheckpoints(now: Date = .now) {
         let liveSummaries = Set(state.dailySummaries.map(\.id))
         state.pendingDailyReviewMaintenance.removeAll { !liveSummaries.contains($0) }
+        state.pendingPersonaRefresh.removeAll { !liveSummaries.contains($0) }
         guard state.privacy.cloudUseEnabled else { state.dailyReviewCheckpoints = []; return }
         guard !state.dailyReviewCheckpoints.isEmpty else { return }
         let configuration = DailyReviewInput.configurationVersion(state.llmConfiguration)

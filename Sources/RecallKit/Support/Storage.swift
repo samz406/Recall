@@ -132,6 +132,13 @@ public struct RecallState: Codable, Sendable {
     public var experienceHintsEnabled: Bool
     public var memoryKnowledge: MemoryKnowledge
     public var memoryKnowledgeSettings: MemoryKnowledgeSettings
+    public var pendingPersonaRefresh: [UUID] = []
+    public var personaTraitObservations: [PersonaTraitObservation] = []
+    public var personaTraits: [PersonaTraitState] = []
+    public var personaMatch: PersonaMatch? = nil
+    public var personaMatchHistory: [PersonaMatch] = []
+    public var dismissedPersonaDimensions: [PersonaDimension] = []
+    public var dismissedPersonaArchetypeIDs: [String] = []
 
     public init(
         rules: [EventRule] = EventRule.defaults(),
@@ -206,6 +213,8 @@ public struct RecallState: Codable, Sendable {
         case weeklyReports, reviewTemplates, reviewSchedules, reviewCategories, memoryKnowledge, memoryKnowledgeSettings
         case episodes, projects, userMemories, insights, insightFeedback, learnedRoutines
         case recentlyDeletedMemories, memorySuppressionRules, matterCorrections, dismissedExperienceIDs, experienceHintsEnabled, topicGroups
+        case pendingPersonaRefresh, personaTraitObservations, personaTraits, personaMatch, personaMatchHistory
+        case dismissedPersonaDimensions, dismissedPersonaArchetypeIDs
     }
 
     public init(from decoder: Decoder) throws {
@@ -255,6 +264,13 @@ public struct RecallState: Codable, Sendable {
         reviewCategories = try container.decodeIfPresent([String: ReviewCategory].self, forKey: .reviewCategories) ?? [:]
         memoryKnowledge = try container.decodeIfPresent(MemoryKnowledge.self, forKey: .memoryKnowledge) ?? MemoryKnowledge()
         memoryKnowledgeSettings = try container.decodeIfPresent(MemoryKnowledgeSettings.self, forKey: .memoryKnowledgeSettings) ?? MemoryKnowledgeSettings()
+        pendingPersonaRefresh = try container.decodeIfPresent([UUID].self, forKey: .pendingPersonaRefresh) ?? []
+        personaTraitObservations = try container.decodeIfPresent([PersonaTraitObservation].self, forKey: .personaTraitObservations) ?? []
+        personaTraits = try container.decodeIfPresent([PersonaTraitState].self, forKey: .personaTraits) ?? []
+        personaMatch = try container.decodeIfPresent(PersonaMatch.self, forKey: .personaMatch)
+        personaMatchHistory = try container.decodeIfPresent([PersonaMatch].self, forKey: .personaMatchHistory) ?? []
+        dismissedPersonaDimensions = try container.decodeIfPresent([PersonaDimension].self, forKey: .dismissedPersonaDimensions) ?? []
+        dismissedPersonaArchetypeIDs = try container.decodeIfPresent([String].self, forKey: .dismissedPersonaArchetypeIDs) ?? []
     }
 }
 
@@ -945,6 +961,13 @@ public actor FileMemoryStore {
         forgetSummaryFeedback(reportID: id)
         invalidateMemoryOutputs(sourceIDs: [id])
         state.dailySummaries.removeAll { $0.id == id }
+        state.pendingPersonaRefresh.removeAll { $0 == id }
+        if state.personaTraitObservations.contains(where: { $0.sourceDailySummaryID == id }) {
+            state.personaTraitObservations.removeAll { $0.sourceDailySummaryID == id }
+            let keep = state.personaTraitObservations.filter { !state.dismissedPersonaDimensions.contains($0.dimension) }
+            state.personaTraits = PersonaProfileEngine.rebuild(from: keep)
+            state.personaMatch = PersonaProfileEngine.match(state.personaTraits, excludingArchetypeIDs: Set(state.dismissedPersonaArchetypeIDs))
+        }
         try persist()
     }
 
@@ -1277,6 +1300,13 @@ public actor FileMemoryStore {
         state.dailyReviewCheckpoints = []
         state.pendingDailyReviewMaintenance = []
         state.dailyReviewAttemptedDays = []
+        state.pendingPersonaRefresh = []
+        state.personaTraitObservations = []
+        state.personaTraits = []
+        state.personaMatch = nil
+        state.personaMatchHistory = []
+        state.dismissedPersonaDimensions = []
+        state.dismissedPersonaArchetypeIDs = []
         state.pendingFileDeletions = ((state.pendingFileDeletions ?? []) + activePaths + deletedPaths.map { "Recently Deleted/Screenshots/" + URL(fileURLWithPath: $0).lastPathComponent } + managedScreenshotFiles()).memoryUnique()
         state.pendingRecoveryCleanup = true
         do { try persist() } catch { state = before; throw error }

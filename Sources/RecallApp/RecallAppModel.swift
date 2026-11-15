@@ -144,6 +144,7 @@ final class RecallAppModel: ObservableObject {
     private var isPurgingRecentlyDeleted = false
     @Published private(set) var isGeneratingDailySummary = false
     private var generatingDailyReviewDay: Date?
+    private var isRefreshingPersonaProfile = false
     private var dailyReviewTask: Task<Void, Never>?
     private let dailyReviewResponderOverride: (any LLMResponding)?
     private var dailyReviewStatusID: UUID?
@@ -262,6 +263,7 @@ final class RecallAppModel: ObservableObject {
         armDailySummaryTimer()
         armRecentlyDeletedTimer()
         generateMissedDailySummaryIfNeeded()
+        refreshPersonaProfileIfNeeded()
         armWeeklySchedules()
         runDueWeeklySchedule()
         startSummaryFeedbackWorker()
@@ -1918,6 +1920,7 @@ final class RecallAppModel: ObservableObject {
                 if reason == .generate || reason == .regenerate { dailyToOpen = summary.id }
                 // Do not run whole-archive maintenance in the user's completion path.
                 // Pending local derived work is drained on the existing maintenance cycle.
+                refreshPersonaProfileIfNeeded()
                 if !Task.isCancelled, state.dailySummarySettings.notifyWhenReady == true {
                     do { try await notificationScheduler.deliverDailyBriefing(summary) }
                     catch { recordError(error, source: "DailySummary", message: "回顾已保存，通知投递失败") }
@@ -1972,6 +1975,67 @@ final class RecallAppModel: ObservableObject {
                     : "反馈已记录，Recall 会据此调整后续判断。"
             } catch {
                 recordError(error, source: "Insights", message: "保存洞察反馈失败")
+            }
+        }
+    }
+
+    /// Drains `pendingPersonaRefresh` one day at a time in the background. Safe to call often:
+    /// it is a no-op while already running or when there is nothing queued, and each day it
+    /// processes is best-effort (a failure drops that day rather than blocking later ones).
+    func refreshPersonaProfileIfNeeded() {
+        guard !isRefreshingPersonaProfile else { return }
+        isRefreshingPersonaProfile = true
+        Task {
+            defer { isRefreshingPersonaProfile = false }
+            guard let responder = dailyReviewResponderOverride ?? dailySummaryResponder() else { return }
+            var processedAny = false
+            while true {
+                do {
+                    let didWork = try await store.refreshPersonaProfile(responder: responder)
+                    guard didWork else { break }
+                    processedAny = true
+                } catch is CancellationError {
+                    break
+                } catch {
+                    recordError(error, source: "PersonaProfile", message: "个人特征提炼失败")
+                    break
+                }
+            }
+            if processedAny { await refresh() }
+        }
+    }
+
+    func dismissPersonaTrait(_ dimension: PersonaDimension) {
+        Task {
+            do {
+                try await store.dismissPersonaTrait(dimension)
+                await refresh()
+                noticeMessage = RecallLocalization.both("已停止根据“\(RecallLocalization.text(dimension.title))”推断你的特征。", "Recall will stop using “\(RecallLocalization.text(dimension.title))” to judge you.")
+            } catch {
+                recordError(error, source: "PersonaProfile", message: "更新个人特征失败")
+            }
+        }
+    }
+
+    func resumePersonaTrait(_ dimension: PersonaDimension) {
+        Task {
+            do {
+                try await store.resumePersonaTrait(dimension)
+                await refresh()
+            } catch {
+                recordError(error, source: "PersonaProfile", message: "更新个人特征失败")
+            }
+        }
+    }
+
+    func dismissPersonaMatch() {
+        Task {
+            do {
+                try await store.dismissPersonaMatch()
+                await refresh()
+                noticeMessage = "好的，Recall 会重新判断更贴近你的形象。"
+            } catch {
+                recordError(error, source: "PersonaProfile", message: "更新形象判断失败")
             }
         }
     }
