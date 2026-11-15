@@ -150,7 +150,7 @@ enum PersonaInsightVerification {
         if let preferred = context.range(of: directive.content), let inferred = context.range(of: "近期行为观察") {
             try expect(preferred.lowerBound < inferred.lowerBound, "自动观察排在明确偏好之前")
         } else { throw Failure(errorDescription: "个性化上下文缺失") }
-        var paused = state; paused.memoryKnowledgeSettings.referencesEnabled = false
+        var paused = state; paused.memoryKnowledgeSettings.referenceInChat = false
         try expect(PersonaPersonalization.text(in: paused).isEmpty, "总参考开关未约束自动观察")
         try await f.store.dismissPersonaTrait(.workPace)
         state = await f.store.snapshot(); try expect(!state.personaTraits.contains { $0.dimension == .workPace }, "停用维度仍显示")
