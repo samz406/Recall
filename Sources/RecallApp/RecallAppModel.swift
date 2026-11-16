@@ -511,7 +511,7 @@ final class RecallAppModel: ObservableObject {
                 }
             } catch {
                 let trace = (error as? ReviewPreparationFailure)?.detail ?? RecallLocalization.both(
-                    "本次处理已结束，校验未通过；已有回顾已保留。", "Processing finished without passing validation. Saved reviews are preserved.")
+                    "本次处理已结束，未生成新的回顾；已有回顾已保留。", "Processing finished without a new review. Saved reviews are preserved.")
                 let elapsed = max(1, Int(Date.now.timeIntervalSince(runStarted)))
                 let metrics = weeklyReviewMetrics ?? DailyReviewMetrics()
                 let format = (error as? PeriodReviewOutputFailure)?.detail

@@ -87,7 +87,7 @@ enum PeriodReviewEvidenceVerification {
             let result = try await engine.generate(in: state, period: period, template: template, responder: model)
             let requests = await model.log()
             try expect(requests.count == 1 && result.draft.items.count == 5 && result.draft.facts.count == 5,
-                "来源位置或排版差异仍导致整份回顾重试")
+                "来源位置或排版差异仍导致整份回顾重试：\(mode)")
             let rows = try JSONSerialization.jsonObject(with: Data(requests[0].context[0].ocrText.utf8)) as! [[String: Any]]
             let text = rows.flatMap { [($0["title"] as! String), ($0["detail"] as! String)] + ($0["quotes"] as! [String]) }
             try expect(result.draft.facts.allSatisfy { fact in fact.quotes.allSatisfy { quote in text.contains { $0.contains(quote) } } },
@@ -101,7 +101,7 @@ enum PeriodReviewEvidenceVerification {
             let sizes = try requests.map { try (JSONSerialization.jsonObject(with: Data($0.context[0].ocrText.utf8)) as! [Any]).count }
             let affected = mode == .mixedOnce ? 2 : 1
             try expect(sizes == [5, affected] && result.draft.items.count == 5 && result.draft.facts.count == 5,
-                "坏引用没有按完整结论局部修复，或丢失合并条目的来源：\(sizes)")
+                "坏引用没有按完整结论局部修复，或丢失合并条目的来源：\(mode) \(sizes)")
             try expect(requests[1].outputTokenLimit == 2_000 && result.metrics.modelCalls == 2,
                 "小范围修复仍使用整周输出预算或重复整周生成")
             try expect(!result.draft.facts.contains { $0.detail.contains("虚构") }, "未验证的引用进入结果")
