@@ -310,6 +310,9 @@ public actor FileMemoryStore {
     private var startupMaintenancePending = false
     private var committedState: RecallState?
     private var lastDiskDigest: String?
+    var archiveRevision: UInt64 = 0
+    var backgroundMaintenanceInFlight = false
+    private var lastMaintenanceRevision: UInt64?
     public private(set) var backupPending = false
 
     public init() throws {
@@ -431,10 +434,8 @@ public actor FileMemoryStore {
         if let lastDiskDigest { backupPending = !FileManager.default.fileExists(atPath: storage.rootURL.appendingPathComponent("Recovery/latest-" + lastDiskDigest + ".json").path) }
     }
 
-    public func snapshot() -> RecallState {
-        state.reconcilePersonaProfile()
-        return state
-    }
+    /// Reads must not re-hash every recent review and its raw screenshots. Writes reconcile the profile.
+    public func snapshot() -> RecallState { state }
 
     public func currentReviewSchedules() -> [ReviewSchedule] { state.reviewSchedules }
 
@@ -546,16 +547,57 @@ public actor FileMemoryStore {
 
     func finishStartupMaintenanceIfNeeded() {
         guard startupMaintenancePending else { return }
-        let snapshot = state
-        for i in snapshot.weeklyReports.indices where snapshot.weeklyReports[i].isReadable
-            && snapshot.weeklyReports[i].sourceVersions.values.contains(where: { !$0.hasPrefix("memory2:") }) {
-            let report = snapshot.weeklyReports[i]
-            if WeeklyReviewEngine.sourcesUnchanged(report, in: snapshot) {
-                state.weeklyReports[i].sourceVersions = Dictionary(uniqueKeysWithValues: report.sourceIDs.compactMap { id in
-                    WeeklyReviewEngine.sourceVersion(id: id, state: snapshot).map { (id, $0) }
-                })
+        state.migrateLegacyWeeklyVersions()
+    }
+
+    /// Reconcile a value copy on a worker. Actor reads and safety checks remain available
+    /// throughout the slow work. A concurrent write makes this result obsolete, never authoritative.
+    @discardableResult
+    public func organizeMemoryInBackground(force: Bool = false, now: Date = .now, pruningExpired: Bool = false,
+        onPreparing: (@Sendable () async -> Void)? = nil) async throws -> Bool {
+        try Task.checkCancellation()
+        guard !backgroundMaintenanceInFlight else { return false }
+        backgroundMaintenanceInFlight = true
+        defer { backgroundMaintenanceInFlight = false }
+        let baseline = state, revision = archiveRevision, migrating = startupMaintenancePending
+        let needsDerivation = force || migrating || lastMaintenanceRevision != revision || indexNeedsRebuild
+            || !state.pendingDailyReviewMaintenance.isEmpty
+        let prepared: RecallState? = try await LocalOperation.run(stage: "整理本地记忆", timeout: nil) {
+            await onPreparing?()
+            try Task.checkCancellation()
+            var copy = baseline
+            let pruned = pruningExpired ? try copy.pruneExpiredSources(now: now) : false
+            guard needsDerivation || pruned else { return nil }
+            if migrating { copy.migrateLegacyWeeklyVersions() }
+            try Task.checkCancellation()
+            if let id = copy.pendingDailyReviewMaintenance.first {
+                copy.pendingDailyReviewMaintenance.removeFirst()
+                if let summary = copy.dailySummaries.first(where: { $0.id == id }) { copy.projectDayFromMatters(summary.day) }
             }
+            try copy.reconcileForPersistence(force: force, now: now, allowNew: true, cancellable: true)
+            try Task.checkCancellation()
+            return copy
         }
+        try Task.checkCancellation()
+        guard archiveRevision == revision else { return false }
+        guard let prepared else { return true }
+        state = prepared
+        do { try persistReviewState(indexChanged: true); markStartupMaintenanceComplete() }
+        catch { state = baseline; throw error }
+        let indexedState = state, indexedRevision = archiveRevision, index = intelligenceIndex
+        do {
+            try await LocalOperation.run(stage: "更新本地索引", timeout: nil) {
+                try Task.checkCancellation()
+                try index?.replace(with: indexedState)
+                try Task.checkCancellation()
+            }
+            indexNeedsRebuild = archiveRevision != indexedRevision || index == nil
+            if !indexNeedsRebuild { lastMaintenanceRevision = archiveRevision }
+        } catch {
+            indexNeedsRebuild = true
+            if ModelCallCancellation.isCancellation(error) { throw CancellationError() }
+        }
+        return true
     }
 
     func markStartupMaintenanceComplete() { startupMaintenancePending = false }
@@ -650,32 +692,7 @@ public actor FileMemoryStore {
         }
     }
 
-    private func invalidateWeeklyReports() {
-        // Reconciling scans every capture; do it once per state instead of once per report.
-        let knowledge = state.weeklyReports.contains { $0.isReadable } ? MemoryKnowledgeEngine().reconcile(state) : nil
-        for i in state.weeklyReports.indices where state.weeklyReports[i].isReadable {
-            if !WeeklyReviewEngine.sourcesUnchanged(state.weeklyReports[i], in: state, knowledge: knowledge) { state.weeklyReports[i].invalidate() }
-            else {
-                let ids = state.weeklyReports[i].sourceIDs
-                state.weeklyReports[i].sourceVersions = Dictionary(uniqueKeysWithValues: ids.compactMap { id in
-                    WeeklyReviewEngine.sourceVersion(id: id, state: state).map { (id, $0) }
-                })
-            }
-        }
-        for i in state.recentlyDeletedMemories.indices {
-            guard var reports = state.recentlyDeletedMemories[i].weeklyReports else { continue }
-            // A source in this same deletion transaction can be restored together with its report.
-            var restorationState = state
-            let existing = Set(state.captures.map(\.id))
-            restorationState.captures += state.recentlyDeletedMemories[i].captures.filter { !existing.contains($0.id) }
-            restorationState.matterCorrections += state.recentlyDeletedMemories[i].matterCorrections ?? []
-            let restorationKnowledge = reports.contains { $0.isReadable } ? MemoryKnowledgeEngine().reconcile(restorationState) : nil
-            for j in reports.indices where reports[j].isReadable {
-                if !WeeklyReviewEngine.sourcesUnchanged(reports[j], in: restorationState, knowledge: restorationKnowledge) { reports[j].invalidate() }
-            }
-            state.recentlyDeletedMemories[i].weeklyReports = reports
-        }
-    }
+    private func invalidateWeeklyReports() { state.invalidateWeeklyReports() }
 
     public func saveReviewTemplate(_ template: ReviewTemplate) throws {
         guard template.isValid else { throw WeeklyReviewError.invalidTemplate }
@@ -913,33 +930,7 @@ public actor FileMemoryStore {
     }
 
     /// Updates one day's episodes and the projects touched that day. Other days' projects, user memories and routines stay.
-    func projectDayFromMatters(_ day: Date) {
-        let calendar = Calendar.current
-        let files = MatterMemoryEngine().sourceFiles(in: state)
-        let sources = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
-        let episodes: [WorkEpisode] = files.flatMap { file in
-            file.events.filter { calendar.isDate($0.date, inSameDayAs: day) }.map { event in
-                WorkEpisode(id: event.id, day: day, startedAt: event.date, endedAt: event.date,
-                    projectKey: file.id, projectName: file.title, title: file.title, intent: file.title,
-                    action: event.detail, outcome: event.resultStatus == .completed || event.status == .completed ? event.detail : nil,
-                    nextAction: event.nextAction, status: event.status, importance: event.status == .blocked ? 0.9 : 0.8,
-                    confidence: 0.8, sourceApps: event.evidenceIDs.compactMap { sources[$0]?.sourceAppName }.memoryUnique(), evidenceIDs: event.evidenceIDs)
-            }
-        }
-        state.episodes.removeAll { calendar.isDate($0.day, inSameDayAs: day) }
-        state.episodes.append(contentsOf: episodes)
-        state.episodes.sort { $0.startedAt > $1.startedAt }
-        for file in files where file.events.contains(where: { calendar.isDate($0.date, inSameDayAs: day) }) {
-            let project = ProjectState(projectKey: file.id, displayName: file.title, currentState: file.latest.detail,
-                nextAction: file.latest.nextAction, blockers: file.latest.status == .blocked ? [file.latest.detail] : [],
-                evidenceIDs: file.evidenceIDs, confidence: 0.8, lastActiveAt: file.latest.date)
-            if let index = state.projects.firstIndex(where: { $0.projectKey == project.projectKey }) {
-                state.projects[index] = project
-            } else {
-                state.projects.append(project)
-            }
-        }
-    }
+    func projectDayFromMatters(_ day: Date) { state.projectDayFromMatters(day) }
 
     func applyIntelligenceState(_ consolidation: IntelligenceConsolidation, for day: Date) {
         let calendar = Calendar.current
@@ -1380,32 +1371,7 @@ public actor FileMemoryStore {
         return removed
     }
 
-    private func removeCaptureState(id: UUID) -> CaptureRecord? {
-        guard let index = state.captures.firstIndex(where: { $0.id == id }) else { return nil }
-        let removed = state.captures.remove(at: index)
-        state.matterCorrections.removeAll { $0.evidenceIDs.contains(id) }
-        // 总结正文可能包含这条记录的内容；删除来源时一并删除受影响总结，避免残留可识别文本。
-        state.dailySummaries.removeAll { $0.sourceCaptureIDs.contains(id) }
-        state.episodes.removeAll { $0.evidenceIDs.contains(id) }
-        state.insights.removeAll { $0.evidenceIDs.contains(id) }
-        state.userMemories.removeAll { $0.evidenceIDs.contains(id) }
-        state.learnedRoutines.removeAll { $0.evidenceIDs.contains(id) }
-        // 提醒正文同样可能包含来源记录中的可识别文本。删除来源时删除其派生提醒，
-        // 由用户手动创建且没有来源关联的提醒不受影响。
-        for i in state.reminders.indices where state.reminders[i].status == .planned && state.reminders[i].sourceCaptureIDs.contains(id) {
-            state.reminders[i].sourceCaptureIDs.removeAll { $0 == id }; state.reminders[i].analysis = nil
-        }
-        state.reminders.removeAll { $0.sourceCaptureIDs.contains(id) }
-        state.reminderLearningProfile.removeHistorySources([id])
-        state.messages.removeAll { $0.role == .assistant && $0.citations.contains(id) }
-        state.conversationSummary = nil
-        state.conversationSummaryCoveredMessageCount = 0
-        state.reminderDiscoveryCheckpoint.processedCaptureHashes.removeValue(forKey: id.uuidString)
-        state.projects = state.projects.compactMap { project in
-            return project.evidenceIDs.contains(id) ? nil : project
-        }
-        return removed
-    }
+    private func removeCaptureState(id: UUID) -> CaptureRecord? { state.removeCaptureState(id: id) }
 
     public func addMessage(_ message: ConversationMessage, inConversation expectedID: UUID? = nil) throws {
         if expectedID != nil { try Task.checkCancellation() }
@@ -1553,74 +1519,19 @@ public actor FileMemoryStore {
 
     public func prune(now: Date = .now) throws -> [String] {
         let previous = state
-        var paths = Set(state.memoryKnowledge.pendingScreenshotDeletions)
-        var expired: [UUID] = []
-        let durableIDs = Set(state.memoryKnowledge.claims.filter { $0.explicit && $0.usable(at: now) }.flatMap(\.sourceIDs))
-        for i in state.captures.indices {
-            let record = state.captures[i]
-            guard let rule = state.rules.first(where: { $0.template == record.eventTemplate }) else { continue }
-            let age = now.timeIntervalSince(record.createdAt)
-            if let path = record.imageRelativePath, age > Double(rule.retainImageDays) * 86_400 {
-                paths.insert(path)
-                state.captures[i].imageRelativePath = nil
-            }
-            guard record.keepTextIndefinitely != true, age > Double(rule.retainTextDays) * 86_400 else { continue }
-            if let directive = record.memoryDirective, state.memoryKnowledgeSettings.retainExplicitMemories,
-               directive.scope != .conversation, durableIDs.contains(record.id) {
-                if let path = record.imageRelativePath { paths.insert(path) }
-                // Keep only the user's explicit agreement and minimal attribution, not the original screen.
-                state.captures[i].ocrText = directive.content
-                state.captures[i].recognition = nil
-                state.captures[i].understanding = nil
-                state.captures[i].correctedText = nil
-                state.captures[i].summary = nil
-                state.captures[i].windowTitle = nil
-                state.captures[i].tags = []
-                state.captures[i].imageRelativePath = nil
-                state.captures[i].isMemoryEvidenceArchive = true
-            } else {
-                if let path = record.imageRelativePath { paths.insert(path) }
-                expired.append(record.id)
-            }
-        }
-        for id in expired { _ = removeCaptureState(id: id) }
-        if !expired.isEmpty || !paths.isEmpty { state.pendingRecoveryCleanup = true }
-        state.memoryKnowledge.pendingScreenshotDeletions = Array(paths).sorted()
+        var copy = state
+        guard try copy.pruneExpiredSources(now: now) else { return state.memoryKnowledge.pendingScreenshotDeletions }
+        state = copy
         do { try persist() } catch { state = previous; throw error }
-        return Array(paths).sorted()
+        return state.memoryKnowledge.pendingScreenshotDeletions
     }
 
     func persist(preservingReviewsFrom previous: RecallState? = nil) throws {
         do {
             chatAnalysis = nil
             guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
-            reconcileDailyReviewCheckpoints()
-            let liveIDs = Set(state.captures.map(\.id))
-            let excludedIDs = Set(state.captures.filter { state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id))
-            let invalidIDs = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
-            let feedbackIDs = Set(state.summaryFeedback.map(\.id))
-            var droppedIDs = Set(state.summaryFeedback.filter {
-                !Set($0.sourceVersions.keys).isSubset(of: liveIDs) || !Set($0.sourceVersions.keys).isDisjoint(with: excludedIDs.union(invalidIDs))
-                    || !Set($0.dependencyFeedbackIDs ?? []).isSubset(of: feedbackIDs)
-            }.map(\.id))
-            for _ in state.summaryFeedback.indices {
-                let more = Set(state.summaryFeedback.filter { !Set($0.dependencyFeedbackIDs ?? []).isDisjoint(with: droppedIDs) }.map(\.id))
-                if more.isSubset(of: droppedIDs) { break }; droppedIDs.formUnion(more)
-            }
-            let droppedFeedback = state.summaryFeedback.filter { droppedIDs.contains($0.id) }
-            if !droppedFeedback.isEmpty {
-                let touched = Set(droppedFeedback.flatMap { $0.resolution?.corrections.map(\.sourceID) ?? [] })
-                state.summaryFeedback.removeAll { entry in droppedFeedback.contains { $0.id == entry.id } }
-                invalidateMemoryOutputs(sourceIDs: touched)
-            }
-            reconcileCaptureUnderstanding()
-            state.topicGroups.removeAll { group in group.sourceIDs.map { Set($0).isDisjoint(with: liveIDs) } ?? false }
-            invalidateWeeklyReports()
-            let topicState = state
-            state.topicReviews.removeAll { !$0.sourcesUnchanged(in: topicState) }
-            applyKnowledge(MemoryKnowledgeEngine().reconcile(state, allowNew: false))
+            try state.reconcileForPersistence()
             if let previous { preserveReviewHistory(from: previous) }
-            state.memoryKnowledge.dependencies = MemoryKnowledgeEngine().dependencies(in: state, claims: state.memoryKnowledge.claims)
             try writeState()
             do {
                 if indexNeedsRebuild { try intelligenceIndex?.replace(with: state) }
@@ -1686,6 +1597,7 @@ public actor FileMemoryStore {
             try data.write(to: url, options: .atomic)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         }
+        archiveRevision &+= 1
     }
 
     @discardableResult
@@ -1699,6 +1611,7 @@ public actor FileMemoryStore {
             backupPending = try !ArchiveReliability.write(data, storage: storage, expectedDigest: lastDiskDigest)
             lastDiskDigest = ArchiveReliability.digest(data)
             committedState = state
+            archiveRevision &+= 1
             return ArchiveWriteMetrics(encodeMilliseconds: encodeMs, writeMilliseconds: Int(Date.now.timeIntervalSince(writing) * 1000), bytes: data.count)
         } catch {
             if let committedState { state = committedState }

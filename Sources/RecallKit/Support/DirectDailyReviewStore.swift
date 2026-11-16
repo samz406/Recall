@@ -164,25 +164,7 @@ extension FileMemoryStore {
         state.dailyReviewCheckpoints = Array(state.dailyReviewCheckpoints.suffix(128))
         do { try persistReviewState() } catch { state = previous; throw error }
     }
-    func reconcileDailyReviewCheckpoints(now: Date = .now) {
-        let liveSummaries = Set(state.dailySummaries.map(\.id))
-        state.pendingDailyReviewMaintenance.removeAll { !liveSummaries.contains($0) }
-        state.pendingPersonaRefresh.removeAll { !liveSummaries.contains($0) }
-        guard state.privacy.cloudUseEnabled else { state.dailyReviewCheckpoints = []; return }
-        guard !state.dailyReviewCheckpoints.isEmpty else { return }
-        let configuration = DailyReviewInput.configurationVersion(state.llmConfiguration)
-        let revision = SummaryFeedbackLearning.revision(in: state)
-        let tracked = Set(state.dailyReviewCheckpoints.flatMap { $0.sourceVersions.keys })
-        let excluded = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
-        let versions = Dictionary(uniqueKeysWithValues: state.captures.filter {
-            tracked.contains($0.id) && !excluded.contains($0.id) && !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "")
-        }.map { ($0.id, CaptureUnderstandingEngine.sourceVersion($0, in: state)) })
-        state.dailyReviewCheckpoints.removeAll { checkpoint in
-            checkpoint.configurationVersion != configuration || checkpoint.feedbackRevision != revision
-                || now.timeIntervalSince(checkpoint.createdAt) > 7 * 86_400
-                || !checkpoint.sourceVersions.allSatisfy { versions[$0.key] == $0.value }
-        }
-    }
+    func reconcileDailyReviewCheckpoints(now: Date = .now) { state.reconcileDailyReviewCheckpoints(now: now) }
     /// Drained by the existing local maintenance cycle, not the user's model wait.
     func finishPendingDailyReviewMaintenance() {
         guard let id = state.pendingDailyReviewMaintenance.first else { return }

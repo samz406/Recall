@@ -131,7 +131,7 @@ extension FileMemoryStore {
     public func finishScreenshotCleanup(paths: [String]) throws {
         let finished = Set(paths)
         state.memoryKnowledge.pendingScreenshotDeletions.removeAll { finished.contains($0) }
-        try persist()
+        try persistReviewState()
     }
 }
 

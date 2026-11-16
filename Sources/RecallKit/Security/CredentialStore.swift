@@ -21,7 +21,8 @@ public protocol CredentialStore: Sendable {
 /// A future data-protection Keychain migration requires a signed/provisioned App and CLI.
 public struct KeychainCredentialStore: CredentialStore {
     public static let shared = KeychainCredentialStore()
-    public init() {}
+    private let interactionAllowed: Bool
+    public init(interactionAllowed: Bool = true) { self.interactionAllowed = interactionAllowed }
     private func query(_ id: UUID) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: "im.recall.app.model-credentials",
@@ -29,6 +30,7 @@ public struct KeychainCredentialStore: CredentialStore {
     }
     public func read(_ id: UUID) throws -> String? {
         var q = query(id); q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
+        if !interactionAllowed { q[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail }
         var result: CFTypeRef?
         let status = SecItemCopyMatching(q as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
