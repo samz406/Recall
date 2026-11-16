@@ -10,7 +10,7 @@ public struct PeriodReviewOutputFailure: LocalizedError, Sendable {
         "The model did not return the required review fields. The previous review is preserved.") }
     public var detail: String { "review.output.\(reason.rawValue) · \(field)" }
     var repairInstruction: String {
-        "JSON 校验位置：\(field)，错误：\(reason.rawValue)。仅返回一个完整对象；overview 是字符串，items 和 coverage 是数组；每项 section/title/detail 是字符串、evidence 是对象数组，每条 evidence 都有字符串 id 和逐字 quote；coverage 每条都有字符串 id/disposition/category。不得省略必需字段，不要返回多个版本。"
+        "JSON 校验位置：\(field)，错误：\(reason.rawValue)。仅返回一个完整对象；overview 是字符串，items 和 coverage 是数组；每项 section/title/detail 是字符串、evidence 是对象数组，每条 evidence 都有字符串 id 和 quoteRef（title/detail/q1/q2/…）或逐字 quote；coverage 每条都有字符串 id/disposition/category。不得省略必需字段，不要返回多个版本。"
     }
 }
 
@@ -69,7 +69,7 @@ extension PeriodReviewFromDaily {
             case .dataCorrupted(let context): path = context.codingPath; reason = .syntax
             @unknown default: path = []; reason = .syntax
             }
-            let allowed = Set(["overview", "items", "section", "title", "detail", "evidence", "id", "quote", "coverage", "disposition", "category", "reason"])
+            let allowed = Set(["overview", "items", "section", "title", "detail", "evidence", "id", "quote", "quoteRef", "coverage", "disposition", "category", "reason"])
             let field = path.map { key in key.intValue.map { "[\($0)]" } ?? (allowed.contains(key.stringValue) ? key.stringValue : "field") }.joined(separator: ".")
             throw PeriodReviewOutputFailure(reason: reason, field: field.isEmpty ? "root" : field)
         }
