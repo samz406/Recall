@@ -1,6 +1,13 @@
 import Foundation
 
 extension FileMemoryStore {
+    /// Queue time is measured by the caller; this measures only work executing inside the store.
+    public func validateDailyDerivedReviewMeasured(_ expected: RecallState) throws -> Int {
+        let started = Date.now
+        try validateDailyDerivedReview(expected)
+        return Int(Date.now.timeIntervalSince(started) * 1000)
+    }
+
     /// Explicit generation prepares only this range. Pausing automatic processing does not
     /// prevent a user-requested review; the cloud permission always applies to every call.
     public func prepareModelReview(period: ReviewPeriod, sourceIDs: Set<UUID>? = nil,
@@ -114,6 +121,8 @@ extension FileMemoryStore {
               state.llmConfiguration == expected.llmConfiguration,
               state.matterCorrections == expected.matterCorrections,
               state.memoryKnowledgeSettings == expected.memoryKnowledgeSettings,
+              state.personaProfileRevision == expected.personaProfileRevision,
+              state.dismissedPersonaDimensions == expected.dismissedPersonaDimensions,
               state.memoryKnowledge.claims.filter({ $0.kind.isPersonal && $0.usable() }) == expected.memoryKnowledge.claims.filter({ $0.kind.isPersonal && $0.usable() }),
               SummaryFeedbackLearning.revision(in: state) == SummaryFeedbackLearning.revision(in: expected),
               state.dailySummaries == expected.dailySummaries

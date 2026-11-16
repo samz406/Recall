@@ -19,6 +19,9 @@ extension RecallLayoutPreviews {
         func isWaiting() -> Bool { waiting }
         func release() { waiting = false; waiter?.resume(); waiter = nil }
         func answer(to request: LLMRequest) async throws -> LLMAnswer {
+            // The automatic persona refresh triggered after a successful daily review reuses whatever
+            // responder the app currently has; answer it without touching the review call accounting below.
+            if request.purpose == .personaInsight { return LLMAnswer(content: "{\"traits\":[]}", citedCaptureIDs: []) }
             calls += 1
             if calls <= invalidResponses { return LLMAnswer(content: "{broken", citedCaptureIDs: []) }
             guard request.purpose == .reviewSynthesis, let context = request.context.first,

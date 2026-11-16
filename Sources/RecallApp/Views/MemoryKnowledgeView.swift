@@ -17,6 +17,9 @@ struct MemoryKnowledgeView: View {
     @State private var source: CaptureRecord?
     @State private var forgetting: MemoryClaim?
     @State private var showsDiagnostics = false
+    @State private var showsPersonaEvidence = false
+    @State private var confirmsPersonaRebuild = false
+    @State private var confirmsPersonaClear = false
 
     private var active: [MemoryClaim] {
         model.state.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.scope != .conversation && $0.usable() }
@@ -27,7 +30,7 @@ struct MemoryKnowledgeView: View {
                 && (query.isEmpty || ($0.title + $0.content).localizedCaseInsensitiveContains(query))
         }.sorted { $0.updatedAt > $1.updatedAt }
     }
-    var body: some View {
+    private var content: some View {
         LazyVStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .top) {
                 Text(RecallLocalization.both("让 Recall 记住你的背景和习惯，减少反复交代。", "Help Recall remember your background and preferences.")).foregroundStyle(RecallPalette.secondary)
@@ -37,6 +40,7 @@ struct MemoryKnowledgeView: View {
             if !model.state.memoryKnowledgeSettings.referencesEnabled {
                 Text(RecallLocalization.both("当前已暂停参考个人信息，可在设置 → 记忆整理中恢复。", "Personal context is paused. Resume it in Settings → Memory.")).font(.caption).foregroundStyle(RecallPalette.secondary)
             }
+            personaSection
             HStack(alignment: .top, spacing: 12) {
                 TextField(RecallLocalization.both("希望 Recall 以后记住什么？", "What should Recall remember for later?"), text: $draft, axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.plain).onSubmit { remember() }
@@ -91,6 +95,9 @@ struct MemoryKnowledgeView: View {
             }
             if rows.count > visibleCount { Button(RecallLocalization.text("再显示 20 条")) { visibleCount += 20 } }
         }
+    }
+    var body: some View {
+        content
         .onChange(of: query) { _, _ in visibleCount = 20 }
         .onChange(of: category) { _, _ in visibleCount = 20 }
         .onAppear { if model.knowledgeToOpen != nil { includeHistory = true } }
@@ -98,16 +105,57 @@ struct MemoryKnowledgeView: View {
         .sheet(item: $editing) { editor($0) }
         .sheet(item: $aliases) { entity in MemoryAliasEditor(entity: entity) { await model.saveMemoryAliases(entity: entity, text: $0) } }
         .sheet(item: $source) { CaptureDetailSheet(capture: $0).environmentObject(model) }
+        .background(personaPresentations)
         .sheet(isPresented: $showsDiagnostics) { MemoryOrganizationDetails().environmentObject(model) }
         .confirmationDialog(RecallLocalization.both("不再参考这条记忆？", "Stop using this memory?"), isPresented: Binding(get: { forgetting != nil }, set: { if !$0 { forgetting = nil } }), presenting: forgetting) { target in
             Button(RecallLocalization.both("不再记住", "Forget"), role: .destructive) { model.retireMemory(target); forgetting = nil }
         } message: { _ in Text(RecallLocalization.both("以后不再按这条信息回答。原始记录与已有回顾保留。", "Future answers will stop using this memory. Source records and saved reviews are kept.")) }
     }
+    private var personaPresentations: some View {
+        Color.clear.frame(width: 0, height: 0)
+        .sheet(isPresented: $showsPersonaEvidence) { PersonaEvidenceSheet().environmentObject(model) }
+        .confirmationDialog(RecallLocalization.both("重新分析最近30天的回顾？", "Reanalyze the reviews from the last 30 days?"), isPresented: $confirmsPersonaRebuild) {
+            Button(RecallLocalization.both("清空观察并重新分析", "Clear observations and reanalyze")) { Task { await model.updatePersonaProfile(.rebuild) } }
+        } message: { Text(RecallLocalization.both("会重置行为观察和纠正记录，按当前有效来源重新分析；需要调用已连接的模型。", "This resets observations and corrections, then analyzes current valid reviews using your connected model.")) }
+        .confirmationDialog(RecallLocalization.both("清空行为观察并停止分析？", "Clear observations and stop analysis?"), isPresented: $confirmsPersonaClear) {
+            Button(RecallLocalization.both("清空并停止", "Clear and stop"), role: .destructive) { Task { await model.updatePersonaProfile(.clear) } }
+        } message: { Text(RecallLocalization.both("清除自动行为观察、形象及其历史。需要时可重新开启分析。", "Removes inferred observations, labels and their history. You can enable analysis again later.")) }
+    }
     private var options: some View {
         Menu {
             Toggle(RecallLocalization.both("显示已停止使用的内容", "Show inactive memories"), isOn: $includeHistory)
             Button(RecallLocalization.both("查看整理详情", "Organization details")) { showsDiagnostics = true }
+            Section(RecallLocalization.both("近期行为观察", "Recent behavior observations")) {
+                Toggle(RecallLocalization.both("自动分析每日回顾", "Analyze daily reviews"), isOn: Binding(
+                    get: { model.state.personaProfileSettings.enabled },
+                    set: { value in Task { await model.updatePersonaProfile(.enabled(value)) } }))
+                Toggle(RecallLocalization.both("用于回答和建议", "Use in answers and suggestions"), isOn: Binding(
+                    get: { model.state.personaProfileSettings.personalizesResponses },
+                    set: { value in Task { await model.updatePersonaProfile(.personalizes(value)) } }))
+                Button(RecallLocalization.both("查看观察与依据", "Review observations and evidence")) { showsPersonaEvidence = true }
+                if model.state.personaRefreshJobs.contains(where: { $0.status == .failed }) {
+                    Button(RecallLocalization.both("重试未完成的分析", "Retry failed analysis")) { Task { await model.updatePersonaProfile(.retry) } }
+                }
+                if !model.state.dismissedPersonaArchetypeIDs.isEmpty {
+                    Button(RecallLocalization.both("恢复被收起的形象", "Restore hidden labels")) { Task { await model.updatePersonaProfile(.restoreMatches) } }
+                }
+                Button(RecallLocalization.both("重新分析最近30天的回顾…", "Reanalyze reviews from the last 30 days…")) { confirmsPersonaRebuild = true }
+                    .disabled(!model.state.privacy.cloudUseEnabled || !model.state.llmConfiguration.hasCredential)
+                Button(RecallLocalization.both("清空观察并停止分析…", "Clear observations and stop…"), role: .destructive) { confirmsPersonaClear = true }
+            }.disabled(model.isUpdatingPersonaProfile)
+            if !model.state.dismissedPersonaDimensions.isEmpty {
+                Menu(RecallLocalization.both("恢复已停用的行为判断", "Restore stopped trait judgments")) {
+                    ForEach(model.state.dismissedPersonaDimensions, id: \.self) { dimension in
+                        Button(RecallLocalization.text(dimension.title)) { model.resumePersonaTrait(dimension) }
+                    }
+                }
+            }
         } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel(RecallLocalization.both("关于我的更多操作", "More personal memory actions"))
+    }
+    private var personaSection: some View {
+        PersonaSummaryView(state: model.state, processing: model.isRefreshingPersonaProfile,
+            onEvidence: { showsPersonaEvidence = true }, onDismissMatch: { model.dismissPersonaMatch() },
+            onRetry: { Task { await model.updatePersonaProfile(.retry) } })
     }
     private func editor(_ claim: MemoryClaim?) -> some View {
         MemoryAgreementEditor(claim: claim, topics: model.state.memoryKnowledge.entities.filter { $0.kind == "topic" }) { content, scope, scopeID, until in
@@ -304,3 +352,4 @@ struct MemoryAliasEditor: View {
         }.padding(28).frame(width: 560).onAppear { text = entity.aliases.joined(separator: "，") }
     }
 }
+

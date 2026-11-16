@@ -13,9 +13,16 @@ extension RecallLayoutPreviews {
         let messages = model.state.messages
         model.startTopicConversation(topic.id)
         guard model.chatScope.topicID == topic.id, model.openAskRequested,
-              model.chatScope.applying(to: model.state).captures.contains(where: { $0.id == note.id }),
-              model.state.messages == messages, !model.isThinking else {
-            throw MemoryExperienceFailure(errorDescription: "继续问未携带主题，或自动发送了固定问题")
+              model.chatScope.applying(to: model.state).captures.contains(where: { $0.id == note.id }) else {
+            throw MemoryExperienceFailure(errorDescription: "继续问未携带主题")
+        }
+        for _ in 0..<2_000 {
+            if !model.isThinking && model.typingMessageID == nil { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard model.state.messages.count >= messages.count + 2, !model.isThinking, model.typingMessageID == nil,
+              model.state.messages.last(where: { $0.role == .user })?.content.contains(topic.title) == true else {
+            throw MemoryExperienceFailure(errorDescription: "继续问没有自动发起带主题的提问")
         }
         guard await model.completeMatter(topic), model.matterFiles.first?.latest.detail == topic.latest.detail,
               TopicReading(file: model.matterFiles[0]).overview == topic.resumeText else {

@@ -259,29 +259,5 @@ extension FileMemoryStore {
 
     /// Called on every mutation, including feedback, source deletion, expiry and privacy changes.
     /// No model job can keep a quote alive after its source has gone away.
-    func reconcileCaptureUnderstanding() {
-        let live = Set(state.captures.filter { CaptureUnderstandingEngine.eligible($0, in: state) }.map(\.id))
-        let referenced = Set(state.understandingJobs.flatMap { $0.sourceVersions.keys })
-            .union(state.captures.compactMap(\.understanding).flatMap { $0.sourceVersions.keys })
-        let signatures = Dictionary(uniqueKeysWithValues: state.captures.filter { live.contains($0.id) && referenced.contains($0.id) }
-            .map { ($0.id, CaptureUnderstandingEngine.sourceVersion($0, in: state)) })
-        var invalid: Set<UUID> = []
-        for i in state.captures.indices {
-            if let result = state.captures[i].understanding, result.processorVersion != CaptureUnderstandingEngine.version || result.sourceVersions.isEmpty || !result.sourceVersions.allSatisfy({ signatures[$0.key] == $0.value }) {
-                invalid.insert(state.captures[i].id); state.captures[i].understanding = nil
-            }
-        }
-        state.understandingJobs.removeAll { !live.contains($0.captureID) }
-        for i in state.understandingJobs.indices {
-            let job = state.understandingJobs[i]
-            if invalid.contains(job.captureID) || (!job.sourceVersions.isEmpty && !job.sourceVersions.allSatisfy({ signatures[$0.key] == $0.value })) {
-                state.understandingJobs[i] = CaptureUnderstandingJob(captureID: job.captureID)
-            }
-        }
-        if !invalid.isEmpty {
-            invalidateMemoryOutputs(sourceIDs: invalid)
-            state.reminderDiscoveryCheckpoint = ReminderDiscoveryCheckpoint()
-            state.reminders.removeAll { $0.origin == .discovered && $0.status == .proposed && !Set($0.sourceCaptureIDs).isDisjoint(with: invalid) }
-        }
-    }
+    func reconcileCaptureUnderstanding() { state.reconcileCaptureUnderstanding() }
 }

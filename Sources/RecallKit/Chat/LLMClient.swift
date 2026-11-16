@@ -117,7 +117,7 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
 }
 
 public enum LLMRequestPurpose: Equatable, Sendable {
-    case chat, chatPlanning, answerVerification, dailySummary, reviewSynthesis, reviewAudit, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup, summaryFeedback, summaryFeedbackAudit, captureUnderstanding, captureUnderstandingAudit, reminderDiscovery, reminderDiscoveryAudit
+    case chat, chatPlanning, answerVerification, dailySummary, reviewSynthesis, reviewAudit, weeklySelection, weeklyComposition, weeklyAudit, memoryLookup, summaryFeedback, summaryFeedbackAudit, captureUnderstanding, captureUnderstandingAudit, reminderDiscovery, reminderDiscoveryAudit, personaInsight
 }
 
 public struct LLMRequest: Sendable {
@@ -404,6 +404,16 @@ public struct CompatibleLLM: LLMResponding {
     }
 
     public func answer(to request: LLMRequest) async throws -> LLMAnswer {
+        if request.purpose == .personaInsight {
+            return try await ModelRequestPriority.shared.backgroundAnswer { try await BackgroundAdapter(client: self).answerCancellably(to: request) }
+        }
+        return try await ModelRequestPriority.shared.foregroundAnswer { try await self.performAnswer(to: request) }
+    }
+    private struct BackgroundAdapter: LLMResponding {
+        let client: CompatibleLLM
+        func answer(to request: LLMRequest) async throws -> LLMAnswer { try await client.performAnswer(to: request) }
+    }
+    private func performAnswer(to request: LLMRequest) async throws -> LLMAnswer {
         try Task.checkCancellation()
         switch configuration.provider {
         case .openAICompatible:
@@ -416,6 +426,10 @@ public struct CompatibleLLM: LLMResponding {
     }
 
     public func answerStream(to request: LLMRequest, onText: @escaping @Sendable (String) async -> Void) async throws -> LLMAnswer {
+        return try await ModelRequestPriority.shared.foregroundAnswer { try await self.performStream(to: request, onText: onText) }
+    }
+
+    private func performStream(to request: LLMRequest, onText: @escaping @Sendable (String) async -> Void) async throws -> LLMAnswer {
         try Task.checkCancellation()
         switch configuration.provider {
         case .openAICompatible:
@@ -617,6 +631,7 @@ public struct CompatibleLLM: LLMResponding {
             case .summaryFeedback: role = "按用户反馈提出有限的回顾修订"
             case .summaryFeedbackAudit: role = "独立核验回顾反馈修订"
             case .chatPlanning: role = "决定要读取哪些本地记忆，或在材料足够时直接回答"
+            case .personaInsight: role = "从当天已生成的每日回顾文本中提炼稳定行为倾向，不做心理诊断"
             default: role = "根据模板整理周回顾正文"
             }
             let evidence: String
