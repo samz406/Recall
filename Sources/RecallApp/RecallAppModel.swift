@@ -448,18 +448,19 @@ final class RecallAppModel: ObservableObject {
             do {
                 let modelStore = store
                 let preparationStarted = Date.now
+                let configuration = state.llmConfiguration
                 let responder: any LLMResponding
                 if let injected = dailyReviewResponderOverride { responder = injected }
                 else {
                     guard state.privacy.cloudUseEnabled, state.llmConfiguration.provider != .localOnly else { throw ModelReviewError.unavailable }
                     updateReviewTask(taskID, progress: ReviewGenerationProgress(.preparing, detail: "正在读取模型连接。"))
-                    let configuration = state.llmConfiguration
                     responder = try await LocalOperation.run(stage: "读取模型连接") {
                         try ModelResponderFactory.make(configuration: configuration, credentials: KeychainCredentialStore(interactionAllowed: false))
                     }
                 }
                 updateReviewTask(taskID, progress: ReviewGenerationProgress(.preparing, detail: "正在读取所选日期的已保存回顾。"))
                 let dailyState = try await LocalOperation.run(stage: "读取每日回顾") { await modelStore.snapshot() }
+                guard dailyReviewResponderOverride != nil || dailyState.llmConfiguration == configuration else { throw ModelReviewError.changed }
                 let preparationWaitMs = Int(Date.now.timeIntervalSince(preparationStarted) * 1000)
                 try Task.checkCancellation()
                 let topicKeys: Set<String>? = scope.useSelectedTopics
