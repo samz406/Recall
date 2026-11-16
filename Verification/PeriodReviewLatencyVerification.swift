@@ -98,7 +98,7 @@ enum PeriodReviewLatencyVerification {
         let maintenance = Task { try await store.organizeMemoryInBackground(force: true, onPreparing: { await gate.park() }) }
         await gate.wait()
         var settings = (await store.snapshot()).memoryKnowledgeSettings
-        settings.referencesEnabled = false
+        settings.referenceInChat = false
         try await store.updateMemoryKnowledgeSettings(settings)
         await gate.release()
         let applied = try await maintenance.value

@@ -552,7 +552,7 @@ public actor FileMemoryStore {
     /// Reconcile a value copy on a worker. Actor reads and safety checks remain available
     /// throughout the slow work. A concurrent write makes this result obsolete, never authoritative.
     @discardableResult
-    public func organizeMemoryInBackground(force: Bool = false, now: Date = .now,
+    public func organizeMemoryInBackground(force: Bool = false, now: Date = .now, pruningExpired: Bool = false,
         onPreparing: (@Sendable () async -> Void)? = nil) async throws -> Bool {
         try Task.checkCancellation()
         guard !backgroundMaintenanceInFlight else { return false }
@@ -563,13 +563,14 @@ public actor FileMemoryStore {
             await onPreparing?()
             try Task.checkCancellation()
             var copy = baseline
+            if pruningExpired { _ = try copy.pruneExpiredSources(now: now) }
             if migrating { copy.migrateLegacyWeeklyVersions() }
             try Task.checkCancellation()
             if let id = copy.pendingDailyReviewMaintenance.first {
                 copy.pendingDailyReviewMaintenance.removeFirst()
                 if let summary = copy.dailySummaries.first(where: { $0.id == id }) { copy.projectDayFromMatters(summary.day) }
             }
-            try copy.reconcileForPersistence(force: force, now: now, allowNew: true)
+            try copy.reconcileForPersistence(force: force, now: now, allowNew: true, cancellable: true)
             try Task.checkCancellation()
             return copy
         }
@@ -1364,32 +1365,7 @@ public actor FileMemoryStore {
         return removed
     }
 
-    private func removeCaptureState(id: UUID) -> CaptureRecord? {
-        guard let index = state.captures.firstIndex(where: { $0.id == id }) else { return nil }
-        let removed = state.captures.remove(at: index)
-        state.matterCorrections.removeAll { $0.evidenceIDs.contains(id) }
-        // 总结正文可能包含这条记录的内容；删除来源时一并删除受影响总结，避免残留可识别文本。
-        state.dailySummaries.removeAll { $0.sourceCaptureIDs.contains(id) }
-        state.episodes.removeAll { $0.evidenceIDs.contains(id) }
-        state.insights.removeAll { $0.evidenceIDs.contains(id) }
-        state.userMemories.removeAll { $0.evidenceIDs.contains(id) }
-        state.learnedRoutines.removeAll { $0.evidenceIDs.contains(id) }
-        // 提醒正文同样可能包含来源记录中的可识别文本。删除来源时删除其派生提醒，
-        // 由用户手动创建且没有来源关联的提醒不受影响。
-        for i in state.reminders.indices where state.reminders[i].status == .planned && state.reminders[i].sourceCaptureIDs.contains(id) {
-            state.reminders[i].sourceCaptureIDs.removeAll { $0 == id }; state.reminders[i].analysis = nil
-        }
-        state.reminders.removeAll { $0.sourceCaptureIDs.contains(id) }
-        state.reminderLearningProfile.removeHistorySources([id])
-        state.messages.removeAll { $0.role == .assistant && $0.citations.contains(id) }
-        state.conversationSummary = nil
-        state.conversationSummaryCoveredMessageCount = 0
-        state.reminderDiscoveryCheckpoint.processedCaptureHashes.removeValue(forKey: id.uuidString)
-        state.projects = state.projects.compactMap { project in
-            return project.evidenceIDs.contains(id) ? nil : project
-        }
-        return removed
-    }
+    private func removeCaptureState(id: UUID) -> CaptureRecord? { state.removeCaptureState(id: id) }
 
     public func addMessage(_ message: ConversationMessage, inConversation expectedID: UUID? = nil) throws {
         if expectedID != nil { try Task.checkCancellation() }
@@ -1536,50 +1512,12 @@ public actor FileMemoryStore {
     private static let recentCaptureWindow = 64
 
     public func prune(now: Date = .now) throws -> [String] {
-        try Task.checkCancellation()
         let previous = state
-        var changed = false
-        var paths = Set(state.memoryKnowledge.pendingScreenshotDeletions)
-        var expired: [UUID] = []
-        let durableIDs = Set(state.memoryKnowledge.claims.filter { $0.explicit && $0.usable(at: now) }.flatMap(\.sourceIDs))
-        for i in state.captures.indices {
-            let record = state.captures[i]
-            guard let rule = state.rules.first(where: { $0.template == record.eventTemplate }) else { continue }
-            let age = now.timeIntervalSince(record.createdAt)
-            if let path = record.imageRelativePath, age > Double(rule.retainImageDays) * 86_400 {
-                paths.insert(path)
-                state.captures[i].imageRelativePath = nil
-                changed = true
-            }
-            guard record.keepTextIndefinitely != true, age > Double(rule.retainTextDays) * 86_400 else { continue }
-            if let directive = record.memoryDirective, state.memoryKnowledgeSettings.retainExplicitMemories,
-               directive.scope != .conversation, durableIDs.contains(record.id) {
-                if let path = record.imageRelativePath { paths.insert(path) }
-                // Keep only the user's explicit agreement and minimal attribution, not the original screen.
-                state.captures[i].ocrText = directive.content
-                state.captures[i].recognition = nil
-                state.captures[i].understanding = nil
-                state.captures[i].correctedText = nil
-                state.captures[i].summary = nil
-                state.captures[i].windowTitle = nil
-                state.captures[i].tags = []
-                state.captures[i].imageRelativePath = nil
-                state.captures[i].isMemoryEvidenceArchive = true
-                changed = true
-            } else {
-                if let path = record.imageRelativePath { paths.insert(path) }
-                expired.append(record.id)
-            }
-        }
-        // Idle retention used to run the complete graph/index pipeline on every timer tick.
-        guard changed || !expired.isEmpty || paths != Set(state.memoryKnowledge.pendingScreenshotDeletions) else {
-            return Array(paths).sorted()
-        }
-        for id in expired { _ = removeCaptureState(id: id) }
-        if !expired.isEmpty || !paths.isEmpty { state.pendingRecoveryCleanup = true }
-        state.memoryKnowledge.pendingScreenshotDeletions = Array(paths).sorted()
+        var copy = state
+        guard try copy.pruneExpiredSources(now: now) else { return state.memoryKnowledge.pendingScreenshotDeletions }
+        state = copy
         do { try persist() } catch { state = previous; throw error }
-        return Array(paths).sorted()
+        return state.memoryKnowledge.pendingScreenshotDeletions
     }
 
     func persist(preservingReviewsFrom previous: RecallState? = nil) throws {

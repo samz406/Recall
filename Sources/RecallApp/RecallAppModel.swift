@@ -300,9 +300,9 @@ final class RecallAppModel: ObservableObject {
         memoryMaintenanceAfter = Date.now.addingTimeInterval(5 * 60)
         do {
             let before = await store.snapshot()
-            guard try await store.organizeMemoryInBackground(force: force) else { return }
+            guard try await store.organizeMemoryInBackground(force: force, pruningExpired: true) else { return }
             try Task.checkCancellation()
-            let paths = try await store.prune()
+            let paths = (await store.snapshot()).memoryKnowledge.pendingScreenshotDeletions
             _ = try await store.queueOrphanScreenshots()
             _ = try await store.retryPendingFileCleanup()
             var cleaned: [String] = []
@@ -713,7 +713,7 @@ final class RecallAppModel: ObservableObject {
             do {
                 if reorganize {
                     // Rebuild the persisted fact ledger, not merely its unchanged UI projection.
-                    try await store.organizeMemory(force: true)
+                    _ = try await store.organizeMemoryInBackground(force: true)
                     try Task.checkCancellation()
                     state = await store.snapshot()
                 }

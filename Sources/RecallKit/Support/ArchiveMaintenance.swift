@@ -2,7 +2,7 @@ import Foundation
 
 // Pure derivation on a value snapshot; no disk access, actor waits or model calls.
 extension RecallState {
-    mutating func reconcileForPersistence(force: Bool = false, now: Date = .now, allowNew: Bool = false) throws {
+    mutating func reconcileForPersistence(force: Bool = false, now: Date = .now, allowNew: Bool = false, cancellable: Bool = false) throws {
         reconcileDailyReviewCheckpoints()
         let liveIDs = Set(self.captures.map(\.id))
         let excludedIDs = Set(self.captures.filter { self.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id))
@@ -22,17 +22,17 @@ extension RecallState {
             self.summaryFeedback.removeAll { entry in droppedFeedback.contains { $0.id == entry.id } }
             invalidateMemoryOutputs(sourceIDs: touched)
         }
-        try Task.checkCancellation()
+        if cancellable { try Task.checkCancellation() }
         reconcileCaptureUnderstanding()
         self.topicGroups.removeAll { group in group.sourceIDs.map { Set($0).isDisjoint(with: liveIDs) } ?? false }
         let knowledge = allowNew ? MemoryKnowledgeEngine().reconcile(self, force: force, now: now) : nil
-        try Task.checkCancellation()
+        if cancellable { try Task.checkCancellation() }
         invalidateWeeklyReports(knowledge: knowledge)
         let topicState = self
         self.topicReviews.removeAll { !$0.sourcesUnchanged(in: topicState) }
-        try Task.checkCancellation()
+        if cancellable { try Task.checkCancellation() }
         applyReconciledKnowledge(knowledge ?? MemoryKnowledgeEngine().reconcile(self, force: force, now: now, allowNew: allowNew))
-        try Task.checkCancellation()
+        if cancellable { try Task.checkCancellation() }
         self.memoryKnowledge.dependencies = MemoryKnowledgeEngine().dependencies(in: self, claims: self.memoryKnowledge.claims)
     }
 
@@ -151,4 +151,77 @@ extension RecallState {
         }
     }
 
+
+    mutating func removeCaptureState(id: UUID) -> CaptureRecord? {
+        guard let index = self.captures.firstIndex(where: { $0.id == id }) else { return nil }
+        let removed = self.captures.remove(at: index)
+        self.matterCorrections.removeAll { $0.evidenceIDs.contains(id) }
+        // 总结正文可能包含这条记录的内容；删除来源时一并删除受影响总结，避免残留可识别文本。
+        self.dailySummaries.removeAll { $0.sourceCaptureIDs.contains(id) }
+        self.episodes.removeAll { $0.evidenceIDs.contains(id) }
+        self.insights.removeAll { $0.evidenceIDs.contains(id) }
+        self.userMemories.removeAll { $0.evidenceIDs.contains(id) }
+        self.learnedRoutines.removeAll { $0.evidenceIDs.contains(id) }
+        // 提醒正文同样可能包含来源记录中的可识别文本。删除来源时删除其派生提醒，
+        // 由用户手动创建且没有来源关联的提醒不受影响。
+        for i in self.reminders.indices where self.reminders[i].status == .planned && self.reminders[i].sourceCaptureIDs.contains(id) {
+            self.reminders[i].sourceCaptureIDs.removeAll { $0 == id }; self.reminders[i].analysis = nil
+        }
+        self.reminders.removeAll { $0.sourceCaptureIDs.contains(id) }
+        self.reminderLearningProfile.removeHistorySources([id])
+        self.messages.removeAll { $0.role == .assistant && $0.citations.contains(id) }
+        self.conversationSummary = nil
+        self.conversationSummaryCoveredMessageCount = 0
+        self.reminderDiscoveryCheckpoint.processedCaptureHashes.removeValue(forKey: id.uuidString)
+        self.projects = self.projects.compactMap { project in
+            return project.evidenceIDs.contains(id) ? nil : project
+        }
+        return removed
+    }
+
+    mutating func pruneExpiredSources(now: Date) throws -> Bool {
+        try Task.checkCancellation()
+        var changed = false
+        var paths = Set(self.memoryKnowledge.pendingScreenshotDeletions)
+        var expired: [UUID] = []
+        let durableIDs = Set(self.memoryKnowledge.claims.filter { $0.explicit && $0.usable(at: now) }.flatMap(\.sourceIDs))
+        for i in self.captures.indices {
+            let record = self.captures[i]
+            guard let rule = self.rules.first(where: { $0.template == record.eventTemplate }) else { continue }
+            let age = now.timeIntervalSince(record.createdAt)
+            if let path = record.imageRelativePath, age > Double(rule.retainImageDays) * 86_400 {
+                paths.insert(path)
+                self.captures[i].imageRelativePath = nil
+                changed = true
+            }
+            guard record.keepTextIndefinitely != true, age > Double(rule.retainTextDays) * 86_400 else { continue }
+            if let directive = record.memoryDirective, self.memoryKnowledgeSettings.retainExplicitMemories,
+               directive.scope != .conversation, durableIDs.contains(record.id) {
+                if let path = record.imageRelativePath { paths.insert(path) }
+                if record.isMemoryEvidenceArchive == true && record.ocrText == directive.content { continue }
+                // Keep only the user's explicit agreement and minimal attribution, not the original screen.
+                self.captures[i].ocrText = directive.content
+                self.captures[i].recognition = nil
+                self.captures[i].understanding = nil
+                self.captures[i].correctedText = nil
+                self.captures[i].summary = nil
+                self.captures[i].windowTitle = nil
+                self.captures[i].tags = []
+                self.captures[i].imageRelativePath = nil
+                self.captures[i].isMemoryEvidenceArchive = true
+                changed = true
+            } else {
+                if let path = record.imageRelativePath { paths.insert(path) }
+                expired.append(record.id)
+            }
+        }
+        // Idle retention used to run the complete graph/index pipeline on every timer tick.
+        guard changed || !expired.isEmpty || paths != Set(self.memoryKnowledge.pendingScreenshotDeletions) else {
+            return false
+        }
+        for id in expired { try Task.checkCancellation(); _ = removeCaptureState(id: id) }
+        if !expired.isEmpty || !paths.isEmpty { self.pendingRecoveryCleanup = true }
+        self.memoryKnowledge.pendingScreenshotDeletions = Array(paths).sorted()
+        return true
+    }
 }
