@@ -4,7 +4,7 @@ import RecallKit
 extension RecallLayoutPreviews {
     private struct PeriodGenerationFailure: LocalizedError { let errorDescription: String? }
     private actor PeriodGenerationModel: LLMResponding {
-        enum Mode { case complete, omitOnce, alwaysOmit, malformed }
+        enum Mode { case complete, omitOnce, alwaysOmit, malformed, references, badEvidenceOnce, badEvidenceAlways }
         let mode: Mode
         var calls = 0
         var sizes: [Int] = []
@@ -32,6 +32,15 @@ extension RecallLayoutPreviews {
                 ["section": "progress", "title": (row["topic"] as! String) + "验证已完成",
                  "detail": "合成验证的边界条件已核对并记录，生产发布尚待确认。",
                  "evidence": [["id": row["id"]!, "quote": row["title"]!]]]
+            }
+            if mode == .references || mode == .badEvidenceOnce || mode == .badEvidenceAlways {
+                for i in items.indices {
+                    let row = selected[i]
+                    items[i]["evidence"] = [["id": row["id"]!, "quoteRef": "title"]]
+                }
+            }
+            if (mode == .badEvidenceOnce && calls == 1) || mode == .badEvidenceAlways {
+                items[0]["evidence"] = [["id": selected[0]["id"]!, "quote": "合成的错误引用，原文里没有这句话"]]
             }
             if mode == .malformed { items[0].removeValue(forKey: "detail") }
             // A dishonest used receipt without its evidence must not bypass completeness checks.
@@ -83,7 +92,7 @@ extension RecallLayoutPreviews {
         }
         let period = ReviewPeriod(start: calendar.date(byAdding: .day, value: -7, to: today)!, end: today)
         var previous: WeeklyReport?
-        for mode in [PeriodGenerationModel.Mode.complete, .omitOnce, .alwaysOmit, .malformed] {
+        for mode in [PeriodGenerationModel.Mode.complete, .references, .badEvidenceOnce, .badEvidenceAlways, .omitOnce, .alwaysOmit, .malformed] {
             let responder = PeriodGenerationModel(mode)
             var input = state
             if let previous { input.weeklyReports = [previous] }
@@ -103,13 +112,16 @@ extension RecallLayoutPreviews {
             guard !model.isGeneratingWeeklyReview, model.state.captures == originalCaptures, model.state.dailySummaries == originalDaily else {
                 throw PeriodGenerationFailure(errorDescription: "周期生成状态异常：\(mode)，running=\(model.isGeneratingWeeklyReview)，capturesSame=\(model.state.captures == originalCaptures)，dailySame=\(model.state.dailySummaries == originalDaily)")
             }
-            if mode == .alwaysOmit || mode == .malformed {
+            if mode == .alwaysOmit || mode == .malformed || mode == .badEvidenceAlways {
                 guard await responder.count() == 2, model.state.weeklyReports == initial.weeklyReports,
                       model.tasks.contains(where: { $0.state == .failed && ($0.detail?.contains("Read") == true || $0.detail?.contains("读取") == true) }) else {
                     throw PeriodGenerationFailure(errorDescription: "遗漏仍被当作周报保存，或未提供失败状态")
                 }
+                guard model.tasks.filter({ $0.state == .failed }).allSatisfy({ $0.detail?.contains("正在核对") != true }) else {
+                    throw PeriodGenerationFailure(errorDescription: "失败任务仍显示正在核对的过期进度")
+                }
             } else {
-                let expectedCalls = mode == .omitOnce ? 2 : 1
+                let expectedCalls = mode == .omitOnce || mode == .badEvidenceOnce ? 2 : 1
                 let chatSnapshot = await model.store.preparedForChat()
                 guard await responder.count() == expectedCalls, let report = model.state.weeklyReports.first,
                       report.modelAssisted, report.dailySynthesisVersion == PeriodReviewFromDaily.synthesisVersion,
@@ -144,10 +156,15 @@ extension RecallLayoutPreviews {
                         throw PeriodGenerationFailure(errorDescription: "原生重试仍然发送整周而不是补齐三条遗漏")
                     }
                 }
+                if mode == .badEvidenceOnce {
+                    guard await responder.inputSizes() == [11, 1] else {
+                        throw PeriodGenerationFailure(errorDescription: "引用修复仍发送整周数据或丢弃已通过结论")
+                    }
+                }
                 previous = report
                 previous?.editedMarkdown = "# 用户已编辑的原周报\n\n这段合成修订在生成失败后必须保留。"
             }
         }
-        print("PASS: native period generation decodes wrapped results, patches only three omitted inputs, records success/failure timing, preserves unknown attribution and >5 exported/reopened items, and retains edited reports on persistent omission/missing fields")
+        print("PASS: native period generation resolves quote references, repairs only one bad citation or three omitted inputs, records success/failure timing, preserves unknown attribution and >5 exported/reopened items, and retains edited reports on persistent omission/missing fields")
     }
 }

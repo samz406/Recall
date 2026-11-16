@@ -40,8 +40,10 @@ extension PeriodReviewFromDaily {
     /// Ask only about unresolved input IDs. Accepted text is never sent through a second full
     /// synthesis, and classifications/exclusions still come from the model with verbatim evidence.
     func repairCoverage(_ original: Draft, prepared: Prepared, instructions: String, template: ReviewTemplate?,
-                        detailLimit: Int, run: inout PeriodReviewRun, responder: any LLMResponding) async throws -> Draft {
-        var ids = coverageIssueIDs(original, prepared: prepared, template: template)
+                        detailLimit: Int, forcedIDs: Set<String> = [], includeMissingCoverage: Bool = true, run: inout PeriodReviewRun, responder: any LLMResponding) async throws -> Draft {
+        var ids = forcedIDs
+        if includeMissingCoverage { ids.formUnion(coverageIssueIDs(original, prepared: prepared, template: template)) }
+        let known = Set(prepared.rows.map(\.id))
         guard !ids.isEmpty else { return original }
         // Replace whole affected conclusions, never leave their text attached to fewer sources.
         var expanded = true
@@ -55,7 +57,7 @@ extension PeriodReviewFromDaily {
         let rows = prepared.rows.filter { ids.contains($0.id) }
         var merged = original
         merged.items.removeAll { !ids.isDisjoint(with: $0.evidence.map(\.id)) }
-        merged.coverage = (merged.coverage ?? []).filter { !ids.contains($0.id) }
+        merged.coverage = (merged.coverage ?? []).filter { known.contains($0.id) && !ids.contains($0.id) }
         // Bounded batches keep a long week's coverage receipt from exhausting one output.
         let batches = stride(from: 0, to: rows.count, by: 24).map { Array(rows[$0..<min($0 + 24, rows.count)]) }
         for (index, batch) in batches.enumerated() {
@@ -65,24 +67,27 @@ extension PeriodReviewFromDaily {
             let question = instructions + """
 
             本次只补齐未通过核对的 \(batch.count) 条输入（第 \(index + 1)/\(batches.count) 组）。其余已通过的结论由程序保留，禁止重写整份回顾。
-            coverage 必须恰好覆盖本次输入的每个 id。used 必须同时在本次 items.evidence 引用该 id；outOfScope 仍须给出原文支持的 category/reason/quote。分类完全根据当前实际内容判断，不能沿用历史标签或为了通过检查排除工作。
-            overview 返回空字符串；items 只写本次资料可支持的完整结论，证据 id 只能来自本组，不添加新安排。
+            coverage 必须恰好覆盖本次输入的每个 id。used 必须同时在本次 items.evidence 引用该 id；outOfScope 仍须给出原文支持的 category/reason/quoteRef（或逐字 quote）。分类完全根据当前实际内容判断，不能沿用历史标签或为了通过检查排除工作。
+            overview 返回空字符串；items 只写本次资料可支持的完整结论，证据 id 只能来自本组，不添加新安排。优先使用 quoteRef=title/detail/q1/q2/…选择现有字段，不重复抄写原文；不能通过删除某条引用而保留仍依赖它的结论。
             """
             let detail = RecallLocalization.both(
                 "已保留 \(merged.items.count) 项，正在补齐 \(rows.count) 条待核对输入（\(index + 1)/\(batches.count) 组）。",
                 "Keeping \(merged.items.count) verified items; checking \(rows.count) unresolved inputs (batch \(index + 1)/\(batches.count)).")
             let text = try await run.call(LLMRequest(question: question,
                 context: [CaptureRecord(eventTemplate: .manualMoment, contentHash: "period-coverage-repair", ocrText: try directReviewJSON(batch))],
-                purpose: .reviewSynthesis, outputTokenLimit: 8_000), detail: detail, responder: responder)
+                purpose: .reviewSynthesis, outputTokenLimit: min(8_000, max(2_000, batch.count * (detailLimit * 2 + 160)))), detail: detail, responder: responder)
             let start = Date.now
             let decoded = try decodeOutput(text)
-            let missing = coverageIssueIDs(decoded, prepared: subset, template: template).count
+            let assessment = try assessEvidence(decoded, prepared: subset, itemLimit: max(batch.count, 6),
+                detailLimit: detailLimit, template: template, complete: true)
+            guard assessment.rejectedItems == 0 else { throw ModelReviewError.validation(assessment.firstIssue ?? .evidence) }
+            let missing = coverageIssueIDs(assessment.draft, prepared: subset, template: template).count
             if missing > 0 {
                 await run.onProgress?(ReviewGenerationProgress(.checking, detail: RecallLocalization.both(
                     "补齐第 \(index + 1)/\(batches.count) 组后，仍有 \(missing)/\(batch.count) 条输入未通过覆盖核对；原回顾保留。",
                     "After repair batch \(index + 1)/\(batches.count), \(missing)/\(batch.count) inputs still lack verified coverage. The previous review is preserved.")))
             }
-            let patch = try validate(decoded, prepared: subset, itemLimit: max(batch.count, 6),
+            let patch = try validate(assessment.draft, prepared: subset, itemLimit: max(batch.count, 6),
                                      detailLimit: detailLimit, template: template, complete: true)
             run.metrics.checkMilliseconds += Int(Date.now.timeIntervalSince(start) * 1000)
             merged.items += patch.items

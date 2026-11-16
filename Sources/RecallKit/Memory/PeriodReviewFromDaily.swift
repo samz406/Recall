@@ -75,10 +75,29 @@ public struct PeriodReviewFromDaily: Sendable {
             var section: String; var title: String; var detail: String
             var evidence: [Evidence]
         }
-        struct Evidence: Codable, Sendable { var id: String; var quote: String }
+        struct Evidence: Codable, Sendable {
+            var id: String
+            var quote: String
+            var quoteRef: String? = nil
+            init(id: String, quote: String, quoteRef: String? = nil) {
+                self.id = id; self.quote = quote; self.quoteRef = quoteRef
+            }
+            private enum CodingKeys: String, CodingKey { case id, quote, quoteRef }
+            init(from decoder: Decoder) throws {
+                let values = try decoder.container(keyedBy: CodingKeys.self)
+                id = try values.decode(String.self, forKey: .id)
+                quote = try values.decodeIfPresent(String.self, forKey: .quote) ?? ""
+                quoteRef = try values.decodeIfPresent(String.self, forKey: .quoteRef)
+                if quote.isEmpty && quoteRef == nil {
+                    throw DecodingError.keyNotFound(CodingKeys.quoteRef, .init(codingPath: values.codingPath,
+                        debugDescription: "Evidence requires quoteRef or quote"))
+                }
+            }
+        }
         struct Coverage: Codable, Sendable {
             var id: String; var disposition: String
             var category: String? = nil; var reason: String? = nil; var quote: String? = nil
+            var quoteRef: String? = nil
         }
         var overview: String
         var items: [Item]
@@ -157,11 +176,11 @@ public struct PeriodReviewFromDaily: Sendable {
         工作/项目模板的 notes 只保留简短核对线索（detail 12–60 字），在来源页查看，不扩写成周报正文；不要重复“相关记录、来源记录提到、记录谈及”等套话。overview 只概括成果、问题和已明确的安排，不罗列 notes。引用选能标识结论的短片段，保留全部被合并的 id，不为缩短输出漏掉覆盖。
         section 只能是 progress（成果与进展）、open（未解决问题）、plans（已明确的后续，必须是本人仍未完成的安排）、notes（值得保留的记录）。
         标题为独立完整短句（3–70字）；detail 12–\(detailLimit) 字，补充变化、结果或限制，不重复标题。overview 不超过160字。最多 \(itemLimit) 项；优先归并重复进展，不为了凑少数几项漏掉独立事项。
-        每项给出 evidence：id 必须是输入条目 id，quote 必须逐字摘自该条目的 title、detail 或 quotes 中的连续片段（4–180字）。合并多天或子主题时引用所有被合并的条目，不限制为六条来源。不要输出 Markdown、引用数字、置信度或算法术语。
-        \(topic == nil ? "每个输入 id 恰好返回一条 coverage：used（已在某条成文的 evidence 中引用），或 outOfScope（不属于当前模板）。不得以 background、低频、重复或篇幅不足丢弃事项；重复内容合并成文并保留各 id 引用。每条 coverage 都给出根据实际内容判断的 category=work/personal/learning/unclassified，不受输入历史标签约束。outOfScope 仅用于经内容核对确属模板之外的条目，须给出具体 reason 和逐字支持分类的 quote（4–180字）；不得因为原标签不符合模板、低频或篇幅不足而排除。工作/项目模板纳入 work，学习模板纳入 learning；我的一周涵盖所有类别，不得排除输入。" : "")
+        每项给出 evidence：id 必须是输入条目 id；优先给 quoteRef 选择该条目的来源位置：title（标题）、detail（完整说明）、q1/q2/…（quotes 数组第1/2/…条）。选择真正支持结论的字段，不抄写或改写原文，由本地从所选位置还原引用。也兼容 quote，但它必须是该条目 title、detail 或 quotes 中逐字连续的片段（4–180字），不能拼接不同片段或删除否定与限定条件。合并多天或子主题时引用所有被合并的条目，不限制为六条来源。不要输出 Markdown、引用数字、置信度或算法术语。
+        \(topic == nil ? "每个输入 id 恰好返回一条 coverage：used（已在某条成文的 evidence 中引用），或 outOfScope（不属于当前模板）。不得以 background、低频、重复或篇幅不足丢弃事项；重复内容合并成文并保留各 id 引用。每条 coverage 都给出根据实际内容判断的 category=work/personal/learning/unclassified，不受输入历史标签约束。outOfScope 仅用于经内容核对确属模板之外的条目，须给出具体 reason 和支持分类的 quoteRef（或4–180字逐字 quote）；不得因为原标签不符合模板、低频或篇幅不足而排除。工作/项目模板纳入 work，学习模板纳入 learning；我的一周涵盖所有类别，不得排除输入。" : "")
         用户已生效的纠错要求：\(PrivacyEngine().redact(feedback))
-        格式检查：只返回一个 JSON 对象；所有字段名与字符串用英文双引号，字符串内换行须转义。overview 必须为字符串（没有则空字符串）；items、evidence、coverage 均为数组（没有则 []，不是 null）。每项必须包含 section/title/detail/evidence；每条 evidence 必须包含字符串 id/quote。coverage 的 used 条目包含 id/disposition/category；outOfScope 还必须包含 reason 和逐字 quote。不能只列 id 清单或用省略号代替内容。
-        输出：{"overview":"概括","items":[{"section":"progress","title":"完整标题","detail":"完整摘要","evidence":[{"id":"i1","quote":"逐字片段"}]}],"coverage":[{"id":"i1","disposition":"used","category":"work"}]}
+        格式检查：只返回一个 JSON 对象；所有字段名与字符串用英文双引号，字符串内换行须转义。overview 必须为字符串（没有则空字符串）；items、evidence、coverage 均为数组（没有则 []，不是 null）。每项必须包含 section/title/detail/evidence；每条 evidence 必须包含字符串 id，以及 quoteRef 或逐字 quote，至少一个；quoteRef 只能选择同一输入条目中已有的位置，不得编造。coverage 的 used 条目包含 id/disposition/category；outOfScope 还必须包含 reason 和支持分类的 quoteRef（或逐字 quote）。不能只列 id 清单或用省略号代替内容。
+        输出：{"overview":"概括","items":[{"section":"progress","title":"完整标题","detail":"完整摘要","evidence":[{"id":"i1","quoteRef":"title"}]}],"coverage":[{"id":"i1","disposition":"used","category":"work"}]}
         """
     }
 
@@ -179,16 +198,14 @@ public struct PeriodReviewFromDaily: Sendable {
             guard allowed.contains(item.section), ReviewDigest.meaningfulTitle(item.title), (12...detailLimit).contains(item.detail.count),
                   ReviewDigest.readable(item.detail),
                   item.title != item.detail else { throw ModelReviewError.validation(.narrative) }
-            // Re-cut each quote to a verbatim fragment of the cited row; unresolved quotes are dropped.
+            // Every cited row must validate. Keeping a conclusion after dropping one of its
+            // citations would hide a missing source and attach its text to unrelated evidence.
             var kept: [Draft.Evidence] = []
             for evidence in item.evidence {
-                guard let row = rowByID[evidence.id] else { continue }
-                let haystack = [row.title, row.detail] + row.quotes
-                let pieces = evidence.quote.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { $0.count >= 4 }.sorted { $0.count > $1.count }
-                if let piece = pieces.first(where: { piece in haystack.contains { $0.contains(piece) } }) {
-                    kept.append(.init(id: evidence.id, quote: piece.count > 180 ? String(piece.prefix(180)) : piece))
-                }
+                guard let id = PeriodReviewEvidence.canonicalID(evidence.id, rows: rowByID), let row = rowByID[id],
+                      let quote = PeriodReviewEvidence.quote(evidence.quote, reference: evidence.quoteRef, row: row)
+                else { throw ModelReviewError.validation(.evidence) }
+                kept.append(.init(id: id, quote: quote))
             }
             guard !kept.isEmpty else { throw ModelReviewError.validation(.evidence) }
             item.evidence = complete ? kept : Array(kept.prefix(8))
@@ -294,7 +311,7 @@ public struct PeriodReviewFromDaily: Sendable {
         var run = PeriodReviewRun(started: start, beforeCall: beforeCall, onProgress: onProgress, onMetrics: onMetrics)
         run.metrics.sourceCount = prepared.dayCount; run.metrics.documentCount = prepared.itemCount; run.metrics.inputBytes = body.utf8.count
         run.metrics.readMilliseconds = Int(Date.now.timeIntervalSince(start) * 1000)
-        var repair = "", accepted: Draft?
+        var repair = "", accepted: EvidenceAssessment?
         do {
             for attempt in 0..<2 {
                 do {
@@ -303,8 +320,8 @@ public struct PeriodReviewFromDaily: Sendable {
                         purpose: .reviewSynthesis, outputTokenLimit: attempt == 0 ? outputBudget : min(32_000, outputBudget + 4_000)),
                         detail: "正在汇总 \(prepared.dayCount) 天的 \(prepared.itemCount) 条已核对结论。" + (attempt == 0 ? "" : " 正在修正返回格式与条目。"), responder: responder)
                     let checking = Date.now
-                    accepted = try validate(decodeOutput(text), prepared: prepared, itemLimit: itemLimit, detailLimit: detailLimit,
-                                            template: template, complete: complete, checkCoverage: false)
+                    accepted = try assessEvidence(decodeOutput(text), prepared: prepared, itemLimit: itemLimit,
+                        detailLimit: detailLimit, template: template, complete: complete)
                     run.metrics.checkMilliseconds += Int(Date.now.timeIntervalSince(checking) * 1000)
                     break
                 } catch let error as PeriodReviewOutputFailure {
@@ -318,10 +335,16 @@ public struct PeriodReviewFromDaily: Sendable {
                     repair = "\n上次没有返回完整结果，精简措辞但保留重要信息，返回完整规定 JSON。"
                 }
             }
-            guard var draft = accepted else { throw ModelReviewError.invalid }
-            if complete {
+            guard let assessment = accepted else { throw ModelReviewError.invalid }
+            var draft = assessment.draft
+            if assessment.rejectedItems > 0 {
+                await onProgress?(ReviewGenerationProgress(.checking, detail: RecallLocalization.both(
+                    "已保留 \(draft.items.count) 项有效结论，\(assessment.rejectedItems) 项需要核对；只修复受影响的来源。",
+                    "Keeping \(draft.items.count) verified conclusions; \(assessment.rejectedItems) need checking. Repairing only affected sources.")))
+            }
+            if complete || !assessment.unresolvedIDs.isEmpty {
                 draft = try await repairCoverage(draft, prepared: prepared, instructions: instructions, template: template,
-                                                 detailLimit: detailLimit, run: &run, responder: responder)
+                    detailLimit: detailLimit, forcedIDs: assessment.unresolvedIDs, includeMissingCoverage: complete, run: &run, responder: responder)
             }
             let checking = Date.now
             let checked = try validate(draft, prepared: prepared, itemLimit: itemLimit, detailLimit: detailLimit, template: template, complete: complete)

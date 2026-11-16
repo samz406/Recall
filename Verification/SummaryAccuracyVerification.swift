@@ -142,7 +142,7 @@ extension SummaryAccuracyVerification {
             let rows = try JSONSerialization.jsonObject(with: Data(request.context[0].ocrText.utf8)) as! [[String: Any]]
             let own = rows.filter { ($0["kind"] as! String) == "matter" }
             let item: [String: Any] = ["section": "progress", "title": "Atlas 分页验证从开始到完成", "detail": "三天内完成边界与空值验证，最后一天结果已保存。",
-                "evidence": own.map { ["id": $0["id"]!, "quote": "跨行\n" + ($0["title"] as! String)] }]
+                "evidence": own.map { ["id": $0["id"]!, "quote": ($0["title"] as! String).replacingOccurrences(of: "分页", with: "分\n页")] }]
             let coverage = rows.map { ["id": $0["id"]!, "disposition": "used", "category": "work"] }
             let value: [String: Any] = ["overview": "分页验证完成。", "items": [item], "coverage": coverage]
             return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self), citedCaptureIDs: [])
@@ -185,7 +185,7 @@ extension SummaryAccuracyVerification {
             "三天的每日回顾没有归并成一个以最终状态结尾的主题")
         try expect(!state.memoryKnowledge.claims.contains { $0.kind == .reference && $0.evidence.isEmpty }, "长期记忆含无来源线索")
         try expect(state.memoryKnowledge.claims.filter { $0.kind == .event }.count == 3, "事项没有作为长期记忆账本里的进展保存")
-        // Period review: one call over the daily items, quotes re-cut to verbatim fragments.
+        // Period review: one call over the daily items; layout line breaks recover the original wording.
         let model = PeriodModel()
         let period = ReviewPeriod(start: calendar.date(byAdding: .day, value: -3, to: today)!, end: today)
         let result = try await PeriodReviewFromDaily().generate(in: state, period: period, template: ReviewTemplate(kind: .personal), responder: model).draft
