@@ -1179,6 +1179,10 @@ final class RecallAppModel: ObservableObject {
         guard let file = matterFiles.first(where: { $0.id == topicID }) else { return }
         chatScope = MemoryQueryScope(topicID: topicID, topicEvidenceIDs: Set(file.evidenceIDs))
         openAskRequested = true
+        ask(RecallLocalization.both(
+            "关于“\(file.title)”，请找回上次的进展、已确认的结论和仍缺少的信息。",
+            "About “\(file.title)”: recall the last progress, confirmed conclusions and missing information."
+        ))
     }
 
     func ask(_ question: String) {
