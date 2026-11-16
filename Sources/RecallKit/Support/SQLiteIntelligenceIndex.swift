@@ -59,9 +59,10 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
     }
 
     public func synchronize(with state: RecallState, force: Bool = false) throws {
+        try Task.checkCancellation()
         lock.lock()
         defer { lock.unlock() }
-        let previousRows = indexedRows
+        let previousRows = indexedRows, previousTerms = termDigests
         try executeUnlocked("BEGIN IMMEDIATE;")
         do {
             if force {
@@ -85,6 +86,7 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
             try removeMissing("insight_feedback", column: "id", ids: Set(state.insightFeedback.map { $0.id.uuidString }))
             try removeMissing("learned_routines", column: "id", ids: Set(state.learnedRoutines.map { $0.id.uuidString }))
             for capture in state.captures {
+                try Task.checkCancellation()
                 let id = capture.id.uuidString
                 if try changed("captures_fts", column: "capture_id", id: id, payload: json(capture)) {
                     try insert(
@@ -97,6 +99,7 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
                 }
             }
             for episode in state.episodes {
+                try Task.checkCancellation()
                 guard try changed("episodes", column: "id", id: episode.id.uuidString, payload: json(episode)) else { continue }
                 try insert("DELETE FROM episodes_fts WHERE episode_id = ?;", [.text(episode.id.uuidString)])
                 try insert(
@@ -152,6 +155,7 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
         } catch {
             try? executeUnlocked("ROLLBACK;")
             indexedRows = previousRows
+            termDigests = previousTerms
             throw error
         }
     }

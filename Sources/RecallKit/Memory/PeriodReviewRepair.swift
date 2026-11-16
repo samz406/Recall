@@ -4,6 +4,7 @@ struct PeriodReviewRun: Sendable {
     var metrics = DailyReviewMetrics()
     let started: Date
     let beforeCall: @Sendable () async throws -> Void
+    let sourceCheck: (@Sendable () async throws -> Int)?
     let onProgress: (@Sendable (ReviewGenerationProgress) async -> Void)?
     let onMetrics: (@Sendable (DailyReviewMetrics) async -> Void)?
 
@@ -14,9 +15,7 @@ struct PeriodReviewRun: Sendable {
 
     mutating func call(_ request: LLMRequest, detail: String, responder: any LLMResponding) async throws -> String {
         try Task.checkCancellation()
-        let check = Date.now
-        try await beforeCall()
-        metrics.checkMilliseconds += Int(Date.now.timeIntervalSince(check) * 1000)
+        try await checkSources()
         await onProgress?(ReviewGenerationProgress(.generating, detail: detail))
         metrics.modelCalls += 1
         let called = Date.now
@@ -31,6 +30,21 @@ struct PeriodReviewRun: Sendable {
         } catch {
             metrics.modelMilliseconds += Int(Date.now.timeIntervalSince(called) * 1000)
             await publish()
+            throw error
+        }
+    }
+
+    mutating func checkSources() async throws {
+        let started = Date.now, check = sourceCheck, fallback = beforeCall
+        do {
+            let elapsed = try await LocalOperation.run(stage: "确认回顾来源") {
+                if let check { return try await check() }
+                try await fallback(); return 0
+            }
+            metrics.checkMilliseconds += elapsed
+            metrics.sourceWaitMilliseconds += max(0, Int(Date.now.timeIntervalSince(started) * 1000) - elapsed)
+        } catch {
+            metrics.sourceWaitMilliseconds += Int(Date.now.timeIntervalSince(started) * 1000)
             throw error
         }
     }

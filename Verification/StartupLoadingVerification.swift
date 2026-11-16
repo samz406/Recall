@@ -77,7 +77,7 @@ enum StartupLoadingVerification {
         defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
         let store = try verificationStore(storage: f.storage, deferMaintenance: true)
         let before = await store.snapshot()
-        try await store.organizeMemory(force: true)
+        _ = try await store.organizeMemoryInBackground(force: true)
         let after = await store.snapshot(), dirty = await store.memoryIndexNeedsRebuild()
         let indexed = await store.indexedCaptureIDs(matching: "Atlas")
         try expect(!dirty && Set(indexed) == Set(f.state.captures.map(\.id))

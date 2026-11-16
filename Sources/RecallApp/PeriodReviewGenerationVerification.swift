@@ -55,6 +55,13 @@ extension RecallLayoutPreviews {
             return LLMAnswer(content: "```json\n{\"result\":" + json + "}\n```", citedCaptureIDs: [])
         }
     }
+    private actor PeriodMaintenanceGate {
+        var entered = false
+        var continuation: CheckedContinuation<Void, Never>?
+        func park() async { entered = true; await withCheckedContinuation { continuation = $0 } }
+        func hasEntered() -> Bool { entered }
+        func release() { continuation?.resume(); continuation = nil }
+    }
     @MainActor static func verifyPeriodReviewGeneration() async throws {
         let calendar = Calendar.current, today = calendar.startOfDay(for: .now)
         var state = RecallState()
@@ -104,6 +111,17 @@ extension RecallLayoutPreviews {
             model.state = initial
             let originalCaptures = initial.captures, originalDaily = initial.dailySummaries
             _ = await model.store.preparedForChat()
+            let gate = PeriodMaintenanceGate()
+            let maintenance: Task<Bool, Error>? = mode == .complete ? Task {
+                try await model.store.organizeMemoryInBackground(force: true, onPreparing: { await gate.park() })
+            } : nil
+            if maintenance != nil {
+                for _ in 0..<200 {
+                    if await gate.hasEntered() { break }
+                    try await Task.sleep(for: .milliseconds(5))
+                }
+                guard await gate.hasEntered() else { throw PeriodGenerationFailure(errorDescription: "后台整理并发验证未启动") }
+            }
             model.generateWeeklyReview(period: period, template: ReviewTemplate(kind: .work), scope: ReviewScope())
             for _ in 0..<600 {
                 if !model.isGeneratingWeeklyReview { break }
@@ -111,6 +129,10 @@ extension RecallLayoutPreviews {
             }
             guard !model.isGeneratingWeeklyReview, model.state.captures == originalCaptures, model.state.dailySummaries == originalDaily else {
                 throw PeriodGenerationFailure(errorDescription: "周期生成状态异常：\(mode)，running=\(model.isGeneratingWeeklyReview)，capturesSame=\(model.state.captures == originalCaptures)，dailySame=\(model.state.dailySummaries == originalDaily)")
+            }
+            if let maintenance {
+                maintenance.cancel(); await gate.release()
+                _ = try? await maintenance.value
             }
             if mode == .alwaysOmit || mode == .malformed || mode == .badEvidenceAlways {
                 guard await responder.count() == 2, model.state.weeklyReports == initial.weeklyReports,

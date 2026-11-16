@@ -287,6 +287,7 @@ public struct PeriodReviewFromDaily: Sendable {
     /// Synthesize once; repair format once or fill only unresolved coverage in bounded batches.
     public func generate(in state: RecallState, period: ReviewPeriod, template: ReviewTemplate? = nil, scope: ReviewScope = ReviewScope(), topic: String? = nil,
                          topicKeys: Set<String>? = nil, beforeCall: @escaping @Sendable () async throws -> Void = {},
+                         sourceCheck: (@Sendable () async throws -> Int)? = nil,
                          onProgress: (@Sendable (ReviewGenerationProgress) async -> Void)? = nil,
                          onMetrics: (@Sendable (DailyReviewMetrics) async -> Void)? = nil,
                          responder: any LLMResponding) async throws -> (draft: ModelReviewResult, metrics: DailyReviewMetrics) {
@@ -308,7 +309,7 @@ public struct PeriodReviewFromDaily: Sendable {
         let instructions = prompt(label: period.label, template: template, topic: topic, feedback: feedback,
                                   itemLimit: itemLimit, detailLimit: detailLimit)
         let outputBudget = complete ? min(24_000, max(8_000, prepared.itemCount * 120)) : 8_000
-        var run = PeriodReviewRun(started: start, beforeCall: beforeCall, onProgress: onProgress, onMetrics: onMetrics)
+        var run = PeriodReviewRun(started: start, beforeCall: beforeCall, sourceCheck: sourceCheck, onProgress: onProgress, onMetrics: onMetrics)
         run.metrics.sourceCount = prepared.dayCount; run.metrics.documentCount = prepared.itemCount; run.metrics.inputBytes = body.utf8.count
         run.metrics.readMilliseconds = Int(Date.now.timeIntervalSince(start) * 1000)
         var repair = "", accepted: EvidenceAssessment?
@@ -348,8 +349,8 @@ public struct PeriodReviewFromDaily: Sendable {
             }
             let checking = Date.now
             let checked = try validate(draft, prepared: prepared, itemLimit: itemLimit, detailLimit: detailLimit, template: template, complete: complete)
-            try Task.checkCancellation(); try await beforeCall()
             run.metrics.checkMilliseconds += Int(Date.now.timeIntervalSince(checking) * 1000)
+            try Task.checkCancellation(); try await run.checkSources()
             var result = result(checked, prepared: prepared)
             result.dailySynthesisVersion = complete ? Self.synthesisVersion : nil
             await run.publish()
