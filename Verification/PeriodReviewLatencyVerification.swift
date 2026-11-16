@@ -73,6 +73,10 @@ enum PeriodReviewLatencyVerification {
         let applied = try await maintenance.value
         let ids = await store.indexedCaptureIDs(matching: "Atlas"), dirty = await store.memoryIndexNeedsRebuild()
         try expect(applied && !dirty && Set(ids) == Set(expected.captures.map(\.id)), "后台整理未完成索引或丢失来源")
+        let bytes = try Data(contentsOf: storage.stateURL)
+        _ = try await store.organizeMemoryInBackground(pruningExpired: true)
+        let repeatedBytes = try Data(contentsOf: storage.stateURL)
+        try expect(bytes == repeatedBytes, "未变化的空闲档案仍然重复整理和写入")
         print("PASS: foreground snapshot/source checks remained available during parked background work (\(Int(Date.now.timeIntervalSince(began) * 1000)) ms including resumed maintenance)")
     }
     private static func cancellationAndLateCompletion() async throws {

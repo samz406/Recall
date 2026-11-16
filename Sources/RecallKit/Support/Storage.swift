@@ -312,6 +312,7 @@ public actor FileMemoryStore {
     private var lastDiskDigest: String?
     var archiveRevision: UInt64 = 0
     var backgroundMaintenanceInFlight = false
+    private var lastMaintenanceRevision: UInt64?
     public private(set) var backupPending = false
 
     public init() throws {
@@ -559,11 +560,14 @@ public actor FileMemoryStore {
         backgroundMaintenanceInFlight = true
         defer { backgroundMaintenanceInFlight = false }
         let baseline = state, revision = archiveRevision, migrating = startupMaintenancePending
-        let prepared = try await LocalOperation.run(stage: "整理本地记忆", timeout: nil) {
+        let needsDerivation = force || migrating || lastMaintenanceRevision != revision || indexNeedsRebuild
+            || !state.pendingDailyReviewMaintenance.isEmpty
+        let prepared: RecallState? = try await LocalOperation.run(stage: "整理本地记忆", timeout: nil) {
             await onPreparing?()
             try Task.checkCancellation()
             var copy = baseline
-            if pruningExpired { _ = try copy.pruneExpiredSources(now: now) }
+            let pruned = pruningExpired ? try copy.pruneExpiredSources(now: now) : false
+            guard needsDerivation || pruned else { return nil }
             if migrating { copy.migrateLegacyWeeklyVersions() }
             try Task.checkCancellation()
             if let id = copy.pendingDailyReviewMaintenance.first {
@@ -576,6 +580,7 @@ public actor FileMemoryStore {
         }
         try Task.checkCancellation()
         guard archiveRevision == revision else { return false }
+        guard let prepared else { return true }
         state = prepared
         do { try persistReviewState(indexChanged: true); markStartupMaintenanceComplete() }
         catch { state = baseline; throw error }
@@ -587,6 +592,7 @@ public actor FileMemoryStore {
                 try Task.checkCancellation()
             }
             indexNeedsRebuild = archiveRevision != indexedRevision || index == nil
+            if !indexNeedsRebuild { lastMaintenanceRevision = archiveRevision }
         } catch {
             indexNeedsRebuild = true
             if ModelCallCancellation.isCancellation(error) { throw CancellationError() }
