@@ -69,7 +69,8 @@ enum ReviewCapacityVerification {
         let allIDs = Set(CaptureUnderstandingEngine.blocks(for: f.records[0]).map(\.id))
         let checked = await model.checked(), log = await model.log(), phases = await progress.log()
         try expect(understanding.coveredBlockCount == 25 && understanding.uncertainBlockCount == 0
-            && understanding.facts.count == 25 && Set(checked) == allIDs && checked.count == 25,
+            && understanding.facts.count == 25 && checked.count == 25
+            && Set(understanding.facts.flatMap(\.evidence).map(\.blockID)) == allIDs,
             "拆分遗漏尾部、重复保存事实，或将失败草稿算作已核对")
         try expect(understanding.facts.flatMap(\.evidence).allSatisfy { allIDs.contains($0.blockID) && f.records[0].ocrText.contains($0.quote) },
             "拆分改变原文引用或来源 ID")
@@ -143,8 +144,9 @@ enum ReviewCapacityVerification {
         let finished = try await reopened.prepareModelReview(period: f.period, responder: model)
         let calls = await model.log().filter { $0.purpose == .captureUnderstanding }
         let first = try JSONSerialization.jsonObject(with: Data(calls[0].context[0].ocrText.utf8)) as! [[String: Any]]
-        let firstID = first.first { $0["contextOnly"] as? Bool != true }?["id"] as? String ?? ""
-        try expect(calls.count == 2 && firstID.contains(":36:")
+        // The model sees short IDs; the 37th line (index 36) must be the first primary block after restart.
+        let firstText = first.first { $0["contextOnly"] as? Bool != true }?["text"] as? String ?? ""
+        try expect(calls.count == 2 && firstText.contains("第 36 组")
             && finished.captures[0].understanding?.coveredBlockCount == 52, "重启没有按已保存的拆分边界继续")
     }
     static func minimalPageBudget() async throws {

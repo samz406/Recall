@@ -38,8 +38,11 @@ extension RecallState {
 
     mutating func invalidateWeeklyReports(knowledge supplied: MemoryKnowledge? = nil) {
         // Daily-derived reports use their own exact source versions, not a global graph rebuild.
+        // Checking a report only needs the current ledger with stale evidence removed. Deriving new claims here
+        // took ~16 s on a 3,000-record archive, ran on every save, and its result was discarded, so the next save
+        // found the ledger "changed" again. New claims come from the background organize step.
         let knowledge = supplied ?? (self.weeklyReports.contains { $0.isReadable && $0.dailySynthesisVersion == nil }
-            ? MemoryKnowledgeEngine().reconcile(self) : nil)
+            ? MemoryKnowledgeEngine().reconcile(self, allowNew: false) : nil)
         for i in self.weeklyReports.indices where self.weeklyReports[i].isReadable {
             if !WeeklyReviewEngine.sourcesUnchanged(self.weeklyReports[i], in: self, knowledge: knowledge) { self.weeklyReports[i].invalidate() }
             else {
@@ -56,7 +59,7 @@ extension RecallState {
             let existing = Set(self.captures.map(\.id))
             restorationState.captures += self.recentlyDeletedMemories[i].captures.filter { !existing.contains($0.id) }
             restorationState.matterCorrections += self.recentlyDeletedMemories[i].matterCorrections ?? []
-            let restorationKnowledge = reports.contains { $0.isReadable } ? MemoryKnowledgeEngine().reconcile(restorationState) : nil
+            let restorationKnowledge = reports.contains { $0.isReadable } ? MemoryKnowledgeEngine().reconcile(restorationState, allowNew: false) : nil
             for j in reports.indices where reports[j].isReadable {
                 if !WeeklyReviewEngine.sourcesUnchanged(reports[j], in: restorationState, knowledge: restorationKnowledge) { reports[j].invalidate() }
             }

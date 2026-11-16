@@ -31,8 +31,9 @@ enum ReviewRecoveryVerification {
                 drafts += 1
                 if mode == "service" { throw LLMResponseFailure(reason: .rateLimited) }
                 let primary = input.filter { $0["contextOnly"] as? Bool != true }
-                let firstPrimaryID = primary.first?["id"] as? String ?? ""
-                let isSecondPage = firstPrimaryID.contains(":24:")
+                // Block IDs are short per page; the 25th line ("第 24 项") starts the second page.
+                let firstPrimaryText = primary.first?["text"] as? String ?? ""
+                let isSecondPage = firstPrimaryText.contains("第 24 项")
                 if (mode == "format" && drafts == 1) || (mode == "resume" && isSecondPage) {
                     return LLMAnswer(content: "{incomplete", citedCaptureIDs: [])
                 }

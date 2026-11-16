@@ -1340,11 +1340,8 @@ public actor FileMemoryStore {
         chatAnalysis = nil
         guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
         try writeState()
-        do {
-            if indexNeedsRebuild { try intelligenceIndex?.replace(with: state) }
-            else { try intelligenceIndex?.synchronize(with: state) }
-            indexNeedsRebuild = false
-        } catch { indexNeedsRebuild = true }
+        guard !indexNeedsRebuild else { return }
+        do { try intelligenceIndex?.synchronize(with: state) } catch { indexNeedsRebuild = true }
     }
 
     @discardableResult
@@ -1533,11 +1530,11 @@ public actor FileMemoryStore {
             try state.reconcileForPersistence()
             if let previous { preserveReviewHistory(from: previous) }
             try writeState()
-            do {
-                if indexNeedsRebuild { try intelligenceIndex?.replace(with: state) }
-                else { try intelligenceIndex?.synchronize(with: state) }
-                indexNeedsRebuild = false
-            } catch { indexNeedsRebuild = true }
+            // A full rebuild took ~70 s here and held every caller, including a question, behind it. Leave it to
+            // the background organize step, which rebuilds off this actor; lookups use the in-memory path meanwhile.
+            if !indexNeedsRebuild {
+                do { try intelligenceIndex?.synchronize(with: state) } catch { indexNeedsRebuild = true }
+            }
         } catch {
             if let committedState { state = committedState }
             chatAnalysis = nil

@@ -17,12 +17,13 @@ extension RecallAppModel {
                 Task { @MainActor [weak self] in self?.startSummaryFeedbackWorker() }
             }
         }
-        guard summaryFeedbackTask == nil else { return }
+        guard summaryFeedbackTask == nil, !isThinking else { return }
         summaryFeedbackTask = Task { [weak self] in
             guard let self else { return }
             defer { self.summaryFeedbackTask = nil }
             // A bounded serial batch yields to capture/chat. The durable queue survives closing the app.
             for _ in 0..<3 {
+                guard !self.isThinking else { break }
                 do {
                     let snapshot = await self.store.snapshot()
                     let config = snapshot.llmConfiguration

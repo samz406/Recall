@@ -711,10 +711,14 @@ public struct MemoryKnowledgeEngine: Sendable {
     }
 
     public func dependencies(in state: RecallState, claims: [MemoryClaim]) -> [MemoryDependency] {
+        // Source → claim positions, so each output looks up its claims instead of scanning every claim.
+        var claimsBySource: [UUID: [Int]] = [:]
+        for (index, claim) in claims.enumerated() {
+            for source in Set(claim.sourceIDs) { claimsBySource[source, default: []].append(index) }
+        }
         func link(_ id: UUID, _ kind: String, _ sources: [UUID]) -> MemoryDependency {
-            let ids = Set(sources)
-            return MemoryDependency(outputID: id, kind: kind, sourceIDs: sources,
-                claimIDs: claims.filter { !Set($0.sourceIDs).isDisjoint(with: ids) }.map(\.id))
+            let positions = Set(sources.flatMap { claimsBySource[$0] ?? [] }).sorted()
+            return MemoryDependency(outputID: id, kind: kind, sourceIDs: sources, claimIDs: positions.map { claims[$0].id })
         }
         var links: [MemoryDependency] = []
         for summary in state.dailySummaries { links.append(link(summary.id, "daily", summary.sourceCaptureIDs)) }

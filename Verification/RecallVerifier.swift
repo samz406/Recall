@@ -1611,6 +1611,10 @@ struct RecallVerifier {
         let chunks = TypewriterTextSequence.chunks(for: content, maximumSteps: 5)
         try expect(chunks.count <= 5, "打字机片段超过设定的最大呈现步数")
         try expect(chunks.joined() == content, "打字机分片没有无损还原模型回答")
+        // A long verified answer must still finish revealing quickly, not in ~180 frames.
+        let long = String(repeating: "长回答内容。", count: 400)
+        let steps = TypewriterTextSequence.chunks(for: long)
+        try expect(steps.count <= TypewriterTextSequence.defaultSteps && steps.joined() == long, "长回答的打字机效果步数过多")
     }
 
     private static func verifyPersistence() async throws {

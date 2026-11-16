@@ -282,7 +282,7 @@ final class RecallAppModel: ObservableObject {
     }
 
     private func startMemoryMaintenance() {
-        guard memoryMaintenanceTask == nil, !isGeneratingDailySummary, !isGeneratingWeeklyReview,
+        guard memoryMaintenanceTask == nil, !isThinking, !isGeneratingDailySummary, !isGeneratingWeeklyReview,
               topicReviewTask == nil, Date.now >= memoryMaintenanceAfter else { return }
         memoryMaintenanceTask = Task(priority: .utility) { [weak self] in
             guard let self else { return }
@@ -1285,7 +1285,7 @@ final class RecallAppModel: ObservableObject {
         for chunk in TypewriterTextSequence.chunks(for: message.content) {
             guard !Task.isCancelled, typingMessageID == message.id else { return }
             typingMessageContent += chunk
-            try? await Task.sleep(for: .milliseconds(16))
+            try? await Task.sleep(for: TypewriterTextSequence.stepInterval)
         }
         guard typingMessageID == message.id else { return }
         typingMessageID = nil

@@ -212,7 +212,12 @@ public struct ChatResponseFormatter: Sendable {
 
 /// 将完整模型回答切成短片段，仅用于界面逐步呈现；持久化内容始终保存完整原文。
 public enum TypewriterTextSequence {
-    public static func chunks(for content: String, maximumSteps: Int = 180) -> [String] {
+    /// The answer is complete and verified before it is revealed, so this is only an effect. Each step
+    /// re-renders and re-parses the Markdown; ~24 steps over ~0.4 s reads as typing without delaying the answer.
+    public static let defaultSteps = 24
+    public static let stepInterval: Duration = .milliseconds(16)
+
+    public static func chunks(for content: String, maximumSteps: Int = defaultSteps) -> [String] {
         guard !content.isEmpty else { return [] }
         let characters = Array(content)
         let safeSteps = max(maximumSteps, 1)

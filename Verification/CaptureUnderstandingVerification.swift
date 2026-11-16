@@ -11,11 +11,22 @@ enum CaptureUnderstandingVerification {
     private struct Stub: LLMResponding {
         let draft: String
         let audit: String
+        /// Scripts are written with the stored block IDs. The engine shows the model short IDs in the same
+        /// order, so the stub answers in those, as a real model would. Unknown IDs pass through unchanged.
+        var stored: [String] = []
         func answer(to request: LLMRequest) async throws -> LLMAnswer {
             guard [.captureUnderstanding, .captureUnderstandingAudit].contains(request.purpose),
                   request.context.count == 1, request.context[0].imageRelativePath == nil,
                   request.recentMessages.isEmpty else { throw Failure(message: "后台理解发送了多余上下文或使用了错误任务类型") }
-            return LLMAnswer(content: request.purpose == .captureUnderstanding ? draft : audit, citedCaptureIDs: [])
+            let shown = (try? JSONSerialization.jsonObject(with: Data(request.context[0].ocrText.utf8)) as? [[String: Any]])?
+                .compactMap { $0["id"] as? String } ?? []
+            guard !shown.contains(where: { $0.count > 8 }) else { throw Failure(message: "模型仍看到完整的来源片段 ID") }
+            var text = request.purpose == .captureUnderstanding ? draft : audit
+            // Longest first so "UUID:1:0" is not replaced inside "UUID:10:0".
+            for (index, id) in stored.enumerated().sorted(by: { $0.element.count > $1.element.count }) where index < shown.count {
+                text = text.replacingOccurrences(of: "\"" + id + "\"", with: "\"" + shown[index] + "\"")
+            }
+            return LLMAnswer(content: text, citedCaptureIDs: [])
         }
     }
     private struct Fixture {
@@ -56,7 +67,8 @@ enum CaptureUnderstandingVerification {
         let primary = page.blocks.filter { !$0.contextOnly }.map(\.id)
         let coverage = omitCoverage ? [] : primary.map { ["blockID": $0, "disposition": used.contains($0) ? "fact" : "noise"] }
         return try Stub(draft: json(["facts": facts, "coverage": coverage]),
-            audit: json(["acceptedFactIDs": accepted ?? facts.compactMap { $0["id"] as? String }, "checkedBlockIDs": auditIDs ?? primary, "missedBlockIDs": []]))
+            audit: json(["acceptedFactIDs": accepted ?? facts.compactMap { $0["id"] as? String }, "checkedBlockIDs": auditIDs ?? primary, "missedBlockIDs": []]),
+            stored: page.blocks.map(\.id))
     }
     private static func analyze(_ page: UnderstandingPage, facts: [[String: Any]], accepted: [String]? = nil) async throws -> UnderstandingPageResult {
         try await CaptureUnderstandingEngine.understand(page, responder: responder(page, facts: facts, accepted: accepted), beforeCall: {})
@@ -148,7 +160,8 @@ enum CaptureUnderstandingVerification {
         let (_, page) = try await claim(f)
         let result = try await analyze(page, facts: [fact(page)], accepted: [])
         let omitted = try Stub(draft: responder(page, facts: []).draft,
-            audit: json(["acceptedFactIDs": [], "checkedBlockIDs": page.blocks.map(\.id), "missedBlockIDs": page.blocks.map(\.id)]))
+            audit: json(["acceptedFactIDs": [], "checkedBlockIDs": page.blocks.map(\.id), "missedBlockIDs": page.blocks.map(\.id)]),
+            stored: page.blocks.map(\.id))
         try await rejected { _ = try await CaptureUnderstandingEngine.understand(page, responder: omitted, beforeCall: {}) }
         try expect(result.facts.isEmpty && result.covered == 1 && result.uncertain == 1, "复核否决的事实仍被保存为准确内容")
     }

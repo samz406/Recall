@@ -46,7 +46,8 @@ extension RecallAppModel {
         }
         // The daily review is the single understanding step. Per-record model calls run only when the
         // user turned them on, and never as a prerequisite of a topic, period review or long-term memory.
-        guard captureUnderstandingTask == nil, !isGeneratingDailySummary, !isGeneratingWeeklyReview, topicReviewTask == nil,
+        // A question in progress goes first: this worker saves the whole archive after each page.
+        guard captureUnderstandingTask == nil, !isThinking, !isGeneratingDailySummary, !isGeneratingWeeklyReview, topicReviewTask == nil,
               state.understandingSettings.enabled, state.understandingSettings.automatic == true else { return }
         captureUnderstandingTask = Task { [weak self] in
             guard let self else { return }
@@ -56,7 +57,7 @@ extension RecallAppModel {
                 // Drain a small serial burst when new records arrive; keep backoff and
                 // yield to explicit reviews between pages, without waiting 30s per page.
                 for _ in 0..<3 {
-                    guard !Task.isCancelled, !isGeneratingDailySummary, !isGeneratingWeeklyReview,
+                    guard !Task.isCancelled, !isThinking, !isGeneratingDailySummary, !isGeneratingWeeklyReview,
                           topicReviewTask == nil, state.understandingSettings.enabled else { return }
                     guard let job = try await store.claimCaptureUnderstanding() else {
                         self.state = await store.snapshot(); return
