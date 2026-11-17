@@ -2034,7 +2034,7 @@ final class RecallAppModel: ObservableObject {
     }
 
     enum PersonaProfileAction {
-        case enabled(Bool), personalizes(Bool), retry, rebuild, clear, restoreMatches, reject(Set<UUID>)
+        case enabled(Bool), personalizes(Bool), retry, rebuild, clear, reject(Set<UUID>), keep(PersonaDimension)
     }
     @discardableResult
     func updatePersonaProfile(_ action: PersonaProfileAction) async -> Bool {
@@ -2049,10 +2049,15 @@ final class RecallAppModel: ObservableObject {
             case .retry: try await store.retryPersonaRefresh()
             case .rebuild: try await store.clearPersonaProfile(rebuild: true)
             case .clear: try await store.clearPersonaProfile()
-            case .restoreMatches: try await store.restorePersonaMatches()
             case .reject(let ids): try await store.rejectPersonaEvidence(ids)
+            case .keep(let dimension):
+                guard try await store.keepPersonaTraitAsPreference(dimension) != nil else { return false }
             }
             state = await store.snapshot()
+            if case .keep = action {
+                rebuildMatterFiles()
+                noticeMessage = RecallLocalization.both("已记为你的明确偏好，可在下方记忆中修改或停用。", "Saved as an explicit preference. Edit or retire it below.")
+            }
             return true
         } catch {
             recordError(error, source: "PersonaProfile", message: "保存行为观察设置失败")
@@ -2080,18 +2085,6 @@ final class RecallAppModel: ObservableObject {
                 state = await store.snapshot()
             } catch {
                 recordError(error, source: "PersonaProfile", message: "更新个人特征失败")
-            }
-        }
-    }
-
-    func dismissPersonaMatch() {
-        Task {
-            do {
-                try await store.dismissPersonaMatch()
-                state = await store.snapshot()
-                noticeMessage = RecallLocalization.both("已收起这个形象。你可以查看依据并更正，新的观察积累后再判断。", "This label is hidden. Review or correct its evidence; new observations may support a later assessment.")
-            } catch {
-                recordError(error, source: "PersonaProfile", message: "更新形象判断失败")
             }
         }
     }

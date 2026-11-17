@@ -636,7 +636,7 @@ public struct CompatibleLLM: LLMResponding {
             case .summaryFeedback: role = "按用户反馈提出有限的回顾修订"
             case .summaryFeedbackAudit: role = "独立核验回顾反馈修订"
             case .chatPlanning: role = "决定要读取哪些本地记忆，或在材料足够时直接回答"
-            case .personaInsight: role = "从当天已生成的每日回顾文本中提炼稳定行为倾向，不做心理诊断"
+            case .personaInsight: role = "从当天已核对的本人事项中提炼当天有逐字依据的行为证据，不推断稳定人格，不做心理诊断"
             default: role = "根据模板整理周回顾正文"
             }
             let evidence: String

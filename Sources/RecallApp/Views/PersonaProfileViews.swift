@@ -5,9 +5,10 @@ struct PersonaSummaryView: View {
     let state: RecallState
     let processing: Bool
     let onEvidence: () -> Void
-    let onDismissMatch: () -> Void
+    let onKeep: (PersonaDimension) -> Void
     let onRetry: () -> Void
     private var traits: [PersonaTraitState] { state.confirmedPersonaTraits }
+    private var mixed: [PersonaTraitState] { state.mixedPersonaTraits }
     private var failures: Int { state.personaRefreshJobs.filter { $0.status == .failed }.count }
     private var observedDays: Int { Set(state.personaTraitObservations.map(\.day)).count }
     var body: some View {
@@ -26,14 +27,15 @@ struct PersonaSummaryView: View {
                     Text(RecallLocalization.text(trait.dimension.valueTitle(trait.value)))
                     Spacer()
                     Text(RecallLocalization.both("\(trait.observationDays) 个观察日", "\(trait.observationDays) observed days")).font(.caption).foregroundStyle(RecallPalette.secondary)
+                    if trait.dimension.responseGuidance(trait.value) != nil {
+                        Button(RecallLocalization.both("对，记住这条", "Yes, remember this")) { onKeep(trait.dimension) }
+                            .buttonStyle(.plain).font(.caption).foregroundStyle(RecallPalette.accent)
+                    }
                 }
             }
-            if let match = state.personaMatch {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(RecallLocalization.both("目前有些像「\(RecallLocalization.text(match.name))」", "Some resemblance to “\(RecallLocalization.text(match.name))”")).font(.caption).foregroundStyle(RecallPalette.secondary)
-                    Spacer()
-                    Button(RecallLocalization.both("这不像我", "This isn't quite me"), action: onDismissMatch).buttonStyle(.plain).font(.caption)
-                }
+            ForEach(mixed) { trait in
+                Text(RecallLocalization.both("\(RecallLocalization.text(trait.dimension.title))：近期表现不一，暂不判断", "\(RecallLocalization.text(trait.dimension.title)): mixed recently, no judgment yet"))
+                    .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
             if failures > 0 {
                 HStack {
@@ -41,7 +43,7 @@ struct PersonaSummaryView: View {
                     Button(RecallLocalization.both("重试", "Retry"), action: onRetry).buttonStyle(.plain).foregroundStyle(RecallPalette.accent)
                 }
             }
-            Text(RecallLocalization.both("根据近30天本人事项形成暂定观察，至少3个不同日期才会展示；当次要求和明确偏好优先。可在右上角菜单暂停或清空。", "Tentative observations use your own recent 30-day activity and require at least 3 distinct dates. Current requests and explicit preferences come first. Pause or clear from the menu above."))
+            Text(RecallLocalization.both("根据近30天本人事项形成暂定观察，至少3个不同日期且方向一致才会展示；只用于“问一问”，不进入回顾。当次要求和明确偏好优先，可在右上角菜单暂停或清空。", "Tentative observations use your own recent 30-day activity and need at least 3 distinct, consistent dates. Used only in Ask, never in reviews. Current requests and explicit preferences come first. Pause or clear from the menu above."))
                 .font(.caption2).foregroundStyle(RecallPalette.secondary)
         }.recallSurface(padding: 18)
     }
@@ -49,11 +51,12 @@ struct PersonaSummaryView: View {
         if !state.personaProfileSettings.enabled { return RecallLocalization.both("自动分析已停止", "Automatic analysis is stopped") }
         if !state.privacy.cloudUseEnabled || !state.llmConfiguration.hasCredential { return RecallLocalization.both("等待连接模型并允许脱敏文本处理，已有观察可在下方核对。", "Waiting for a connected model and text-processing permission. Existing evidence remains available.") }
         if processing { return RecallLocalization.both("正在后台分析，主动提问或生成回顾会优先处理。", "Analyzing in the background. Your questions and reviews take priority.") }
+        if traits.isEmpty && !mixed.isEmpty { return RecallLocalization.both("近期观察方向不一致，暂不形成判断。", "Recent observations point in different directions, so no judgment yet.") }
         if traits.isEmpty { return RecallLocalization.both("已积累 \(observedDays) 天有效观察，暂不足以形成稳定判断。", "Observations from \(observedDays) days; more independent evidence is needed.") }
         if !state.personaProfileSettings.personalizesResponses || !state.memoryKnowledgeSettings.referencesEnabled {
             return RecallLocalization.both("已暂停用于回答和建议", "Use in answers and suggestions is paused")
         }
-        return RecallLocalization.both("相关回答会参考这些观察，你可以随时更正。", "Relevant answers may use these observations. You can correct them anytime.")
+        return RecallLocalization.both("“问一问”会据此调整回答方式，你可以随时更正。", "Ask may adapt how it answers. You can correct these anytime.")
     }
 }
 

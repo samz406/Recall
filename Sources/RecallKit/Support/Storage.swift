@@ -135,16 +135,12 @@ public struct RecallState: Codable, Sendable {
     public var pendingPersonaRefresh: [UUID] = []
     public var personaTraitObservations: [PersonaTraitObservation] = []
     public var personaTraits: [PersonaTraitState] = []
-    public var personaMatch: PersonaMatch? = nil
-    public var personaMatchHistory: [PersonaMatch] = []
     public var dismissedPersonaDimensions: [PersonaDimension] = []
-    public var dismissedPersonaArchetypeIDs: [String] = []
     public var personaProfileSettings = PersonaProfileSettings()
     public var personaRefreshJobs: [PersonaRefreshJob] = []
     public var personaProfileRevision = UUID()
     public var personaProfileVersion = 0
     public var rejectedPersonaEvidence: [String] = []
-    public var rejectedPersonaMatchStamp: String? = nil
 
     public init(
         rules: [EventRule] = EventRule.defaults(),
@@ -219,9 +215,9 @@ public struct RecallState: Codable, Sendable {
         case weeklyReports, reviewTemplates, reviewSchedules, reviewCategories, memoryKnowledge, memoryKnowledgeSettings
         case episodes, projects, userMemories, insights, insightFeedback, learnedRoutines
         case recentlyDeletedMemories, memorySuppressionRules, matterCorrections, dismissedExperienceIDs, experienceHintsEnabled, topicGroups
-        case pendingPersonaRefresh, personaTraitObservations, personaTraits, personaMatch, personaMatchHistory
-        case personaProfileSettings, personaRefreshJobs, personaProfileRevision, personaProfileVersion, rejectedPersonaEvidence, rejectedPersonaMatchStamp
-        case dismissedPersonaDimensions, dismissedPersonaArchetypeIDs
+        case pendingPersonaRefresh, personaTraitObservations, personaTraits
+        case personaProfileSettings, personaRefreshJobs, personaProfileRevision, personaProfileVersion, rejectedPersonaEvidence
+        case dismissedPersonaDimensions
     }
 
     public init(from decoder: Decoder) throws {
@@ -274,16 +270,12 @@ public struct RecallState: Codable, Sendable {
         pendingPersonaRefresh = try container.decodeIfPresent([UUID].self, forKey: .pendingPersonaRefresh) ?? []
         personaTraitObservations = try container.decodeIfPresent([PersonaTraitObservation].self, forKey: .personaTraitObservations) ?? []
         personaTraits = try container.decodeIfPresent([PersonaTraitState].self, forKey: .personaTraits) ?? []
-        personaMatch = try container.decodeIfPresent(PersonaMatch.self, forKey: .personaMatch)
-        personaMatchHistory = try container.decodeIfPresent([PersonaMatch].self, forKey: .personaMatchHistory) ?? []
         personaProfileSettings = try container.decodeIfPresent(PersonaProfileSettings.self, forKey: .personaProfileSettings) ?? PersonaProfileSettings()
         personaRefreshJobs = try container.decodeIfPresent([PersonaRefreshJob].self, forKey: .personaRefreshJobs) ?? []
         personaProfileRevision = try container.decodeIfPresent(UUID.self, forKey: .personaProfileRevision) ?? UUID()
         personaProfileVersion = try container.decodeIfPresent(Int.self, forKey: .personaProfileVersion) ?? 0
         rejectedPersonaEvidence = try container.decodeIfPresent([String].self, forKey: .rejectedPersonaEvidence) ?? []
-        rejectedPersonaMatchStamp = try container.decodeIfPresent(String.self, forKey: .rejectedPersonaMatchStamp)
         dismissedPersonaDimensions = try container.decodeIfPresent([PersonaDimension].self, forKey: .dismissedPersonaDimensions) ?? []
-        dismissedPersonaArchetypeIDs = try container.decodeIfPresent([String].self, forKey: .dismissedPersonaArchetypeIDs) ?? []
     }
 }
 
@@ -1306,12 +1298,9 @@ public actor FileMemoryStore {
         state.pendingPersonaRefresh = []
         state.personaTraitObservations = []
         state.personaTraits = []
-        state.personaMatch = nil
-        state.personaMatchHistory = []
         state.dismissedPersonaDimensions = []
-        state.dismissedPersonaArchetypeIDs = []
         state.personaRefreshJobs = []; state.personaProfileRevision = UUID()
-        state.rejectedPersonaEvidence = []; state.rejectedPersonaMatchStamp = nil
+        state.rejectedPersonaEvidence = []
         state.pendingFileDeletions = ((state.pendingFileDeletions ?? []) + activePaths + deletedPaths.map { "Recently Deleted/Screenshots/" + URL(fileURLWithPath: $0).lastPathComponent } + managedScreenshotFiles()).memoryUnique()
         state.pendingRecoveryCleanup = true
         do { try persist() } catch { state = before; throw error }

@@ -85,13 +85,15 @@ public enum PersonalMemoryContext {
                 && ($0.isMemoryEvidenceArchive != true || $0.memoryDirective != nil) && $0.eventTemplate != .dailyReview
         }
     }
-    public static func text(in state: RecallState, question: String, topicIDs: Set<String> = [], conversationID: UUID? = nil) -> String {
+    /// Inferred observations shape conversational answers only; generated reviews stay free of them.
+    public static func text(in state: RecallState, question: String, topicIDs: Set<String> = [], conversationID: UUID? = nil, includesObservations: Bool = false) -> String {
         let allowed = Set(sourceRecords(in: state).filter { source in state.rules.first { $0.template == source.eventTemplate }?.participatesInChat ?? true }.map(\.id))
         let claims = state.memoryKnowledge.claims.filter {
             $0.kind.isPersonal && $0.usable() && state.memoryKnowledgeSettings.references($0)
                 && !$0.sourceIDs.isEmpty && Set($0.sourceIDs).isSubset(of: allowed)
         }
         let explicit = MemoryRetrievalEngine().preferenceContext(question: question, claims: claims, conversationID: conversationID, entities: topicIDs) ?? ""
-        return [explicit, PersonaPersonalization.text(in: state)].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let inferred = includesObservations ? PersonaPersonalization.text(in: state) : ""
+        return [explicit, inferred].filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 }

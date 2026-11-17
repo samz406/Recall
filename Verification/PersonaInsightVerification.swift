@@ -9,15 +9,16 @@ enum PersonaInsightVerification {
     static func run() async throws {
         try independentDatesAndDecay()
         try evidenceAndAttribution()
-        try conservativeArchetypes()
+        try mixedEvidenceAndOrdering()
         try await refreshFeedbackAndPersonalization()
-        try await restoreHiddenMatch()
+        try await keepAsPreference()
+        try await unrelatedEditsKeepObservations()
         try await failuresResumeAndRegeneration()
         try await deletionAndPrivacyRaces()
         try await cancellationAndCoalescing()
         try await deletionCorrectionsAndWriteFailure()
         try await modelPriority()
-        print("PASS: persona independent dates, aging/weak evidence, ownership/quote validation, bounded input, conservative labels, feedback/personalization, retries/restart, regeneration, deletion/privacy/reset races, cancellation/coalescing, write rollback and foreground priority")
+        print("PASS: persona independent dates, aging/weak evidence, ownership/quote validation, bounded input, dominance/mixed evidence, strength ordering, guidance-only Ask injection, explicit override, keep-as-preference, unrelated-edit stability, feedback/personalization, retries/restart, regeneration, deletion/privacy/reset races, cancellation/coalescing, write rollback and foreground priority")
     }
     static func independentDatesAndDecay() throws {
         let today = Calendar.current.startOfDay(for: .now)
@@ -70,16 +71,28 @@ enum PersonaInsightVerification {
         let bounded = engine.evidence(for: summary)
         try expect(bounded.count <= 16 && bounded.reduce(0, { $0 + $1.title.count + $1.detail.count + $1.quote.count }) <= 6_000, "输入预算未生效")
     }
-    static func conservativeArchetypes() throws {
-        func trait(_ dimension: PersonaDimension, _ value: String) -> PersonaTraitState {
-            PersonaTraitState(dimension: dimension, value: value, strength: 0.9, observationDays: 4, evidenceIDs: [])
+    static func mixedEvidenceAndOrdering() throws {
+        let today = Calendar.current.startOfDay(for: .now)
+        func proof(_ offset: Int, _ dimension: PersonaDimension, _ value: String, _ confidence: Double = 0.8) -> PersonaTraitObservation {
+            PersonaTraitObservation(dimension: dimension, value: value, evidenceQuote: quote, confidence: confidence,
+                day: today.addingTimeInterval(Double(offset) * 86_400), sourceDailySummaryID: UUID())
         }
-        let full = [trait(.decisionStyle, "cautious_verifying"), trait(.learningStyle, "systematic_research"), trait(.stressResponse, "breakdown_planning"), trait(.valueFocus, "quality")]
-        try expect(PersonaProfileEngine.match(Array(full.prefix(2))) == nil, "少量支撑维度给出了人格标签")
-        try expect(PersonaProfileEngine.match(full)?.archetypeID == "meticulous-planner", "充分支持的形象未匹配")
-        try expect(PersonaProfileEngine.match(full, excludingArchetypeIDs: ["meticulous-planner"]) == nil, "排除后不应强行换标签")
-        let conflict = Array(full.prefix(3)) + [trait(.valueFocus, "innovation")]
-        try expect(PersonaProfileEngine.match(conflict) == nil, "矛盾证据被忽略")
+        let split = (0..<3).map { proof(-$0, .decisionStyle, "cautious_verifying") } + (3..<6).map { proof(-$0, .decisionStyle, "decisive_fast") }
+        let state = PersonaProfileEngine.rebuild(from: split).first!
+        try expect(!state.isConfirmed && state.isMixed, "相互矛盾的观察被确认为确定特征")
+        let dominant = (0..<4).map { proof(-$0, .decisionStyle, "cautious_verifying") } + [proof(-5, .decisionStyle, "decisive_fast", 0.6)]
+        try expect(PersonaProfileEngine.rebuild(from: dominant).first?.isConfirmed == true, "明显占优的观察未确认")
+        // A weaker communication trait must not displace stronger ones just by sorting first alphabetically.
+        let mixedStrength = (0..<3).map { proof(-$0, .communicationStyle, "direct_concise", 0.6) }
+            + (0..<3).flatMap { [proof(-$0, .workPace, "deep_focus", 0.95), proof(-$0, .learningStyle, "systematic_research", 0.95), proof(-$0, .stressResponse, "breakdown_planning", 0.95)] }
+        try expect(PersonaProfileEngine.rebuild(from: mixedStrength).first?.dimension != .communicationStyle, "特征未按强度排序")
+        let shared = UUID()
+        let repeated = (0..<3).map { offset -> PersonaTraitObservation in
+            var item = proof(-offset, .workPace, "deep_focus"); item.sourceIDs = [shared]; return item
+        }
+        try expect(PersonaProfileEngine.rebuild(from: repeated).first?.isConfirmed == false, "同一来源跨天重复被算作独立观察日")
+        try expect(PersonaProfileEngine.rebuild(from: (0..<3).map { proof(-$0, .valueFocus, "quality") }).isEmpty, "已停用维度仍被汇总")
+        try expect(!PersonaInsightEngine().prompt().contains("valueFocus") && !PersonaInsightEngine().prompt().contains("emotionalTone"), "仍向模型请求与回答无关的维度")
     }
     static func summary(source: CaptureRecord, offset: Int) -> DailySummary {
         let day = Calendar.current.startOfDay(for: .now).addingTimeInterval(-Double(offset) * 86_400)
@@ -139,13 +152,16 @@ enum PersonaInsightVerification {
         let responder = Model(); try await drain(f.store, responder)
         var state = await f.store.snapshot()
         try expect(state.confirmedPersonaTraits.count == 3, "三天观察未在完整流程生效")
-        try expect(!PersonaPersonalization.text(in: state).isEmpty, "未接入个性化上下文")
-        try expect(PersonalMemoryContext.text(in: state, question: "给些建议").contains("当次要求与用户明确表达的偏好优先"), "缺少明确要求优先约束")
+        let hint = PersonaPersonalization.text(in: state)
+        try expect(!hint.isEmpty, "未接入个性化上下文")
+        try expect(hint.contains(PersonaDimension.decisionStyle.responseGuidance("cautious_verifying")!) && !hint.contains("做决定前习惯反复求证"), "注入的是人格描述而不是回答策略")
+        try expect(PersonalMemoryContext.text(in: state, question: "给些建议", includesObservations: true).contains("当次要求与用户明确表达的偏好优先"), "缺少明确要求优先约束")
+        try expect(!PersonalMemoryContext.text(in: state, question: "工作周报").contains("近期行为观察"), "周期回顾等生成任务混入了行为观察")
         var explicit = state
         let directive = MemoryDirective.parse("记住：以后回答详细一点，说明验证过程")!
         explicit.captures.append(CaptureRecord(eventTemplate: .manualMoment, sourceAppName: "明确约定", contentHash: "synthetic-explicit", ocrText: directive.content, textOrigin: .userInput, memoryDirective: directive))
         explicit.memoryKnowledge = MemoryKnowledgeEngine().reconcile(explicit, force: true)
-        let context = PersonalMemoryContext.text(in: explicit, question: "给些建议")
+        let context = PersonalMemoryContext.text(in: explicit, question: "给些建议", includesObservations: true)
         try expect(context.contains(directive.content), "明确偏好没有进入实际共用上下文")
         if let preferred = context.range(of: directive.content), let inferred = context.range(of: "近期行为观察") {
             try expect(preferred.lowerBound < inferred.lowerBound, "自动观察排在明确偏好之前")
@@ -162,21 +178,49 @@ enum PersonaInsightVerification {
         try await f.store.setPersonaPersonalization(false)
         state = await f.store.snapshot(); try expect(PersonaPersonalization.text(in: state).isEmpty, "暂停参考后仍发送推断")
         try await f.store.clearPersonaProfile()
-        state = await f.store.snapshot(); try expect(state.personaTraitObservations.isEmpty && state.personaMatchHistory.isEmpty && !state.personaProfileSettings.enabled, "清空后残留历史或继续排队")
+        state = await f.store.snapshot(); try expect(state.personaTraitObservations.isEmpty && !state.personaProfileSettings.enabled, "清空后残留观察或继续排队")
         try await f.store.clearPersonaProfile(rebuild: true)
         state = await f.store.snapshot(); try expect(state.pendingPersonaRefresh.count == 3, "重建未对已有每日回顾补齐")
     }
-    static func restoreHiddenMatch() async throws {
+    static func keepAsPreference() async throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
-        try await drain(f.store, Model("planner"))
-        let before = await f.store.snapshot()
-        guard let label = before.personaMatch else { throw Failure(errorDescription: "匹配恢复夹具没有形成形象") }
-        try await f.store.dismissPersonaMatch()
-        let hidden = await f.store.snapshot()
-        try expect(hidden.personaMatch == nil, "同一依据立即换了另一个标签")
-        try await f.store.restorePersonaMatches()
-        let restored = await f.store.snapshot()
-        try expect(restored.personaMatch?.archetypeID == label.archetypeID, "被收起的形象无法恢复")
+        try await drain(f.store, Model())
+        let guidance = PersonaDimension.decisionStyle.responseGuidance("cautious_verifying")!
+        try expect(try await f.store.keepPersonaTraitAsPreference(.decisionStyle) != nil, "确认的观察无法记为明确偏好")
+        let state = await f.store.snapshot()
+        try expect(state.memoryKnowledge.claims.contains { $0.explicit && $0.usable() && $0.content.contains(guidance) }, "保留后没有成为明确记忆")
+        let context = PersonalMemoryContext.text(in: state, question: "给些建议", includesObservations: true)
+        try expect(context.components(separatedBy: guidance).count == 2, "明确偏好与推断观察重复注入")
+        try expect(try await f.store.keepPersonaTraitAsPreference(.socialMode) == nil, "未确认的维度被记为偏好")
+        // An explicit length/tone preference decides communication style; inference must not compete with it.
+        var explicit = state
+        let directive = MemoryDirective.parse("记住：以后回答详细一点")!
+        explicit.captures.append(CaptureRecord(eventTemplate: .manualMoment, sourceAppName: "明确约定", contentHash: "synthetic-length", ocrText: directive.content, textOrigin: .userInput, memoryDirective: directive))
+        explicit.memoryKnowledge = MemoryKnowledgeEngine().reconcile(explicit, force: true)
+        explicit.personaTraitObservations += explicit.dailySummaries.map {
+            PersonaTraitObservation(dimension: .communicationStyle, value: "direct_concise", evidenceQuote: quote, confidence: 0.9, day: $0.day, sourceDailySummaryID: $0.id)
+        }
+        try expect(explicit.confirmedPersonaTraits.contains { $0.dimension == .communicationStyle }, "沟通风格夹具未确认")
+        try expect(!PersonaPersonalization.text(in: explicit).contains(PersonaDimension.communicationStyle.responseGuidance("direct_concise")!), "明确篇幅偏好已存在时仍注入推断的沟通风格")
+    }
+    static func unrelatedEditsKeepObservations() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
+        let model = Model(); try await drain(f.store, model)
+        let calls = await model.count()
+        var state = await f.store.snapshot()
+        let observed = state.personaTraitObservations.count
+        // Completing an action and regenerating an unchanged review are not new evidence.
+        state.dailySummaries[0].todos = [DailySummaryTodo(title: "合成待办", detail: "", status: .completed, sourceCaptureIDs: state.dailySummaries[0].sourceCaptureIDs, priority: .normal)]
+        state.dailySummaries[1].id = UUID(); state.dailySummaries[1].createdAt = .now; state.dailySummaries[1].content = "重新生成的合成回顾"
+        state.reconcilePersonaProfile()
+        try expect(state.personaTraitObservations.count == observed && state.confirmedPersonaTraits.count == 3, "无关修改让已有观察失效")
+        try expect(state.pendingPersonaRefresh.isEmpty, "无关修改触发了重新外发分析")
+        try expect(state.personaTraitObservations.filter { Calendar.current.isDate($0.day, inSameDayAs: state.dailySummaries[1].day) }.allSatisfy { $0.sourceDailySummaryID == state.dailySummaries[1].id }, "观察未指向当天当前回顾")
+        // Changing the analyzed own item is new evidence.
+        state.dailySummaries[2].ledger[0].quotes[0].text = quote + "另外补充了一段新的本人说明。"
+        state.reconcilePersonaProfile()
+        try expect(state.pendingPersonaRefresh.count == 1 && state.personaTraitObservations.count == observed - 3, "证据修改后未失效重算")
+        try expect(await model.count() == calls, "校验过程调用了模型")
     }
     static func failuresResumeAndRegeneration() async throws {
         let f = try fixture(days: 2); defer { try? FileManager.default.removeItem(at: f.storage.rootURL) }
@@ -194,8 +238,8 @@ enum PersonaInsightVerification {
         var replacement = old; replacement.id = UUID(); replacement.createdAt = .now
         archived.dailySummaries[0] = replacement
         archived.reconcilePersonaProfile()
-        try expect(!archived.personaTraitObservations.contains { $0.sourceDailySummaryID == old.id }, "重新生成后旧观察仍累计")
-        try expect(archived.personaRefreshJobs.contains { $0.summaryID == replacement.id && $0.status == .queued }, "新版本没有进入独立检查点")
+        try expect(!archived.personaTraitObservations.contains { $0.sourceDailySummaryID == old.id }, "重新生成后观察仍指向旧回顾")
+        try expect(archived.personaRefreshJobs.contains { $0.summaryID == replacement.id && $0.status == .completed }, "证据未变的重新生成丢失了检查点")
         await model.setMode("empty")
         let g = try fixture(days: 1); defer { try? FileManager.default.removeItem(at: g.storage.rootURL) }
         _ = try await g.store.refreshPersonaProfile(responder: model)
@@ -218,7 +262,7 @@ enum PersonaInsightVerification {
             }
             await model.release(); _ = try await task.value
             let after = await f.store.snapshot()
-            try expect(after.personaTraitObservations.isEmpty && after.personaMatch == nil, "\(scenario) 后迟到的结果被保存")
+            try expect(after.personaTraitObservations.isEmpty, "\(scenario) 后迟到的结果被保存")
         }
     }
     static func cancellationAndCoalescing() async throws {
@@ -257,7 +301,7 @@ enum PersonaInsightVerification {
                 continue
             }
             let after = await f.store.snapshot()
-            try expect(after.confirmedPersonaTraits.isEmpty && after.personaMatchHistory.isEmpty, "来源撤回后残留确认判断/历史")
+            try expect(after.confirmedPersonaTraits.isEmpty, "来源撤回后残留确认判断")
             let reopened = try FileMemoryStore(storage: f.storage, deferMaintenance: true, credentials: InMemoryCredentialStore())
             let restored = await reopened.snapshot()
             try expect(restored.confirmedPersonaTraits.isEmpty, "重启恢复了删除的判断")

@@ -38,9 +38,6 @@ extension FileMemoryStore {
             state.personaRefreshJobs[live].status = observations.isEmpty ? .insufficientEvidence : .completed
             state.personaRefreshJobs[live].failure = nil; state.personaRefreshJobs[live].retryAt = nil
             state.reconcilePersonaProfile(now: now)
-            if let match = state.personaMatch, state.personaMatchHistory.last?.archetypeID != match.archetypeID {
-                state.personaMatchHistory = Array((state.personaMatchHistory + [match]).suffix(30))
-            }
             try persistReviewState()
         } catch {
             guard state.personaProfileRevision == baseline.personaProfileRevision,
@@ -84,10 +81,9 @@ extension FileMemoryStore {
     }
     public func clearPersonaProfile(rebuild: Bool = false) throws {
         state.personaProfileRevision = UUID(); state.personaProfileSettings.enabled = rebuild
-        state.personaTraitObservations = []; state.personaTraits = []; state.personaMatch = nil; state.personaMatchHistory = []
+        state.personaTraitObservations = []; state.personaTraits = []
         state.personaRefreshJobs = []; state.pendingPersonaRefresh = []
-        state.rejectedPersonaEvidence = []; state.rejectedPersonaMatchStamp = nil
-        state.dismissedPersonaDimensions = []; state.dismissedPersonaArchetypeIDs = []
+        state.rejectedPersonaEvidence = []; state.dismissedPersonaDimensions = []
         state.conversationSummary = nil
         state.pendingRecoveryCleanup = true
         try persist()
@@ -114,20 +110,19 @@ extension FileMemoryStore {
         let keys = state.personaTraitObservations.filter { ids.contains($0.id) }.map(PersonaProfileEngine.evidenceKey)
         state.rejectedPersonaEvidence = Array(Set(state.rejectedPersonaEvidence + keys)).sorted()
         state.personaTraitObservations.removeAll { ids.contains($0.id) }
-        state.personaProfileRevision = UUID(); state.conversationSummary = nil; state.personaMatchHistory = []
+        state.personaProfileRevision = UUID(); state.conversationSummary = nil
         state.pendingRecoveryCleanup = true
         try persist()
         _ = try? retryPendingFileCleanup()
     }
-    public func dismissPersonaMatch() throws {
-        guard let current = state.personaMatch else { return }
-        state.dismissedPersonaArchetypeIDs = Array(Set(state.dismissedPersonaArchetypeIDs + [current.archetypeID])).sorted()
-        state.rejectedPersonaMatchStamp = state.personaEvidenceStamp
-        state.personaMatch = nil
-        try persistReviewState()
-    }
-    public func restorePersonaMatches() throws {
-        state.dismissedPersonaArchetypeIDs = []; state.rejectedPersonaMatchStamp = nil
-        try persistReviewState()
+    /// Turns a confirmed observation into an explicit, user-owned preference. The explicit memory then
+    /// supersedes the inferred dimension in answers and stays until the user retires it.
+    @discardableResult
+    public func keepPersonaTraitAsPreference(_ dimension: PersonaDimension, now: Date = .now) throws -> CaptureRecord? {
+        guard let trait = state.confirmedPersonaTraits(now: now).first(where: { $0.dimension == dimension }),
+              let guidance = dimension.responseGuidance(trait.value) else { return nil }
+        var directive = MemoryDirective(content: "以后回答时" + guidance + "。", key: "persona:" + dimension.rawValue)
+        directive.scopeExplicitlySet = true
+        return try remember(directive, now: now)
     }
 }

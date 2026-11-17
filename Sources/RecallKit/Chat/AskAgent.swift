@@ -45,7 +45,7 @@ public enum AskAgent {
         guard !EvidenceAccess.records(scoped).filter({ record in scoped.rules.first { $0.template == record.eventTemplate }?.participatesInChat ?? true }).isEmpty else {
             return AskTranscript(content: AnswerGrounding.noEvidence, citations: [], inspectedSourceIDs: [])
         }
-        let rawProfile = PersonalMemoryContext.text(in: scoped, question: question, topicIDs: Set([scope.topicID].compactMap { $0 }), conversationID: conversationID)
+        let rawProfile = PersonalMemoryContext.text(in: scoped, question: question, topicIDs: Set([scope.topicID].compactMap { $0 }), conversationID: conversationID, includesObservations: true)
         let profile = PrivacyEngine().redact(rawProfile)
         let profileIDs = scoped.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() && rawProfile.contains($0.content) && scoped.memoryKnowledgeSettings.references($0) }.flatMap(\.sourceIDs).memoryUnique()
         let tools = MemoryReadTools(state: state, scope: scope, textIndex: textIndex)

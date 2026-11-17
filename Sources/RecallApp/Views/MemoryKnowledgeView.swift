@@ -119,7 +119,7 @@ struct MemoryKnowledgeView: View {
         } message: { Text(RecallLocalization.both("会重置行为观察和纠正记录，按当前有效来源重新分析；需要调用已连接的模型。", "This resets observations and corrections, then analyzes current valid reviews using your connected model.")) }
         .confirmationDialog(RecallLocalization.both("清空行为观察并停止分析？", "Clear observations and stop analysis?"), isPresented: $confirmsPersonaClear) {
             Button(RecallLocalization.both("清空并停止", "Clear and stop"), role: .destructive) { Task { await model.updatePersonaProfile(.clear) } }
-        } message: { Text(RecallLocalization.both("清除自动行为观察、形象及其历史。需要时可重新开启分析。", "Removes inferred observations, labels and their history. You can enable analysis again later.")) }
+        } message: { Text(RecallLocalization.both("清除自动行为观察及其纠正记录。需要时可重新开启分析。", "Removes inferred observations and their corrections. You can enable analysis again later.")) }
     }
     private var options: some View {
         Menu {
@@ -136,16 +136,13 @@ struct MemoryKnowledgeView: View {
                 if model.state.personaRefreshJobs.contains(where: { $0.status == .failed }) {
                     Button(RecallLocalization.both("重试未完成的分析", "Retry failed analysis")) { Task { await model.updatePersonaProfile(.retry) } }
                 }
-                if !model.state.dismissedPersonaArchetypeIDs.isEmpty {
-                    Button(RecallLocalization.both("恢复被收起的形象", "Restore hidden labels")) { Task { await model.updatePersonaProfile(.restoreMatches) } }
-                }
                 Button(RecallLocalization.both("重新分析最近30天的回顾…", "Reanalyze reviews from the last 30 days…")) { confirmsPersonaRebuild = true }
                     .disabled(!model.state.privacy.cloudUseEnabled || !model.state.llmConfiguration.hasCredential)
                 Button(RecallLocalization.both("清空观察并停止分析…", "Clear observations and stop…"), role: .destructive) { confirmsPersonaClear = true }
             }.disabled(model.isUpdatingPersonaProfile)
-            if !model.state.dismissedPersonaDimensions.isEmpty {
+            if model.state.dismissedPersonaDimensions.contains(where: { !$0.isRetired }) {
                 Menu(RecallLocalization.both("恢复已停用的行为判断", "Restore stopped trait judgments")) {
-                    ForEach(model.state.dismissedPersonaDimensions, id: \.self) { dimension in
+                    ForEach(model.state.dismissedPersonaDimensions.filter { !$0.isRetired }, id: \.self) { dimension in
                         Button(RecallLocalization.text(dimension.title)) { model.resumePersonaTrait(dimension) }
                     }
                 }
@@ -154,7 +151,7 @@ struct MemoryKnowledgeView: View {
     }
     private var personaSection: some View {
         PersonaSummaryView(state: model.state, processing: model.isRefreshingPersonaProfile,
-            onEvidence: { showsPersonaEvidence = true }, onDismissMatch: { model.dismissPersonaMatch() },
+            onEvidence: { showsPersonaEvidence = true }, onKeep: { dimension in Task { await model.updatePersonaProfile(.keep(dimension)) } },
             onRetry: { Task { await model.updatePersonaProfile(.retry) } })
     }
     private func editor(_ claim: MemoryClaim?) -> some View {

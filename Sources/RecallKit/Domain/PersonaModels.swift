@@ -1,8 +1,8 @@
 import Foundation
 
-/// Behavioral dimensions inferred only from a day's already-generated, already-sanitized daily
-/// review text — never from raw captures. Values describe observed tendencies, not clinical or
-/// diagnostic traits; the taxonomy deliberately avoids disorder/illness framing.
+/// Behavioral dimensions inferred only from a day's already-reviewed, user-owned items — never
+/// from raw captures. Values describe observed tendencies, not clinical or diagnostic traits.
+/// Retired cases stay decodable so older archives load; they are never inferred or shown.
 public enum PersonaDimension: String, Codable, CaseIterable, Hashable, Sendable {
     case communicationStyle
     case decisionStyle
@@ -13,6 +13,10 @@ public enum PersonaDimension: String, Codable, CaseIterable, Hashable, Sendable 
     case learningStyle
     case stressResponse
     case valueFocus
+
+    /// Only dimensions that change how an answer is organized are inferred.
+    public static let inferred: [PersonaDimension] = [.communicationStyle, .decisionStyle, .learningStyle, .stressResponse, .workPace]
+    public var isRetired: Bool { !Self.inferred.contains(self) }
 
     public var title: String {
         switch self {
@@ -34,12 +38,9 @@ public enum PersonaDimension: String, Codable, CaseIterable, Hashable, Sendable 
         case .communicationStyle: ["direct_concise", "gentle_detailed", "formal", "casual"]
         case .decisionStyle: ["cautious_verifying", "decisive_fast", "data_driven", "intuition_driven"]
         case .workPace: ["deep_focus", "multitask_switching", "sprint_to_deadline", "steady_pace"]
-        case .emotionalTone: ["upbeat_positive", "calm_pragmatic", "reflective_cautious"]
-        case .socialMode: ["independent", "collaborative", "influencing_others", "supportive_listener"]
-        case .motivation: ["achievement", "curiosity_exploration", "relationship_meaning", "stability_security"]
+        case .emotionalTone, .socialMode, .motivation, .valueFocus: []
         case .learningStyle: ["trial_and_error", "systematic_research", "imitation_reference"]
         case .stressResponse: ["breakdown_planning", "seek_help", "face_head_on", "temporary_avoidance"]
-        case .valueFocus: ["efficiency", "quality", "innovation", "harmony", "autonomy"]
         }
     }
 
@@ -58,17 +59,6 @@ public enum PersonaDimension: String, Codable, CaseIterable, Hashable, Sendable 
         case (.workPace, "multitask_switching"): "习惯在多个任务间切换"
         case (.workPace, "sprint_to_deadline"): "临近截止时冲刺收尾"
         case (.workPace, "steady_pace"): "保持稳定匀速的节奏"
-        case (.emotionalTone, "upbeat_positive"): "整体基调积极乐观"
-        case (.emotionalTone, "calm_pragmatic"): "整体基调务实冷静"
-        case (.emotionalTone, "reflective_cautious"): "遇事偏谨慎、爱反思"
-        case (.socialMode, "independent"): "更习惯独立完成事情"
-        case (.socialMode, "collaborative"): "更习惯协作完成事情"
-        case (.socialMode, "influencing_others"): "倾向主动影响或推动他人"
-        case (.socialMode, "supportive_listener"): "倾向倾听和支持他人"
-        case (.motivation, "achievement"): "由成就和结果驱动"
-        case (.motivation, "curiosity_exploration"): "由好奇和探索驱动"
-        case (.motivation, "relationship_meaning"): "由关系和意义驱动"
-        case (.motivation, "stability_security"): "由稳定和安全感驱动"
         case (.learningStyle, "trial_and_error"): "靠实践试错来学习"
         case (.learningStyle, "systematic_research"): "靠系统研究来学习"
         case (.learningStyle, "imitation_reference"): "靠模仿参考来学习"
@@ -76,13 +66,40 @@ public enum PersonaDimension: String, Codable, CaseIterable, Hashable, Sendable 
         case (.stressResponse, "seek_help"): "压力下会主动寻求帮助"
         case (.stressResponse, "face_head_on"): "压力下会正面迎击"
         case (.stressResponse, "temporary_avoidance"): "压力下会先暂时回避"
-        case (.valueFocus, "efficiency"): "更看重效率"
-        case (.valueFocus, "quality"): "更看重质量"
-        case (.valueFocus, "innovation"): "更看重创新"
-        case (.valueFocus, "harmony"): "更看重人际和谐"
-        case (.valueFocus, "autonomy"): "更看重自主权"
         default: title
         }
+    }
+
+    /// How an answer should adapt. Injected instead of the descriptive label, so the model adjusts
+    /// its organization rather than repeating a characterization back to the user.
+    public func responseGuidance(_ value: String) -> String? {
+        switch (self, value) {
+        case (.communicationStyle, "direct_concise"): "先给结论，少铺垫，篇幅精简"
+        case (.communicationStyle, "gentle_detailed"): "语气平和，必要时展开步骤和背景"
+        case (.communicationStyle, "formal"): "措辞规范正式"
+        case (.communicationStyle, "casual"): "语气自然口语化"
+        case (.decisionStyle, "cautious_verifying"): "给结论时附上依据和可核对的来源"
+        case (.decisionStyle, "decisive_fast"): "直接给出推荐选项，再简述理由"
+        case (.decisionStyle, "data_driven"): "优先列出数据和事实依据"
+        case (.decisionStyle, "intuition_driven"): "给出推荐时简述判断思路，并点明关键风险"
+        case (.workPace, "deep_focus"): "建议安排时保留成块的专注时间"
+        case (.workPace, "multitask_switching"): "建议按可随时中断的小块来组织"
+        case (.workPace, "sprint_to_deadline"): "给建议时标出截止前的关键节点"
+        case (.workPace, "steady_pace"): "建议按均匀节奏分配工作"
+        case (.learningStyle, "trial_and_error"): "讲解时先给可直接动手尝试的步骤"
+        case (.learningStyle, "systematic_research"): "讲解时先给完整结构和背景"
+        case (.learningStyle, "imitation_reference"): "讲解时优先给示例或可参考的做法"
+        case (.stressResponse, "breakdown_planning"): "事情多时帮助拆成可执行的步骤"
+        case (.stressResponse, "seek_help"): "事情多时指出可以求助或协作的对象"
+        case (.stressResponse, "face_head_on"): "事情多时直接点出最关键的一步"
+        case (.stressResponse, "temporary_avoidance"): "事情多时先给一个最小的起步动作，不施压"
+        default: nil
+        }
+    }
+
+    /// Explicit preference slots that already decide this dimension. See `MemoryPersonalization.preferenceSlot`.
+    public var preferenceSlots: Set<String> {
+        self == .communicationStyle ? ["response-length", "response-tone"] : []
     }
 }
 
@@ -99,6 +116,8 @@ public struct PersonaTraitObservation: Identifiable, Codable, Hashable, Sendable
     public var createdAt: Date
     public var sourceVersion: String? = nil
     public var evidenceID: String? = nil
+    /// Local only. Lets a repeated source count as one independent day.
+    public var sourceIDs: [UUID]? = nil
 
     public init(
         id: UUID = UUID(),
@@ -122,7 +141,7 @@ public struct PersonaTraitObservation: Identifiable, Codable, Hashable, Sendable
 }
 
 /// The rolling, decayed belief about one dimension. A single day never flips this on its own;
-/// `observationDays` must cross a threshold before the trait is confident enough to surface.
+/// `observationDays` must cross a threshold, and the value must clearly dominate competing values.
 public struct PersonaTraitState: Identifiable, Codable, Hashable, Sendable {
     public static let minimumObservationDaysToSurface = 3
 
@@ -133,6 +152,10 @@ public struct PersonaTraitState: Identifiable, Codable, Hashable, Sendable {
     public var observationDays: Int
     public var evidenceIDs: [UUID]
     public var updatedAt: Date
+    /// Share of the dimension's decayed weight held by `value`. Nil in older archives.
+    public var dominance: Double? = nil
+    /// Independent days observed for this dimension across all values.
+    public var dimensionDays: Int? = nil
 
     public init(
         dimension: PersonaDimension,
@@ -150,14 +173,20 @@ public struct PersonaTraitState: Identifiable, Codable, Hashable, Sendable {
         self.updatedAt = updatedAt
     }
 
-    public var isConfirmed: Bool { observationDays >= Self.minimumObservationDaysToSurface && strength >= 0.7 }
+    public static let minimumDominance = 0.7
+    public var isConfirmed: Bool {
+        observationDays >= Self.minimumObservationDaysToSurface && strength >= 0.7 && (dominance ?? 1) >= Self.minimumDominance
+    }
+    /// Enough independent days, but they point in different directions.
+    public var isMixed: Bool {
+        (dimensionDays ?? 0) >= Self.minimumObservationDaysToSurface && (dominance ?? 1) < Self.minimumDominance
+    }
 }
 
 public struct PersonaProfileSettings: Codable, Hashable, Sendable {
     /// Still requires the existing cloud permission and a configured model.
     public var enabled = true
     public var personalizesResponses = true
-    public var showsArchetype = true
     public init() {}
 }
 
@@ -176,91 +205,5 @@ public struct PersonaRefreshJob: Identifiable, Codable, Hashable, Sendable {
     public var failure: String? = nil
     public init(summaryID: UUID, sourceVersion: String) {
         self.summaryID = summaryID; self.sourceVersion = sourceVersion
-    }
-}
-
-/// A named archetype the trait state can be matched against. Purely local, hand-authored and
-/// extensible — not something the model proposes.
-public struct PersonaArchetype: Identifiable, Sendable {
-    public var id: String
-    public var name: String
-    public var tagline: String
-    public var signatureDimensions: [PersonaDimension: String]
-
-    public init(id: String, name: String, tagline: String, signatureDimensions: [PersonaDimension: String]) {
-        self.id = id
-        self.name = name
-        self.tagline = tagline
-        self.signatureDimensions = signatureDimensions
-    }
-
-    public static let catalog: [PersonaArchetype] = [
-        PersonaArchetype(
-            id: "meticulous-planner", name: "严谨规划师",
-            tagline: "做决定前习惯把证据摆齐，按步骤稳步推进。",
-            signatureDimensions: [.decisionStyle: "cautious_verifying", .learningStyle: "systematic_research", .stressResponse: "breakdown_planning", .valueFocus: "quality"]
-        ),
-        PersonaArchetype(
-            id: "agile-explorer", name: "敏捷探索者",
-            tagline: "靠直觉快速试，边做边调整方向。",
-            signatureDimensions: [.decisionStyle: "intuition_driven", .workPace: "multitask_switching", .learningStyle: "trial_and_error", .valueFocus: "innovation"]
-        ),
-        PersonaArchetype(
-            id: "deep-diver", name: "专注深潜者",
-            tagline: "一旦投入就长时间沉浸在一件事里。",
-            signatureDimensions: [.workPace: "deep_focus", .learningStyle: "systematic_research", .socialMode: "independent"]
-        ),
-        PersonaArchetype(
-            id: "steady-executor", name: "稳健执行者",
-            tagline: "节奏稳定、靠数据说话，不追求戏剧性的冲刺。",
-            signatureDimensions: [.workPace: "steady_pace", .decisionStyle: "data_driven", .motivation: "stability_security"]
-        ),
-        PersonaArchetype(
-            id: "warm-collaborator", name: "温暖协作者",
-            tagline: "更在意和别人一起把事情做好。",
-            signatureDimensions: [.socialMode: "collaborative", .emotionalTone: "upbeat_positive", .valueFocus: "harmony"]
-        ),
-        PersonaArchetype(
-            id: "deadline-sprinter", name: "目标冲刺者",
-            tagline: "越临近截止越专注，正面迎击压力。",
-            signatureDimensions: [.workPace: "sprint_to_deadline", .motivation: "achievement", .stressResponse: "face_head_on"]
-        ),
-        PersonaArchetype(
-            id: "curious-generalist", name: "好奇杂学家",
-            tagline: "对新鲜事物好奇，喜欢在多个话题间切换。",
-            signatureDimensions: [.motivation: "curiosity_exploration", .learningStyle: "imitation_reference", .workPace: "multitask_switching"]
-        )
-    ]
-}
-
-/// A computed match, recomputed locally every time the trait state changes. Never sent to a model.
-public struct PersonaMatch: Identifiable, Codable, Hashable, Sendable {
-    public var id: UUID
-    public var archetypeID: String
-    public var name: String
-    public var tagline: String
-    public var score: Double
-    public var supportingDimensions: [PersonaDimension]
-    public var alternateArchetypeID: String?
-    public var matchedAt: Date
-
-    public init(
-        id: UUID = UUID(),
-        archetypeID: String,
-        name: String,
-        tagline: String,
-        score: Double,
-        supportingDimensions: [PersonaDimension],
-        alternateArchetypeID: String? = nil,
-        matchedAt: Date = .now
-    ) {
-        self.id = id
-        self.archetypeID = archetypeID
-        self.name = name
-        self.tagline = tagline
-        self.score = min(max(score, 0), 1)
-        self.supportingDimensions = supportingDimensions
-        self.alternateArchetypeID = alternateArchetypeID
-        self.matchedAt = matchedAt
     }
 }
