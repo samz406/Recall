@@ -64,11 +64,13 @@ public struct DailyReviewActionCompletion: Equatable, Sendable {
             sourceCaptureIDs: ids.sorted { $0.uuidString < $1.uuidString }, confidence: 1, createdAt: now, updatedAt: now,
             semanticKey: DailyReviewPresentation.key(item.title))
         updated.sourceCaptureIDs = Array(Set(updated.sourceCaptureIDs).union(ids)).sorted { $0.uuidString < $1.uuidString }
-        updated.completedAt = now; updated.updatedAt = now
         let alreadyScheduled = updated.status == .scheduled || updated.status == .snoozed
-        if alreadyScheduled, let due = updated.dueAt, updated.recurrence != .none, let next = updated.recurrence.nextDate(after: max(due, now)) {
-            updated.dueAt = next; updated.status = .scheduled; updated.closedAt = nil
-        } else { updated.status = .completed; updated.closedAt = now }
+        if alreadyScheduled && updated.recurrence != .none {
+            updated = ReminderTimeline.completing(updated, now: now)
+        } else {
+            updated.completedAt = now; updated.updatedAt = now; updated.snoozedUntil = nil
+            updated.status = .completed; updated.closedAt = now
+        }
         reminder = updated
     }
 }

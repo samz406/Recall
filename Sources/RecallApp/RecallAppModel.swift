@@ -25,8 +25,8 @@ final class RecallAppModel: ObservableObject {
             chatSources.update(state)
             globalSearch.update(state, matters: matterFiles)
             if oldValue.reminders != state.reminders {
-                let active = Set(state.reminders.filter { $0.status == .scheduled || $0.status == .snoozed }.map(\.id))
-                for old in oldValue.reminders where (old.status == .scheduled || old.status == .snoozed) && !active.contains(old.id) {
+                let active = Set(state.reminders.lazy.filter(\.status.needsNotification).map(\.id))
+                for old in oldValue.reminders where old.status.needsNotification && !active.contains(old.id) {
                     notificationScheduler.cancel(old)
                 }
             }
@@ -56,7 +56,7 @@ final class RecallAppModel: ObservableObject {
     let timelineWorkspace = TimelineWorkspace()
     let chatSources = ChatSourcesWorkspace()
     let globalSearch = GlobalSearchWorkspace()
-    @Published private(set) var isLoadingSavedState = true
+    @Published var isLoadingSavedState = true
     private var isFinishingStartup = true
     @Published var tasks: [RecallTaskStatus] = []
     var taskRetryActions: [UUID: () -> Void] = [:]
@@ -124,6 +124,10 @@ final class RecallAppModel: ObservableObject {
     @Published private(set) var enterKeyMonitorStatus: GlobalEnterKeyRecorderStatus = .disabled
     @Published private(set) var diagnosticEntries: [RecallDiagnosticEntry]
     @Published private(set) var reminderDeliveryStates: [UUID: ReminderDeliveryState] = [:]
+    /// Nil until checked or when this host cannot use notifications. Never prompts.
+    @Published private(set) var reminderNotificationsAllowed: Bool?
+    /// Notification actions that arrived before the saved archive finished loading.
+    private var pendingReminderActions: [(id: UUID, action: String)] = []
     @Published private(set) var isUpdatingReminderHistory = false
     @Published private(set) var reminderDiscoveryStatus: ReminderDiscoveryStatus = .idle
 
@@ -256,6 +260,8 @@ final class RecallAppModel: ObservableObject {
         guard !isLoadingSavedState else { return }
         do { try await store.syncDailyReviewReminders() }
         catch { recordError(error, source: "Reminders", message: "从每日回顾更新提醒失败，将重试") }
+        do { try await store.maintainReminders() }
+        catch { recordError(error, source: "Reminders", message: "整理提醒历史失败，将重试") }
         state = await store.snapshot()
         archiveBackupPending = await store.backupPending
         pendingFileCleanupCount = (state.pendingFileDeletions ?? []).count + (state.pendingRecoveryCleanup == true ? 1 : 0)
@@ -264,7 +270,8 @@ final class RecallAppModel: ObservableObject {
         rebuildMatterFiles()
         configureShortcuts()
         updateEnterKeyRecorder()
-        await refreshReminderDeliveryStates()
+        await refreshReminderDeliveryStates(repair: true)
+        drainPendingReminderActions()
         armDailySummaryTimer()
         armRecentlyDeletedTimer()
         generateMissedDailySummaryIfNeeded()
@@ -846,45 +853,55 @@ final class RecallAppModel: ObservableObject {
 
     func verifyReminderDelivery() {
         Task {
-            await refreshReminderDeliveryStates()
-            let scheduled = state.reminders.filter { $0.status == .scheduled || $0.status == .snoozed }
-            let counts = scheduled.reduce(into: (pending: 0, delivered: 0, notFound: 0)) { result, reminder in
-                switch reminderDeliveryStates[reminder.id] {
-                case .pending: result.pending += 1
-                case .delivered: result.delivered += 1
-                case .notFound, .none: result.notFound += 1
-                }
-            }
-            if scheduled.isEmpty {
-                noticeMessage = "当前没有已安排的提醒。"
-            } else {
-                noticeMessage = "已核验系统通知：待投递 \(counts.pending) 项，已推送 \(counts.delivered) 项，未在系统队列中找到 \(counts.notFound) 项。"
-            }
+            await refreshReminderDeliveryStates(repair: true)
+            let scheduled = state.reminders.filter(\.status.needsNotification)
+            let missing = scheduled.filter { reminderDeliveryStates[$0.id] == .notFound }.count
+            noticeMessage = scheduled.isEmpty ? "当前没有已安排的提醒。"
+                : (missing == 0 ? "已核验 \(scheduled.count) 项提醒，系统通知均已就绪。" : "有 \(missing) 项提醒未能写入系统通知，请检查通知权限。")
         }
     }
 
-    private func refreshReminderDeliveryStates() async {
-        let scheduled = state.reminders.filter { $0.status == .scheduled || $0.status == .snoozed }
+    /// Re-registers every scheduled reminder whose system request is missing (relaunch, permission
+    /// regained, cleared queue) and tops up monthly dates. Never prompts for permission.
+    private func refreshReminderDeliveryStates(repair: Bool = false) async {
+        let scheduled = state.reminders.filter(\.status.needsNotification)
+        reminderNotificationsAllowed = await reminderCreationScheduler.notificationsAllowed()
         guard !scheduled.isEmpty else {
             reminderDeliveryStates = [:]
             return
         }
         do {
-            let nextStates = try await notificationScheduler.deliveryStates(for: scheduled)
-            let missingIDs = nextStates.compactMap { id, value -> String? in
-                guard value == .notFound,
-                      let reminder = scheduled.first(where: { $0.id == id }),
-                      (reminder.dueAt ?? .distantPast) > .now else { return nil }
-                return id.uuidString
-            }.sorted()
-            if !missingIDs.isEmpty, missingIDs != reminderDeliveryStates.compactMap({ $0.value == .notFound ? $0.key.uuidString : nil }).sorted() {
-                recordDiagnostic(.warning, source: "Reminders", message: "已安排提醒未出现在系统通知队列", metadata: ["count": "\(missingIDs.count)"])
+            var nextStates = try await reminderCreationScheduler.deliveryStates(for: scheduled)
+            if repair, reminderNotificationsAllowed == true {
+                var repaired = 0
+                for reminder in scheduled where !ReminderTimeline.requests(for: reminder).isEmpty {
+                    // Monthly dates are explicit one-offs; refresh them so the lookahead never runs dry.
+                    let monthly = reminder.recurrence == .monthly
+                    guard nextStates[reminder.id] != .pending || monthly else { continue }
+                    do { try await reminderCreationScheduler.schedule(reminder); nextStates[reminder.id] = .pending; repaired += monthly ? 0 : 1 }
+                    catch { continue }
+                }
+                if repaired > 0 { recordDiagnostic(.info, source: "Reminders", message: "已重新写入缺失的系统通知", metadata: ["count": "\(repaired)"]) }
+            }
+            let byID = Dictionary(uniqueKeysWithValues: scheduled.map { ($0.id, $0) })
+            let missing = nextStates.filter { id, value in
+                value == .notFound && byID[id].map { !ReminderTimeline.requests(for: $0).isEmpty } == true
+            }.count
+            if missing > 0, missing != reminderDeliveryStates.values.filter({ $0 == .notFound }).count {
+                recordDiagnostic(.warning, source: "Reminders", message: "已安排提醒未出现在系统通知队列", metadata: ["count": "\(missing)"])
             }
             reminderDeliveryStates = nextStates
         } catch {
             reminderDeliveryStates = [:]
             recordDiagnostic(.warning, source: "Reminders", message: "无法核验系统通知队列", metadata: ["error": String(describing: type(of: error))])
         }
+    }
+
+    func openNotificationSettings() {
+        let id = Bundle.main.bundleIdentifier ?? ""
+        let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)")
+            ?? URL(string: "x-apple.systempreferences:com.apple.preference.notifications")!
+        NSWorkspace.shared.open(url)
     }
 
     func clearDiagnosticLog() {
@@ -1394,13 +1411,9 @@ final class RecallAppModel: ObservableObject {
         }
         Task {
             do {
-                var updated = reminder
-                updated.dueAt = dueAt
-                updated.recurrence = recurrence
-                updated.scheduledAt = .now
-                updated.updatedAt = .now
-                updated.status = .scheduled
-                let granted = try await notificationScheduler.requestAuthorization()
+                var updated = ReminderTimeline.rescheduling(reminder, dueAt: dueAt, recurrence: recurrence)
+                let granted = try await reminderCreationScheduler.requestAuthorization()
+                reminderNotificationsAllowed = granted
                 guard granted else {
                     updated.status = .proposed
                     try await store.updateReminder(updated)
@@ -1408,7 +1421,8 @@ final class RecallAppModel: ObservableObject {
                     noticeMessage = "事项已保存为待确认；系统通知未授权，尚未安排提醒。"
                     return
                 }
-                try await notificationScheduler.schedule(updated)
+                // schedule() already confirms the request is in the system queue.
+                try await reminderCreationScheduler.schedule(updated)
                 var learningProfile = state.reminderLearningProfile
                 learningProfile.record(
                     .confirmed(hour: Calendar.current.component(.hour, from: dueAt)),
@@ -1417,15 +1431,13 @@ final class RecallAppModel: ObservableObject {
                 do {
                     try await store.updateReminder(updated, learningProfile: learningProfile)
                 } catch {
-                    notificationScheduler.cancel(updated)
+                    reminderCreationScheduler.cancel(updated)
                     throw error
                 }
                 await refresh()
-                guard reminderDeliveryStates[updated.id] == .pending else {
-                    throw ReminderNotificationError.notificationSchedulingFailed
-                }
-                noticeMessage = "提醒已写入 macOS 通知队列，将在 \(dueAt.formatted(date: .abbreviated, time: .shortened)) 推送。"
+                noticeMessage = "提醒已安排，将在 \(dueAt.formatted(date: .abbreviated, time: .shortened)) 推送。"
             } catch {
+                noticeMessage = (error as? ReminderNotificationError)?.errorDescription ?? "安排提醒失败，请重试。"
                 recordError(error, source: "Reminders", message: "安排提醒失败")
             }
         }
@@ -1460,7 +1472,7 @@ final class RecallAppModel: ObservableObject {
         do {
             guard try await reminderCreationScheduler.requestAuthorization() else { throw ReminderNotificationError.authorizationRequired }
             guard dueAt > .now else { throw ReminderCreationError.invalidInput }
-            reminder.status = .scheduled; reminder.scheduledAt = .now; reminder.updatedAt = .now
+            reminder = ReminderTimeline.rescheduling(reminder, dueAt: dueAt, recurrence: recurrence)
             try await reminderCreationScheduler.schedule(reminder)
             do {
                 var profile = await store.snapshot().reminderLearningProfile
@@ -1505,7 +1517,8 @@ final class RecallAppModel: ObservableObject {
                 try await store.updateReminder(updated, learningProfile: learningProfile)
                 notificationScheduler.cancel(updated)
                 await refresh()
-                noticeMessage = reminder.status == .proposed ? "已忽略该候选，30 天内不会重复建议。" : "提醒已取消。"
+                noticeMessage = reminder.status == .proposed ? "已忽略该候选，30 天内不会重复建议。"
+                    : (reminder.status == .planned ? "已从今天的安排中移除。" : "提醒已取消，系统通知已撤回。")
             } catch {
                 recordError(error, source: "Reminders", message: "更新提醒状态失败")
             }
@@ -1554,35 +1567,30 @@ final class RecallAppModel: ObservableObject {
     func completeReminder(_ reminder: ReminderCandidate) {
         Task {
             do {
-                var updated = reminder
+                let updated = ReminderTimeline.completing(reminder)
                 var learningProfile = state.reminderLearningProfile
                 learningProfile.record(.completed, semanticKey: reminderSemanticKey(updated))
-                if let currentDueAt = reminder.dueAt,
-                   reminder.recurrence != .none,
-                   let nextDueAt = reminder.recurrence.nextDate(after: max(currentDueAt, .now)) {
-                    updated.dueAt = nextDueAt
-                    updated.status = .scheduled
-                    updated.completedAt = .now
-                    updated.updatedAt = .now
-                    try await notificationScheduler.schedule(updated)
+                if updated.status == .scheduled, let nextDueAt = updated.dueAt {
+                    var notified = true
+                    do { try await reminderCreationScheduler.schedule(updated) }
+                    catch { notified = false; recordError(error, source: "Reminders", message: "下次重复提醒未写入系统通知") }
                     do {
                         try await store.updateReminder(updated, learningProfile: learningProfile)
                     } catch {
-                        notificationScheduler.cancel(updated)
+                        if notified { try? await reminderCreationScheduler.schedule(reminder) }
                         throw error
                     }
-                    noticeMessage = "本次已完成，下次将在 \(nextDueAt.formatted(date: .abbreviated, time: .shortened)) 提醒。"
+                    noticeMessage = notified
+                        ? "本次已完成，下次将在 \(nextDueAt.formatted(date: .abbreviated, time: .shortened)) 提醒。"
+                        : "本次已完成。系统通知未开启，下次提醒暂不会推送。"
                 } else {
-                    updated.status = .completed
-                    updated.closedAt = .now
-                    updated.completedAt = updated.closedAt
-                    updated.updatedAt = .now
                     try await store.updateReminder(updated, learningProfile: learningProfile)
-                    notificationScheduler.cancel(updated)
+                    reminderCreationScheduler.cancel(updated)
                     noticeMessage = "提醒已完成。"
                 }
                 await refresh()
             } catch {
+                noticeMessage = "未能保存完成状态，请重试。"
                 recordError(error, source: "Reminders", message: "完成提醒失败")
             }
         }
@@ -1592,27 +1600,24 @@ final class RecallAppModel: ObservableObject {
         guard dueAt > .now else { return }
         Task {
             do {
-                let previous = reminder
-                var updated = reminder
-                updated.dueAt = dueAt
-                updated.status = .snoozed
-                updated.snoozeCount += 1
-                updated.updatedAt = .now
+                let updated = ReminderTimeline.snoozing(reminder, until: dueAt)
                 var learningProfile = state.reminderLearningProfile
                 learningProfile.record(
                     .snoozed(hour: Calendar.current.component(.hour, from: dueAt)),
                     semanticKey: reminderSemanticKey(updated)
                 )
-                try await notificationScheduler.schedule(updated)
+                try await reminderCreationScheduler.schedule(updated)
                 do {
                     try await store.updateReminder(updated, learningProfile: learningProfile)
                 } catch {
-                    try? await notificationScheduler.schedule(previous)
+                    try? await reminderCreationScheduler.schedule(reminder)
                     throw error
                 }
                 await refresh()
-                noticeMessage = "已稍后到 \(dueAt.formatted(date: .abbreviated, time: .shortened))。"
+                let series = reminder.recurrence == .none ? "" : "，之后仍按\(reminder.recurrence.title)的原时间提醒"
+                noticeMessage = "已稍后到 \(dueAt.formatted(date: .abbreviated, time: .shortened))\(series)。"
             } catch {
+                noticeMessage = (error as? ReminderNotificationError)?.errorDescription ?? "稍后提醒未能安排，原提醒保留。"
                 recordError(error, source: "Reminders", message: "稍后提醒失败")
             }
         }
@@ -1678,7 +1683,9 @@ final class RecallAppModel: ObservableObject {
         }
     }
 
-    private func handleReminderNotificationAction(id: UUID, action: String) {
+    /// Notification buttons can arrive before the archive loads on a cold launch; queue them instead of dropping.
+    func handleReminderNotificationAction(id: UUID, action: String) {
+        guard !isLoadingSavedState else { pendingReminderActions.append((id, action)); return }
         guard let reminder = state.reminders.first(where: { $0.id == id }) else { return }
         switch action {
         case LocalNotificationScheduler.completeActionIdentifier:
@@ -1686,16 +1693,28 @@ final class RecallAppModel: ObservableObject {
         case LocalNotificationScheduler.snoozeHourActionIdentifier:
             snoozeReminder(reminder, until: .now.addingTimeInterval(60 * 60))
         case LocalNotificationScheduler.snoozeTomorrowActionIdentifier:
-            let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: .now) ?? .now.addingTimeInterval(86_400)
-            let dueAt = Calendar.current.date(
-                bySettingHour: state.reminderLearningProfile.preferredHour,
-                minute: 0,
-                second: 0,
-                of: tomorrow
-            ) ?? tomorrow
-            snoozeReminder(reminder, until: dueAt)
+            snoozeReminder(reminder, until: ReminderSnoozeOption.tomorrow.date(preferredHour: state.reminderLearningProfile.preferredHour))
         default:
-            break
+            // Tapping the notification itself opens and highlights the reminder.
+            destination = .reminder(id)
+        }
+    }
+
+    private func drainPendingReminderActions() {
+        let queued = pendingReminderActions; pendingReminderActions = []
+        for item in queued { handleReminderNotificationAction(id: item.id, action: item.action) }
+    }
+
+    func confirmAllProposedForToday() {
+        Task {
+            do {
+                let count = try await store.addAllProposedToToday()
+                await refresh()
+                noticeMessage = count > 0 ? "已将 \(count) 项加入今天。" : "待确认事项已变化，请刷新后重试。"
+            } catch {
+                noticeMessage = "未能加入今天，请重试。"
+                recordError(error, source: "Reminders", message: "批量加入今天失败")
+            }
         }
     }
 

@@ -78,6 +78,9 @@ final class RecallAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
         let weeklyReportID = response.notification.request.content.userInfo["weeklyReportID"] as? String
         let action = response.actionIdentifier
         completionHandler()
+        // Complete and snooze buttons are handled in the background; only opening the notification
+        // brings Recall forward and reveals the exact reminder.
+        let opensApp = action == UNNotificationDefaultActionIdentifier || reminderID == nil
         DispatchQueue.main.async {
             if let reminderID {
                 NotificationCenter.default.post(
@@ -85,12 +88,12 @@ final class RecallAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
                     object: nil,
                     userInfo: ["reminderID": reminderID, "action": action]
                 )
-                NotificationCenter.default.post(name: .recallOpenReminders, object: nil)
+                if opensApp { NotificationCenter.default.post(name: .recallOpenReminders, object: nil) }
             }
             if let weeklyReportID {
                 NotificationCenter.default.post(name: .recallOpenWeeklyReview, object: nil, userInfo: ["weeklyReportID": weeklyReportID])
             }
-            Self.activateMainWindow()
+            if opensApp { Self.activateMainWindow() }
         }
     }
 
@@ -143,6 +146,7 @@ private struct MenuBarPanel: View {
                 privacy.screenCapturePaused.toggle()
                 model.updatePrivacy(privacy)
             }
+            MenuBarReminderSection()
             Button(RecallLocalization.text("打开 Recall")) {
                 openWindow(id: "main")
                 DispatchQueue.main.async {
@@ -156,5 +160,56 @@ private struct MenuBarPanel: View {
         }
         .padding()
         .frame(width: 250)
+    }
+}
+
+/// Due and overdue reminders at a glance, with one-click completion. Reads only local state.
+private struct MenuBarReminderSection: View {
+    @EnvironmentObject private var model: RecallAppModel
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let summary = ReminderMenuSummary(reminders: model.state.reminders, now: context.date)
+            if summary.overdue > 0 || summary.today > 0 {
+                Divider()
+                Text(RecallLocalization.both("提醒：今天 \(summary.today) 项" + (summary.overdue > 0 ? "，已逾期 \(summary.overdue) 项" : ""),
+                                             "Reminders: \(summary.today) today" + (summary.overdue > 0 ? ", \(summary.overdue) overdue" : "")))
+                    .font(.caption).foregroundStyle(summary.overdue > 0 ? RecallPalette.danger : RecallPalette.secondary)
+                ForEach(summary.upcoming) { reminder in
+                    HStack(spacing: 6) {
+                        Button {
+                            model.destination = .reminder(reminder.id)
+                            NotificationCenter.default.post(name: .recallOpenReminders, object: nil)
+                            openWindow(id: "main"); RecallAppDelegate.activateMainWindow()
+                        } label: {
+                            Text(reminder.title).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                        }.buttonStyle(.plain)
+                        if let due = ReminderTimeline.effectiveDueAt(reminder) {
+                            Text(due.formatted(date: .omitted, time: .shortened)).font(.caption)
+                                .foregroundStyle(due < context.date ? RecallPalette.danger : RecallPalette.secondary)
+                        }
+                        Button { model.completeReminder(reminder) } label: { Image(systemName: "checkmark.circle") }
+                            .buttonStyle(.plain).help(RecallLocalization.both("标记完成", "Mark complete"))
+                    }.font(.callout)
+                }
+                Divider()
+            }
+        }
+    }
+}
+
+struct ReminderMenuSummary {
+    let overdue: Int
+    let today: Int
+    let upcoming: [ReminderCandidate]
+    init(reminders: [ReminderCandidate], now: Date, calendar: Calendar = .current) {
+        let active = reminders.filter(\.status.needsNotification)
+        overdue = active.filter { ReminderTimeline.isOverdue($0, now: now) }.count
+        let todayRows = active.filter { reminder in
+            guard let due = ReminderTimeline.effectiveDueAt(reminder) else { return false }
+            return due < now || calendar.isDate(due, inSameDayAs: now)
+        }.sorted { (ReminderTimeline.effectiveDueAt($0) ?? .distantFuture) < (ReminderTimeline.effectiveDueAt($1) ?? .distantFuture) }
+        today = todayRows.count - overdue
+        upcoming = Array(todayRows.prefix(3))
     }
 }

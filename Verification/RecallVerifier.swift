@@ -23,6 +23,7 @@ struct RecallVerifier {
             try await StartupLoadingVerification.run()
             try await DirectDailyReviewVerification.run()
             try await PersonaInsightVerification.run()
+            try await ReminderTimelineVerification.run()
             try KnowledgeProjectionVerification.run()
             try await TopicCompletionVerification.run()
             try await MemoryExperienceVerification.run()

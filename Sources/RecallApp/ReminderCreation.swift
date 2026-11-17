@@ -6,8 +6,50 @@ import RecallKit
     func requestAuthorization() async throws -> Bool
     func schedule(_ reminder: ReminderCandidate) async throws
     func cancel(_ reminder: ReminderCandidate)
+    /// Current permission without prompting; nil when unknown or unavailable on this host.
+    func notificationsAllowed() async -> Bool?
+    func deliveryStates(for reminders: [ReminderCandidate]) async throws -> [UUID: ReminderDeliveryState]
 }
-extension LocalNotificationScheduler: ReminderCreationScheduling {}
+extension ReminderCreationScheduling {
+    func notificationsAllowed() async -> Bool? { nil }
+    func deliveryStates(for reminders: [ReminderCandidate]) async throws -> [UUID: ReminderDeliveryState] { [:] }
+}
+extension LocalNotificationScheduler: ReminderCreationScheduling {
+    func notificationsAllowed() async -> Bool? { await authorizationGranted() }
+}
+
+/// Shared by the reminder card, the notification buttons and the menu bar.
+enum ReminderSnoozeOption: CaseIterable, Identifiable {
+    case hour, tonight, tomorrow, nextMonday
+    var id: Self { self }
+    func title(preferredHour: Int) -> String {
+        switch self {
+        case .hour: RecallLocalization.both("1 小时后", "In 1 hour")
+        case .tonight: RecallLocalization.both("今晚 20:00", "Tonight 20:00")
+        case .tomorrow: RecallLocalization.both(String(format: "明天 %02d:00", preferredHour), String(format: "Tomorrow %02d:00", preferredHour))
+        case .nextMonday: RecallLocalization.both(String(format: "下周一 %02d:00", preferredHour), String(format: "Next Monday %02d:00", preferredHour))
+        }
+    }
+    func date(preferredHour: Int, now: Date = .now, calendar: Calendar = .current) -> Date {
+        switch self {
+        case .hour:
+            return now.addingTimeInterval(60 * 60)
+        case .tonight:
+            return calendar.date(bySettingHour: 20, minute: 0, second: 0, of: now) ?? now.addingTimeInterval(3_600)
+        case .tomorrow:
+            let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) ?? now.addingTimeInterval(86_400)
+            return calendar.date(bySettingHour: preferredHour, minute: 0, second: 0, of: tomorrow) ?? tomorrow
+        case .nextMonday:
+            let start = calendar.startOfDay(for: now)
+            let monday = calendar.nextDate(after: start, matching: DateComponents(weekday: 2), matchingPolicy: .nextTime) ?? start.addingTimeInterval(7 * 86_400)
+            return calendar.date(bySettingHour: preferredHour, minute: 0, second: 0, of: monday) ?? monday
+        }
+    }
+    /// "Tonight" disappears once evening has passed.
+    func isAvailable(now: Date = .now, calendar: Calendar = .current) -> Bool {
+        self != .tonight || calendar.component(.hour, from: now) < 19
+    }
+}
 
 struct ReminderCreationResult {
     let reminder: ReminderCandidate
@@ -51,7 +93,8 @@ struct ReminderListLocation {
     }
     static func active(_ reminders: [ReminderCandidate]) -> [ReminderCandidate] {
         reminders.filter { $0.status.isAction }.sorted {
-            if $0.dueAt != $1.dueAt { return ($0.dueAt ?? .distantFuture) < ($1.dueAt ?? .distantFuture) }
+            let left = ReminderTimeline.effectiveDueAt($0), right = ReminderTimeline.effectiveDueAt($1)
+            if left != right { return (left ?? .distantFuture) < (right ?? .distantFuture) }
             return $0.id.uuidString < $1.id.uuidString
         }
     }

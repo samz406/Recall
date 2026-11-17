@@ -15,11 +15,28 @@ struct ReminderHistoryView: View {
     let showSources: (ReminderCandidate) -> Void
     private let pageSize = 20
 
-    private var index: ReminderHistoryIndex { ReminderHistoryIndex(reminders: model.state.reminders, captures: model.state.captures) }
-    private var matched: [ReminderCandidate] { index.matching(search: search, sourceID: sourceID) }
-    private var rows: [ReminderHistoryRow] { index.rows(filter: filter, search: search, sourceID: sourceID) }
+    /// Built when reminders change; filtered results are rebuilt only when a filter or the debounced search changes.
+    @State private var index = ReminderHistoryIndex(reminders: [], captures: [])
+    @State private var appliedSearch = ""
+    @State private var matched: [ReminderCandidate] = []
+    @State private var rows: [ReminderHistoryRow] = []
+    @State private var filterCounts: [ReminderHistoryFilter: Int] = [:]
     private var ignoredIDs: Set<UUID> { Set(matched.filter { filter.includes($0.status) && $0.status == .dismissed }.map(\.id)) }
     private var pageCount: Int { max(1, (rows.count + pageSize - 1) / pageSize) }
+    private var firstRowID: String? { rows.first?.id }
+
+    private func rebuildIndex() {
+        index = ReminderHistoryIndex(reminders: model.state.reminders, captures: model.state.captures)
+        applyFilters()
+    }
+    private func applyFilters() {
+        matched = index.matching(search: appliedSearch, sourceID: sourceID)
+        rows = index.rows(filter: filter, search: appliedSearch, sourceID: sourceID)
+        // Count merged rows, matching the list and the tab badge rather than raw records.
+        filterCounts = Dictionary(uniqueKeysWithValues: ReminderHistoryFilter.allCases.map { value in
+            (value, value == filter ? rows.count : index.rows(filter: value, search: appliedSearch, sourceID: sourceID).count)
+        })
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -44,11 +61,17 @@ struct ReminderHistoryView: View {
                 footer
             }
         }
-        .onChange(of: filter) { _, _ in page = 1 }
-        .onChange(of: search) { _, _ in page = 1 }
-        .onChange(of: sourceID) { _, _ in page = 1 }
+        .onChange(of: filter) { _, _ in page = 1; applyFilters() }
+        .task(id: search) {
+            // Debounce typing; clearing applies immediately.
+            if !search.isEmpty { try? await Task.sleep(for: .milliseconds(200)) }
+            guard !Task.isCancelled, appliedSearch != search else { return }
+            appliedSearch = search; page = 1; applyFilters()
+        }
+        .onChange(of: sourceID) { _, _ in page = 1; applyFilters() }
+        .onChange(of: model.state.reminders) { _, _ in rebuildIndex() }
         .onChange(of: rows.count) { _, _ in page = min(page, pageCount) }
-        .onAppear(perform: openDestination)
+        .onAppear { rebuildIndex(); openDestination() }
         .onChange(of: model.navigationRevision) { _, _ in openDestination() }
         .confirmationDialog(deletion?.onlyDismissed == true ? "清理已忽略记录？" : "删除历史记录？", isPresented: $confirmsDeletion,
                             titleVisibility: .visible, presenting: deletion) { item in
@@ -78,7 +101,7 @@ struct ReminderHistoryView: View {
     private var filters: some View {
         HStack(spacing: 8) {
             ForEach(ReminderHistoryFilter.allCases) { value in
-                let count = matched.filter { value.includes($0.status) }.count
+                let count = filterCounts[value] ?? 0
                 Button { filter = value } label: {
                     Text(value.title + " \(count)").font(.system(size: 13, weight: filter == value ? .medium : .regular))
                         .fixedSize().padding(.horizontal, 12).padding(.vertical, 7)
@@ -135,7 +158,7 @@ struct ReminderHistoryView: View {
             VStack(spacing: 0) {
                 ForEach(Array(group.rows.enumerated()), id: \.element.id) { offset, row in
                     if offset > 0 { Divider().overlay(RecallPalette.border) }
-                    ReminderHistoryEntry(row: row, compact: compact, previewHovered: previewHover && row.id == rows.first?.id,
+                    ReminderHistoryEntry(row: row, compact: compact, previewHovered: previewHover && row.id == firstRowID,
                         busy: model.isUpdatingReminderHistory,
                         source: { showSources(row.sourceReminder) },
                         restore: { model.restoreReminderHistory(row.reminderIDs) },
@@ -186,7 +209,8 @@ struct ReminderHistoryView: View {
     private func openDestination() {
         guard case .reminder(let id) = model.destination,
               model.state.reminders.contains(where: { $0.id == id && $0.status.isHistory }) else { return }
-        filter = .all; sourceID = nil; search = ""
+        filter = .all; sourceID = nil; search = ""; appliedSearch = ""
+        if index.reminders.isEmpty { rebuildIndex() }
         let all = index.rows()
         let destinationPage = (all.firstIndex { $0.reminderIDs.contains(id) } ?? 0) / pageSize + 1
         Task { @MainActor in await Task.yield(); page = destinationPage }

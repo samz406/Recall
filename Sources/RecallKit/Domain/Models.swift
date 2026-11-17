@@ -304,13 +304,45 @@ public enum ReminderRecurrence: String, Codable, CaseIterable, Identifiable, Sen
         }
     }
 
-    public func nextDate(after date: Date, calendar: Calendar = .current) -> Date? {
+    /// The n-th occurrence counted from the series anchor. Always derived from the anchor, never chained,
+    /// so completing late, snoozing or a short month never shifts later occurrences.
+    /// Months without the anchor's day use their last day (31st → Feb 28/29 → Mar 31).
+    public func occurrence(_ n: Int, anchor: Date, calendar: Calendar = .current) -> Date? {
         switch self {
-        case .none: nil
-        case .daily: calendar.date(byAdding: .day, value: 1, to: date)
-        case .weekly: calendar.date(byAdding: .weekOfYear, value: 1, to: date)
-        case .monthly: calendar.date(byAdding: .month, value: 1, to: date)
+        case .none: n == 0 ? anchor : nil
+        case .daily: calendar.date(byAdding: .day, value: n, to: anchor)
+        case .weekly: calendar.date(byAdding: .day, value: 7 * n, to: anchor)
+        case .monthly: calendar.date(byAdding: .month, value: n, to: anchor)
         }
+    }
+    private func estimatedIndex(of date: Date, anchor: Date, calendar: Calendar) -> Int {
+        switch self {
+        case .none: 0
+        case .daily: calendar.dateComponents([.day], from: anchor, to: date).day ?? 0
+        case .weekly: (calendar.dateComponents([.day], from: anchor, to: date).day ?? 0) / 7
+        case .monthly: calendar.dateComponents([.month], from: anchor, to: date).month ?? 0
+        }
+    }
+    /// First occurrence strictly after `date`.
+    public func occurrence(after date: Date, anchor: Date, calendar: Calendar = .current) -> Date? {
+        guard self != .none else { return anchor > date ? anchor : nil }
+        var n = max(0, estimatedIndex(of: date, anchor: anchor, calendar: calendar) - 2)
+        while let value = occurrence(n, anchor: anchor, calendar: calendar) {
+            if value > date { return value }
+            n += 1
+        }
+        return nil
+    }
+    /// Latest occurrence at or before `date`, or nil when the series has not started.
+    public func latestOccurrence(atOrBefore date: Date, anchor: Date, calendar: Calendar = .current) -> Date? {
+        guard self != .none else { return anchor <= date ? anchor : nil }
+        guard anchor <= date else { return nil }
+        var n = max(0, estimatedIndex(of: date, anchor: anchor, calendar: calendar) + 2)
+        while n >= 0 {
+            if let value = occurrence(n, anchor: anchor, calendar: calendar), value <= date { return value }
+            n -= 1
+        }
+        return nil
     }
 }
 
@@ -450,6 +482,10 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
     public var plannedForDay: LocalDay? = nil
     public var acceptedAt: Date? = nil
     public var analysis: ReminderAnalysis? = nil
+    /// First occurrence of a repeating series. Later occurrences are computed from it, not from `dueAt`.
+    public var recurrenceAnchor: Date? = nil
+    /// A temporary one-off delay. `dueAt` keeps the regular time so snoozing never moves the series.
+    public var snoozedUntil: Date? = nil
 
     public init(
         id: UUID = UUID(),
@@ -492,6 +528,7 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, title, detail, dueAt, sourceCaptureIDs, confidence, status, createdAt
         case updatedAt, origin, recurrence, semanticKey, scheduledAt, completedAt, dismissedUntil, snoozeCount, closedAt, analysis
+        case plannedForDay, acceptedAt, recurrenceAnchor, snoozedUntil
     }
 
     public init(from decoder: Decoder) throws {
@@ -514,6 +551,10 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
         snoozeCount = try container.decodeIfPresent(Int.self, forKey: .snoozeCount) ?? 0
         closedAt = try container.decodeIfPresent(Date.self, forKey: .closedAt) ?? (status.isHistory ? ((status == .completed ? completedAt : nil) ?? updatedAt) : nil)
         analysis = try container.decodeIfPresent(ReminderAnalysis.self, forKey: .analysis)
+        plannedForDay = try container.decodeIfPresent(LocalDay.self, forKey: .plannedForDay)
+        acceptedAt = try container.decodeIfPresent(Date.self, forKey: .acceptedAt)
+        recurrenceAnchor = try container.decodeIfPresent(Date.self, forKey: .recurrenceAnchor)
+        snoozedUntil = try container.decodeIfPresent(Date.self, forKey: .snoozedUntil)
     }
 }
 

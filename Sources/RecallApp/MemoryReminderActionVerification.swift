@@ -24,6 +24,12 @@ extension RecallLayoutPreviews {
             try onSchedule?()
         }
         func cancel(_ reminder: ReminderCandidate) { cancelled.append(reminder.id) }
+        func notificationsAllowed() async -> Bool? { permission == .unavailable ? nil : permission == .allowed }
+        /// Simulates a system queue that lost every request, as after a relaunch or a cleared notification center.
+        var pendingIDs: Set<UUID> = []
+        func deliveryStates(for reminders: [ReminderCandidate]) async throws -> [UUID: ReminderDeliveryState] {
+            Dictionary(uniqueKeysWithValues: reminders.map { ($0.id, pendingIDs.contains($0.id) ? .pending : .notFound) })
+        }
     }
 
     @MainActor static func verifyMemoryReminderActions() async throws {
@@ -34,7 +40,8 @@ extension RecallLayoutPreviews {
         try await verifyManualCreation(permission: .allowed, queueFails: true)
         try await verifyManualWriteFailures()
         try verifyReminderCalendar()
-        print("PASS: native memory/reminder actions (immediate dismissal, restart/failure, save before permission, denial/unavailable/queue fallback, write rollback, pagination and future calendar)")
+        try await verifyReminderLifecycle()
+        print("PASS: native memory/reminder actions (immediate dismissal, restart/failure, save before permission, denial/unavailable/queue fallback, write rollback, pagination, future calendar, relaunch repair, permission state, late completion, series-preserving snooze, background notification actions and cold-launch queueing)")
     }
     @MainActor private static func verifyDismissAction() async throws {
         let now = Date.now.addingTimeInterval(-60)
@@ -128,6 +135,54 @@ extension RecallLayoutPreviews {
         try restoreStateFile(model.storage, backup: secondBackup)
         let reopened = try FileMemoryStore(storage: model.storage, deferMaintenance: true, credentials: InMemoryCredentialStore())
         guard await reopened.snapshot().reminders.first?.status == .proposed else { throw MemoryReminderFailure.failed("通知失败的草稿重启后丢失") }
+    }
+    @MainActor private static func verifyReminderLifecycle() async throws {
+        let calendar = Calendar.current
+        let start = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: calendar.startOfDay(for: .now).addingTimeInterval(-2 * 86_400))!
+        var series = ReminderCandidate(title: "合成每日巡检", detail: "", dueAt: start, confidence: 1, status: .scheduled, origin: .manual, recurrence: .daily)
+        series.recurrenceAnchor = start
+        let future = ReminderCandidate(title: "合成未来提醒", detail: "", dueAt: .now.addingTimeInterval(86_400), confidence: 1, status: .scheduled, origin: .manual)
+        let probe = NotificationProbe(.allowed)
+        let model = try RecallAppModel(previewState: RecallState(reminders: [series, future]), reminderCreationScheduler: probe)
+        defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
+        await model.refresh()
+        guard model.reminderNotificationsAllowed == true, Set(probe.scheduled.map(\.id)).isSuperset(of: [series.id, future.id]) else {
+            throw MemoryReminderFailure.failed("重启后缺失的系统通知没有重新写入或权限状态未读取")
+        }
+        guard let rolled = model.state.reminders.first(where: { $0.id == series.id }), let due = rolled.dueAt,
+              calendar.isDateInToday(due), calendar.component(.hour, from: due) == 9 else {
+            throw MemoryReminderFailure.failed("重复提醒没有前移到今天的原时间")
+        }
+        func wait(_ condition: () -> Bool) async throws {
+            for _ in 0..<400 { if condition() { return }; try await Task.sleep(for: .milliseconds(5)) }
+            throw MemoryReminderFailure.failed("提醒操作没有完成")
+        }
+        // Snoozing keeps the 9:00 series; completing afterwards returns to it.
+        let snoozeUntil = Date.now.addingTimeInterval(3_600)
+        model.snoozeReminder(rolled, until: snoozeUntil)
+        try await wait { model.state.reminders.first { $0.id == series.id }?.status == .snoozed }
+        let snoozed = model.state.reminders.first { $0.id == series.id }!
+        guard snoozed.dueAt == rolled.dueAt, snoozed.snoozedUntil == snoozeUntil else { throw MemoryReminderFailure.failed("稍后改变了重复提醒的原时间") }
+        model.completeReminder(snoozed)
+        try await wait { model.state.reminders.first { $0.id == series.id }?.status == .scheduled }
+        let next = model.state.reminders.first { $0.id == series.id }!
+        guard let nextDue = next.dueAt, calendar.isDateInTomorrow(nextDue) || nextDue > .now,
+              calendar.component(.hour, from: nextDue) == 9, calendar.component(.minute, from: nextDue) == 0, next.snoozedUntil == nil else {
+            throw MemoryReminderFailure.failed("晚完成或稍后后完成使重复提醒偏离原时间")
+        }
+        // Background notification buttons must not be lost while the archive is loading.
+        let cold = try RecallAppModel(previewState: RecallState(reminders: [future]), reminderCreationScheduler: NotificationProbe(.allowed))
+        defer { try? FileManager.default.removeItem(at: cold.storage.rootURL) }
+        cold.isLoadingSavedState = true
+        cold.handleReminderNotificationAction(id: future.id, action: LocalNotificationScheduler.completeActionIdentifier)
+        cold.isLoadingSavedState = false
+        await cold.refresh()
+        try await wait { cold.state.reminders.first?.status == .completed }
+        // Denied permission is visible without prompting.
+        let denied = try RecallAppModel(previewState: RecallState(reminders: [future]), reminderCreationScheduler: NotificationProbe(.denied))
+        defer { try? FileManager.default.removeItem(at: denied.storage.rootURL) }
+        await denied.refresh()
+        guard denied.reminderNotificationsAllowed == false else { throw MemoryReminderFailure.failed("通知权限被拒时没有显示状态") }
     }
     @MainActor private static func verifyReminderCalendar() throws {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!

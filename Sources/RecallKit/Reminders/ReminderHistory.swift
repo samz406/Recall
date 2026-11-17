@@ -117,20 +117,28 @@ public struct ReminderHistoryDay: Identifiable, Sendable {
 /// Search and source/status filtering precede grouping and pagination, so counts and actions agree.
 public struct ReminderHistoryIndex: Sendable {
     public let reminders: [ReminderCandidate]
-    private let captures: [UUID: CaptureRecord]
+    /// Resolved once; rows, search and source filters reuse it instead of re-reading captures.
+    private let sourcesByID: [UUID: [ReminderSourceChoice]]
+    public let sourceChoices: [ReminderSourceChoice]
     public init(reminders: [ReminderCandidate], captures: [CaptureRecord]) {
-        self.reminders = reminders.filter { $0.status.isHistory }
-        self.captures = Dictionary(captures.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let history = reminders.filter { $0.status.isHistory }
+        self.reminders = history
+        let wanted = Set(history.flatMap(\.sourceCaptureIDs))
+        let captures = Dictionary(captures.lazy.filter { wanted.contains($0.id) }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let resolved = Dictionary(history.map { ($0.id, Self.sources(for: $0, captures: captures)) }, uniquingKeysWith: { first, _ in first })
+        sourcesByID = resolved
+        let all = history.sorted { $0.updatedAt > $1.updatedAt }.flatMap { resolved[$0.id] ?? [] }
+        sourceChoices = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values
+            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
-    public func sources(for reminder: ReminderCandidate) -> [ReminderSourceChoice] {
+    private static func sources(for reminder: ReminderCandidate, captures: [UUID: CaptureRecord]) -> [ReminderSourceChoice] {
         if reminder.origin == .manual { return [ReminderSourceChoice(id: "manual", title: "手动创建")] }
         let captured = reminder.sourceCaptureIDs.compactMap { captures[$0] }.sorted { $0.createdAt > $1.createdAt }
         let sources = Dictionary(captured.compactMap(ReminderSourceChoice.init(capture:)).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return sources.isEmpty ? [ReminderSourceChoice(id: "unavailable", title: "来源未保留")] : sources.values.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
-    public var sourceChoices: [ReminderSourceChoice] {
-        let all = reminders.sorted { $0.updatedAt > $1.updatedAt }.flatMap(sources(for:))
-        return Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    public func sources(for reminder: ReminderCandidate) -> [ReminderSourceChoice] {
+        sourcesByID[reminder.id] ?? []
     }
     public func matching(search: String = "", sourceID: String? = nil) -> [ReminderCandidate] {
         let terms = search.split(whereSeparator: \.isWhitespace).map(String.init)

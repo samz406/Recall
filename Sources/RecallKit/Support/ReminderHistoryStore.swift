@@ -89,11 +89,13 @@ public extension FileMemoryStore {
             let extractor = ReminderExtractor()
             let protected = state.reminders.filter { $0.updatedAt > startedAt }
             let protectedIDs = Set(protected.map(\.id))
+            let settled = ReminderExtractor.BlockIndex(state.reminders.filter { $0.status != .proposed }, extractor: extractor)
+            let recent = ReminderExtractor.BlockIndex(protected, extractor: extractor)
             let proposals = candidates.filter { candidate in
                 guard candidate.status == .proposed, candidate.origin == .discovered, !candidate.sourceCaptureIDs.isEmpty,
                       !profile.suppressesHistory(candidate, now: now),
-                      !state.reminders.contains(where: { extractor.blocks(candidate: candidate, existing: $0, now: now) && $0.status != .proposed }),
-                      !protected.contains(where: { $0.id == candidate.id || extractor.blocks(candidate: candidate, existing: $0, now: now) }) else { return false }
+                      !settled.blocks(candidate, now: now),
+                      !protectedIDs.contains(candidate.id), !recent.blocks(candidate, now: now) else { return false }
                 return candidate.sourceCaptureIDs.allSatisfy { id in
                     guard let capture = sourceMap[id], profile.permitsReminderDiscovery(from: capture),
                           !state.privacy.excludedBundleIdentifiers.contains(capture.sourceBundleIdentifier ?? "") else { return false }
@@ -108,17 +110,11 @@ public extension FileMemoryStore {
                     && !state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") } ?? false
             })
             var merged = extractor.merging(proposals, into: current, now: now, revalidatedCaptureIDs: validRevalidated) + protected
-            merged = merged.filter { reminder in
-                switch reminder.status {
-                case .dismissed: return now.timeIntervalSince(reminder.dismissedUntil ?? reminder.closedAt ?? reminder.updatedAt) < 90 * 86_400
-                case .completed, .cancelled: return now.timeIntervalSince(reminder.closedAt ?? reminder.completedAt ?? reminder.updatedAt) < 180 * 86_400
-                default: return true
-                }
-            }.sorted {
+            merged = merged.filter { ReminderTimeline.retainsHistory($0, now: now) }.sorted {
                 if $0.status.isHistory != $1.status.isHistory { return !$0.status.isHistory }
                 return $0.updatedAt > $1.updatedAt
             }
-            let retained = Array(merged.prefix(1_000))
+            let retained = Array(merged.prefix(ReminderTimeline.historyLimit))
             state.reminders = retained
             var next = checkpoint
             next.processedCaptureHashes = next.processedCaptureHashes.filter { id, _ in

@@ -138,6 +138,8 @@ public enum DailyReviewReminderEngine {
                 outcome.withdrawn += 1
             }
         }
+        // Appended rows are new proposals, never history, so one index serves the whole pass.
+        let historyBlockers = ReminderExtractor.BlockIndex(state.reminders.filter(\.status.isHistory))
         for summary in summaries {
             let version = fingerprint(summary, sources: sources, state: safe)
             guard marks[summary.id.uuidString] != version else { continue }
@@ -192,7 +194,7 @@ public enum DailyReviewReminderEngine {
                         candidate.analysis?.dailyReview = DailyReminderProvenance(summaryID: summary.id, itemID: item.id,
                             actionID: actionID, identity: identity, topic: knowledge.topic, sourceVersions: versions)
                         guard !state.reminderLearningProfile.suppressesHistory(candidate, now: now),
-                              !state.reminders.contains(where: { $0.status.isHistory && ReminderExtractor().blocks(candidate: candidate, existing: $0, now: now) }) else { continue }
+                              !historyBlockers.blocks(candidate, now: now) else { continue }
                         state.reminders.append(candidate); outcome.added += 1
                     }
                 }

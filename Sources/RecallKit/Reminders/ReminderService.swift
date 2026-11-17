@@ -19,6 +19,7 @@ public struct ReminderExtractor: Sendable {
         let captures = captures.map { $0.scopingUnderstanding(to: allowed) }
         let resolutionCaptures = resolutionCaptures.map { $0.scopingUnderstanding(to: allowed) }
         var result: [ReminderCandidate] = []
+        let blockers = BlockIndex(existing, extractor: self)
         let resolutions = (captures + resolutionCaptures).flatMap { capture in
             RecordedText.segments(in: capture).compactMap { segment -> Resolution? in
                 guard segment.speaker == .user, isResolution(segment.text) else { return nil }
@@ -39,7 +40,7 @@ public struct ReminderExtractor: Sendable {
                     let draft = ReminderCandidate(title: fact.subject, detail: fact.readableDetail,
                         dueAt: fact.explicitDeadline, sourceCaptureIDs: fact.sourceIDs, confidence: 0.8,
                         createdAt: capture.createdAt, origin: .discovered, semanticKey: fingerprint(fact.subject))
-                    guard !learningProfile.suppressesHistory(draft, now: now), !existing.contains(where: { blocks(candidate: draft, existing: $0, now: now) }) else { continue }
+                    guard !learningProfile.suppressesHistory(draft, now: now), !blockers.blocks(draft, now: now) else { continue }
                     if let i = result.firstIndex(where: { sameOccurrence($0, draft) }) {
                         result[i].sourceCaptureIDs = Array(Set(result[i].sourceCaptureIDs + draft.sourceCaptureIDs))
                     } else { result.append(draft) }
@@ -68,7 +69,7 @@ public struct ReminderExtractor: Sendable {
                     recurrence: recurrence,
                     semanticKey: semanticKey
                 )
-                guard !learningProfile.suppressesHistory(draft, now: now), !existing.contains(where: { blocks(candidate: draft, existing: $0, now: now) }) else { continue }
+                guard !learningProfile.suppressesHistory(draft, now: now), !blockers.blocks(draft, now: now) else { continue }
 
                 if let index = result.firstIndex(where: { sameOccurrence($0, draft) }) {
                     if !result[index].sourceCaptureIDs.contains(capture.id) {
@@ -375,15 +376,60 @@ public struct ReminderExtractor: Sendable {
         return title
     }
 
+    /// Title normalization computed once per reminder instead of once per comparison.
+    struct TitleKey: Sendable {
+        let fingerprint: String
+        let pairs: Set<String>
+    }
+    func titleKey(_ title: String) -> TitleKey {
+        let value = fingerprint(title)
+        return TitleKey(fingerprint: value, pairs: characterPairs(in: value))
+    }
+
+    /// Precomputed comparison keys for one pass over existing reminders. Exact fingerprints are
+    /// answered by lookup; fuzzy comparisons skip titles whose bigram counts make 0.72 overlap impossible.
+    public struct BlockIndex: Sendable {
+        let extractor: ReminderExtractor
+        let entries: [(reminder: ReminderCandidate, key: TitleKey)]
+        let exact: [String: [Int]]
+        public init(_ reminders: [ReminderCandidate], extractor: ReminderExtractor = ReminderExtractor()) {
+            self.extractor = extractor
+            entries = reminders.map { ($0, extractor.titleKey($0.title)) }
+            var exact: [String: [Int]] = [:]
+            for (i, entry) in entries.enumerated() { exact[entry.key.fingerprint, default: []].append(i) }
+            self.exact = exact
+        }
+        public func blocks(_ candidate: ReminderCandidate, now: Date, where include: (ReminderCandidate) -> Bool = { _ in true }) -> Bool {
+            let key = extractor.titleKey(candidate.title)
+            if let ids = exact[key.fingerprint], ids.contains(where: { include(entries[$0].reminder) && extractor.blocks(candidate: candidate, candidateKey: key, existing: entries[$0].reminder, existingKey: entries[$0].key, now: now) }) {
+                return true
+            }
+            guard candidate.analysis == nil else { return false }
+            return entries.contains { entry in
+                guard entry.key.fingerprint != key.fingerprint, ReminderExtractor.mayBeEquivalent(key, entry.key), include(entry.reminder) else { return false }
+                return extractor.blocks(candidate: candidate, candidateKey: key, existing: entry.reminder, existingKey: entry.key, now: now)
+            }
+        }
+    }
+    static func mayBeEquivalent(_ lhs: TitleKey, _ rhs: TitleKey) -> Bool {
+        let shorter = min(lhs.fingerprint.count, rhs.fingerprint.count)
+        if shorter >= 8 { return true } // Containment can match titles of any length ratio.
+        let small = Double(min(lhs.pairs.count, rhs.pairs.count)), large = Double(max(lhs.pairs.count, rhs.pairs.count))
+        return large == 0 || small / large >= 0.72
+    }
+
     private func isSemanticallyEquivalent(_ lhs: String, _ rhs: String) -> Bool {
-        let left = fingerprint(lhs)
-        let right = fingerprint(rhs)
+        isSemanticallyEquivalent(titleKey(lhs), titleKey(rhs))
+    }
+    private func isSemanticallyEquivalent(_ lhsKey: TitleKey, _ rhsKey: TitleKey) -> Bool {
+        let left = lhsKey.fingerprint
+        let right = rhsKey.fingerprint
         guard !left.isEmpty, !right.isEmpty else { return false }
         if left == right { return true }
         if min(left.count, right.count) >= 8 && (left.contains(right) || right.contains(left)) { return true }
 
-        let leftPairs = characterPairs(in: left)
-        let rightPairs = characterPairs(in: right)
+        let leftPairs = lhsKey.pairs
+        let rightPairs = rhsKey.pairs
         guard !leftPairs.isEmpty, !rightPairs.isEmpty else { return false }
         let intersection = leftPairs.intersection(rightPairs).count
         let union = leftPairs.union(rightPairs).count
@@ -391,14 +437,17 @@ public struct ReminderExtractor: Sendable {
     }
 
     private func sameOccurrence(_ lhs: ReminderCandidate, _ rhs: ReminderCandidate) -> Bool {
+        sameOccurrence(lhs, titleKey(lhs.title), rhs, titleKey(rhs.title))
+    }
+    private func sameOccurrence(_ lhs: ReminderCandidate, _ lhsKey: TitleKey, _ rhs: ReminderCandidate, _ rhsKey: TitleKey) -> Bool {
         if lhs.analysis != nil || rhs.analysis != nil {
             if lhs.id == rhs.id { return true }
             // Model decisions supply identity. Fuzzy character overlap must not merge different
             // clients/projects or unrelated conversations after the semantic audit accepted both.
-            guard fingerprint(lhs.title) == fingerprint(rhs.title),
+            guard lhsKey.fingerprint == rhsKey.fingerprint,
                   !Set(lhs.sourceCaptureIDs).isDisjoint(with: rhs.sourceCaptureIDs) else { return false }
         } else {
-            guard isSemanticallyEquivalent(lhs.title, rhs.title) else { return false }
+            guard isSemanticallyEquivalent(lhsKey, rhsKey) else { return false }
         }
         switch (lhs.dueAt, rhs.dueAt) {
         case let (left?, right?):
@@ -411,17 +460,20 @@ public struct ReminderExtractor: Sendable {
     }
 
     func blocks(candidate: ReminderCandidate, existing: ReminderCandidate, now: Date) -> Bool {
+        blocks(candidate: candidate, candidateKey: titleKey(candidate.title), existing: existing, existingKey: titleKey(existing.title), now: now)
+    }
+    func blocks(candidate: ReminderCandidate, candidateKey: TitleKey, existing: ReminderCandidate, existingKey: TitleKey, now: Date) -> Bool {
         if candidate.analysis != nil {
-            guard existing.id == candidate.id || fingerprint(existing.title) == fingerprint(candidate.title) else { return false }
+            guard existing.id == candidate.id || existingKey.fingerprint == candidateKey.fingerprint else { return false }
         } else {
-            guard isSemanticallyEquivalent(existing.title, candidate.title) else { return false }
+            guard isSemanticallyEquivalent(existingKey, candidateKey) else { return false }
         }
         switch existing.status {
         case .proposed, .planned, .scheduled, .snoozed:
-            return sameOccurrence(existing, candidate)
+            return sameOccurrence(existing, existingKey, candidate, candidateKey)
         case .dismissed:
             return (existing.dismissedUntil ?? existing.updatedAt.addingTimeInterval(30 * 86_400)) > now
-                && sameOccurrence(existing, candidate)
+                && sameOccurrence(existing, existingKey, candidate, candidateKey)
         case .completed, .cancelled:
             if let oldDate = existing.dueAt, let newDate = candidate.dueAt {
                 return Calendar.current.isDate(oldDate, inSameDayAs: newDate)
@@ -680,7 +732,7 @@ public final class LocalNotificationScheduler {
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
             throw ReminderNotificationError.authorizationRequired
         }
-        guard let dueAt = reminder.dueAt else { throw ReminderNotificationError.missingDueDate }
+        guard reminder.dueAt != nil else { throw ReminderNotificationError.missingDueDate }
         let content = UNMutableNotificationContent()
         content.title = reminder.title
         let detailLines = reminder.detail.components(separatedBy: .newlines).filter { !$0.isEmpty }
@@ -688,37 +740,40 @@ public final class LocalNotificationScheduler {
         content.sound = .default
         content.categoryIdentifier = Self.categoryIdentifier
         content.userInfo = ["reminderID": reminder.id.uuidString]
-        let calendar = Calendar.current
-        let components: DateComponents
-        let repeats: Bool
-        switch reminder.status == .snoozed ? ReminderRecurrence.none : reminder.recurrence {
-        case .none:
-            components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: dueAt)
-            repeats = false
-        case .daily:
-            components = calendar.dateComponents([.hour, .minute], from: dueAt)
-            repeats = true
-        case .weekly:
-            components = calendar.dateComponents([.weekday, .hour, .minute], from: dueAt)
-            repeats = true
-        case .monthly:
-            components = calendar.dateComponents([.day, .hour, .minute], from: dueAt)
-            repeats = true
-        }
-        let request = UNNotificationRequest(
-            identifier: reminder.id.uuidString,
-            content: content,
-            trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: repeats)
-        )
+        let requests = ReminderTimeline.requests(for: reminder)
+        guard !requests.isEmpty else { throw ReminderNotificationError.missingDueDate }
+        // Replace every request this reminder may own, so a shape change (snooze, short month) leaves nothing stale.
+        center.removePendingNotificationRequests(withIdentifiers: ReminderTimeline.identifiers(for: reminder.id))
         do {
-            try await center.add(request)
+            for item in requests {
+                let trigger: UNCalendarNotificationTrigger
+                switch item.trigger {
+                case .once(let date):
+                    trigger = UNCalendarNotificationTrigger(dateMatching: Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date), repeats: false)
+                case .repeating(let components):
+                    trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
+                }
+                try await center.add(UNNotificationRequest(identifier: item.identifier, content: content, trigger: trigger))
+            }
         } catch {
+            center.removePendingNotificationRequests(withIdentifiers: ReminderTimeline.identifiers(for: reminder.id))
             throw notificationError(from: error)
         }
-
-        guard try await deliveryStates(for: [reminder])[reminder.id] == .pending else {
-            center.removePendingNotificationRequests(withIdentifiers: [reminder.id.uuidString])
+        let pending = Set(await center.pendingNotificationRequests().map(\.identifier))
+        guard requests.allSatisfy({ pending.contains($0.identifier) }) else {
+            center.removePendingNotificationRequests(withIdentifiers: ReminderTimeline.identifiers(for: reminder.id))
             throw ReminderNotificationError.notificationSchedulingFailed
+        }
+    }
+
+    /// Current authorization without prompting. Nil when the host cannot use notifications.
+    public func authorizationGranted() async -> Bool? {
+        guard let center = try? notificationCenter() else { return nil }
+        let status = await center.notificationSettings().authorizationStatus
+        switch status {
+        case .authorized, .provisional: return true
+        case .notDetermined: return nil
+        default: return false
         }
     }
 
@@ -728,16 +783,17 @@ public final class LocalNotificationScheduler {
         guard !remindersWithDates.isEmpty else { return [:] }
 
         let center = try notificationCenter()
-        let pendingIdentifiers = Set(await center.pendingNotificationRequests().map(\.identifier))
-        let deliveredIdentifiers = Set(await center.deliveredNotifications().map { $0.request.identifier })
+        let pendingIdentifiers = Set(await center.pendingNotificationRequests().compactMap { ReminderTimeline.reminderID(fromRequest: $0.identifier) })
+        let deliveredIdentifiers = Set(await center.deliveredNotifications().compactMap { ReminderTimeline.reminderID(fromRequest: $0.request.identifier) })
 
         return Dictionary(uniqueKeysWithValues: remindersWithDates.map { reminder in
-            let identifier = reminder.id.uuidString
+            let identifier = reminder.id
             let status: ReminderDeliveryState
-            if deliveredIdentifiers.contains(identifier) {
-                status = .delivered
-            } else if pendingIdentifiers.contains(identifier) {
+            // A repeating reminder can be both delivered and pending; pending means the future is covered.
+            if pendingIdentifiers.contains(identifier) {
                 status = .pending
+            } else if deliveredIdentifiers.contains(identifier) {
+                status = .delivered
             } else {
                 status = .notFound
             }
@@ -821,7 +877,7 @@ public final class LocalNotificationScheduler {
 
     public func cancel(_ reminder: ReminderCandidate) {
         guard isNotificationHostAvailable else { return }
-        let identifiers = [reminder.id.uuidString]
+        let identifiers = ReminderTimeline.identifiers(for: reminder.id)
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: identifiers)
         center.removeDeliveredNotifications(withIdentifiers: identifiers)
@@ -829,7 +885,7 @@ public final class LocalNotificationScheduler {
 
     public func cancelAll(_ reminders: [ReminderCandidate]) {
         guard isNotificationHostAvailable else { return }
-        let identifiers = reminders.map { $0.id.uuidString }
+        let identifiers = reminders.flatMap { ReminderTimeline.identifiers(for: $0.id) }
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: identifiers)
         center.removeDeliveredNotifications(withIdentifiers: identifiers)
