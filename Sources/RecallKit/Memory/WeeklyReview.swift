@@ -279,6 +279,13 @@ public struct WeeklyReport: Codable, Identifiable, Equatable, Sendable {
     }
     public var sourceIDs: Set<UUID> { Set(sourceVersions.keys) }
     public var isReadable: Bool { invalidatedAt == nil }
+    /// Readable but nothing reaches the body: everything went to related records, or nothing was found.
+    public var hasNoBody: Bool { isReadable && editedMarkdown == nil && readingRows.isEmpty }
+    /// Reports of the same period, template and scope are versions of one review.
+    public var versionKey: String {
+        let topics = scope.topicIDs.sorted().joined(separator: ",")
+        return "\(Int(period.start.timeIntervalSince1970))|\(Int(period.end.timeIntervalSince1970))|\(period.timeZoneIdentifier)|\(template.id)|\(scope.useSelectedTopics)|\(topics)"
+    }
     public var overview: String { isReadable ? (modelOverview ?? (modelCoverage == nil ? digestOverview : "")) : "" }
 
     public var displayName: String {
@@ -400,6 +407,8 @@ public enum WeeklyReviewWork: Sendable {
 
 public enum WeeklyReviewError: Error, LocalizedError, Equatable {
     case noEvidence, invalidPeriod, invalidTemplate, changedSources, cancelled, noWorkScope, noDailyReviews
+    /// Generation succeeded but nothing belongs in this template's body. Nothing is saved.
+    case noReadableContent(template: String, relatedCount: Int)
     public var errorDescription: String? {
         switch self {
         case .noEvidence: "这段时间没有符合范围的记录，可以换一个时间范围或补充记录。"
@@ -409,6 +418,10 @@ public enum WeeklyReviewError: Error, LocalizedError, Equatable {
         case .cancelled: "已取消本次生成。"
         case .noWorkScope: "所选日期内暂未识别出明确的工作内容，可以改用“我的一周”回顾全部内容。"
         case .noDailyReviews: "这段时间还没有可用的每日回顾。周期回顾基于每日回顾生成，请先在“每日回顾”里生成或重新生成这些天，再回来。"
+        case .noReadableContent(let template, let related):
+            related > 0
+                ? "这段时间没有可写入“\(template)”的内容；有 \(related) 条相关记录不属于这个模板，未保存新回顾。可以改用“我的一周”，或补生成缺失的天。"
+                : "这段时间没有可写入“\(template)”的内容，未保存新回顾。可以换个时间范围或模板。"
         }
     }
 }
@@ -614,5 +627,28 @@ public struct WeeklyReviewEngine: Sendable {
             return (prefix + " · " + text[range], category)
         }
         return nil
+    }
+}
+
+/// Reports of the same period, template and scope shown as one review with versions.
+/// Storage keeps each version as its own report, so deletion, restore and schedules stay per version.
+public struct ReviewVersionGroup: Identifiable, Sendable {
+    /// Newest first.
+    public let versions: [WeeklyReport]
+    public var id: String { versions[0].versionKey }
+    public var latest: WeeklyReport { versions[0] }
+    /// 1-based, oldest is 1.
+    public func number(of id: UUID) -> Int? {
+        versions.firstIndex { $0.id == id }.map { versions.count - $0 }
+    }
+    /// Groups in the order of each group's newest report.
+    public static func groups(_ reports: [WeeklyReport]) -> [ReviewVersionGroup] {
+        var order: [String] = [], members: [String: [WeeklyReport]] = [:]
+        for report in reports.sorted(by: { $0.createdAt > $1.createdAt }) {
+            let key = report.versionKey
+            if members[key] == nil { order.append(key) }
+            members[key, default: []].append(report)
+        }
+        return order.map { ReviewVersionGroup(versions: members[$0]!) }
     }
 }

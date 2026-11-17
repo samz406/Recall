@@ -162,12 +162,11 @@ public extension WeeklyReport {
     var supplementaryRows: [ReviewDigestRow] {
         separatesSupplementaryRecords ? digestRows.filter { $0.item.section == .notes } : []
     }
+    /// Empty bodies are presented by the app as an explanation card, never as a pointer sentence.
     var readingOverview: String {
         guard !supplementaryRows.isEmpty else { return overview }
         let titles = readingRows.prefix(3).map(\.title)
-        return titles.isEmpty
-            ? RecallLocalization.both("本期的相关记录保留在“查看来源”中。", "Related records for this period are available under View sources.")
-            : RecallLocalization.both("本期重点：", "Period highlights: ") + titles.joined(separator: "；") + "。"
+        return titles.isEmpty ? "" : RecallLocalization.both("本期重点：", "Period highlights: ") + titles.joined(separator: "；") + "。"
     }
     var supplementaryMarkdown: String {
         supplementaryRows.map { "### " + $0.title + "\n\n" + $0.summary }.joined(separator: "\n\n")

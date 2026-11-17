@@ -159,6 +159,9 @@ final class RecallAppModel: ObservableObject {
     private var dailyReviewBackfillPausedUntil: Date?
     private var isDailyReviewBackfillPaused: Bool { dailyReviewBackfillPausedUntil.map { Date.now < $0 } ?? false }
     private var pendingDailySummaries: [(day: Date, reason: DailySummaryReason)] = []
+    /// A period review the user asked for once the listed daily reviews exist.
+    struct PendingPeriodReview { let period: ReviewPeriod; let template: ReviewTemplate; let scope: ReviewScope; let days: Set<Date> }
+    @Published private(set) var pendingPeriodReview: PendingPeriodReview?
     private let diagnosticLog: RecallDiagnosticLogStore
     private var reminderActionObserver: NSObjectProtocol?
     private var appActiveObserver: NSObjectProtocol?
@@ -482,6 +485,10 @@ final class RecallAppModel: ObservableObject {
                 try Task.checkCancellation()
                 guard !result.items.isEmpty else { throw WeeklyReviewError.noEvidence }
                 var report = result.weeklyReport(period: period, template: template, scope: scope, in: snapshot)
+                // A body with nothing in it is not a review. Keep the previous version and explain why.
+                guard !report.hasNoBody else {
+                    throw WeeklyReviewError.noReadableContent(template: template.name, relatedCount: report.supplementaryRows.count)
+                }
                 report.scheduledFor = scheduledTrigger
                 let current = try await LocalOperation.run(stage: "确认回顾来源") { await modelStore.snapshot() }
                 guard current.privacy.cloudUseEnabled == snapshot.privacy.cloudUseEnabled,
@@ -546,7 +553,11 @@ final class RecallAppModel: ObservableObject {
                 weeklyReviewMessage = nil
                 recordError(error, source: "WeeklyReview", message: "一周回顾生成失败")
                 if let schedule {
-                    let skip = (error as? WeeklyReviewError) == .noEvidence || (error as? WeeklyReviewError) == .noWorkScope || (error as? WeeklyReviewError) == .invalidPeriod
+                    let skip: Bool
+                    switch error as? WeeklyReviewError {
+                    case .noEvidence, .noWorkScope, .invalidPeriod, .noReadableContent: skip = true
+                    default: skip = false
+                    }
                     do { try await store.deferReviewSchedule(schedule, noEvidence: skip); state = await store.snapshot() }
                     catch { recordError(error, source: "WeeklyReview", message: "保存回顾重试状态失败") }
                 }
@@ -1805,6 +1816,34 @@ final class RecallAppModel: ObservableObject {
         }
     }
     /// Generates structured daily reviews for days that have records but no review yet. Oldest day first.
+    /// Fills missing daily reviews first, then generates the period review automatically.
+    func backfillThenGenerateWeeklyReview(days: [Date], period: ReviewPeriod, template: ReviewTemplate, scope: ReviewScope) {
+        let calendar = Calendar.current
+        let missing = Set(days.map { calendar.startOfDay(for: $0) }).filter { $0 <= Date.now && state.dailyReview(on: $0) == nil }
+        guard !missing.isEmpty else { generateWeeklyReview(period: period, template: template, scope: scope); return }
+        guard state.privacy.cloudUseEnabled else { noticeMessage = "请先允许发送脱敏文本，再补生成这些天的每日回顾。"; return }
+        pendingPeriodReview = PendingPeriodReview(period: period, template: template, scope: scope, days: missing)
+        weeklyReviewMessage = RecallLocalization.both("正在补生成 \(missing.count) 天的每日回顾，完成后自动生成这份回顾。",
+            "Generating \(missing.count) missing daily reviews; the period review will follow automatically.")
+        backfillDailyReviews(Array(missing))
+    }
+    func cancelPendingPeriodReview() {
+        pendingPeriodReview = nil; weeklyReviewMessage = nil
+    }
+    /// Runs the queued period review once no requested day is still waiting or running.
+    private func continuePendingPeriodReviewIfReady() {
+        guard let pending = pendingPeriodReview, !isGeneratingDailySummary, !isGeneratingWeeklyReview else { return }
+        let calendar = Calendar.current
+        let waiting = pendingDailySummaries.contains { item in pending.days.contains { calendar.isDate($0, inSameDayAs: item.day) } }
+        guard !waiting else { return }
+        pendingPeriodReview = nil
+        let failed = pending.days.filter { state.dailyReview(on: $0) == nil }
+        if !failed.isEmpty {
+            weeklyReviewMessage = RecallLocalization.both("有 \(failed.count) 天的每日回顾未能生成，已用现有的每日回顾继续生成。",
+                "\(failed.count) daily reviews could not be generated; continuing with the existing ones.")
+        }
+        generateWeeklyReview(period: pending.period, template: pending.template, scope: pending.scope)
+    }
     func backfillDailyReviews(_ days: [Date]) {
         let calendar = Calendar.current
         let missing = Set(days.map { calendar.startOfDay(for: $0) }).filter { $0 <= Date.now && state.dailyReview(on: $0) == nil }
@@ -1816,6 +1855,8 @@ final class RecallAppModel: ObservableObject {
     }
     func cancelDailyReview() {
         guard let id = dailyReviewStatusID, requestTaskCancellation(id) else { return }
+        // Stopping the backfill also drops the period review that was waiting for it.
+        pendingPeriodReview = nil
         pauseAutomaticDailyReviews()
         pendingDailySummaries.removeAll()
         dailyReviewTask?.cancel()
@@ -2005,6 +2046,7 @@ final class RecallAppModel: ObservableObject {
                 startDailyReview(on: next.day, reason: next.reason)
             }
         }
+        continuePendingPeriodReviewIfReady()
     }
 
     func reviewInsight(_ insight: PersonalInsight, rating: InsightFeedbackRating) {

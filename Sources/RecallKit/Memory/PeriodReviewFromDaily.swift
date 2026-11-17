@@ -15,16 +15,23 @@ public struct PeriodReviewFromDaily: Sendable {
     public struct DayGaps: Sendable {
         public var reviewedDayCount: Int
         public var spanDayCount: Int
+        /// Past days with records but no daily review. Today is reported separately.
         public var missingRecordedDays: [Date]
         public var headline: String
+        /// Today is inside the period, has records and no daily review yet.
+        public var todayMissing: Bool = false
         public var hasMissingRecords: Bool { !missingRecordedDays.isEmpty }
+        /// Everything that would need a daily review before a complete period review.
+        public var allMissingDays: [Date] { missingRecordedDays + (todayMissing ? [todayStart].compactMap { $0 } : []) }
+        var todayStart: Date?
     }
 
     /// Days in the period that have records but no structured daily review.
     public static func gaps(in state: RecallState, period: ReviewPeriod, now: Date = .now) -> DayGaps {
         let calendar = period.calendar
         let start = calendar.startOfDay(for: period.start)
-        let end = min(period.end, calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now)) ?? now)
+        let today = calendar.startOfDay(for: now)
+        let end = min(period.end, calendar.date(byAdding: .day, value: 1, to: today) ?? now)
         var span: [Date] = []
         var day = start
         while day < end && span.count < 31 {
@@ -47,7 +54,9 @@ public struct PeriodReviewFromDaily: Sendable {
             return calendar.startOfDay(for: date)
         })
         let reviewedCount = span.filter { reviewed.contains($0) }.count
-        let missing = span.filter { recorded.contains($0) && !reviewed.contains($0) }
+        let missingAll = span.filter { recorded.contains($0) && !reviewed.contains($0) }
+        let todayMissing = missingAll.contains(today)
+        let missing = missingAll.filter { $0 != today }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.timeZone = calendar.timeZone
@@ -57,7 +66,17 @@ public struct PeriodReviewFromDaily: Sendable {
         if !missing.isEmpty {
             headline += "；" + missing.map { formatter.string(from: $0) }.joined(separator: "、") + "未生成"
         }
-        return DayGaps(reviewedDayCount: reviewedCount, spanDayCount: span.count, missingRecordedDays: missing, headline: headline)
+        if todayMissing { headline += "；今天的记录还在进行中" }
+        var result = DayGaps(reviewedDayCount: reviewedCount, spanDayCount: span.count, missingRecordedDays: missing, headline: headline, todayMissing: todayMissing)
+        result.todayStart = todayMissing ? today : nil
+        return result
+    }
+
+    /// The same period ending at the start of today, when today has no daily review yet.
+    public static func excludingToday(_ period: ReviewPeriod, now: Date = .now) -> ReviewPeriod? {
+        let today = period.calendar.startOfDay(for: now)
+        guard period.start < today, period.end > today else { return nil }
+        return ReviewPeriod(start: period.start, end: today, timeZoneIdentifier: period.timeZoneIdentifier)
     }
 
     public struct Prepared: Sendable {

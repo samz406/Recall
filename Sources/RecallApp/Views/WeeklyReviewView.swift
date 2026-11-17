@@ -22,13 +22,22 @@ struct WeeklyReviewView: View {
     @State private var sourceItem: ReviewItem?
     @State private var deleting: WeeklyReport?
     @State private var materials: WeeklyReport?
+    @State private var lastSelectedVersionKey: String?
+    /// The composer's choice when today has records but no daily review.
+    @State private var excludesToday = false
     var scrollToReport: () -> Void = {}
 
-    private var period: ReviewPeriod {
+    private var selectedPeriod: ReviewPeriod {
         if periodKind != .custom { return .make(periodKind, at: rangeNow) }
         let c = Calendar.current
         let end = min(rangeNow, c.date(byAdding: .day, value: 1, to: c.startOfDay(for: customEnd)) ?? customEnd)
         return ReviewPeriod(start: c.startOfDay(for: customStart), end: end)
+    }
+    /// Optionally stops at the start of today, so an unfinished day does not leave a gap.
+    private var period: ReviewPeriod {
+        let selected = selectedPeriod
+        guard excludesToday, let trimmed = PeriodReviewFromDaily.excludingToday(selected, now: rangeNow) else { return selected }
+        return trimmed
     }
     private var report: WeeklyReport? {
         model.state.weeklyReports.first { $0.id == selectedID }
@@ -40,12 +49,16 @@ struct WeeklyReviewView: View {
         HStack(alignment: .top, spacing: 18) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    Text("已保存 \(model.state.weeklyReports.count) 份").font(.caption).foregroundStyle(RecallPalette.secondary).padding(.bottom, 4)
-                    ForEach(Array(model.state.weeklyReports.prefix(historyCount))) { item in
-                        RecallListChoice(title: item.displayName, detail: item.period.label, selected: item.id == report?.id,
-                            warning: item.isReadable ? nil : "待更新") { selectedID = item.id }
+                    let groups = ReviewVersionGroup.groups(model.state.weeklyReports)
+                    Text("已保存 \(groups.count) 份").font(.caption).foregroundStyle(RecallPalette.secondary).padding(.bottom, 4)
+                    ForEach(Array(groups.prefix(historyCount))) { group in
+                        let item = group.latest
+                        let selected = group.versions.contains { $0.id == report?.id }
+                        RecallListChoice(title: item.displayName,
+                            detail: item.period.label + (group.versions.count > 1 ? RecallLocalization.both(" · 第 \(group.versions.count) 版", " · v\(group.versions.count)") : ""),
+                            selected: selected, warning: listWarning(item)) { selectedID = item.id }
                     }
-                    if model.state.weeklyReports.count > historyCount { Button(RecallLocalization.text("更早的回顾")) { historyCount += 20 } }
+                    if groups.count > historyCount { Button(RecallLocalization.text("更早的回顾")) { historyCount += 20 } }
                     utilityActions.padding(.top, 4)
                 }
             }.frame(width: 218).clipped()
@@ -54,7 +67,15 @@ struct WeeklyReviewView: View {
                     if let task = model.tasks.first(where: { $0.kind == "周期回顾" }), task.isRunning || task.state == .failed || task.state == .partial {
                         RecallTaskStatusView(task: task, cancel: model.cancelWeeklyReview)
                     }
-                    if let message = model.weeklyReviewMessage, !message.isEmpty { Text(message).font(.caption).foregroundStyle(RecallPalette.secondary) }
+                    if let message = model.weeklyReviewMessage, !message.isEmpty {
+                        HStack(spacing: 10) {
+                            Text(message).font(.caption).foregroundStyle(RecallPalette.secondary)
+                            if model.pendingPeriodReview != nil {
+                                Button(RecallLocalization.both("不再自动生成", "Don't generate afterwards")) { model.cancelPendingPeriodReview() }
+                                    .buttonStyle(.plain).font(.caption).foregroundStyle(RecallPalette.accent)
+                            }
+                        }
+                    }
                     if let report { reportBody(report) }
                     else if !model.isGeneratingWeeklyReview {
                         if model.state.weeklyReports.isEmpty { emptyState }
@@ -77,6 +98,7 @@ struct WeeklyReviewView: View {
         }
         .onAppear {
             rangeNow = .now
+            excludesToday = false
             scope = ReviewScope()
             showsComposer = false
             if let id = model.reviewTopicToOpen { openTopicReview(id); return }
@@ -90,8 +112,14 @@ struct WeeklyReviewView: View {
             if let id { openTopicReview(id) }
         }
         .onChange(of: selectedID) { _, id in model.weeklyReportToOpen = id }
-        .onChange(of: model.state.weeklyReports.map(\.id)) { _, ids in
-            if let selectedID, !ids.contains(selectedID) { self.selectedID = nil }
+        .onChange(of: model.state.weeklyReports.map(\.id)) { old, ids in
+            guard let selectedID, !ids.contains(selectedID) else { return }
+            // Deleting one version keeps the review open on its newest remaining version.
+            let key = lastSelectedVersionKey
+            self.selectedID = key.flatMap { key in ReviewVersionGroup.groups(model.state.weeklyReports).first { $0.id == key }?.latest.id }
+        }
+        .onChange(of: selectedID) { _, id in
+            if let id, let report = model.state.weeklyReports.first(where: { $0.id == id }) { lastSelectedVersionKey = report.versionKey }
         }
         .onChange(of: customStart) { _, start in if customEnd < start { customEnd = start } }
         .onChange(of: model.memoryWorkspace?.revision) { _, _ in rangeNow = .now }
@@ -177,6 +205,7 @@ struct WeeklyReviewView: View {
                     Button(RecallLocalization.text("回顾全部内容")) { scope = ReviewScope(); model.reviewTopicToOpen = nil }.fixedSize()
                 }
             }
+            if range.isValid { coverageNotice(range: range) }
             // Only explain a blocked action; ordinary generation has no diagnostic/configuration panel.
             if !range.isValid {
                 Text(RecallLocalization.text("请选择不超过 31 天的有效日期范围。"))
@@ -238,17 +267,55 @@ struct WeeklyReviewView: View {
     private var customEndControl: some View {
         CalendarDateField(title: "结束日期", date: $customEnd, earliest: customStart)
     }
+    /// Daily-review coverage before generation: which days are missing, and how today is handled.
+    @ViewBuilder private func coverageNotice(range: ReviewPeriod) -> some View {
+        let full = PeriodReviewFromDaily.gaps(in: model.state, period: selectedPeriod, now: rangeNow)
+        let gaps = PeriodReviewFromDaily.gaps(in: model.state, period: range, now: rangeNow)
+        if full.todayMissing || gaps.hasMissingRecords {
+            VStack(alignment: .leading, spacing: 8) {
+                Label(gaps.headline, systemImage: "calendar.badge.exclamationmark").font(.callout)
+                if full.todayMissing {
+                    Toggle(RecallLocalization.both("今天的记录还在进行中，只回顾到昨天", "Today is still in progress; stop at yesterday"), isOn: $excludesToday)
+                        .toggleStyle(.checkbox).font(.callout)
+                }
+                if !gaps.allMissingDays.isEmpty {
+                    Text(RecallLocalization.both("周期回顾基于每日回顾生成。可以先补生成缺失的天，完成后自动生成；也可以只用已有的 \(gaps.reviewedDayCount) 天。",
+                        "Period reviews are built from daily reviews. Fill the missing days first and the review follows automatically, or use the \(gaps.reviewedDayCount) existing days."))
+                        .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(RecallPalette.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
     private func generateButton(range: ReviewPeriod, eligibleTopicCount: Int) -> some View {
+        let missing = range.isValid ? PeriodReviewFromDaily.gaps(in: model.state, period: range, now: rangeNow).allMissingDays : []
+        let reviewed = range.isValid ? PeriodReviewFromDaily.gaps(in: model.state, period: range, now: rangeNow).reviewedDayCount : 0
+        return HStack(spacing: 10) {
+            if !missing.isEmpty && reviewed > 0 {
+                Button(RecallLocalization.both("只用已有的 \(reviewed) 天", "Use \(reviewed) existing days")) {
+                    model.generateWeeklyReview(period: range, template: template, scope: scope)
+                    showsComposer = false
+                }.controlSize(.large).fixedSize()
+                    .disabled(model.isGeneratingWeeklyReview || model.isBuildingMatters || eligibleTopicCount == 0)
+            }
+            primaryGenerateButton(range: range, eligibleTopicCount: eligibleTopicCount, missing: missing)
+        }
+    }
+    private func primaryGenerateButton(range: ReviewPeriod, eligibleTopicCount: Int, missing: [Date]) -> some View {
         Button {
-            model.generateWeeklyReview(period: range, template: template, scope: scope)
+            if missing.isEmpty { model.generateWeeklyReview(period: range, template: template, scope: scope) }
+            else { model.backfillThenGenerateWeeklyReview(days: missing, period: range, template: template, scope: scope) }
             showsComposer = false
         } label: {
-            Label(RecallLocalization.text("生成回顾"), systemImage: "sparkles")
+            Label(missing.isEmpty ? RecallLocalization.text("生成回顾") : RecallLocalization.both("补生成 \(missing.count) 天后生成", "Fill \(missing.count) days, then generate"),
+                  systemImage: "sparkles")
                 .font(.system(size: 15, weight: .semibold))
                 .padding(.horizontal, 8).frame(minHeight: 30)
         }
             .buttonStyle(.borderedProminent).controlSize(.large).frame(minHeight: 44).fixedSize()
-            .disabled(model.isGeneratingWeeklyReview || model.isBuildingMatters || !range.isValid || eligibleTopicCount == 0)
+            .disabled(model.isGeneratingWeeklyReview || model.isBuildingMatters || !range.isValid
+                      || (missing.isEmpty && eligibleTopicCount == 0) || model.pendingPeriodReview != nil
+                      || (!missing.isEmpty && !model.state.privacy.cloudUseEnabled))
     }
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -294,15 +361,68 @@ struct WeeklyReviewView: View {
                 MarkdownDocumentView(markdown: edited).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     .font(.system(size: 15)).lineSpacing(7)
                 DisclosureGroup(RecallLocalization.text("查看自动整理的小结")) { reportSections(report).padding(.top, 18) }
+            } else if report.hasNoBody {
+                emptyBodyCard(report)
             } else {
-                Text(report.readingOverview).font(.system(size: 16, weight: .medium)).lineSpacing(7)
-                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                if !report.readingOverview.isEmpty {
+                    Text(report.readingOverview).font(.system(size: 16, weight: .medium)).lineSpacing(7)
+                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                }
                 reportSections(report)
             }
-            if report.isReadable { SummaryFeedbackFooter(target: .period(report)) }
+            if report.isReadable && !report.hasNoBody { SummaryFeedbackFooter(target: .period(report)) }
             Text("创建于 \(report.createdAt.formatted(date: .abbreviated, time: .shortened))")
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
         }.padding(28).reviewSurface()
+    }
+    private func listWarning(_ report: WeeklyReport) -> String? {
+        if !report.isReadable { return "待更新" }
+        return report.hasNoBody ? RecallLocalization.both("无正文", "No body") : nil
+    }
+    private func versionGroup(of report: WeeklyReport) -> ReviewVersionGroup? {
+        ReviewVersionGroup.groups(model.state.weeklyReports).first { $0.versions.contains { $0.id == report.id } }
+    }
+    /// Shown instead of an empty body: why nothing was written and what to do next.
+    private func emptyBodyCard(_ report: WeeklyReport) -> some View {
+        let gaps = PeriodReviewFromDaily.gaps(in: model.state, period: report.period)
+        let related = report.supplementaryRows.count
+        let missing = gaps.allMissingDays
+        return VStack(alignment: .leading, spacing: 12) {
+            Label(RecallLocalization.both("这段时间没有形成「\(report.template.name)」的正文", "No “\(report.template.name)” content for this period"),
+                  systemImage: "doc.text.magnifyingglass").font(.headline)
+            Text(emptyBodyReason(report, gaps: gaps, related: related))
+                .font(.callout).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) { emptyBodyActions(report, related: related, missing: missing) }
+                VStack(alignment: .leading, spacing: 10) { emptyBodyActions(report, related: related, missing: missing) }
+            }
+        }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
+            .background(RecallPalette.selected.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+    }
+    private func emptyBodyReason(_ report: WeeklyReport, gaps: PeriodReviewFromDaily.DayGaps, related: Int) -> String {
+        var parts = [RecallLocalization.both("本期 \(gaps.reviewedDayCount)/\(max(gaps.spanDayCount, 1)) 天有每日回顾。", "\(gaps.reviewedDayCount) of \(max(gaps.spanDayCount, 1)) days have daily reviews.")]
+        if related > 0 {
+            parts.append(RecallLocalization.both("其中 \(related) 条记录不属于「\(report.template.name)」，没有写入正文。", "\(related) records don't belong to “\(report.template.name)” and were left out of the body."))
+        }
+        if !gaps.allMissingDays.isEmpty {
+            parts.append(RecallLocalization.both("还有 \(gaps.allMissingDays.count) 天有记录但没有每日回顾。", "\(gaps.allMissingDays.count) more days have records but no daily review."))
+        }
+        return parts.joined()
+    }
+    @ViewBuilder private func emptyBodyActions(_ report: WeeklyReport, related: Int, missing: [Date]) -> some View {
+        if related > 0 {
+            Button(RecallLocalization.both("查看 \(related) 条相关记录", "View \(related) related records")) { materials = report }
+        }
+        if !missing.isEmpty {
+            Button(RecallLocalization.both("补生成 \(missing.count) 天并重新生成", "Fill \(missing.count) days and regenerate")) {
+                model.backfillThenGenerateWeeklyReview(days: missing, period: report.period, template: report.template, scope: report.scope)
+            }.disabled(model.isGeneratingDailySummary || model.isGeneratingWeeklyReview || model.pendingPeriodReview != nil)
+        }
+        if report.template.kind != .personal {
+            Button(RecallLocalization.both("改用「我的一周」生成", "Use “My week” instead")) {
+                model.generateWeeklyReview(period: report.period, template: ReviewTemplate(kind: .personal), scope: report.scope)
+            }.disabled(model.isGeneratingWeeklyReview || model.isGeneratingDailySummary)
+        }
     }
     private func reportHeading(_ report: WeeklyReport) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -310,20 +430,43 @@ struct WeeklyReviewView: View {
             Text(report.period.label).font(.callout.monospacedDigit()).foregroundStyle(RecallPalette.secondary)
             let gaps = PeriodReviewFromDaily.gaps(in: model.state, period: report.period)
             Text(gaps.headline).font(.caption).foregroundStyle(RecallPalette.secondary)
-            if gaps.hasMissingRecords {
-                Button(RecallLocalization.text("补生成这几天")) { model.backfillDailyReviews(gaps.missingRecordedDays) }
-                    .buttonStyle(.bordered).controlSize(.small).disabled(model.isGeneratingDailySummary)
+            if gaps.hasMissingRecords && !report.hasNoBody {
+                Button(RecallLocalization.both("补生成 \(gaps.missingRecordedDays.count) 天并重新生成", "Fill \(gaps.missingRecordedDays.count) days and regenerate")) {
+                    model.backfillThenGenerateWeeklyReview(days: gaps.missingRecordedDays, period: report.period, template: report.template, scope: report.scope)
+                }.buttonStyle(.bordered).controlSize(.small)
+                    .disabled(model.isGeneratingDailySummary || model.isGeneratingWeeklyReview || model.pendingPeriodReview != nil)
             }
             if report.isReadable {
-                Text("\(report.readingRows.count) 项内容 · 涵盖 \(report.coveredDayCount) 个记录日" + (report.editedMarkdown == nil ? "" : " · 已编辑"))
+                Text(report.hasNoBody
+                     ? RecallLocalization.both("暂无正文", "No body") + (report.supplementaryRows.isEmpty ? "" : RecallLocalization.both(" · \(report.supplementaryRows.count) 条相关记录", " · \(report.supplementaryRows.count) related records"))
+                     : "\(report.readingRows.count) 项内容 · 涵盖 \(report.coveredDayCount) 个记录日" + (report.editedMarkdown == nil ? "" : " · 已编辑"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
         }
     }
     private func reportActions(_ report: WeeklyReport) -> some View {
         HStack(spacing: 12) {
-            Button { editing = report } label: { Label(RecallLocalization.text("编辑"), systemImage: "pencil") }.disabled(!report.isReadable)
-            Button { exporting = report } label: { Label(RecallLocalization.text("复制与导出"), systemImage: "square.and.arrow.up") }.disabled(!report.isReadable)
+            if !report.hasNoBody {
+                Button { editing = report } label: { Label(RecallLocalization.text("编辑"), systemImage: "pencil") }.disabled(!report.isReadable)
+                Button { exporting = report } label: { Label(RecallLocalization.text("复制与导出"), systemImage: "square.and.arrow.up") }.disabled(!report.isReadable)
+            }
+            if let group = versionGroup(of: report), group.versions.count > 1 {
+                Menu {
+                    ForEach(group.versions) { version in
+                        Button {
+                            selectedID = version.id
+                        } label: {
+                            let title = RecallLocalization.both("第 \(group.number(of: version.id) ?? 1) 版", "Version \(group.number(of: version.id) ?? 1)")
+                                + " · " + version.createdAt.formatted(date: .abbreviated, time: .shortened)
+                                + (version.id == group.latest.id ? RecallLocalization.both("（最新）", " (latest)") : "")
+                            if version.id == report.id { Label(title, systemImage: "checkmark") } else { Text(title) }
+                        }
+                    }
+                } label: {
+                    Label(RecallLocalization.both("第 \(group.number(of: report.id) ?? 1)/\(group.versions.count) 版", "v\(group.number(of: report.id) ?? 1)/\(group.versions.count)"),
+                          systemImage: "clock.arrow.circlepath")
+                }.menuStyle(.borderlessButton).fixedSize()
+            }
             Menu {
                 Button(RecallLocalization.both("查看来源与相关记录", "View sources and related records")) { materials = report }.disabled(!report.isReadable)
                 if report.isReadable {
@@ -331,7 +474,7 @@ struct WeeklyReviewView: View {
                     Button(RecallLocalization.text("重新生成（保留原版本）")) { regenerate(report) }
                         .disabled(model.isGeneratingWeeklyReview)
                 }
-                Button(RecallLocalization.text("删除回顾"), role: .destructive) { deleting = report }
+                Button(RecallLocalization.text(versionGroup(of: report).map { $0.versions.count > 1 } == true ? "删除这个版本" : "删除回顾"), role: .destructive) { deleting = report }
                     .accessibilityIdentifier("delete-period-review-" + report.id.uuidString)
             } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
                 .disabled(model.deletingWeeklyReportIDs.contains(report.id))
@@ -384,7 +527,7 @@ struct WeeklyReviewView: View {
     }
     private var history: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text(RecallLocalization.text("已保存的回顾")).font(.headline); Spacer(); Text("\(model.state.weeklyReports.count) 份").foregroundStyle(RecallPalette.secondary) }
+            HStack { Text(RecallLocalization.text("已保存的回顾")).font(.headline); Spacer(); Text("\(ReviewVersionGroup.groups(model.state.weeklyReports).count) 份").foregroundStyle(RecallPalette.secondary) }
             if model.state.weeklyReports.isEmpty {
                 Text(RecallLocalization.text("生成后会保存在这里，之后可以随时回看或调整。")).font(.callout).foregroundStyle(RecallPalette.secondary)
             }

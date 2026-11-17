@@ -187,6 +187,94 @@ extension RecallLayoutPreviews {
                 previous?.editedMarkdown = "# 用户已编辑的原周报\n\n这段合成修订在生成失败后必须保留。"
             }
         }
-        print("PASS: native period generation resolves quote references, repairs only one bad citation or three omitted inputs, records success/failure timing, preserves unknown attribution and >5 exported/reopened items, and retains edited reports on persistent omission/missing fields")
+        try await verifyEmptyBodyAndBackfillChain(state: state, period: period)
+        print("PASS: native period generation resolves quote references, repairs only one bad citation or three omitted inputs, records success/failure timing, preserves unknown attribution and >5 exported/reopened items, retains edited reports on persistent omission/missing fields, refuses empty work bodies and chains missing daily reviews into the period review")
+    }
+
+    /// Answers every daily review with one owned matter, and every period review with related records only
+    /// (empty body) or with one progress item, so both the refusal and the chained generation are observable.
+    private actor ChainModel: LLMResponding {
+        let emptyBody: Bool
+        var daily = 0, period = 0
+        init(emptyBody: Bool) { self.emptyBody = emptyBody }
+        func counts() -> (daily: Int, period: Int) { (daily, period) }
+        func answer(to request: LLMRequest) async throws -> LLMAnswer {
+            if request.purpose == .personaInsight { return LLMAnswer(content: "{\"traits\":[]}", citedCaptureIDs: []) }
+            guard let body = request.context.first?.ocrText,
+                  let rows = try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [[String: Any]], let first = rows.first else {
+                throw PeriodGenerationFailure(errorDescription: "合成模型收到无法解析的输入")
+            }
+            if first["text"] != nil {
+                daily += 1
+                let id = first["id"] as! String
+                let quote = (first["quotes"] as? [String])?.first ?? (first["text"] as! String).components(separatedBy: "\n").last!
+                let item: [String: Any] = ["section": "progress", "title": "Atlas 合成补生成验证完成", "detail": "Atlas 合成补生成的验证结果已记录，原始来源保留。",
+                    "owner": "user", "status": "completed", "explicitCommitment": false, "condition": NSNull(), "evidence": [["id": id, "quote": quote]]]
+                let coverage = rows.map { ["id": $0["id"]!, "disposition": ($0["id"] as? String) == id ? "used" : "background"] }
+                let value: [String: Any] = ["overview": "Atlas 合成补生成验证结果已记录。", "items": [item], "coverage": coverage]
+                return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self), citedCaptureIDs: [])
+            }
+            period += 1
+            let items = rows.map { row -> [String: Any] in
+                ["section": emptyBody ? "notes" : "progress", "title": (row["topic"] as? String ?? "合成") + "验证记录",
+                 "detail": "合成验证的过程与结论已记录，来源保留。", "evidence": [["id": row["id"]!, "quote": row["title"]!]]]
+            }
+            let coverage = rows.map { ["id": $0["id"]!, "disposition": "used", "category": "work"] }
+            let value: [String: Any] = ["overview": "合成回顾。", "items": items, "coverage": coverage]
+            return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self), citedCaptureIDs: [])
+        }
+    }
+    @MainActor private static func verifyEmptyBodyAndBackfillChain(state seed: RecallState, period: ReviewPeriod) async throws {
+        func wait(_ model: RecallAppModel) async throws {
+            for _ in 0..<800 {
+                if !model.isGeneratingWeeklyReview && !model.isGeneratingDailySummary && model.pendingPeriodReview == nil { return }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            throw PeriodGenerationFailure(errorDescription: "补生成与周期回顾没有在时限内结束")
+        }
+        // 1. A work review whose model output contains only related records is not saved.
+        var input = seed; input.llmConfiguration.credentialReference = UUID().uuidString
+        let refusing = ChainModel(emptyBody: true)
+        let empty = try RecallAppModel(previewState: input, dailyReviewResponder: refusing)
+        defer { try? FileManager.default.removeItem(at: empty.storage.rootURL) }
+        empty.state = await empty.store.snapshot()
+        let before = empty.state.weeklyReports
+        empty.generateWeeklyReview(period: period, template: ReviewTemplate(kind: .project), scope: ReviewScope())
+        try await wait(empty)
+        guard empty.state.weeklyReports == before,
+              empty.tasks.contains(where: { $0.state == .failed && $0.phase.contains("相关记录") && $0.phase.contains("未保存") }) else {
+            throw PeriodGenerationFailure(errorDescription: "没有正文的工作回顾仍被保存，或未说明原因")
+        }
+        // 2. Missing days are generated first; the period review follows without another click.
+        let calendar = Calendar.current
+        var gapped = input
+        let missingDay = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: .now))!
+        gapped.captures.append(CaptureRecord(eventTemplate: .manualMoment, createdAt: missingDay.addingTimeInterval(36_000), sourceAppName: "Synthetic Notes",
+            contentHash: UUID().uuidString, ocrText: "Atlas 合成补生成验证已经完成，这一天还没有每日回顾。", textOrigin: .userInput))
+        let chain = ChainModel(emptyBody: false)
+        let model = try RecallAppModel(previewState: gapped, dailyReviewResponder: chain)
+        defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
+        model.state = await model.store.snapshot()
+        let gaps = PeriodReviewFromDaily.gaps(in: model.state, period: period)
+        guard gaps.missingRecordedDays.contains(where: { calendar.isDate($0, inSameDayAs: missingDay) }) else {
+            throw PeriodGenerationFailure(errorDescription: "生成前没有识别出缺失的每日回顾")
+        }
+        model.backfillThenGenerateWeeklyReview(days: gaps.allMissingDays, period: period, template: ReviewTemplate(kind: .personal), scope: ReviewScope())
+        guard model.pendingPeriodReview != nil || model.isGeneratingDailySummary else {
+            throw PeriodGenerationFailure(errorDescription: "补生成没有排队")
+        }
+        try await wait(model)
+        let counts = await chain.counts()
+        guard counts.daily >= 1, counts.period == 1, model.state.dailyReview(on: missingDay) != nil,
+              let saved = model.state.weeklyReports.first, !saved.hasNoBody, model.weeklyReportToOpen == saved.id else {
+            throw PeriodGenerationFailure(errorDescription: "补生成后没有自动生成周期回顾（每日 \(counts.daily) 次，周期 \(counts.period) 次）")
+        }
+        // 3. Regenerating the same range adds a version, grouped under one review.
+        model.generateWeeklyReview(period: period, template: ReviewTemplate(kind: .personal), scope: ReviewScope())
+        try await wait(model)
+        let groups = ReviewVersionGroup.groups(model.state.weeklyReports)
+        guard model.state.weeklyReports.count == 2, groups.count == 1, groups[0].versions.count == 2 else {
+            throw PeriodGenerationFailure(errorDescription: "同一时间段重新生成没有归为同一份回顾的新版本")
+        }
     }
 }
