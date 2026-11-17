@@ -65,7 +65,8 @@ struct WeeklyReviewView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let task = model.tasks.first(where: { $0.kind == "周期回顾" }), task.isRunning || task.state == .failed || task.state == .partial {
-                        RecallTaskStatusView(task: task, cancel: model.cancelWeeklyReview)
+                        RecallTaskStatusView(task: task, cancel: model.cancelWeeklyReview, compact: true,
+                                             showDetails: { model.showsTaskHistory = true })
                     }
                     if let message = model.weeklyReviewMessage, !message.isEmpty {
                         HStack(spacing: 10) {

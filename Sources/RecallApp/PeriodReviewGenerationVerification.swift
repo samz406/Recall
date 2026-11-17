@@ -101,6 +101,7 @@ extension RecallLayoutPreviews {
         var previous: WeeklyReport?
         for mode in [PeriodGenerationModel.Mode.complete, .references, .badEvidenceOnce, .badEvidenceAlways, .omitOnce, .alwaysOmit, .malformed] {
             let responder = PeriodGenerationModel(mode)
+            await PeriodReviewFromDaily.discardRetryCheckpoints()
             var input = state
             if let previous { input.weeklyReports = [previous] }
             let model = try RecallAppModel(previewState: input, dailyReviewResponder: responder)
@@ -134,7 +135,30 @@ extension RecallLayoutPreviews {
                 maintenance.cancel(); await gate.release()
                 _ = try? await maintenance.value
             }
-            if mode == .alwaysOmit || mode == .malformed || mode == .badEvidenceAlways {
+            if mode == .alwaysOmit || mode == .badEvidenceAlways {
+                // The verified majority is saved as an explicitly partial review; the edited original stays.
+                let expectedMissing = mode == .alwaysOmit ? 3 : 1
+                guard await responder.count() == 2, let saved = model.state.weeklyReports.first,
+                      saved.modelCoverage?.unverifiedItemCount == expectedMissing,
+                      saved.modelCoverage?.notice?.contains("\(expectedMissing) 条") == true,
+                      initial.weeklyReports.allSatisfy({ old in model.state.weeklyReports.contains(old) }),
+                      model.tasks.contains(where: { $0.state == .partial && $0.phase.contains("\(expectedMissing) 条事项未通过核对") }) else {
+                    throw PeriodGenerationFailure(errorDescription: "持续未通过的少数事项没有以部分回顾保存，或覆盖了用户编辑的原周报：\(mode)")
+                }
+                // Retrying reuses the verified synthesis and only redoes the failed inputs.
+                let retry = PeriodGenerationModel(mode)
+                let retryModel = try RecallAppModel(previewState: model.state, dailyReviewResponder: retry)
+                defer { try? FileManager.default.removeItem(at: retryModel.storage.rootURL) }
+                retryModel.state = await retryModel.store.snapshot()
+                retryModel.generateWeeklyReview(period: period, template: ReviewTemplate(kind: .work), scope: ReviewScope())
+                for _ in 0..<600 {
+                    if !retryModel.isGeneratingWeeklyReview { break }
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                guard await retry.count() == 1, await retry.inputSizes() == [expectedMissing] else {
+                    throw PeriodGenerationFailure(errorDescription: "重新生成仍从头整理整周，而不是只补齐未通过的事项：\(await retry.inputSizes())")
+                }
+            } else if mode == .malformed {
                 guard await responder.count() == 2, model.state.weeklyReports == initial.weeklyReports,
                       model.tasks.contains(where: { $0.state == .failed && ($0.detail?.contains("Read") == true || $0.detail?.contains("读取") == true) }) else {
                     throw PeriodGenerationFailure(errorDescription: "遗漏仍被当作周报保存，或未提供失败状态")
@@ -188,7 +212,7 @@ extension RecallLayoutPreviews {
             }
         }
         try await verifyEmptyBodyAndBackfillChain(state: state, period: period)
-        print("PASS: native period generation resolves quote references, repairs only one bad citation or three omitted inputs, records success/failure timing, preserves unknown attribution and >5 exported/reopened items, retains edited reports on persistent omission/missing fields, refuses empty work bodies and chains missing daily reviews into the period review")
+        print("PASS: native period generation resolves quote references, repairs only one bad citation or three omitted inputs, records success/failure timing, preserves unknown attribution and >5 exported/reopened items, saves persistent omissions/bad citations as counted partial reviews and retries only those inputs, retains edited reports on missing fields, refuses empty work bodies and chains missing daily reviews into the period review")
     }
 
     /// Answers every daily review with one owned matter, and every period review with related records only

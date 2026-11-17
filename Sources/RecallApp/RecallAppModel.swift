@@ -67,6 +67,7 @@ final class RecallAppModel: ObservableObject {
     @Published var showsGlobalSearch = false
     @Published var summaryFeedbackTarget: SummaryFeedbackTarget?
     @Published var showsSummaryFeedbackHistory = false
+    @Published var showsTaskHistory = false
     @Published var generatingTopicID: String?
     var automaticTopicSummaryBudget = 3
     let topicReviewResponderOverride: (any LLMResponding)?
@@ -439,15 +440,16 @@ final class RecallAppModel: ObservableObject {
     }
 
     func generateWeeklyReview(period: ReviewPeriod, template: ReviewTemplate, scope: ReviewScope,
-                              replacing: UUID? = nil, schedule: ReviewSchedule? = nil) {
+                              replacing: UUID? = nil, schedule: ReviewSchedule? = nil, isRetry: Bool = false) {
         guard !isGeneratingWeeklyReview, !isGeneratingDailySummary, generatingTopicID == nil else {
             weeklyReviewMessage = "另一份回顾正在生成，完成后可以继续。"; return
         }
         isGeneratingWeeklyReview = true
         memoryMaintenanceTask?.cancel()
         weeklyReviewMessage = nil
+        // Retrying reuses this session's verified synthesis (memory only) and redoes just the failed part.
         let taskID = beginTask("周期回顾", target: period.label, phase: "准备记录", retry: { [weak self] in
-            self?.generateWeeklyReview(period: period, template: template, scope: scope, replacing: replacing)
+            self?.generateWeeklyReview(period: period, template: template, scope: scope, replacing: replacing, isRetry: true)
         })
         let scheduledTrigger = schedule?.effectiveTrigger(at: .now)
         weeklyReviewStatusID = taskID
@@ -478,6 +480,7 @@ final class RecallAppModel: ObservableObject {
                     : nil
                 let snapshot = dailyState
                 let generated = try await PeriodReviewFromDaily().generate(in: snapshot, period: period, template: template, scope: scope, topicKeys: topicKeys,
+                    reuseVerifiedDraft: isRetry || schedule == nil,
                     sourceCheck: { try await modelStore.validateDailyDerivedReviewMeasured(snapshot) },
                     onProgress: { progress in await self.updateReviewTask(taskID, progress: progress) },
                     onMetrics: { metrics in await self.updateWeeklyReviewMetrics(metrics, taskID: taskID) }, responder: responder)
@@ -515,9 +518,12 @@ final class RecallAppModel: ObservableObject {
                 metadata["sourceNotes"] = String(result.items.filter { $0.kind == "reference" }.count)
                 recordDiagnostic(.info, source: "WeeklyReview", message: "周期回顾处理统计", metadata: metadata)
                 if schedule == nil { weeklyReportToOpen = saved.id }
-                let uncertain = result.coverage.uncertainBlockCount > 0
+                let unverified = result.coverage.unverifiedItemCount ?? 0
+                let uncertain = result.coverage.isPartial
                 finishTask(taskID, state: uncertain ? .partial : .succeeded,
-                    message: uncertain ? "回顾已保存，部分原文暂无法确认" : "回顾已保存", destination: .review(saved.id),
+                    message: unverified > 0
+                        ? RecallLocalization.both("回顾已保存；\(unverified) 条事项未通过核对，暂未写入", "Review saved; \(unverified) items failed checks and were left out")
+                        : uncertain ? "回顾已保存，部分原文暂无法确认" : "回顾已保存", destination: .review(saved.id),
                     detail: RecallLocalization.both(
                         "共 \(metrics.sourceCount) 天 · \(metrics.documentCount) 项 · 模型请求 \(metrics.modelCalls) 次 · 模型等待 \(max(1, metrics.modelMilliseconds / 1000)) 秒 · 本地读取 \(metrics.readMilliseconds) 毫秒 · 核对 \(metrics.checkMilliseconds) 毫秒 · 本地等待 \(metrics.sourceWaitMilliseconds) 毫秒 · 保存共 \(metrics.saveMilliseconds) 毫秒（排队 \(saveQueueMs) · 来源校验 \(outcome.metrics.sourceCheckMilliseconds) · 编码 \(outcome.metrics.encodeMilliseconds) · 写入 \(outcome.metrics.writeMilliseconds) · 界面刷新 \(publishMs)）",
                         "\(metrics.sourceCount) days · \(metrics.documentCount) items · \(metrics.modelCalls) model requests · Model \(max(1, metrics.modelMilliseconds / 1000))s · Read \(metrics.readMilliseconds)ms · Check \(metrics.checkMilliseconds)ms · Local wait \(metrics.sourceWaitMilliseconds)ms · Save total \(metrics.saveMilliseconds)ms (queue \(saveQueueMs) · sources \(outcome.metrics.sourceCheckMilliseconds) · encode \(outcome.metrics.encodeMilliseconds) · write \(outcome.metrics.writeMilliseconds) · UI \(publishMs))"))
@@ -534,16 +540,18 @@ final class RecallAppModel: ObservableObject {
                     catch { recordError(error, source: "WeeklyReview", message: "记录本期取消状态失败") }
                 }
             } catch {
-                let trace = (error as? ReviewPreparationFailure)?.detail ?? RecallLocalization.both(
-                    "本次处理已结束，未生成新的回顾；已有回顾已保留。", "Processing finished without a new review. Saved reviews are preserved.")
+                // The headline already says the saved review is unaffected; details only add what happened.
                 let elapsed = max(1, Int(Date.now.timeIntervalSince(runStarted)))
                 let metrics = weeklyReviewMetrics ?? DailyReviewMetrics()
+                let trace = (error as? ReviewPreparationFailure)?.detail
                 let format = (error as? PeriodReviewOutputFailure)?.detail
                 let timing = RecallLocalization.both(
-                    "模型请求 \(metrics.modelCalls) 次 · 等待 \(metrics.modelMilliseconds) 毫秒 · 读取 \(metrics.readMilliseconds) 毫秒 · 核对 \(metrics.checkMilliseconds) 毫秒 · 本地等待 \(metrics.sourceWaitMilliseconds) 毫秒",
-                    "\(metrics.modelCalls) model requests · Model \(metrics.modelMilliseconds)ms · Read \(metrics.readMilliseconds)ms · Check \(metrics.checkMilliseconds)ms · Local wait \(metrics.sourceWaitMilliseconds)ms")
+                    "共用时 \(elapsed) 秒 · 模型请求 \(metrics.modelCalls) 次 · 模型等待 \(Self.seconds(metrics.modelMilliseconds)) 秒 · 本地读取与核对 \(Self.seconds(metrics.readMilliseconds + metrics.checkMilliseconds + metrics.sourceWaitMilliseconds)) 秒",
+                    "Elapsed \(elapsed)s · \(metrics.modelCalls) model requests · Model \(Self.seconds(metrics.modelMilliseconds))s · Local read and checks \(Self.seconds(metrics.readMilliseconds + metrics.checkMilliseconds + metrics.sourceWaitMilliseconds))s")
+                let hint = (metrics.cacheHits == 0 && metrics.modelCalls > 0 && error is ModelReviewError)
+                    ? RecallLocalization.both("重试会复用本次已核对的内容，只重做未通过的部分。", "Retrying reuses what was verified this time and redoes only the failed part.") : nil
                 finishTask(taskID, state: .failed, message: error.localizedDescription,
-                    detail: [trace, format, timing, RecallLocalization.both("本次用时 \(elapsed) 秒，原回顾已保留。", "Elapsed \(elapsed)s. The previous review is preserved.")].compactMap { $0 }.joined(separator: "\n"))
+                    detail: [trace, format, timing, hint].compactMap { $0 }.joined(separator: "\n"))
                 var metadata = metrics.diagnosticMetadata
                 metadata["generation"] = "period-from-daily-v4"
                 metadata["elapsedMs"] = String(Int(Date.now.timeIntervalSince(runStarted) * 1000))
@@ -563,6 +571,11 @@ final class RecallAppModel: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Durations shown to people use seconds with one decimal; milliseconds stay in diagnostics.
+    nonisolated static func seconds(_ milliseconds: Int) -> String {
+        milliseconds < 100 ? "<0.1" : String(format: "%.1f", Double(milliseconds) / 1000)
     }
 
     private func updateWeeklyReviewMetrics(_ metrics: DailyReviewMetrics, taskID: UUID) {
@@ -1753,7 +1766,10 @@ final class RecallAppModel: ObservableObject {
     }
 
     func updatePrivacy(_ privacy: PrivacySettings) {
-        if !privacy.cloudUseEnabled { personaProfileTask?.cancel() }
+        if !privacy.cloudUseEnabled {
+            personaProfileTask?.cancel()
+            Task { await PeriodReviewFromDaily.discardRetryCheckpoints() }
+        }
         state.privacy = privacy
         updateEnterKeyRecorder()
         Task {
@@ -2247,6 +2263,7 @@ final class RecallAppModel: ObservableObject {
             do {
                 let reminders = state.reminders
                 try await store.clearAllMemoryData()
+                await PeriodReviewFromDaily.discardRetryCheckpoints()
                 notificationScheduler.cancelAll(reminders)
                 await cleanupExpiredRecentlyDeleted()
                 await refresh()

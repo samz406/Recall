@@ -7,17 +7,17 @@ public enum ModelValidationIssue: String, Codable, Sendable {
 
     public var explanation: String {
         switch self {
-        case .format: "模型返回的内容格式不完整"
-        case .structure: "条目的字段或长度不符合要求"
-        case .coverage: "部分输入片段没有被逐一核对"
-        case .evidence: "部分结论未能对应到原文片段"
-        case .attribution: "人物或说话人的归属尚未核对清楚"
-        case .time: "时间或条件未能对应到原文"
-        case .actionState: "待办与已确认的归属或状态不一致"
-        case .importantContentMissing: "核对发现仍有重要信息被遗漏"
-        case .unsupportedClaim: "部分表述超出了来源能够支持的范围"
-        case .narrative: "标题或正文仍有重复、碎片或含义不清的问题"
-        case .consolidation: "材料尚未归并成可保存的回顾"
+        case .format: "模型返回的内容不完整"
+        case .structure: "部分条目缺少内容或篇幅超出要求"
+        case .coverage: "有记录没有被逐条核对到"
+        case .evidence: "有结论找不到对应的原文"
+        case .attribution: "有事情分不清是你还是别人做的"
+        case .time: "有时间或条件在原文中找不到依据"
+        case .actionState: "有事项被写成待办或后续安排，但它已完成、已取消或不是你本人的安排"
+        case .importantContentMissing: "有重要事项没有写进回顾"
+        case .unsupportedClaim: "有表述超出了原文能支持的范围"
+        case .narrative: "有条目的标题或正文重复、残缺或含义不清"
+        case .consolidation: "内容还没有整理成可以保存的回顾"
         }
     }
     public var repairInstruction: String {
@@ -28,7 +28,7 @@ public enum ModelValidationIssue: String, Codable, Sendable {
         case .evidence: "引用必须逐字出现在给定原文，blockID/factIDs 只能用输入已有 ID；删除无依据的主张，不编造引用。"
         case .attribution: "重新核对角色标记、引用性质、说话人与负责人；未知保留未知，其他人和资料不能成为本人行动。"
         case .time: "保留原文明示的时间、用途和条件；不能确定则 null，不用采集时间补写发生时间或截止时间。"
-        case .actionState: "行动仅保留已核对的本人明确承诺且仍未完成、无条件的事项；不满足时保留正确事实或省略行动。"
+        case .actionState: "行动和后续安排仅保留已核对的本人明确承诺且仍未完成、无条件的事项；status 为 completed 或 cancelled、kind 为 reference 或标注“非本人”的输入不得写成行动或后续安排，改写为进展或记录。"
         case .importantContentMissing: "重新阅读所有主片段与输入事实，补回遗漏的重要结果、变化、限制和阻碍；不靠将其改标 noise/background 消除遗漏。"
         case .unsupportedClaim: "回到原文重写，删除无法支持的主张，保留否定、条件、部分完成和待验证；不升级为确定事实。"
         case .narrative: "用完整短句概括具体事情，正文补充实际变化或限制，不重复标题，不输出泛泛评价和碎片。"

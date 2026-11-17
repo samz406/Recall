@@ -10,7 +10,6 @@ struct RecallRootView: View {
     @AppStorage(RecallLocalization.languageKey) private var interfaceLanguage = "system"
     @State private var section: SidebarSection? = .matters
     @State private var showingRecordSheet = false
-    @State private var showingTasks = false
     @State private var returnSection: SidebarSection?
     @State private var noticeDismissal: Task<Void, Never>?
 
@@ -51,8 +50,8 @@ struct RecallRootView: View {
                             Button(RecallLocalization.both("会议记录", "Meeting moments")) { model.showsMeetingPanel = true }
                         } label: { Label(RecallLocalization.text("记录此刻"), systemImage: "plus.square") }
                         Button { model.showsGlobalSearch = true } label: { Label(RecallLocalization.text("搜索记忆"), systemImage: "magnifyingglass") }.keyboardShortcut("f", modifiers: [.command, .shift]).labelStyle(.titleAndIcon)
-                        Button { showingTasks.toggle() } label: { Label(RecallLocalization.text("处理任务"), systemImage: model.tasks.contains(where: \.isRunning) ? "clock.badge" : "clock") }
-                            .labelStyle(.titleAndIcon).help(RecallLocalization.text("查看处理进度和结果")).popover(isPresented: $showingTasks) { RecallTaskHistory().environmentObject(model) }
+                        Button { model.showsTaskHistory.toggle() } label: { Label(RecallLocalization.text("处理任务"), systemImage: model.tasks.contains(where: \.isRunning) ? "clock.badge" : "clock") }
+                            .labelStyle(.titleAndIcon).help(RecallLocalization.text("查看处理进度和结果")).popover(isPresented: $model.showsTaskHistory) { RecallTaskHistory().environmentObject(model) }
                     }
                 }
             }
@@ -79,7 +78,7 @@ struct RecallRootView: View {
         .onChange(of: model.navigationRevision) { _, _ in
             let target = model.destination
             guard let target else { return }
-            returnSection = section; showingTasks = false
+            returnSection = section; model.showsTaskHistory = false
             switch target {
             case .record: section = .timeline
             case .topic(let id): model.topicToOpen = id; section = .matters

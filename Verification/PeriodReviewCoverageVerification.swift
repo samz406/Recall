@@ -64,7 +64,7 @@ enum PeriodReviewCoverageVerification {
     }
 
     private actor Model: LLMResponding {
-        enum Mode { case complete, omitOnce, alwaysOmit, falseReceipt, unsupportedExclusion, invalidExclusion, referenceAsProgress, referenceAsPlan
+        enum Mode { case complete, omitOnce, alwaysOmit, falseReceipt, unsupportedExclusion, invalidExclusion, referenceAsProgress, referenceAsPlan, completedAsPlan
             case wrapped, trailingComma, singleEvidence, missingCoverage, missingDetail, ambiguous, truncated }
         let mode: Mode
         var requests: [LLMRequest] = []
@@ -96,10 +96,11 @@ enum PeriodReviewCoverageVerification {
                 if mode == .falseReceipt, topic.hasPrefix("Nova") { continue }
                 groups[topic.hasPrefix("Atlas") ? "Atlas 核心功能" : topic, default: []].append(row)
             }
+            let completedAsPlan = mode == .completedAsPlan
             let referenceSection = mode == .referenceAsPlan ? "plans" : mode == .referenceAsProgress ? "progress" : "notes"
             let items = groups.keys.sorted().map { key -> [String: Any] in
                 let reference = groups[key]!.allSatisfy { ($0["kind"] as? String)?.contains("reference") == true }
-                let section = reference ? referenceSection : "progress"
+                let section = reference ? referenceSection : completedAsPlan && key.hasPrefix("Nova") ? "plans" : "progress"
                 return ["section": section, "title": key + (reference ? "相关信息已记录" : "已完成阶段核对"),
                  "detail": reference ? "记录谈及服务维护安排，尚未核实实际影响，不表示用户已经完成该工作。" : key + "的验证结果已记录，边界条件保留，生产发布仍待确认。",
                  "evidence": groups[key]!.map { ["id": $0["id"]!, "quote": $0["title"]!] }]
@@ -168,12 +169,27 @@ enum PeriodReviewCoverageVerification {
         let repairRows = try JSONSerialization.jsonObject(with: Data((await repairing.log())[1].context[0].ocrText.utf8)) as! [[String: Any]]
         try expect(repairRows.count == 5 && repairRows.allSatisfy { ($0["topic"] as? String)?.hasPrefix("Nova") == true },
             "补齐遗漏仍然把已通过的整周内容重新发给模型")
+        // Persistent omissions keep the verified majority as an explicitly partial review: failed
+        // inputs are counted, never claimed, and no conclusion is attached to them.
         for mode in [Model.Mode.alwaysOmit, .falseReceipt, .unsupportedExclusion, .invalidExclusion] {
-            do {
-                _ = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .work), responder: Model(mode))
-                throw Failure(errorDescription: "遗漏、假覆盖回执或无依据排除仍被当作完整周报保存")
-            } catch ModelReviewError.validation { }
+            let partial = try await engine.generate(in: state, period: period, template: ReviewTemplate(kind: .work), responder: Model(mode)).draft
+            let report = partial.weeklyReport(period: period, template: ReviewTemplate(kind: .work), scope: ReviewScope(), in: state)
+            let failedRows = mode == .invalidExclusion ? "Orion" : "Nova"
+            try expect((partial.coverage.unverifiedItemCount ?? 0) > 0 && partial.coverage.isPartial && partial.coverage.notice != nil
+                && report.modelCoverage?.notice?.contains("未能通过核对") == true
+                && !partial.items.contains { $0.title.hasPrefix(failedRows) } && partial.items.contains { $0.title.hasPrefix("Atlas") },
+                "遗漏、假覆盖回执或无依据排除被当作完整周报保存，或丢掉了已核对的其他工作：\(mode)")
         }
+        // A review missing most of its inputs is not saved, even as partial.
+        var mostlyNova = state
+        for index in mostlyNova.dailySummaries.indices {
+            for row in mostlyNova.dailySummaries[index].ledger.indices { mostlyNova.dailySummaries[index].ledger[row].topic = "Nova 合成\(index)-\(row)" }
+            for item in mostlyNova.dailySummaries[index].items.indices { mostlyNova.dailySummaries[index].items[item].knowledge?.topic = "Nova 合成\(index)-\(item)" }
+        }
+        do {
+            _ = try await engine.generate(in: mostlyNova, period: period, template: ReviewTemplate(kind: .work), responder: Model(.alwaysOmit))
+            throw Failure(errorDescription: "大部分事项未通过核对时仍保存了部分周报")
+        } catch ModelReviewError.validation { }
         try await verifyAttributionRecovery(state, engine: engine)
         try await verifyDailySourceWithdrawal(state, engine: engine)
         try await verifyOutputRecovery(state, engine: engine)
@@ -319,6 +335,23 @@ enum PeriodReviewCoverageVerification {
             var customized = report; customized.template.headings["notes"] = "我保留的背景"
             try expect(customized.markdown.contains("Cetus"), "用户明确自定义的背景栏目被擅自隐藏")
         }
+        // A model may still file a finished item under "plans". It is kept as a record, not a pending
+        // plan, without failing the whole period or paying for another model call.
+        var finished = state
+        for index in finished.dailySummaries.indices {
+            for row in finished.dailySummaries[index].ledger.indices where finished.dailySummaries[index].ledger[row].topic?.hasPrefix("Nova") == true {
+                finished.dailySummaries[index].ledger[row].status = "completed"
+            }
+            for item in finished.dailySummaries[index].items.indices where finished.dailySummaries[index].items[item].knowledge?.topic?.hasPrefix("Nova") == true {
+                finished.dailySummaries[index].items[item].knowledge?.status = "completed"
+            }
+        }
+        let completedProbe = Model(.completedAsPlan)
+        let completed = try await engine.generate(in: finished, period: period, template: ReviewTemplate(kind: .work), responder: completedProbe)
+        let nova = completed.draft.items.filter { $0.title.hasPrefix("Nova") }, completedCalls = await completedProbe.log().count
+        try expect(completedCalls == 1 && !nova.isEmpty && nova.allSatisfy { $0.section == "notes" }
+            && !completed.draft.items.contains { $0.section == "plans" } && completed.draft.items.count == 9,
+            "已完成事项被写进后续安排时，整份周期回顾失败、重复请求或仍显示为待办安排")
         print("PASS: period attribution recovery keeps unknown/reference progress and plans as source-qualified notes in one model call, with no personal action or unsafe overview and no loss after export/reopen")
     }
 

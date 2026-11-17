@@ -194,6 +194,7 @@ public struct PeriodReviewFromDaily: Sendable {
         不要重复每日回顾已有的流水账，要写这段时间的整体进展、变化、仍未解决的事和已明确的后续安排。没有依据的内容不要写，不凑条目，不据缺少记录推断停滞。
         工作/项目模板的 notes 只保留简短核对线索（detail 12–60 字），在来源页查看，不扩写成周报正文；不要重复“相关记录、来源记录提到、记录谈及”等套话。overview 只概括成果、问题和已明确的安排，不罗列 notes。引用选能标识结论的短片段，保留全部被合并的 id，不为缩短输出漏掉覆盖。
         section 只能是 progress（成果与进展）、open（未解决问题）、plans（已明确的后续，必须是本人仍未完成的安排）、notes（值得保留的记录）。
+        status 为 completed 或 cancelled 的输入不得放入 plans，kind 带“非本人”或为 reference 的输入也不得放入 plans；已完成的事写进 progress，资料与他人的安排写进 notes。
         标题为独立完整短句（3–70字）；detail 12–\(detailLimit) 字，补充变化、结果或限制，不重复标题。overview 不超过160字。最多 \(itemLimit) 项；优先归并重复进展，不为了凑少数几项漏掉独立事项。
         每项给出 evidence：id 必须是输入条目 id；优先给 quoteRef 选择该条目的来源位置：title（标题）、detail（完整说明）、q1/q2/…（quotes 数组第1/2/…条）。选择真正支持结论的字段，不抄写或改写原文，由本地从所选位置还原引用。也兼容 quote，但它必须是该条目 title、detail 或 quotes 中逐字连续的片段（4–180字），不能拼接不同片段或删除否定与限定条件。合并多天或子主题时引用所有被合并的条目，不限制为六条来源。不要输出 Markdown、引用数字、置信度或算法术语。
         \(topic == nil ? "每个输入 id 恰好返回一条 coverage：used（已在某条成文的 evidence 中引用），或 outOfScope（不属于当前模板）。不得以 background、低频、重复或篇幅不足丢弃事项；重复内容合并成文并保留各 id 引用。每条 coverage 都给出根据实际内容判断的 category=work/personal/learning/unclassified，不受输入历史标签约束。outOfScope 仅用于经内容核对确属模板之外的条目，须给出具体 reason 和支持分类的 quoteRef（或4–180字逐字 quote）；不得因为原标签不符合模板、低频或篇幅不足而排除。工作/项目模板纳入 work，学习模板纳入 learning；我的一周涵盖所有类别，不得排除输入。" : "")
@@ -238,14 +239,19 @@ public struct PeriodReviewFromDaily: Sendable {
                 item.section = "notes"
                 recoveredReference = true
             }
-            // A plan must rest on at least one of the user's own, still-open items.
+            // A plan must rest on at least one of the user's own, still-open items. When every cited
+            // item is already completed or cancelled, the text and evidence are still verified; keep
+            // them as a record instead of failing the whole period. It never becomes a pending plan.
             if item.section == "plans" {
-                let own = item.evidence.contains { evidence in
+                let open = item.evidence.contains { evidence in
                     guard let entry = prepared.entries[evidence.id] else { return false }
                     return entry.knowledge.ownedByUser && entry.knowledge.kind != .reference
                         && !["completed", "cancelled"].contains(entry.knowledge.status)
                 }
-                guard own else { throw ModelReviewError.validation(.actionState) }
+                if !open {
+                    item.section = "notes"
+                    recoveredReference = true
+                }
             }
             result.items[i] = item
         }
@@ -305,7 +311,8 @@ public struct PeriodReviewFromDaily: Sendable {
 
     /// Synthesize once; repair format once or fill only unresolved coverage in bounded batches.
     public func generate(in state: RecallState, period: ReviewPeriod, template: ReviewTemplate? = nil, scope: ReviewScope = ReviewScope(), topic: String? = nil,
-                         topicKeys: Set<String>? = nil, beforeCall: @escaping @Sendable () async throws -> Void = {},
+                         topicKeys: Set<String>? = nil, reuseVerifiedDraft: Bool = false,
+                         beforeCall: @escaping @Sendable () async throws -> Void = {},
                          sourceCheck: (@Sendable () async throws -> Int)? = nil,
                          onProgress: (@Sendable (ReviewGenerationProgress) async -> Void)? = nil,
                          onMetrics: (@Sendable (DailyReviewMetrics) async -> Void)? = nil,
@@ -332,8 +339,18 @@ public struct PeriodReviewFromDaily: Sendable {
         run.metrics.sourceCount = prepared.dayCount; run.metrics.documentCount = prepared.itemCount; run.metrics.inputBytes = body.utf8.count
         run.metrics.readMilliseconds = Int(Date.now.timeIntervalSince(start) * 1000)
         var repair = "", accepted: EvidenceAssessment?
+        // A retry of the same request reuses the verified first synthesis and goes straight to the
+        // scoped repair. The key covers the redacted input, instructions, template and feedback.
+        let cacheKey = CaptureUnderstandingEngine.digest("period-from-daily-v\(Self.synthesisVersion)|"
+            + DailyReviewInput.configurationVersion(state.llmConfiguration) + "|" + body + "|" + instructions)
         do {
-            for attempt in 0..<2 {
+            if reuseVerifiedDraft, let cached = await PeriodReviewCheckpoints.shared.value(for: cacheKey) {
+                accepted = cached; run.metrics.cacheHits += 1
+                await onProgress?(ReviewGenerationProgress(.checking, detail: RecallLocalization.both(
+                    "复用上次已核对的 \(cached.draft.items.count) 项结论，只重新处理未通过的部分。",
+                    "Reusing \(cached.draft.items.count) verified conclusions from the last attempt; only the failed part is redone.")))
+            }
+            for attempt in 0..<2 where accepted == nil {
                 do {
                     let context = CaptureRecord(eventTemplate: .manualMoment, contentHash: "period-from-daily", ocrText: body)
                     let text = try await run.call(LLMRequest(question: instructions + repair, context: [context],
@@ -343,7 +360,7 @@ public struct PeriodReviewFromDaily: Sendable {
                     accepted = try assessEvidence(decodeOutput(text), prepared: prepared, itemLimit: itemLimit,
                         detailLimit: detailLimit, template: template, complete: complete)
                     run.metrics.checkMilliseconds += Int(Date.now.timeIntervalSince(checking) * 1000)
-                    break
+                    if let accepted { await PeriodReviewCheckpoints.shared.store(accepted, for: cacheKey) }
                 } catch let error as PeriodReviewOutputFailure {
                     guard attempt == 0 else { throw error }
                     repair = "\n" + error.repairInstruction
@@ -356,22 +373,40 @@ public struct PeriodReviewFromDaily: Sendable {
                 }
             }
             guard let assessment = accepted else { throw ModelReviewError.invalid }
-            var draft = assessment.draft
+            var draft = assessment.draft, unresolved: Set<String> = [], issue = assessment.firstIssue
             if assessment.rejectedItems > 0 {
                 await onProgress?(ReviewGenerationProgress(.checking, detail: RecallLocalization.both(
                     "已保留 \(draft.items.count) 项有效结论，\(assessment.rejectedItems) 项需要核对；只修复受影响的来源。",
                     "Keeping \(draft.items.count) verified conclusions; \(assessment.rejectedItems) need checking. Repairing only affected sources.")))
             }
             if complete || !assessment.unresolvedIDs.isEmpty {
-                draft = try await repairCoverage(draft, prepared: prepared, instructions: instructions, template: template,
-                    detailLimit: detailLimit, forcedIDs: assessment.unresolvedIDs, includeMissingCoverage: complete, run: &run, responder: responder)
+                let outcome = try await repairCoverage(draft, prepared: prepared, instructions: instructions, template: template,
+                    detailLimit: detailLimit, forcedIDs: assessment.unresolvedIDs, rejections: assessment.rejections,
+                    includeMissingCoverage: complete, run: &run, responder: responder)
+                draft = outcome.draft; unresolved = outcome.unresolvedIDs; issue = outcome.issue ?? issue
+            }
+            if complete { unresolved.formUnion(coverageIssueIDs(draft, prepared: prepared, template: template)) }
+            if !unresolved.isEmpty {
+                // Keep the verified majority, never a review that silently lost a large share. Failed
+                // inputs and every conclusion citing them are left out and counted on the saved review.
+                unresolved = Self.closure(unresolved, items: draft.items)
+                draft.items.removeAll { !unresolved.isDisjoint(with: $0.evidence.map(\.id)) }
+                draft.coverage = draft.coverage?.filter { !unresolved.contains($0.id) }
+                guard !draft.items.isEmpty, unresolved.count * 3 <= prepared.itemCount else {
+                    throw ModelReviewError.validation(issue ?? .importantContentMissing)
+                }
+                draft.overview = recordOverview(draft, prepared: prepared)
             }
             let checking = Date.now
-            let checked = try validate(draft, prepared: prepared, itemLimit: itemLimit, detailLimit: detailLimit, template: template, complete: complete)
+            let checked = try validate(draft, prepared: prepared, itemLimit: itemLimit, detailLimit: detailLimit, template: template,
+                                       complete: complete, checkCoverage: unresolved.isEmpty)
             run.metrics.checkMilliseconds += Int(Date.now.timeIntervalSince(checking) * 1000)
             try Task.checkCancellation(); try await run.checkSources()
             var result = result(checked, prepared: prepared)
             result.dailySynthesisVersion = complete ? Self.synthesisVersion : nil
+            // A partial review keeps its checkpoint, so regenerating only redoes the failed inputs.
+            if !unresolved.isEmpty { result.coverage.unverifiedItemCount = unresolved.count }
+            else { await PeriodReviewCheckpoints.shared.remove(cacheKey) }
             await run.publish()
             return (result, run.metrics)
         } catch {
@@ -411,4 +446,27 @@ public struct PeriodReviewFromDaily: Sendable {
             sourceVersions: prepared.sourceVersions,
             coverage: ModelReviewCoverage(sourceCount: prepared.dayCount, factCount: facts.count, uncertainBlockCount: 0))
     }
+}
+
+/// In-memory only: a retry within the same app session skips the full synthesis. Nothing is written
+/// to disk, entries expire after 30 minutes, and clearing memory data drops them all.
+actor PeriodReviewCheckpoints {
+    static let shared = PeriodReviewCheckpoints()
+    private var entries: [String: (value: PeriodReviewFromDaily.EvidenceAssessment, at: Date)] = [:]
+    func value(for key: String, now: Date = .now) -> PeriodReviewFromDaily.EvidenceAssessment? {
+        entries = entries.filter { now.timeIntervalSince($0.value.at) < 1_800 }
+        return entries[key]?.value
+    }
+    func store(_ value: PeriodReviewFromDaily.EvidenceAssessment, for key: String, now: Date = .now) {
+        entries = entries.filter { now.timeIntervalSince($0.value.at) < 1_800 }
+        if entries.count >= 4, let oldest = entries.min(by: { $0.value.at < $1.value.at })?.key { entries[oldest] = nil }
+        entries[key] = (value, now)
+    }
+    func remove(_ key: String) { entries[key] = nil }
+    func removeAll() { entries = [:] }
+}
+
+public extension PeriodReviewFromDaily {
+    /// Drop retry checkpoints, e.g. when the user clears memory data or disables cloud use.
+    static func discardRetryCheckpoints() async { await PeriodReviewCheckpoints.shared.removeAll() }
 }

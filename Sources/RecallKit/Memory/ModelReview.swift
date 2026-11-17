@@ -10,7 +10,7 @@ public enum ModelReviewError: LocalizedError {
         case .unavailable: "请先连接模型并允许使用脱敏文本，正式回顾需要模型生成。"
         case .incomplete: "部分记录尚未完成理解，请重试整理后再生成；已有回顾保持不变。"
         case .invalid: "本次回顾未通过内容与来源核对，已有回顾保持不变，可重新生成。"
-        case .validation(let issue): "回顾未完成：\(issue.explanation)，自动修正后仍未通过。原回顾已保留，可重试。"
+        case .validation(let issue): "回顾未完成：\(issue.explanation)。已自动修正一次仍未通过，原回顾不受影响，可直接重试。"
         case .changed: "记录、权限或设置已变化，已停止本次生成。"
         case .declined: "所选范围包含已停用理解的记录，请先在记录详情中重新整理该记录。"
         }
@@ -24,8 +24,14 @@ public struct ModelReviewCoverage: Codable, Hashable, Sendable {
     public var factCount: Int
     public var uncertainBlockCount: Int
     public var createdAt: Date = .now
+    /// Period reviews: input items that still failed local checks after repair and were left out.
+    public var unverifiedItemCount: Int? = nil
+    public var isPartial: Bool { uncertainBlockCount > 0 || (unverifiedItemCount ?? 0) > 0 }
     public var notice: String? {
-        uncertainBlockCount > 0 ? "部分原文暂无法确认，回顾仅包含可核对的内容。" : nil
+        if let count = unverifiedItemCount, count > 0 {
+            return "有 \(count) 条每日回顾事项未能通过核对，暂未写入这份回顾；其余内容均已核对。可重新生成，只补齐这几条。"
+        }
+        return uncertainBlockCount > 0 ? "部分原文暂无法确认，回顾仅包含可核对的内容。" : nil
     }
 }
 public struct ModelReviewFact: Codable, Hashable, Identifiable, Sendable {

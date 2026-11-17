@@ -51,27 +51,31 @@ struct PeriodReviewRun: Sendable {
 }
 
 extension PeriodReviewFromDaily {
+    struct RepairOutcome: Sendable {
+        var draft: Draft
+        /// Inputs that still have no verified conclusion or receipt after the scoped repair.
+        var unresolvedIDs: Set<String>
+        var issue: ModelValidationIssue?
+    }
+
     /// Ask only about unresolved input IDs. Accepted text is never sent through a second full
     /// synthesis, and classifications/exclusions still come from the model with verbatim evidence.
+    /// A batch that still fails does not discard other verified batches: its inputs are returned as
+    /// unresolved, and the caller decides whether a clearly marked partial review may be saved.
     func repairCoverage(_ original: Draft, prepared: Prepared, instructions: String, template: ReviewTemplate?,
-                        detailLimit: Int, forcedIDs: Set<String> = [], includeMissingCoverage: Bool = true, run: inout PeriodReviewRun, responder: any LLMResponding) async throws -> Draft {
+                        detailLimit: Int, forcedIDs: Set<String> = [], rejections: [Rejection] = [], includeMissingCoverage: Bool = true,
+                        run: inout PeriodReviewRun, responder: any LLMResponding) async throws -> RepairOutcome {
         var ids = forcedIDs
         if includeMissingCoverage { ids.formUnion(coverageIssueIDs(original, prepared: prepared, template: template)) }
         let known = Set(prepared.rows.map(\.id))
-        guard !ids.isEmpty else { return original }
+        guard !ids.isEmpty else { return RepairOutcome(draft: original, unresolvedIDs: [], issue: nil) }
         // Replace whole affected conclusions, never leave their text attached to fewer sources.
-        var expanded = true
-        while expanded {
-            let old = ids
-            for item in original.items where !ids.isDisjoint(with: item.evidence.map(\.id)) {
-                ids.formUnion(item.evidence.map(\.id))
-            }
-            expanded = ids != old
-        }
+        ids = Self.closure(ids, items: original.items)
         let rows = prepared.rows.filter { ids.contains($0.id) }
         var merged = original
         merged.items.removeAll { !ids.isDisjoint(with: $0.evidence.map(\.id)) }
         merged.coverage = (merged.coverage ?? []).filter { known.contains($0.id) && !ids.contains($0.id) }
+        var unresolved: Set<String> = [], lastIssue: ModelValidationIssue?
         // Bounded batches keep a long week's coverage receipt from exhausting one output.
         let batches = stride(from: 0, to: rows.count, by: 24).map { Array(rows[$0..<min($0 + 24, rows.count)]) }
         for (index, batch) in batches.enumerated() {
@@ -83,7 +87,8 @@ extension PeriodReviewFromDaily {
             本次只补齐未通过核对的 \(batch.count) 条输入（第 \(index + 1)/\(batches.count) 组）。其余已通过的结论由程序保留，禁止重写整份回顾。
             coverage 必须恰好覆盖本次输入的每个 id。used 必须同时在本次 items.evidence 引用该 id；outOfScope 仍须给出原文支持的 category/reason/quoteRef（或逐字 quote）。分类完全根据当前实际内容判断，不能沿用历史标签或为了通过检查排除工作。
             overview 返回空字符串；items 只写本次资料可支持的完整结论，证据 id 只能来自本组，不添加新安排。优先使用 quoteRef=title/detail/q1/q2/…选择现有字段，不重复抄写原文；不能通过删除某条引用而保留仍依赖它的结论。
-            """
+            """ + Self.repairNotes(rejections, batch: wanted, missing: wanted.intersection(forcedIDs.union(
+                includeMissingCoverage ? coverageIssueIDs(original, prepared: prepared, template: template) : [])))
             let detail = RecallLocalization.both(
                 "已保留 \(merged.items.count) 项，正在补齐 \(rows.count) 条待核对输入（\(index + 1)/\(batches.count) 组）。",
                 "Keeping \(merged.items.count) verified items; checking \(rows.count) unresolved inputs (batch \(index + 1)/\(batches.count)).")
@@ -91,26 +96,71 @@ extension PeriodReviewFromDaily {
                 context: [CaptureRecord(eventTemplate: .manualMoment, contentHash: "period-coverage-repair", ocrText: try directReviewJSON(batch))],
                 purpose: .reviewSynthesis, outputTokenLimit: min(8_000, max(2_000, batch.count * (detailLimit * 2 + 160)))), detail: detail, responder: responder)
             let start = Date.now
-            let decoded = try decodeOutput(text)
-            let assessment = try assessEvidence(decoded, prepared: subset, itemLimit: max(batch.count, 6),
-                detailLimit: detailLimit, template: template, complete: true)
-            guard assessment.rejectedItems == 0 else { throw ModelReviewError.validation(assessment.firstIssue ?? .evidence) }
-            let missing = coverageIssueIDs(assessment.draft, prepared: subset, template: template).count
-            if missing > 0 {
-                await run.onProgress?(ReviewGenerationProgress(.checking, detail: RecallLocalization.both(
-                    "补齐第 \(index + 1)/\(batches.count) 组后，仍有 \(missing)/\(batch.count) 条输入未通过覆盖核对；原回顾保留。",
-                    "After repair batch \(index + 1)/\(batches.count), \(missing)/\(batch.count) inputs still lack verified coverage. The previous review is preserved.")))
+            defer { run.metrics.checkMilliseconds += Int(Date.now.timeIntervalSince(start) * 1000) }
+            let assessment: EvidenceAssessment
+            do {
+                assessment = try assessEvidence(decodeOutput(text), prepared: subset, itemLimit: max(batch.count, 6),
+                    detailLimit: detailLimit, template: template, complete: true)
+            } catch is PeriodReviewOutputFailure {
+                unresolved.formUnion(wanted); lastIssue = .format; continue
+            } catch ModelReviewError.validation(let issue) {
+                unresolved.formUnion(wanted); lastIssue = issue; continue
             }
-            let patch = try validate(assessment.draft, prepared: subset, itemLimit: max(batch.count, 6),
-                                     detailLimit: detailLimit, template: template, complete: true)
-            run.metrics.checkMilliseconds += Int(Date.now.timeIntervalSince(start) * 1000)
+            // Keep every verified conclusion of this batch; drop only those touching a failed input.
+            var failed = assessment.unresolvedIDs.union(coverageIssueIDs(assessment.draft, prepared: subset, template: template))
+            failed = Self.closure(failed, items: assessment.draft.items).intersection(wanted)
+            var patch = assessment.draft
+            patch.items.removeAll { !failed.isDisjoint(with: $0.evidence.map(\.id)) }
+            patch.coverage = (patch.coverage ?? []).filter { wanted.contains($0.id) && !failed.contains($0.id) }
+            if !failed.isEmpty {
+                lastIssue = assessment.firstIssue ?? .importantContentMissing
+                unresolved.formUnion(failed)
+                await run.onProgress?(ReviewGenerationProgress(.checking, detail: RecallLocalization.both(
+                    "补齐第 \(index + 1)/\(batches.count) 组后，仍有 \(failed.count)/\(batch.count) 条输入未通过核对；其余结论已保留。",
+                    "After repair batch \(index + 1)/\(batches.count), \(failed.count)/\(batch.count) inputs still fail checks. Other conclusions are kept.")))
+            }
+            do {
+                patch = try validate(patch, prepared: subset, itemLimit: max(batch.count, 6),
+                                     detailLimit: detailLimit, template: template, complete: true, checkCoverage: false)
+            } catch ModelReviewError.validation(let issue) {
+                unresolved.formUnion(wanted); lastIssue = issue; continue
+            }
             merged.items += patch.items
             merged.coverage = (merged.coverage ?? []) + (patch.coverage ?? [])
         }
         // A repaired classification can invalidate the old overview. Use verified model headlines
         // as a record index; all model-written detail and evidence remain in the body.
         merged.overview = recordOverview(merged, prepared: prepared)
-        return merged
+        return RepairOutcome(draft: merged, unresolvedIDs: unresolved, issue: lastIssue)
+    }
+
+    /// Inputs cited together by one conclusion stand or fall together.
+    static func closure(_ seed: Set<String>, items: [Draft.Item]) -> Set<String> {
+        var ids = seed, expanded = true
+        while expanded {
+            let old = ids
+            for item in items where !ids.isDisjoint(with: item.evidence.map(\.id)) { ids.formUnion(item.evidence.map(\.id)) }
+            expanded = ids != old
+        }
+        return ids
+    }
+
+    /// Tell the model exactly which conclusion failed and why, instead of only "fix these inputs".
+    /// Titles are the model's own redacted output; ids refer to the redacted rows already in this batch.
+    static func repairNotes(_ rejections: [Rejection], batch: Set<String>, missing: Set<String>) -> String {
+        var lines: [String] = []
+        for rejection in rejections where !batch.isDisjoint(with: rejection.ids) || rejection.ids.isEmpty {
+            let cited = rejection.ids.filter(batch.contains)
+            let ids = cited.isEmpty ? "" : "（引用 " + cited.joined(separator: "、") + "）"
+            lines.append("- 上次写在 \(rejection.section) 的“\(rejection.title)”\(ids)未通过：\(rejection.issue.explanation)。\(rejection.issue.repairInstruction)")
+        }
+        let rejected = Set(rejections.flatMap(\.ids))
+        let uncovered = missing.subtracting(rejected).sorted()
+        if !uncovered.isEmpty {
+            lines.append("- 以下输入上次没有对应的结论或 coverage：\(uncovered.joined(separator: "、"))。逐条核对后成文或给出有原文依据的 outOfScope。")
+        }
+        guard !lines.isEmpty else { return "" }
+        return "\n上次未通过的具体原因（逐条修正，不要重复同样的问题）：\n" + lines.prefix(24).joined(separator: "\n")
     }
 
     func recordOverview(_ draft: Draft, prepared: Prepared) -> String {

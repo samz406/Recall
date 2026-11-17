@@ -109,13 +109,35 @@ enum PeriodReviewEvidenceVerification {
                 try expect(result.draft.items.contains { $0.detail == detail }, "修复覆盖了有效结论或省略原有条目")
             }
         }
+        // One of five conclusions keeps an invalid citation: the other four verified ones are saved
+        // as an explicitly partial review; the unsupported conclusion is never published.
         let persistent = Model(.wrongQuoteAlways)
-        do {
-            _ = try await engine.generate(in: state, period: period, template: template, responder: persistent)
-            throw Failure(errorDescription: "修复后仍无依据的结论被发布")
-        } catch ModelReviewError.validation(.evidence) { }
+        let partial = try await engine.generate(in: state, period: period, template: template, responder: persistent)
         let failed = await persistent.log()
         try expect(failed.count == 2, "持续错误引用没有封顶")
+        try expect(partial.draft.items.count == 4 && partial.draft.coverage.unverifiedItemCount == 1
+            && !partial.draft.facts.contains { $0.detail.contains("虚构") }, "修复后仍无依据的结论被发布，或丢掉了已核对的其他结论")
+        try expect(failed[1].question.contains("未通过：" + ModelValidationIssue.evidence.explanation)
+            && failed[1].question.contains(ModelValidationIssue.evidence.repairInstruction) && failed[1].question.contains("上次写在 progress 的“Atlas"),
+            "修复请求没有告诉模型是哪条结论、因为什么未通过")
+        // A retry reuses the verified first synthesis (in memory, opt-in) and only redoes the repair.
+        // Without the opt-in, or after the checkpoints are discarded, the full synthesis runs again.
+        let firstTry = Model(.wrongQuoteAlways), secondTry = Model(.wrongQuoteAlways), thirdTry = Model(.wrongQuoteAlways)
+        let firstState = fixture(count: 6)
+        _ = try await engine.generate(in: firstState, period: period, template: template, reuseVerifiedDraft: true, responder: firstTry)
+        let retried = try await engine.generate(in: firstState, period: period, template: template, reuseVerifiedDraft: true, responder: secondTry)
+        let retryRows = try await secondTry.log().map { try (JSONSerialization.jsonObject(with: Data($0.context[0].ocrText.utf8)) as! [Any]).count }
+        try expect(retryRows == [1] && retried.metrics.cacheHits == 1 && retried.draft.items.count == 5,
+            "重试仍从头生成整份回顾，没有复用上次已核对的结论：\(retryRows)")
+        await PeriodReviewFromDaily.discardRetryCheckpoints()
+        _ = try await engine.generate(in: firstState, period: period, template: template, reuseVerifiedDraft: true, responder: thirdTry)
+        try expect(await thirdTry.log().count == 2, "清除后仍复用了旧的已核对结论")
+        await PeriodReviewFromDaily.discardRetryCheckpoints()
+        // Every conclusion keeps failing: nothing verified is left, so nothing is saved.
+        do {
+            _ = try await engine.generate(in: fixture(count: 1), period: period, template: template, responder: Model(.wrongQuoteAlways))
+            throw Failure(errorDescription: "没有任何已核对结论时仍保存了回顾")
+        } catch ModelReviewError.validation(.evidence) { }
         let large = Model(.unknownOnce)
         let recovered = try await engine.generate(in: fixture(count: 31), period: period, template: template, responder: large)
         let largeRequests = await large.log()
@@ -125,6 +147,6 @@ enum PeriodReviewEvidenceVerification {
         let filtered = try await engine.generate(in: fixture(personal: true), period: period, template: template, responder: exclusion)
         let exclusions = await exclusion.log()
         try expect(exclusions.count == 1 && filtered.draft.items.count == 4, "模型的范围排除位置引用没有被验证")
-        print("PASS: period citation references and legacy typography recover in one call; changed numbers/negation/word boundaries/exponents and mixed-source conclusions repair only affected rows; unknown IDs use bounded batches; persistent invalid evidence is rejected; exclusions remain model-classified")
+        print("PASS: period citation references and legacy typography recover in one call; changed numbers/negation/word boundaries/exponents and mixed-source conclusions repair only affected rows; unknown IDs use bounded batches; persistent invalid evidence is withheld with an explicit partial count and the repair names the failed conclusion; retries reuse the verified synthesis in memory; exclusions remain model-classified")
     }
 }

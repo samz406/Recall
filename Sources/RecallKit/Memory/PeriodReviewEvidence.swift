@@ -81,11 +81,19 @@ enum PeriodReviewEvidence {
 }
 
 extension PeriodReviewFromDaily {
-    struct EvidenceAssessment {
+    /// A conclusion that failed a local check, kept only to tell the model what to fix.
+    struct Rejection: Sendable {
+        var title: String
+        var section: String
+        var ids: [String]
+        var issue: ModelValidationIssue
+    }
+    struct EvidenceAssessment: Sendable {
         var draft: Draft
         var unresolvedIDs: Set<String>
         var rejectedItems: Int
         var firstIssue: ModelValidationIssue? = nil
+        var rejections: [Rejection] = []
     }
     /// Preserve complete valid conclusions, and queue *whole* rejected conclusions for scoped
     /// model repair. Partial content is never published and local code never invents a narrative.
@@ -94,7 +102,7 @@ extension PeriodReviewFromDaily {
         guard original.overview.count <= 160, original.items.count <= itemLimit else { throw ModelReviewError.validation(.structure) }
         let rows = Dictionary(uniqueKeysWithValues: prepared.rows.map { ($0.id, $0) })
         var cleaned = original, invalid: Set<String> = [], kept: [Draft.Item] = [], rejected = 0, changedOwnership = false
-        var firstIssue: ModelValidationIssue?
+        var firstIssue: ModelValidationIssue?, rejections: [Rejection] = []
         for item in original.items {
             do {
                 let single = try validate(Draft(overview: "", items: [item]), prepared: prepared, itemLimit: itemLimit,
@@ -115,6 +123,8 @@ extension PeriodReviewFromDaily {
                 }
                 // An unscoped or empty citation requires rechecking all input rows in bounded batches.
                 invalid.formUnion(candidates.isEmpty ? Set(rows.keys) : candidates)
+                rejections.append(Rejection(title: String(item.title.prefix(70)), section: item.section,
+                                            ids: candidates.sorted(), issue: issue))
             }
         }
         cleaned.items = kept
@@ -129,6 +139,6 @@ extension PeriodReviewFromDaily {
             return value
         }
         if changedOwnership { cleaned.overview = recordOverview(cleaned, prepared: prepared) }
-        return EvidenceAssessment(draft: cleaned, unresolvedIDs: invalid, rejectedItems: rejected, firstIssue: firstIssue)
+        return EvidenceAssessment(draft: cleaned, unresolvedIDs: invalid, rejectedItems: rejected, firstIssue: firstIssue, rejections: rejections)
     }
 }

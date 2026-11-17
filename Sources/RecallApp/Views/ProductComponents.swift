@@ -104,7 +104,33 @@ struct RecallTaskStatusView: View {
     @EnvironmentObject private var model: RecallAppModel
     let task: RecallTaskStatus
     var cancel: (() -> Void)? = nil
+    /// Page banners show one line; the full message and details stay in the task list.
+    var compact: Bool = false
+    var showDetails: (() -> Void)? = nil
     var body: some View {
+        if compact && !task.isRunning { compactBody } else { fullBody }
+    }
+    private var compactBody: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: symbol).foregroundStyle(task.state == .failed ? RecallPalette.warning : RecallPalette.accent)
+            Text(task.phase).font(.callout).lineLimit(1).truncationMode(.tail).help(task.phase)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let showDetails, task.detail?.isEmpty == false {
+                Button(RecallLocalization.text("查看详情"), action: showDetails).buttonStyle(.borderless)
+            }
+            retryButton
+        }.padding(.horizontal, 16).padding(.vertical, 10).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 12))
+            .accessibilityElement(children: .contain)
+    }
+    @ViewBuilder private var retryButton: some View {
+        if model.canRetryTask(task) {
+            Button(RecallLocalization.text("重试")) { model.retryTask(task.id) }
+                .disabled(model.isGeneratingDailySummary || model.isGeneratingWeeklyReview || model.generatingTopicID != nil)
+                .help(model.isGeneratingDailySummary || model.isGeneratingWeeklyReview || model.generatingTopicID != nil
+                    ? RecallLocalization.both("另一份回顾正在生成，完成后才能重试。", "Another review is generating. Retry when it finishes.") : "")
+        }
+    }
+    private var fullBody: some View {
         HStack(alignment: .top, spacing: 12) {
             if task.isRunning { ProgressView().controlSize(.small).frame(width: 22, height: 22) }
             else { Image(systemName: symbol).foregroundStyle(task.state == .failed ? RecallPalette.warning : RecallPalette.accent) }
@@ -129,12 +155,7 @@ struct RecallTaskStatusView: View {
             if task.isRunning, let cancel {
                 Button(task.isCancelling ? "取消中…" : "取消", action: cancel).disabled(task.isCancelling)
             }
-            if model.canRetryTask(task) {
-                Button(RecallLocalization.text("重试")) { model.retryTask(task.id) }
-                    .disabled(model.isGeneratingDailySummary || model.isGeneratingWeeklyReview || model.generatingTopicID != nil)
-                    .help(model.isGeneratingDailySummary || model.isGeneratingWeeklyReview || model.generatingTopicID != nil
-                        ? RecallLocalization.both("另一份回顾正在生成，完成后才能重试。", "Another review is generating. Retry when it finishes.") : "")
-            }
+            retryButton
         }.padding(16).background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 12))
             .accessibilityElement(children: .contain)
     }
