@@ -6,57 +6,82 @@ struct PersonaSummaryView: View {
     let processing: Bool
     let onEvidence: () -> Void
     let onKeep: (PersonaDimension) -> Void
+    let onDismiss: (PersonaDimension) -> Void
     let onRetry: () -> Void
     private var traits: [PersonaTraitState] { state.confirmedPersonaTraits }
     private var mixed: [PersonaTraitState] { state.mixedPersonaTraits }
     private var failures: Int { state.personaRefreshJobs.filter { $0.status == .failed }.count }
     private var observedDays: Int { Set(state.personaTraitObservations.map(\.day)).count }
+    /// Explicit preferences the user already kept, so the same observation is not offered again.
+    private var explicit: [String] {
+        state.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }.map(\.content)
+    }
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(RecallLocalization.both("近期行为观察", "Recent behavior observations")).font(.headline)
+                    Text(RecallLocalization.both("Recall 观察到的习惯", "Habits Recall noticed")).font(.headline)
                     Text(status).font(.caption).foregroundStyle(RecallPalette.secondary)
                 }
                 Spacer()
-                Button(RecallLocalization.both("查看依据与更正", "Evidence and corrections"), action: onEvidence).buttonStyle(.plain).foregroundStyle(RecallPalette.accent)
+                Button(RecallLocalization.both("查看依据", "View evidence"), action: onEvidence).buttonStyle(.plain).foregroundStyle(RecallPalette.accent)
                     .accessibilityIdentifier("persona-evidence")
             }
-            ForEach(Array(traits.prefix(3))) { trait in
-                HStack(alignment: .firstTextBaseline) {
-                    Text(RecallLocalization.text(trait.dimension.valueTitle(trait.value)))
-                    Spacer()
-                    Text(RecallLocalization.both("\(trait.observationDays) 个观察日", "\(trait.observationDays) observed days")).font(.caption).foregroundStyle(RecallPalette.secondary)
-                    if trait.dimension.responseGuidance(trait.value) != nil {
-                        Button(RecallLocalization.both("对，记住这条", "Yes, remember this")) { onKeep(trait.dimension) }
-                            .buttonStyle(.plain).font(.caption).foregroundStyle(RecallPalette.accent)
-                    }
-                }
-            }
-            ForEach(mixed) { trait in
-                Text(RecallLocalization.both("\(RecallLocalization.text(trait.dimension.title))：近期表现不一，暂不判断", "\(RecallLocalization.text(trait.dimension.title)): mixed recently, no judgment yet"))
-                    .font(.caption).foregroundStyle(RecallPalette.secondary)
-            }
+            ForEach(Array(traits.prefix(3))) { trait in row(trait) }
             if failures > 0 {
                 HStack {
                     Text(RecallLocalization.both("\(failures) 天分析未完成，已有观察已保留。", "Analysis incomplete for \(failures) days. Existing observations are kept.")).font(.caption)
                     Button(RecallLocalization.both("重试", "Retry"), action: onRetry).buttonStyle(.plain).foregroundStyle(RecallPalette.accent)
                 }
             }
-            Text(RecallLocalization.both("根据近30天本人事项形成暂定观察，至少3个不同日期且方向一致才会展示；只用于“问一问”，不进入回顾。当次要求和明确偏好优先，可在右上角菜单暂停或清空。", "Tentative observations use your own recent 30-day activity and need at least 3 distinct, consistent dates. Used only in Ask, never in reviews. Current requests and explicit preferences come first. Pause or clear from the menu above."))
-                .font(.caption2).foregroundStyle(RecallPalette.secondary)
+            if !traits.isEmpty {
+                Text(RecallLocalization.both("暂定观察：近 30 天里至少 3 天一致才会出现，只影响“问一问”的回答方式。",
+                                             "Tentative: shown only after 3 consistent days in the last 30, and only shapes how Ask answers."))
+                    .font(.caption2).foregroundStyle(RecallPalette.secondary)
+                    .help(RecallLocalization.both("不进入回顾；当次要求和你明确记住的内容优先。可在右上角菜单暂停或清空。",
+                                                  "Never used in reviews. Current requests and things you asked Recall to remember come first. Pause or clear from the menu above."))
+            }
         }.recallSurface(padding: 18)
+    }
+    private func row(_ trait: PersonaTraitState) -> some View {
+        let guidance = trait.dimension.responseGuidance(trait.value)
+        let kept = guidance.map { text in explicit.contains { $0.contains(text) } } ?? false
+        return HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(RecallLocalization.text(trait.dimension.valueTitle(trait.value))).font(.system(size: 14, weight: .medium))
+                if let guidance {
+                    Text(RecallLocalization.both("回答时会：\(guidance)", "Answers will: \(guidance)"))
+                        .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Text(RecallLocalization.both("\(trait.observationDays) 天的记录支持", "Supported by \(trait.observationDays) days"))
+                    .font(.caption2).foregroundStyle(RecallPalette.secondary)
+            }
+            Spacer(minLength: 12)
+            if kept {
+                Label(RecallLocalization.both("已记住", "Remembered"), systemImage: "checkmark").font(.caption).foregroundStyle(RecallPalette.secondary)
+            } else {
+                if guidance != nil {
+                    Button(RecallLocalization.both("记住", "Remember")) { onKeep(trait.dimension) }
+                        .controlSize(.small)
+                        .help(RecallLocalization.both("保存为你的明确偏好，之后可在上方修改或停用。", "Save as an explicit preference. You can edit or retire it above."))
+                }
+                Button(RecallLocalization.both("不准确", "Not right")) { onDismiss(trait.dimension) }
+                    .controlSize(.small)
+                    .help(RecallLocalization.both("不再推断“\(RecallLocalization.text(trait.dimension.title))”，可在右上角菜单恢复。",
+                                                  "Stop inferring “\(RecallLocalization.text(trait.dimension.title))”. Restore it from the menu above."))
+            }
+        }
     }
     private var status: String {
         if !state.personaProfileSettings.enabled { return RecallLocalization.both("自动分析已停止", "Automatic analysis is stopped") }
-        if !state.privacy.cloudUseEnabled || !state.llmConfiguration.hasCredential { return RecallLocalization.both("等待连接模型并允许脱敏文本处理，已有观察可在下方核对。", "Waiting for a connected model and text-processing permission. Existing evidence remains available.") }
+        if !state.privacy.cloudUseEnabled || !state.llmConfiguration.hasCredential { return RecallLocalization.both("等待连接模型并允许脱敏文本处理，已有观察可在依据中核对。", "Waiting for a connected model and text-processing permission. Existing evidence remains available.") }
         if processing { return RecallLocalization.both("正在后台分析，主动提问或生成回顾会优先处理。", "Analyzing in the background. Your questions and reviews take priority.") }
-        if traits.isEmpty && !mixed.isEmpty { return RecallLocalization.both("近期观察方向不一致，暂不形成判断。", "Recent observations point in different directions, so no judgment yet.") }
-        if traits.isEmpty { return RecallLocalization.both("已积累 \(observedDays) 天有效观察，暂不足以形成稳定判断。", "Observations from \(observedDays) days; more independent evidence is needed.") }
+        if traits.isEmpty && !mixed.isEmpty { return RecallLocalization.both("近期表现不一，暂不形成判断。", "Recent days point in different directions, so no judgment yet.") }
+        if traits.isEmpty { return RecallLocalization.both("已积累 \(observedDays) 天观察，还不足以形成判断。", "Observations from \(observedDays) days; more independent evidence is needed.") }
         if !state.personaProfileSettings.personalizesResponses || !state.memoryKnowledgeSettings.referencesEnabled {
-            return RecallLocalization.both("已暂停用于回答和建议", "Use in answers and suggestions is paused")
+            return RecallLocalization.both("已暂停用于回答", "Paused for answers")
         }
-        return RecallLocalization.both("“问一问”会据此调整回答方式，你可以随时更正。", "Ask may adapt how it answers. You can correct these anytime.")
+        return RecallLocalization.both("根据你的每日回顾推断，不对可以直接标记。", "Inferred from your daily reviews. Mark anything that's wrong.")
     }
 }
 

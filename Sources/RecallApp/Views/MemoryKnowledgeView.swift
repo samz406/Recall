@@ -40,24 +40,25 @@ struct MemoryKnowledgeView: View {
             if !model.state.memoryKnowledgeSettings.referencesEnabled {
                 Text(RecallLocalization.both("当前已暂停参考个人信息，可在设置 → 记忆整理中恢复。", "Personal context is paused. Resume it in Settings → Memory.")).font(.caption).foregroundStyle(RecallPalette.secondary)
             }
-            personaSection
-            HStack(alignment: .top, spacing: 12) {
-                TextField(RecallLocalization.both("希望 Recall 以后记住什么？", "What should Recall remember for later?"), text: $draft, axis: .vertical)
-                    .lineLimit(1...4).textFieldStyle(.plain).onSubmit { remember() }
-                    .accessibilityIdentifier("personal-memory-input")
-                Button(RecallLocalization.both(saving ? "保存中…" : "记住", saving ? "Saving…" : "Remember"), action: remember)
-                    .buttonStyle(.borderedProminent).disabled(saving || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.count > 800)
+            // What the user asked Recall to remember comes first; inferred habits follow, below.
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 12) {
+                    TextField(RecallLocalization.both("希望 Recall 以后记住什么？", "What should Recall remember for later?"), text: $draft, axis: .vertical)
+                        .lineLimit(1...4).textFieldStyle(.plain).onSubmit { remember() }
+                        .accessibilityIdentifier("personal-memory-input")
+                    Button(RecallLocalization.both(saving ? "保存中…" : "记住", saving ? "Saving…" : "Remember"), action: remember)
+                        .buttonStyle(.borderedProminent).disabled(saving || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.count > 800)
+                }
+                if active.isEmpty && !includeHistory && draft.isEmpty {
+                    HStack(spacing: 6) {
+                        Text(RecallLocalization.both("例如：以后回答先给结论，再展开细节。", "For example: Give the conclusion first, then the details."))
+                        Button(RecallLocalization.both("填入", "Use it")) { draft = RecallLocalization.both("以后回答先给结论，再展开细节", "Give the conclusion first, then the details") }
+                            .buttonStyle(.plain).foregroundStyle(RecallPalette.accent)
+                        Text(RecallLocalization.both("· 也可以在“问一问”中说“记住：……”", "· Or say “Remember: …” in Ask."))
+                    }.font(.caption).foregroundStyle(RecallPalette.secondary)
+                }
             }.recallSurface(padding: 16)
             if let message { Text(message).font(.caption).foregroundStyle(RecallPalette.secondary) }
-            if active.isEmpty && !includeHistory {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(RecallLocalization.both("从一句话开始", "Start with one sentence")).font(.headline)
-                    Text(RecallLocalization.both("例如：以后回答先给结论，再展开细节。下次相关回答会参考这个要求。", "For example: Give the conclusion first, then the details. Recall can use this in future answers."))
-                        .foregroundStyle(RecallPalette.secondary)
-                    Button(RecallLocalization.both("填入这个示例", "Use this example")) { draft = RecallLocalization.both("以后回答先给结论，再展开细节", "Give the conclusion first, then the details") }.buttonStyle(.plain).foregroundStyle(RecallPalette.accent)
-                    Text(RecallLocalization.both("也可以在“问一问”中直接说“记住：……”", "You can also say “Remember: …” in Ask.")).font(.caption).foregroundStyle(RecallPalette.secondary)
-                }.recallSurface()
-            }
             if active.count > 8 || !query.isEmpty {
                 HStack {
                     TextField(RecallLocalization.both("搜索记住的内容", "Search memories"), text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 340)
@@ -94,6 +95,7 @@ struct MemoryKnowledgeView: View {
                 }.recallSurface(padding: 18)
             }
             if rows.count > visibleCount { Button(RecallLocalization.text("再显示 20 条")) { visibleCount += 20 } }
+            personaSection
         }
     }
     var body: some View {
@@ -152,6 +154,7 @@ struct MemoryKnowledgeView: View {
     private var personaSection: some View {
         PersonaSummaryView(state: model.state, processing: model.isRefreshingPersonaProfile,
             onEvidence: { showsPersonaEvidence = true }, onKeep: { dimension in Task { await model.updatePersonaProfile(.keep(dimension)) } },
+            onDismiss: { model.dismissPersonaTrait($0) },
             onRetry: { Task { await model.updatePersonaProfile(.retry) } })
     }
     private func editor(_ claim: MemoryClaim?) -> some View {
