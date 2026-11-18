@@ -137,7 +137,7 @@ struct MemoryKnowledgeView: View {
                     }
                     Menu(RecallLocalization.both("查看来源", "View sources")) {
                         ForEach(claim.sourceIDs.compactMap { model.memoryWorkspace?.sources[$0] }) { record in
-                            Button((record.sourceAppName ?? RecallLocalization.text("记录")) + " · " + record.createdAt.formatted()) { source = record }
+                            Button((record.sourceAppName ?? RecallLocalization.both("记录", "Record")) + " · " + record.createdAt.formatted()) { source = record }
                         }
                     }
                 } label: { Image(systemName: "ellipsis").frame(width: 22, height: 22) }
