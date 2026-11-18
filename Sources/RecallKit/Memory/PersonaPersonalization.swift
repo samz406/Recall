@@ -13,9 +13,9 @@ public enum PersonaPersonalization {
         let lines = state.confirmedPersonaTraits(now: now).filter { trait in
             guard slots.isDisjoint(with: trait.dimension.preferenceSlots) else { return false }
             // A kept observation is already an explicit preference; do not repeat or contradict it.
-            let guidance = trait.dimension.allowedValues.compactMap { trait.dimension.responseGuidance($0) }
+            let guidance = trait.dimension.allowedValues.compactMap { trait.dimension.responseGuidance($0) } + [trait.responseGuidance].compactMap { $0 }
             return !explicit.contains { content in guidance.contains(where: content.contains) }
-        }.prefix(3).compactMap { $0.dimension.responseGuidance($0.value) }
+        }.prefix(3).compactMap(\.responseGuidance)
         guard !lines.isEmpty else { return "" }
         return """
         回答组织方式参考（来自近期行为观察，暂定、低优先级，仅在相关时采用）：

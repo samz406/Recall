@@ -13,9 +13,15 @@ public enum PersonaDimension: String, Codable, CaseIterable, Hashable, Sendable 
     case learningStyle
     case stressResponse
     case valueFocus
+    case planningStyle
+    case priorityStyle
+    case informationStyle
+    case collaborationStyle
+    case toolPreference
 
     /// Only dimensions that change how an answer is organized are inferred.
-    public static let inferred: [PersonaDimension] = [.communicationStyle, .decisionStyle, .learningStyle, .stressResponse, .workPace]
+    public static let inferred: [PersonaDimension] = [.communicationStyle, .decisionStyle, .learningStyle, .stressResponse, .workPace,
+                                                  .planningStyle, .priorityStyle, .informationStyle, .collaborationStyle, .toolPreference]
     public var isRetired: Bool { !Self.inferred.contains(self) }
 
     public var title: String {
@@ -29,6 +35,11 @@ public enum PersonaDimension: String, Codable, CaseIterable, Hashable, Sendable 
         case .learningStyle: "学习方式"
         case .stressResponse: "压力应对"
         case .valueFocus: "价值观关注点"
+        case .planningStyle: "计划方式"
+        case .priorityStyle: "优先级取舍"
+        case .informationStyle: "信息处理"
+        case .collaborationStyle: "协作方式"
+        case .toolPreference: "工具与技术偏好"
         }
     }
 
@@ -38,7 +49,8 @@ public enum PersonaDimension: String, Codable, CaseIterable, Hashable, Sendable 
         case .communicationStyle: ["direct_concise", "gentle_detailed", "formal", "casual"]
         case .decisionStyle: ["cautious_verifying", "decisive_fast", "data_driven", "intuition_driven"]
         case .workPace: ["deep_focus", "multitask_switching", "sprint_to_deadline", "steady_pace"]
-        case .emotionalTone, .socialMode, .motivation, .valueFocus: []
+        // Free-form only: the model describes the habit, validated locally by `sanitizedLabel`.
+        case .emotionalTone, .socialMode, .motivation, .valueFocus, .planningStyle, .priorityStyle, .informationStyle, .collaborationStyle, .toolPreference: []
         case .learningStyle: ["trial_and_error", "systematic_research", "imitation_reference"]
         case .stressResponse: ["breakdown_planning", "seek_help", "face_head_on", "temporary_avoidance"]
         }
@@ -47,28 +59,39 @@ public enum PersonaDimension: String, Codable, CaseIterable, Hashable, Sendable 
     /// A short, non-clinical Chinese description of one value, for display next to its evidence.
     public func valueTitle(_ value: String) -> String {
         switch (self, value) {
-        case (.communicationStyle, "direct_concise"): "表达直接、偏简洁"
-        case (.communicationStyle, "gentle_detailed"): "表达委婉、愿意展开细节"
-        case (.communicationStyle, "formal"): "措辞偏正式"
-        case (.communicationStyle, "casual"): "语气随性自然"
-        case (.decisionStyle, "cautious_verifying"): "做决定前习惯反复求证"
-        case (.decisionStyle, "decisive_fast"): "决策果断、行动快"
-        case (.decisionStyle, "data_driven"): "依赖数据和事实做判断"
-        case (.decisionStyle, "intuition_driven"): "更依赖直觉和经验做判断"
-        case (.workPace, "deep_focus"): "习惯长时间专注单个任务"
-        case (.workPace, "multitask_switching"): "习惯在多个任务间切换"
-        case (.workPace, "sprint_to_deadline"): "临近截止时冲刺收尾"
-        case (.workPace, "steady_pace"): "保持稳定匀速的节奏"
-        case (.learningStyle, "trial_and_error"): "靠实践试错来学习"
-        case (.learningStyle, "systematic_research"): "靠系统研究来学习"
-        case (.learningStyle, "imitation_reference"): "靠模仿参考来学习"
-        case (.stressResponse, "breakdown_planning"): "压力下会拆解制定计划"
-        case (.stressResponse, "seek_help"): "压力下会主动寻求帮助"
-        case (.stressResponse, "face_head_on"): "压力下会正面迎击"
-        case (.stressResponse, "temporary_avoidance"): "压力下会先暂时回避"
-        default: title
+        case (.communicationStyle, "direct_concise"): "你表达直接、偏简洁"
+        case (.communicationStyle, "gentle_detailed"): "你表达委婉、愿意展开细节"
+        case (.communicationStyle, "formal"): "你的措辞偏正式"
+        case (.communicationStyle, "casual"): "你的语气随性自然"
+        case (.decisionStyle, "cautious_verifying"): "你做决定前习惯反复求证"
+        case (.decisionStyle, "decisive_fast"): "你决策果断、行动快"
+        case (.decisionStyle, "data_driven"): "你依赖数据和事实做判断"
+        case (.decisionStyle, "intuition_driven"): "你更依赖直觉和经验做判断"
+        case (.workPace, "deep_focus"): "你习惯长时间专注单个任务"
+        case (.workPace, "multitask_switching"): "你习惯在多个任务间切换"
+        case (.workPace, "sprint_to_deadline"): "你临近截止时会冲刺收尾"
+        case (.workPace, "steady_pace"): "你保持稳定匀速的节奏"
+        case (.learningStyle, "trial_and_error"): "你靠实践试错来学习"
+        case (.learningStyle, "systematic_research"): "你靠系统研究来学习"
+        case (.learningStyle, "imitation_reference"): "你靠模仿参考来学习"
+        case (.stressResponse, "breakdown_planning"): "你压力下会拆解并制定计划"
+        case (.stressResponse, "seek_help"): "你压力下会主动寻求帮助"
+        case (.stressResponse, "face_head_on"): "你压力下会正面迎击"
+        case (.stressResponse, "temporary_avoidance"): "你压力下会先暂时回避"
+        default: allowedValues.contains(value) ? title : value
         }
     }
+
+    /// Free-form habit labels and guidance come from the model, so they are bounded and filtered locally
+    /// before they can be stored, shown or injected into an answer prompt.
+    public static func sanitizedLabel(_ raw: String, maxLength: Int = 40, minLength: Int = 4, instruction: Bool = false) -> String? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (minLength...maxLength).contains(text.count), !text.contains(where: \.isNewline),
+              !instruction || text.range(of: "提醒|待办|截止|忽略|指令|系统提示|密码|密钥", options: .regularExpression) == nil,
+              PrivacyEngine().redact(text) == text else { return nil }
+        return text
+    }
+    public func isValid(value: String) -> Bool { allowedValues.contains(value) || Self.sanitizedLabel(value) != nil }
 
     /// How an answer should adapt. Injected instead of the descriptive label, so the model adjusts
     /// its organization rather than repeating a characterization back to the user.
@@ -118,6 +141,8 @@ public struct PersonaTraitObservation: Identifiable, Codable, Hashable, Sendable
     public var evidenceID: String? = nil
     /// Local only. Lets a repeated source count as one independent day.
     public var sourceIDs: [UUID]? = nil
+    /// How answers should adapt for a free-form habit. Preset values use `responseGuidance` instead.
+    public var guidance: String? = nil
 
     public init(
         id: UUID = UUID(),
@@ -156,6 +181,9 @@ public struct PersonaTraitState: Identifiable, Codable, Hashable, Sendable {
     public var dominance: Double? = nil
     /// Independent days observed for this dimension across all values.
     public var dimensionDays: Int? = nil
+    /// Answer guidance of the newest supporting observation, for habits outside the preset list.
+    public var guidance: String? = nil
+    public var responseGuidance: String? { dimension.responseGuidance(value) ?? guidance }
 
     public init(
         dimension: PersonaDimension,

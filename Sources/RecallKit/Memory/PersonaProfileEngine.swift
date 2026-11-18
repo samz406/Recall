@@ -15,7 +15,7 @@ public enum PersonaProfileEngine {
         for observation in observations.sorted(by: { $0.createdAt < $1.createdAt }) {
             let days = calendar.dateComponents([.day], from: observation.day, to: today).day ?? 0
             guard (0..<horizonDays).contains(days), observation.confidence >= 0.6, !observation.dimension.isRetired,
-                  observation.dimension.allowedValues.contains(observation.value) else { continue }
+                  observation.dimension.isValid(value: observation.value) else { continue }
             unique["\(observation.day.timeIntervalSince1970)|\(observation.dimension.rawValue)"] = observation
         }
         return Dictionary(grouping: Array(unique.values), by: \.dimension).compactMap { dimension, values -> PersonaTraitState? in
@@ -32,6 +32,7 @@ public enum PersonaProfileEngine {
                     observationDays: proofs.count, evidenceIDs: proofs.sorted { $0.day > $1.day }.map(\.id), updatedAt: last)
                 state.dominance = total > 0 ? weighted.reduce(0, +) / total : 0
                 state.dimensionDays = independent.count
+                state.guidance = proofs.sorted { $0.day > $1.day }.compactMap(\.guidance).first
                 return state
             }
             return candidates.sorted {

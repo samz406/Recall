@@ -24,7 +24,7 @@ extension FileMemoryStore {
         try persistReviewState()
         let context = CaptureRecord(eventTemplate: .manualMoment, contentHash: "persona-" + job.sourceVersion,
             ocrText: engine.text(evidence))
-        let request = LLMRequest(question: engine.prompt(excluding: Set(state.dismissedPersonaDimensions)), context: [context], purpose: .personaInsight, outputTokenLimit: 1_600)
+        let request = LLMRequest(question: engine.prompt(excluding: Set(state.dismissedPersonaDimensions), knownHabits: knownPersonaHabits()), context: [context], purpose: .personaInsight, outputTokenLimit: 1_600)
         do {
             try validatePersonaJob(job, baseline: baseline)
             let answer = try await responder.answerCancellably(to: request)
@@ -58,6 +58,12 @@ extension FileMemoryStore {
         return true
     }
 
+    /// Labels already observed recently, so the model reuses wording and cross-day counts stay meaningful.
+    private func knownPersonaHabits() -> [String] {
+        var seen: Set<String> = []
+        return state.personaTraitObservations.sorted { $0.day > $1.day }
+            .map { $0.dimension.valueTitle($0.value) }.filter { seen.insert($0).inserted }.prefix(8).map { $0 }
+    }
     private func validatePersonaJob(_ job: PersonaRefreshJob, baseline: RecallState) throws {
         try Task.checkCancellation()
         guard state.personaProfileRevision == baseline.personaProfileRevision,
@@ -120,7 +126,7 @@ extension FileMemoryStore {
     @discardableResult
     public func keepPersonaTraitAsPreference(_ dimension: PersonaDimension, now: Date = .now) throws -> CaptureRecord? {
         guard let trait = state.confirmedPersonaTraits(now: now).first(where: { $0.dimension == dimension }),
-              let guidance = dimension.responseGuidance(trait.value) else { return nil }
+              let guidance = trait.responseGuidance else { return nil }
         var directive = MemoryDirective(content: "以后回答时" + guidance + "。", key: "persona:" + dimension.rawValue)
         directive.scopeExplicitlySet = true
         return try remember(directive, now: now)

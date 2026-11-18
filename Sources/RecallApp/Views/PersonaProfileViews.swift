@@ -9,6 +9,13 @@ struct PersonaSummaryView: View {
     let onDismiss: (PersonaDimension) -> Void
     let onRetry: () -> Void
     private var traits: [PersonaTraitState] { state.confirmedPersonaTraits }
+    /// Habits whose guidance is already an explicit memory add nothing; only unconfirmed ones are listed.
+    private var pending: [PersonaTraitState] {
+        traits.filter { trait in
+            guard let guidance = trait.responseGuidance else { return true }
+            return !explicit.contains { $0.contains(guidance) }
+        }
+    }
     private var mixed: [PersonaTraitState] { state.mixedPersonaTraits }
     private var failures: Int { state.personaRefreshJobs.filter { $0.status == .failed }.count }
     private var observedDays: Int { Set(state.personaTraitObservations.map(\.day)).count }
@@ -27,7 +34,12 @@ struct PersonaSummaryView: View {
                 Button(RecallLocalization.both("查看依据", "View evidence"), action: onEvidence).buttonStyle(.plain).foregroundStyle(RecallPalette.accent)
                     .accessibilityIdentifier("persona-evidence")
             }
-            ForEach(Array(traits.prefix(3))) { trait in row(trait) }
+            ForEach(Array(pending.prefix(3))) { trait in row(trait) }
+            if !traits.isEmpty && pending.isEmpty {
+                Text(RecallLocalization.both("目前观察到的习惯都已在上方“已记住”里，没有需要你确认的新内容。",
+                                             "Everything Recall noticed is already in “Remembered” above. Nothing new to confirm."))
+                    .font(.callout).foregroundStyle(RecallPalette.secondary)
+            }
             if failures > 0 {
                 HStack {
                     Text(RecallLocalization.both("\(failures) 天分析未完成，已有观察已保留。", "Analysis incomplete for \(failures) days. Existing observations are kept.")).font(.caption)
@@ -44,16 +56,16 @@ struct PersonaSummaryView: View {
         }.recallSurface(padding: 18)
     }
     private func row(_ trait: PersonaTraitState) -> some View {
-        let guidance = trait.dimension.responseGuidance(trait.value)
+        let guidance = trait.responseGuidance
         let kept = guidance.map { text in explicit.contains { $0.contains(text) } } ?? false
         return HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(RecallLocalization.text(trait.dimension.valueTitle(trait.value))).font(.system(size: 14, weight: .medium))
                 if let guidance {
-                    Text(RecallLocalization.both("回答时会：\(guidance)", "Answers will: \(guidance)"))
+                    Text(RecallLocalization.both("回答你时会：\(guidance)", "Answers will: \(guidance)"))
                         .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                Text(RecallLocalization.both("\(trait.observationDays) 天的记录支持", "Supported by \(trait.observationDays) days"))
+                Text(RecallLocalization.both("近 30 天里有 \(trait.observationDays) 天的回顾体现了这一点", "Showed up in \(trait.observationDays) of the last 30 days of reviews"))
                     .font(.caption2).foregroundStyle(RecallPalette.secondary)
             }
             Spacer(minLength: 12)
