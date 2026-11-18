@@ -17,50 +17,76 @@ struct PersonaSummaryView: View {
         state.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.usable() }.map(\.content)
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(RecallLocalization.both("Recall 观察到的习惯", "Habits Recall noticed")).font(.headline)
-                    Text(status).font(.caption).foregroundStyle(RecallPalette.secondary)
-                }
-                Spacer()
-                Button(RecallLocalization.both("查看依据", "View evidence"), action: onEvidence).buttonStyle(.plain).foregroundStyle(RecallPalette.accent)
+                    Text(status).font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                Button(RecallLocalization.both("查看依据", "View evidence"), action: onEvidence)
+                    .buttonStyle(.plain).font(.subheadline).foregroundStyle(RecallPalette.accent).fixedSize()
                     .accessibilityIdentifier("persona-evidence")
+            }.padding(16)
+            ForEach(Array(traits.prefix(3))) { trait in
+                Divider().padding(.horizontal, 16)
+                row(trait).padding(16)
             }
-            ForEach(Array(traits.prefix(3))) { trait in row(trait) }
             if failures > 0 {
-                HStack {
-                    Text(RecallLocalization.both("\(failures) 天分析未完成，已有观察已保留。", "Analysis incomplete for \(failures) days. Existing observations are kept.")).font(.caption)
-                    Button(RecallLocalization.both("重试", "Retry"), action: onRetry).buttonStyle(.plain).foregroundStyle(RecallPalette.accent)
-                }
+                Divider().padding(.horizontal, 16)
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(RecallLocalization.both("\(failures) 天分析未完成，已有观察已保留。", "Analysis incomplete for \(failures) days. Existing observations are kept."))
+                        .font(.caption).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                    Button(RecallLocalization.both("重试", "Retry"), action: onRetry).buttonStyle(.plain).foregroundStyle(RecallPalette.accent).fixedSize()
+                }.padding(16)
             }
             if !traits.isEmpty {
-                Text(RecallLocalization.both("暂定观察：近 30 天里至少 3 天一致才会出现，只影响“问一问”的回答方式。",
-                                             "Tentative: shown only after 3 consistent days in the last 30, and only shapes how Ask answers."))
+                Divider().padding(.horizontal, 16)
+                Text(RecallLocalization.both("仅影响“问一问”的回答方式；你明确保存的内容优先。",
+                                             "Only shapes how Ask answers. Your explicit preferences come first."))
                     .font(.caption2).foregroundStyle(RecallPalette.secondary)
-                    .help(RecallLocalization.both("不进入回顾；当次要求和你明确记住的内容优先。可在右上角菜单暂停或清空。",
-                                                  "Never used in reviews. Current requests and things you asked Recall to remember come first. Pause or clear from the menu above."))
+                    .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 16).padding(.vertical, 12)
+                    .help(RecallLocalization.both("暂定观察：近 30 天里至少 3 天一致才会出现。不进入回顾；当次要求和你明确记住的内容优先。可在右上角菜单暂停或清空。",
+                                                  "Tentative: shown after at least 3 consistent days in the last 30. Never used in reviews. Current requests and explicit preferences come first. Pause or clear from the menu above."))
             }
-        }.recallSurface(padding: 18)
+        }.recallSurface(padding: 0)
     }
     private func row(_ trait: PersonaTraitState) -> some View {
         let guidance = trait.dimension.responseGuidance(trait.value)
         let kept = guidance.map { text in explicit.contains { $0.contains(text) } } ?? false
         return HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(RecallLocalization.text(trait.dimension.valueTitle(trait.value))).font(.system(size: 14, weight: .medium))
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        traitTitle(trait)
+                        support(trait)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        traitTitle(trait)
+                        support(trait)
+                    }
+                }
                 if let guidance {
                     Text(RecallLocalization.both("回答时会：\(guidance)", "Answers will: \(guidance)"))
                         .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                Text(RecallLocalization.both("\(trait.observationDays) 天的记录支持", "Supported by \(trait.observationDays) days"))
-                    .font(.caption2).foregroundStyle(RecallPalette.secondary)
-            }
-            Spacer(minLength: 12)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            traitActions(trait, kept: kept, hasGuidance: guidance != nil).fixedSize()
+        }
+    }
+    private func traitTitle(_ trait: PersonaTraitState) -> some View {
+        Text(RecallLocalization.text(trait.dimension.valueTitle(trait.value)))
+            .font(.system(size: 14, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+    }
+    private func support(_ trait: PersonaTraitState) -> some View {
+        Text(RecallLocalization.both("\(trait.observationDays) 天支持", "\(trait.observationDays) days of evidence"))
+            .font(.caption2).foregroundStyle(RecallPalette.secondary).fixedSize()
+    }
+    private func traitActions(_ trait: PersonaTraitState, kept: Bool, hasGuidance: Bool) -> some View {
+        HStack(spacing: 8) {
             if kept {
                 Label(RecallLocalization.both("已记住", "Remembered"), systemImage: "checkmark").font(.caption).foregroundStyle(RecallPalette.secondary)
             } else {
-                if guidance != nil {
+                if hasGuidance {
                     Button(RecallLocalization.both("记住", "Remember")) { onKeep(trait.dimension) }
                         .controlSize(.small)
                         .help(RecallLocalization.both("保存为你的明确偏好，之后可在上方修改或停用。", "Save as an explicit preference. You can edit or retire it above."))

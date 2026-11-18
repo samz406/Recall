@@ -97,7 +97,7 @@ enum RecallLayoutPreviews {
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(10)) }
         let defaults = UserDefaults(suiteName: "im.recall.synthetic-layout")!
         defer { defaults.removePersistentDomain(forName: "im.recall.synthetic-layout") }
-        let names = ["global-search", "global-search-results", "global-search-dates", "global-search-calendar", "archive-recovery", "archive-safety", "record-retention", "preferences", "first-moment", "sample", "daily", "daily-long", "daily-calendar", "daily-calendar-missing", "daily-calendar-empty", "topics", "topic-detail", "period", "period-stale", "period-work", "period-work-sources", "period-work-empty", "review-schedule", "review-schedule-saving", "knowledge", "knowledge-empty", "knowledge-persona", "knowledge-persona-paused", "knowledge-persona-failed", "persona-evidence", "rules", "reminders", "reminder-new", "reminder-calendar", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "chat-busy", "chat-sources", "navigation"]
+        let names = ["global-search", "global-search-results", "global-search-dates", "global-search-calendar", "archive-recovery", "archive-safety", "record-retention", "preferences", "first-moment", "sample", "daily", "daily-long", "daily-calendar", "daily-calendar-missing", "daily-calendar-empty", "topics", "topic-detail", "period", "period-stale", "period-work", "period-work-sources", "period-work-empty", "review-schedule", "review-schedule-saving", "knowledge", "knowledge-empty", "knowledge-many", "knowledge-persona", "knowledge-persona-kept", "knowledge-persona-paused", "knowledge-persona-failed", "persona-evidence", "rules", "reminders", "reminder-new", "reminder-source-manual", "reminder-source-manual-long", "reminder-source-missing", "reminder-source-single", "reminder-source-multiple", "reminder-calendar", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "chat-busy", "chat-sources", "navigation"]
         for mode in ["wide", "narrow", "dark", "english"] {
             UserDefaults.standard.set(mode == "english" ? "en" : "zh-Hans", forKey: RecallLocalization.languageKey)
             let width: CGFloat = mode == "narrow" ? 780 : 1050
@@ -124,8 +124,9 @@ enum RecallLayoutPreviews {
                 }
                 if name == "reminder-history-empty" { model.state.reminders.removeAll { $0.status.isHistory } }
                 if name == "knowledge-empty" { model.state.memoryKnowledge.claims = [] }
+                if name == "knowledge-many" { model.state = personalMemoryLayoutState(many: true) }
                 if name.hasPrefix("knowledge-persona") || name == "persona-evidence" {
-                    model.state = personaFixtureState(seeded: true)
+                    model.state = name.hasSuffix("kept") ? personalMemoryLayoutState() : personaFixtureState(seeded: true)
                     if name.hasSuffix("paused") { model.state.personaProfileSettings.enabled = false }
                     if name.hasSuffix("failed") {
                         model.state.personaTraitObservations = []; model.state.reconcilePersonaProfile()
@@ -143,12 +144,15 @@ enum RecallLayoutPreviews {
                 }
                 let pageWidth: CGFloat = name == "navigation" ? width + 196 : (name == "appearance-compact" ? 620 : (name.hasPrefix("model-editor") ? 700 : width))
                 let pageHeight: CGFloat = name.hasPrefix("model-editor") ? min(744, (NSScreen.main?.visibleFrame.height ?? 900) - 48) : (name == "topic-detail" ? 430 : (name == "appearance-compact" ? 560 : 740))
+                let intrinsic = name.hasPrefix("reminder-source-")
                 let page = RecallRootView.previewPage(name)
                     .environmentObject(model).recallColors().defaultAppStorage(defaults)
                     .environment(\.controlActiveState, .key)
-                    .frame(width: pageWidth, height: pageHeight)
+                    .frame(width: intrinsic ? nil : pageWidth, height: intrinsic ? nil : pageHeight)
                 let host = NSHostingView(rootView: page)
-                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: pageWidth, height: pageHeight), styleMask: [.borderless], backing: .buffered, defer: false)
+                let size = intrinsic ? host.fittingSize : NSSize(width: pageWidth, height: pageHeight)
+                if intrinsic { print("LAYOUT: \(mode)-\(name) \(Int(size.width)) × \(Int(size.height))") }
+                let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.appearance = NSAppearance(named: mode == "dark" ? .darkAqua : .aqua)
                 window.contentView = host; window.makeKeyAndOrderFront(nil)
                 try await Task.sleep(for: .milliseconds(name == "navigation" ? 600 : 150))
