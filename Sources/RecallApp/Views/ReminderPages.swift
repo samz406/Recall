@@ -471,62 +471,127 @@ struct NewReminderSheet: View {
     }
 }
 
-private struct ReminderSourceSheet: View {
+struct ReminderSourceSheet: View {
     @Environment(\.dismiss) private var dismiss
     let reminder: ReminderCandidate
     let captures: [CaptureRecord]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(RecallLocalization.text("提醒来源"))
-                        .font(.title2.weight(.semibold))
-                    Text(reminder.title)
-                        .font(.subheadline)
-                        .foregroundStyle(RecallPalette.secondary)
-                        .lineLimit(2)
-                }
+                Text(RecallLocalization.text("提醒来源"))
+                    .font(RecallTypography.title)
                 Spacer()
                 Button(RecallLocalization.text("关闭")) { dismiss() }
                     .buttonStyle(.bordered)
+                    .keyboardShortcut(.cancelAction)
             }
+            .padding(20)
+            Divider()
 
-            if let analysis = reminder.analysis {
-                Label(analysis.basis, systemImage: "text.bubble")
-                    .font(.caption).foregroundStyle(RecallPalette.secondary)
+            // Short reminders use their natural height; long text and multiple sources scroll.
+            ViewThatFits(in: .vertical) {
+                sourceContent.fixedSize(horizontal: false, vertical: true)
+                ScrollView { sourceContent }
+                    .scrollBounceBehavior(.basedOnSize)
             }
+            .frame(maxHeight: min(520, max(180, (NSScreen.main?.visibleFrame.height ?? 800) - 200)))
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(width: captures.isEmpty ? 540 : 660)
+        .background(RecallPalette.surface)
+    }
 
+    private var sourceContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(reminder.title)
+                .font(.headline)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
             if captures.isEmpty {
-                ContentUnavailableView(
-                    reminder.origin == .manual ? "这是手动创建的提醒" : "来源记录已不存在",
-                    systemImage: "doc.questionmark",
-                    description: Text(reminder.origin == .manual ? (reminder.detail.isEmpty ? "没有关联采集记录。" : reminder.detail) : "对应记录可能已被删除或超过了保留期限。")
-                )
-            } else {
-                List(captures.sorted(by: { $0.createdAt > $1.createdAt })) { capture in
-                    VStack(alignment: .leading, spacing: 7) {
-                        HStack {
-                            Text(capture.sourceAppName ?? capture.eventTemplate.title)
-                                .font(.headline)
-                            Spacer()
-                            Text(capture.createdAt.formatted(date: .abbreviated, time: .shortened))
-                                .font(.caption)
-                                .foregroundStyle(RecallPalette.secondary)
-                        }
-                        Text(capture.ocrText.isEmpty ? (capture.summary ?? "未保留原始文字") : capture.ocrText)
-                            .font(.subheadline)
-                            .textSelection(.enabled)
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: reminder.origin == .manual ? "square.and.pencil" : "doc.questionmark")
+                        .font(.system(size: 20))
+                        .foregroundStyle(reminder.origin == .manual ? RecallPalette.accent : RecallPalette.secondary)
+                        .frame(width: 32, height: 32)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(RecallLocalization.both(reminder.origin == .manual ? "手动创建的提醒" : "来源记录已不可用",
+                                                     reminder.origin == .manual ? "Manually created reminder" : "Source records unavailable"))
+                            .font(.subheadline.weight(.medium))
+                        Text(RecallLocalization.both(reminder.origin == .manual ? "由你直接创建，没有关联的采集记录。" : "对应记录可能已被删除或超过保留期限。",
+                                                     reminder.origin == .manual ? "Created by you, with no linked capture records." : "The records may have been deleted or passed their retention period."))
+                            .font(.caption).foregroundStyle(RecallPalette.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .padding(.vertical, 6)
                 }
-                .listStyle(.inset)
-                .scrollContentBackground(.hidden)
-                .background(RecallPalette.background)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(RecallPalette.background, in: RoundedRectangle(cornerRadius: 10))
+            }
+            if !reminder.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(RecallLocalization.both("补充说明", "Details"))
+                        .font(.caption).foregroundStyle(RecallPalette.secondary)
+                    Text(reminder.detail).font(.callout)
+                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                }
+            }
+            if let basis = reminder.analysis?.basis, !basis.isEmpty {
+                Label(basis, systemImage: "text.bubble")
+                    .font(.caption).foregroundStyle(RecallPalette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !captures.isEmpty {
+                HStack {
+                    Text(RecallLocalization.both("关联记录", "Linked records")).font(.subheadline.weight(.medium))
+                    Spacer()
+                    Text(RecallLocalization.both("\(captures.count) 条", "\(captures.count) records"))
+                        .font(.caption).foregroundStyle(RecallPalette.secondary)
+                }
+                let missing = Set(reminder.sourceCaptureIDs).subtracting(captures.map(\.id)).count
+                if missing > 0 {
+                    Text(RecallLocalization.both("另有 \(missing) 条来源已删除或超过保留期限。", "Another \(missing) source records were deleted or passed their retention period."))
+                        .font(.caption).foregroundStyle(RecallPalette.secondary)
+                }
+                ForEach(captures.sorted(by: { $0.createdAt > $1.createdAt })) { capture in
+                    sourceRow(capture)
+                }
             }
         }
-        .padding(24)
-        .frame(width: 680, height: 480)
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func sourceRow(_ capture: CaptureRecord) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text(capture.sourceAppName ?? RecallLocalization.text(capture.eventTemplate.title)).font(.subheadline.weight(.medium))
+                    Spacer(minLength: 12)
+                    sourceDate(capture)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(capture.sourceAppName ?? RecallLocalization.text(capture.eventTemplate.title)).font(.subheadline.weight(.medium))
+                    sourceDate(capture)
+                }
+            }
+            if !capture.ocrText.isEmpty {
+                Text(capture.ocrText).font(.callout).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            } else if let summary = capture.summary, !summary.isEmpty {
+                Text(summary).font(.callout).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            } else {
+                Text(RecallLocalization.both("未保留原始文字", "Original text was not retained"))
+                    .font(.callout).foregroundStyle(RecallPalette.secondary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RecallPalette.background, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func sourceDate(_ capture: CaptureRecord) -> some View {
+        Text(capture.createdAt.formatted(date: .abbreviated, time: .shortened))
+            .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize()
     }
 }
 
