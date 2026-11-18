@@ -21,20 +21,20 @@ struct MemoryKnowledgeView: View {
     @State private var confirmsPersonaRebuild = false
     @State private var confirmsPersonaClear = false
 
-    private var active: [MemoryClaim] {
-        model.state.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.scope != .conversation && $0.usable() }
-    }
+    private var personal: [MemoryClaim] { model.state.memoryKnowledge.claims.filter { $0.kind.isPersonal && $0.scope != .conversation } }
+    private var active: [MemoryClaim] { personal.filter { $0.usable() } }
     private var rows: [MemoryClaim] {
-        model.state.memoryKnowledge.claims.filter {
-            $0.kind.isPersonal && category.includes($0.kind) && $0.scope != .conversation && ($0.usable() || includeHistory)
+        personal.filter {
+            category.includes($0.kind) && ($0.usable() || includeHistory)
                 && (query.isEmpty || ($0.title + $0.content).localizedCaseInsensitiveContains(query))
         }.sorted { $0.updatedAt > $1.updatedAt }
     }
     private var content: some View {
-        LazyVStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .top) {
-                Text(RecallLocalization.both("让 Recall 记住你的背景和习惯，减少反复交代。", "Help Recall remember your background and preferences.")).foregroundStyle(RecallPalette.secondary)
-                Spacer()
+        LazyVStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 12) {
+                Text(RecallLocalization.both("让 Recall 记住你的背景和习惯，减少反复交代。", "Help Recall remember your background and preferences."))
+                    .font(.subheadline).foregroundStyle(RecallPalette.secondary)
+                    .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
                 options
             }
             if !model.state.memoryKnowledgeSettings.referencesEnabled {
@@ -42,66 +42,115 @@ struct MemoryKnowledgeView: View {
             }
             // What the user asked Recall to remember comes first; inferred habits follow, below.
             VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top, spacing: 12) {
+                Text(RecallLocalization.both("添加记忆", "Add a memory")).font(.subheadline.weight(.semibold))
+                HStack(alignment: .bottom, spacing: 12) {
                     TextField(RecallLocalization.both("希望 Recall 以后记住什么？", "What should Recall remember for later?"), text: $draft, axis: .vertical)
                         .lineLimit(1...4).textFieldStyle(.plain).onSubmit { remember() }
+                        .padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityIdentifier("personal-memory-input")
                     Button(RecallLocalization.both(saving ? "保存中…" : "记住", saving ? "Saving…" : "Remember"), action: remember)
                         .buttonStyle(.borderedProminent).disabled(saving || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.count > 800)
                 }
                 if active.isEmpty && !includeHistory && draft.isEmpty {
-                    HStack(spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(RecallLocalization.both("例如：以后回答先给结论，再展开细节。", "For example: Give the conclusion first, then the details."))
                         Button(RecallLocalization.both("填入", "Use it")) { draft = RecallLocalization.both("以后回答先给结论，再展开细节", "Give the conclusion first, then the details") }
                             .buttonStyle(.plain).foregroundStyle(RecallPalette.accent)
-                        Text(RecallLocalization.both("· 也可以在“问一问”中说“记住：……”", "· Or say “Remember: …” in Ask."))
                     }.font(.caption).foregroundStyle(RecallPalette.secondary)
                 }
             }.recallSurface(padding: 16)
             if let message { Text(message).font(.caption).foregroundStyle(RecallPalette.secondary) }
-            if active.count > 8 || !query.isEmpty {
-                HStack {
-                    TextField(RecallLocalization.both("搜索记住的内容", "Search memories"), text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 340)
-                    Menu(RecallLocalization.text(category.title)) {
-                        ForEach([MemoryLibraryCategory.all, .preferences, .agreements, .people], id: \.self) { value in Button(RecallLocalization.text(value.title)) { category = value } }
-                    }.fixedSize()
-                    Spacer()
-                }
-            }
-            ForEach(Array(rows.prefix(visibleCount))) { claim in
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(claim.content).font(RecallTypography.body).textSelection(.enabled)
-                    HStack(spacing: 10) {
-                        Text(RecallLocalization.text(claim.scope.title)).font(.caption).foregroundStyle(RecallPalette.secondary)
-                        if !claim.usable() { Text(claim.state.title).font(.caption).foregroundStyle(RecallPalette.secondary) }
-                        else if !model.state.memoryKnowledgeSettings.references(claim) { Text(RecallLocalization.both("已暂停参考", "Paused")).font(.caption).foregroundStyle(RecallPalette.secondary) }
-                        Spacer()
-                        Button(RecallLocalization.both("修改", "Edit")) { editing = claim }.buttonStyle(.plain)
-                        Menu {
-                            if claim.usable() {
-                                Button(RecallLocalization.both("不再记住这条", "Forget this memory"), role: .destructive) { forgetting = claim }
-                                Button(RecallLocalization.both(model.state.memoryKnowledgeSettings.references(claim) ? "暂停参考" : "恢复参考", model.state.memoryKnowledgeSettings.references(claim) ? "Pause use" : "Resume use")) { model.setMemoryReference(claim, enabled: !model.state.memoryKnowledgeSettings.references(claim)) }
-                            }
-                            if let entity = model.state.memoryKnowledge.entities.first(where: { $0.id == claim.subjectID && $0.kind == "person" }) {
-                                Button(RecallLocalization.text("管理人物别名")) { aliases = entity }
-                            }
-                            Menu(RecallLocalization.both("查看来源", "View sources")) {
-                                ForEach(claim.sourceIDs.compactMap { model.memoryWorkspace?.sources[$0] }) { record in
-                                    Button((record.sourceAppName ?? "记录") + " · " + record.createdAt.formatted()) { source = record }
-                                }
-                            }
-                        } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
-                    }
-                }.recallSurface(padding: 18)
-            }
-            if rows.count > visibleCount { Button(RecallLocalization.text("再显示 20 条")) { visibleCount += 20 } }
+            savedMemories
             personaSection
         }
+        .frame(maxWidth: 960)
+        .frame(maxWidth: .infinity)
+    }
+    private var savedMemories: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(RecallLocalization.both("已记住", "Remembered")).font(.headline)
+                Text(RecallLocalization.both("\(rows.count) 条", "\(rows.count) memories"))
+                    .font(.caption).monospacedDigit().foregroundStyle(RecallPalette.secondary)
+                Spacer()
+                if includeHistory { Text(RecallLocalization.both("含已停用内容", "Including inactive")).font(.caption).foregroundStyle(RecallPalette.secondary) }
+            }.padding(16)
+            if personal.count > 8 || !query.isEmpty || category != .all || includeHistory {
+                HStack(spacing: 12) {
+                    TextField(RecallLocalization.both("搜索记住的内容", "Search memories"), text: $query)
+                        .textFieldStyle(.roundedBorder).frame(maxWidth: .infinity)
+                    Menu(RecallLocalization.text(category.title)) {
+                        ForEach([MemoryLibraryCategory.all, .preferences, .agreements, .people], id: \.self) { value in
+                            Button(RecallLocalization.text(value.title)) { category = value }
+                        }
+                    }.fixedSize()
+                }.padding(.horizontal, 16).padding(.bottom, 14)
+            }
+            Divider()
+            if rows.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(RecallLocalization.both(query.isEmpty && category == .all ? "还没有记住的内容" : "没有匹配的记忆",
+                                                 query.isEmpty && category == .all ? "No saved memories yet" : "No matching memories"))
+                        .font(.subheadline.weight(.medium))
+                    if !query.isEmpty || category != .all {
+                        Button(RecallLocalization.both("清除筛选", "Clear filters")) { query = ""; category = .all }
+                            .buttonStyle(.plain).foregroundStyle(RecallPalette.accent)
+                    } else {
+                        Text(RecallLocalization.both("在上方添加背景、偏好或约定，之后可以随时修改或停用。", "Add your background, preferences or agreements above. Edit or stop using them any time."))
+                            .font(.caption).foregroundStyle(RecallPalette.secondary)
+                    }
+                }.padding(16)
+            } else {
+                let displayed = Array(rows.prefix(visibleCount))
+                ForEach(displayed) { claim in
+                    if claim.id != displayed.first?.id { Divider().padding(.horizontal, 16) }
+                    memoryRow(claim)
+                }
+                if rows.count > visibleCount {
+                    Divider()
+                    Button(RecallLocalization.text("再显示 20 条")) { visibleCount += 20 }
+                        .buttonStyle(.plain).foregroundStyle(RecallPalette.accent).padding(16)
+                }
+            }
+        }.recallSurface(padding: 0)
+    }
+    private func memoryRow(_ claim: MemoryClaim) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(claim.content).font(RecallTypography.body).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                HStack(spacing: 8) {
+                    Text(RecallLocalization.text(claim.scope.title))
+                    if !claim.usable() { Text(RecallLocalization.text(claim.state.title)) }
+                    else if !model.state.memoryKnowledgeSettings.references(claim) { Text(RecallLocalization.both("已暂停参考", "Paused")) }
+                }.font(.caption).foregroundStyle(RecallPalette.secondary)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 12) {
+                Button(RecallLocalization.both("修改", "Edit")) { editing = claim }
+                    .buttonStyle(.plain).foregroundStyle(RecallPalette.accent)
+                Menu {
+                    if claim.usable() {
+                        Button(RecallLocalization.both("不再记住这条", "Forget this memory"), role: .destructive) { forgetting = claim }
+                        Button(RecallLocalization.both(model.state.memoryKnowledgeSettings.references(claim) ? "暂停参考" : "恢复参考", model.state.memoryKnowledgeSettings.references(claim) ? "Pause use" : "Resume use")) { model.setMemoryReference(claim, enabled: !model.state.memoryKnowledgeSettings.references(claim)) }
+                    }
+                    if let entity = model.state.memoryKnowledge.entities.first(where: { $0.id == claim.subjectID && $0.kind == "person" }) {
+                        Button(RecallLocalization.text("管理人物别名")) { aliases = entity }
+                    }
+                    Menu(RecallLocalization.both("查看来源", "View sources")) {
+                        ForEach(claim.sourceIDs.compactMap { model.memoryWorkspace?.sources[$0] }) { record in
+                            Button((record.sourceAppName ?? RecallLocalization.text("记录")) + " · " + record.createdAt.formatted()) { source = record }
+                        }
+                    }
+                } label: { Image(systemName: "ellipsis").frame(width: 22, height: 22) }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .accessibilityLabel(RecallLocalization.both("这条记忆的更多操作", "More actions for this memory"))
+            }.font(.subheadline).fixedSize()
+        }.padding(16)
     }
     var body: some View {
         content
         .onChange(of: query) { _, _ in visibleCount = 20 }
         .onChange(of: category) { _, _ in visibleCount = 20 }
+        .onChange(of: includeHistory) { _, _ in visibleCount = 20 }
         .onAppear { if model.knowledgeToOpen != nil { includeHistory = true } }
         .sheet(isPresented: $adding) { editor(nil) }
         .sheet(item: $editing) { editor($0) }
@@ -149,7 +198,9 @@ struct MemoryKnowledgeView: View {
                     }
                 }
             }
-        } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel(RecallLocalization.both("关于我的更多操作", "More personal memory actions"))
+        } label: { Image(systemName: "ellipsis").frame(width: 22, height: 22) }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .accessibilityLabel(RecallLocalization.both("关于我的更多操作", "More personal memory actions"))
     }
     private var personaSection: some View {
         PersonaSummaryView(state: model.state, processing: model.isRefreshingPersonaProfile,
