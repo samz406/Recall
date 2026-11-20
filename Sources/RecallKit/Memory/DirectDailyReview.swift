@@ -503,7 +503,7 @@ public struct DirectDailyReviewEngine: Sendable {
 
     private func restoringPreviousProgress(in draft: DailyReviewDraft, documents: [DailyReviewDocument],
                                            input: DailyReviewInput) throws -> (DailyReviewDraft, [DailyReviewDocument]) {
-        guard !input.previousProgress.isEmpty, !draft.items.isEmpty else { return (draft, documents) }
+        guard !input.previousProgress.isEmpty else { return (draft, documents) }
         let byID = Dictionary(uniqueKeysWithValues: documents.map { ($0.id, $0) })
         let progress = draft.allItems.filter { isProgress($0, documents: byID) }.map { item in
             (key: progressKey(item), title: DailyReviewPresentation.key(item.title), proofs: matched(item, documents: byID))

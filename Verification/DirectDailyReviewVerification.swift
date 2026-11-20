@@ -158,7 +158,7 @@ enum DirectDailyReviewVerification {
         }
     }
     private actor CompletenessModel: LLMResponding {
-        enum Mode { case ledger, onlyAction, updatedCedar, providerCapacity }
+        enum Mode { case ledger, onlyAction, empty, updatedCedar, providerCapacity }
         static let cedarUpdate = "Cedar 验收的部署后验证已经完成，所有合成用例已通过。"
         static let records = [
             (topic: "Nova 导出", quote: "Nova 导出已合并，批量写入的回归用例已经通过。", section: "progress", status: "completed"),
@@ -186,8 +186,8 @@ enum DirectDailyReviewVerification {
             }
             let onlyAction = mode == .onlyAction || mode == .updatedCedar
             let action = rows.first { ($0["section"] as? String) == "actions" }
-            var items = (action ?? (onlyAction ? nil : rows.first)).map { [$0] } ?? []
-            var ledger = onlyAction ? [] : rows
+            var items = mode == .empty ? [] : (action ?? (onlyAction ? nil : rows.first)).map { [$0] } ?? []
+            var ledger = onlyAction || mode == .empty ? [] : rows
             if mode == .ledger {
                 var invalid = rows[0]
                 invalid["title"] = "无依据的合成进展"
@@ -249,6 +249,11 @@ enum DirectDailyReviewVerification {
             && recovered.summary.todos.map(\.id) == legacy.todos.map(\.id) && recovered.summary.modelCoverage?.uncertainBlockCount == 1
             && recovered.summary.content.contains("部署后的验证尚未进行"), "重生成未保存完整有效的正文，或破坏了历史和待办")
         try expect(calls.allSatisfy { !$0.question.contains(progress[0].title) }, "旧回顾的文字被送进了模型请求")
+
+        let emptyDraft = try await fixture.store.generateDirectDailyReview(day: day, period: fixture.period, responder: CompletenessModel(.empty))
+        try expect(emptyDraft.metrics.modelCalls == 1 && emptyDraft.summary.items.map(\.section) == [.progress, .progress]
+            && emptyDraft.summary.todos.isEmpty && emptyDraft.summary.versions?.first?.id == recovered.summary.id,
+            "模型返回了有效但空的草稿时，未保存仍能核对的进展，或重新生成了旧待办")
     }
     private static func previousProgressRespectsCurrentEvidence() async throws {
         let fixture = try await completenessFixture()
