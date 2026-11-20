@@ -1982,8 +1982,7 @@ final class RecallAppModel: ObservableObject {
             }) else { return }
         }
         let taskID = beginTask("每日回顾", target: day.formatted(date: .abbreviated, time: .omitted), phase: "准备记录", reviewDay: day, retry: { [weak self] in
-            self?.pauseAutomaticDailyReviews()
-            self?.enqueueDailyReviews([day], reason: .generate)
+            self?.generateDailyReview(on: day)
         })
         guard let responder else {
             finishTask(taskID, state: .failed, message: ModelReviewError.unavailable.localizedDescription)

@@ -79,7 +79,9 @@ extension FileMemoryStore {
             try recordDailyReviewAttempt(on: reviewDay, now: start, calendar: calendar)
             let baseline = state
             await onProgress?(ReviewGenerationProgress(.preparing, detail: "正在读取所选日期的材料；已有整理直接复用，其余使用脱敏原文。"))
-            let preparation = Task.detached(priority: .userInitiated) { try DailyReviewInput.make(in: baseline, period: period) }
+            let preparation = Task.detached(priority: .userInitiated) {
+                try DailyReviewInput.make(in: baseline, period: period, previous: original)
+            }
             let input = try await withTaskCancellationHandler { try await preparation.value } onCancel: { preparation.cancel() }
             await meter.prepared(input, milliseconds: DailyReviewMeter.milliseconds(since: start))
             try validateDirectDailyReview(input, baseline: baseline)
