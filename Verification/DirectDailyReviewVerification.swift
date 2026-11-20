@@ -67,6 +67,7 @@ enum DirectDailyReviewVerification {
         try await targetedRepairs()
         try await ledgerProgressReachesTheReview()
         try await incompleteRegenerationUsesSameDayEvidence()
+        try await previousProgressRespectsCurrentEvidence()
         try await ledgerSurvivesProviderCapacityFallback()
         try await boundedParallelBatchesAndFullTail()
         try await restartResumesBatches()
@@ -78,7 +79,7 @@ enum DirectDailyReviewVerification {
         try await sameDateHasOneActiveGeneration()
         try await checkpointsWithdrawWithSources()
         try await maintenanceAndMigration()
-        print("PASS: direct daily reviews cover visible progress, omission repair, full group ledgers, one-call synthesis, restart, provenance and actions")
+        print("PASS: direct daily reviews recover same-day progress in one call, preserve current evidence and actions, and retain group provenance")
     }
     static func generate(_ f: ModelReviewVerification.Fixture, model: Model, store: FileMemoryStore? = nil,
                          limits: DailyReviewLimits = DailyReviewLimits(), metrics: MetricsLog? = nil,
@@ -157,7 +158,8 @@ enum DirectDailyReviewVerification {
         }
     }
     private actor CompletenessModel: LLMResponding {
-        enum Mode { case ledger, onlyAction, repair, providerCapacity }
+        enum Mode { case ledger, onlyAction, updatedCedar, providerCapacity }
+        static let cedarUpdate = "Cedar 验收的部署后验证已经完成，所有合成用例已通过。"
         static let records = [
             (topic: "Nova 导出", quote: "Nova 导出已合并，批量写入的回归用例已经通过。", section: "progress", status: "completed"),
             (topic: "Cedar 验收", quote: "Cedar 验收在沙盒跑通，部署后的验证尚未进行。", section: "progress", status: "inProgress"),
@@ -182,17 +184,23 @@ enum DirectDailyReviewVerification {
                     "explicitCommitment": record.section == "actions", "condition": NSNull(),
                     "evidence": [["id": document["id"]!, "quote": record.quote]]]
             }
-            let omit = mode == .onlyAction || (mode == .repair && requests.count == 1)
-            let focus = rows.first { ($0["section"] as? String) == "actions" } ?? rows.first!
-            var ledger = omit ? [] : rows
+            let onlyAction = mode == .onlyAction || mode == .updatedCedar
+            let action = rows.first { ($0["section"] as? String) == "actions" }
+            var items = (action ?? (onlyAction ? nil : rows.first)).map { [$0] } ?? []
+            var ledger = onlyAction ? [] : rows
             if mode == .ledger {
                 var invalid = rows[0]
                 invalid["title"] = "无依据的合成进展"
                 invalid["evidence"] = [["id": docs[0]["id"]!, "quote": "原始材料中不存在的文字"]]
                 ledger.append(invalid)
             }
-            let coverage = (omit ? Array(docs.dropLast()) : docs).map { ["id": $0["id"]!, "disposition": "used"] }
-            let answer: [String: Any] = ["overview": "Nova 已合并，Cedar 完成沙盒验收。", "items": [focus], "ledger": ledger, "coverage": coverage]
+            if mode == .updatedCedar, let doc = docs.first(where: { ($0["text"] as! String).contains(Self.cedarUpdate) }) {
+                items.append(["section": "progress", "title": "Cedar 部署验收已完成", "detail": Self.cedarUpdate,
+                    "topic": "Cedar 验收", "kind": "matter", "owner": "user", "status": "completed",
+                    "explicitCommitment": false, "condition": NSNull(), "evidence": [["id": doc["id"]!, "quote": Self.cedarUpdate]]])
+            }
+            let coverage = (onlyAction ? Array(docs.dropLast()) : docs).map { ["id": $0["id"]!, "disposition": "used"] }
+            let answer: [String: Any] = ["overview": "Nova 已合并，Cedar 完成沙盒验收。", "items": items, "ledger": ledger, "coverage": coverage]
             return LLMAnswer(content: try ReviewRecoveryVerification.json(answer), citedCaptureIDs: [])
         }
     }
@@ -232,19 +240,44 @@ enum DirectDailyReviewVerification {
         try await fixture.store.upsertDailySummary(legacy)
 
         let incomplete = CompletenessModel(.onlyAction)
-        do {
-            _ = try await fixture.store.generateDirectDailyReview(day: day, period: fixture.period, responder: incomplete)
-            throw ModelReviewVerification.Failure(message: "连续遗漏已核对的进展仍被发布")
-        } catch let error as ModelReviewError {
-            guard case .validation(.importantContentMissing) = error else { throw error }
-        }
-        let attempts = await incomplete.log(), state = await fixture.store.snapshot()
-        try expect(attempts.count == 2 && attempts[1].question.contains("请重点核对材料 d1、d2")
-            && state.dailySummaries == [legacy], "遗漏未定向修正一次，或失败后改动了已保存版本")
-        let repaired = try await fixture.store.generateDirectDailyReview(day: day, period: fixture.period,
-            responder: CompletenessModel(.repair))
-        try expect(repaired.metrics.modelCalls == 2 && repaired.summary.items.filter { $0.section == .progress }.count == 2
-            && repaired.summary.versions?.map(\.id) == [legacy.id, detailed.id], "修正成功后仍缺当天进展，或未保留两个历史版本")
+        let recovered = try await fixture.store.generateDirectDailyReview(day: day, period: fixture.period, responder: incomplete)
+        let progress = recovered.summary.items.filter { $0.section == .progress }
+        let state = await fixture.store.snapshot(), calls = await incomplete.log()
+        try expect(recovered.metrics.modelCalls == 1 && calls.count == 1 && progress.map(\.evidenceIDs) == fixture.records.prefix(2).map { [$0.id] },
+            "仅返回待办时没有在一次请求内从当天原文恢复进展")
+        try expect(state.dailySummaries.first?.id == recovered.summary.id && recovered.summary.versions?.map(\.id) == [legacy.id, detailed.id]
+            && recovered.summary.todos.map(\.id) == legacy.todos.map(\.id) && recovered.summary.modelCoverage?.uncertainBlockCount == 1
+            && recovered.summary.content.contains("部署后的验证尚未进行"), "重生成未保存完整有效的正文，或破坏了历史和待办")
+        try expect(calls.allSatisfy { !$0.question.contains(progress[0].title) }, "旧回顾的文字被送进了模型请求")
+    }
+    private static func previousProgressRespectsCurrentEvidence() async throws {
+        let fixture = try await completenessFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.storage.rootURL) }
+        let day = fixture.records[0].createdAt
+        var old = try await fixture.store.generateDirectDailyReview(day: day, period: fixture.period,
+            responder: CompletenessModel(.ledger)).summary
+
+        // Keep the historical quote in the edited source to prove matching text alone cannot restore it.
+        let changed = fixture.records[0]
+        try await fixture.store.correctCaptureText(changed.id, text: "[聊天·自己] " + CompletenessModel.records[0].quote + "\n后来回滚了该改动。")
+        let update = CaptureRecord(eventTemplate: .workCheckpoint, createdAt: fixture.records[3].createdAt.addingTimeInterval(1),
+            sourceAppName: "合成测试", sourceBundleIdentifier: "example.synthetic-review", contentHash: "cedar-deployed",
+            ocrText: "[聊天·自己] " + CompletenessModel.cedarUpdate, textOrigin: .userInput)
+        try await fixture.store.addCapture(update)
+        try await fixture.store.upsertDailySummary(old)
+        let regenerated = try await fixture.store.generateDirectDailyReview(day: day, period: fixture.period,
+            responder: CompletenessModel(.updatedCedar)).summary
+        let progress = regenerated.items.filter { $0.section == .progress }
+        try expect(progress.count == 1 && progress.first?.knowledge?.status == "completed" && progress.first?.evidenceIDs == [update.id],
+            "历史恢复采用了已编辑来源的旧结论，或覆盖了同主题的新结果")
+
+        let cedar = old.items.firstIndex { $0.knowledge?.topic == "Cedar 验收" }!
+        old.items[cedar].knowledge?.quotes.append("原始记录里不存在的第二条引文")
+        try await fixture.store.upsertDailySummary(old)
+        let unverifiable = try await fixture.store.generateDirectDailyReview(day: day, period: fixture.period,
+            responder: CompletenessModel(.onlyAction)).summary
+        try expect(unverifiable.items.map(\.section) == [.actions] && unverifiable.modelCoverage?.isPartial == true,
+            "恢复沿用了未能完整核对引文的历史条目，或把未确认材料算成已覆盖")
     }
     private static func ledgerSurvivesProviderCapacityFallback() async throws {
         let fixture = try await completenessFixture(long: true)
@@ -255,6 +288,14 @@ enum DirectDailyReviewVerification {
         try expect(calls.count == 4 && output.summary.items.filter { $0.section == .progress }.count == 2
             && output.summary.ledger.first { $0.topic == "Moss 回归" }?.evidenceIDs == [fixture.records[3].id],
             "容量拆分丢失了分组清单的事项，或最终清单未恢复原始记录的引用")
+
+        let grouped = CompletenessModel(.onlyAction)
+        let recovered = try await fixture.store.generateDirectDailyReview(day: fixture.records[0].createdAt,
+            period: fixture.period, responder: grouped, limits: DailyReviewLimits(inputBytes: 14_000))
+        let requests = await grouped.log()
+        try expect(requests.count > 1 && requests.last?.context[0].ocrText.contains("Nova 导出") == false
+            && recovered.summary.items.filter { $0.section == .progress }.map(\.evidenceIDs) == fixture.records.prefix(2).map { [$0.id] },
+            "最后一轮材料省略了旧进展时，未能从分组前的原文恢复并保存进展")
     }
     static func largeFixture() async throws -> ModelReviewVerification.Fixture {
         let f = try await ModelReviewVerification.fixture(count: 4, raw: true)
