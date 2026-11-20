@@ -6,7 +6,7 @@ public struct DailyReviewMetrics: Sendable {
     public var inputBytes = 0, readMilliseconds = 0, modelMilliseconds = 0, checkMilliseconds = 0, saveMilliseconds = 0, totalMilliseconds = 0
     public var sourceWaitMilliseconds = 0
     public var diagnosticMetadata: [String: String] {
-        ["generation": "direct-daily-v2", "sources": "\(sourceCount)", "documents": "\(documentCount)",
+        ["generation": "direct-daily-v3", "sources": "\(sourceCount)", "documents": "\(documentCount)",
          "reusedRecords": "\(reusedRecords)", "modelCalls": "\(modelCalls)", "cacheHits": "\(cacheHits)",
          "inputBytes": "\(inputBytes)", "readMs": "\(readMilliseconds)", "modelMs": "\(modelMilliseconds)",
          "checkMs": "\(checkMilliseconds)", "sourceWaitMs": "\(sourceWaitMilliseconds)", "saveMs": "\(saveMilliseconds)", "totalMs": "\(totalMilliseconds)"]
@@ -213,7 +213,7 @@ struct DailyReviewInput: Sendable {
             previousProgress: previousProgress(in: previous, state: state, recordIDs: recordIDs, sourceVersions: versions))
     }
 
-    /// Use the newest useful version of this day as a coverage check. Its written conclusions never enter the request.
+    /// Select earlier progress for local recovery. History never enters the model request.
     private static func previousProgress(in summary: DailySummary?, state: RecallState, recordIDs: Set<UUID>,
                                          sourceVersions: [UUID: String]) -> [DailySummaryItem] {
         guard let summary else { return [] }
@@ -266,7 +266,9 @@ public struct DirectDailyReviewEngine: Sendable {
                 let final = try await request(groups[0], input: input, final: true, round: round, instructions: instructions,
                     checkpoints: [], beforeCall: beforeCall, saveCheckpoint: saveCheckpoint, onProgress: onProgress,
                     onCacheHit: onCacheHit, responder: responder)
-                return result(final, documents: documents, input: input, uncertain: uncertain)
+                try Task.checkCancellation()
+                let (complete, sources) = try restoringPreviousProgress(in: final, documents: documents, input: input)
+                return result(complete, documents: sources, input: input, uncertain: uncertain)
             }
             await onProgress?(ReviewGenerationProgress(.generating, detail: "材料超出单次容量，分为 \(groups.count) 组整理；最多同时处理 \(limits.concurrency) 组。"))
             let drafts = try await withThrowingTaskGroup(of: (Int, DailyReviewDraft).self) { group in
@@ -354,7 +356,6 @@ public struct DirectDailyReviewEngine: Sendable {
         for attempt in 0..<2 {
             try Task.checkCancellation(); try await beforeCall()
             await onProgress?(ReviewGenerationProgress(.generating, detail: final ? "正在生成完整每日回顾；返回后直接做本地校验并保存。" : "正在整理超量材料，已完成的组会保存供重试复用。"))
-            var missingIDs: [String] = []
             do {
                 let question = instructions + (final ? "\n生成最终回顾，items 最多7项重点。" : "\n整理本组重要结果、限制和未完成承诺，items 最多16项重点，其余写入 ledger。overview 为空。") + repair
                 let context = CaptureRecord(eventTemplate: .manualMoment, contentHash: "direct-daily", ocrText: body)
@@ -364,15 +365,6 @@ public struct DirectDailyReviewEngine: Sendable {
                       var draft = try? JSONDecoder().decode(DailyReviewDraft.self, from: Data(answer.content[start...end].utf8)) else { throw ModelReviewError.validation(.format) }
                 draft = try sanitized(draft, documents: documents, final: final, demoteOwnership: attempt > 0)
                 try validate(draft, documents: documents, final: final)
-                if final {
-                    let missing = missingProgressSources(in: draft, documents: documents, input: input)
-                    if !missing.isEmpty {
-                        missingIDs = documents.filter { doc in
-                            doc.proofs.contains { $0.sourceIDs.contains(where: missing.contains) }
-                        }.map(\.id)
-                        throw ModelReviewError.validation(.importantContentMissing)
-                    }
-                }
                 try Task.checkCancellation(); try await beforeCall()
                 if !final {
                     let dependencies = Set(documents.flatMap { $0.proofs.flatMap(\.sourceIDs) })
@@ -384,9 +376,6 @@ public struct DirectDailyReviewEngine: Sendable {
             } catch let error as ModelReviewError {
                 guard attempt == 0, case .validation(let issue) = error else { throw error }
                 repair = "\n本地校验发现：\(issue.explanation)。\(issue.repairInstruction) 仅修正该问题，返回完整 JSON。"
-                if !missingIDs.isEmpty {
-                    repair += " 请重点核对材料 \(missingIDs.prefix(24).joined(separator: "、")) 的具体进展及最新状态，并写入正文或事项清单。"
-                }
             } catch let error as LLMResponseFailure {
                 if [.contextLimit, .truncated, .reasoningOnly].contains(error.reason), documents.count > 1, round < 8 {
                     // Capacity fallback is bounded by strictly smaller input groups.
@@ -470,18 +459,7 @@ public struct DirectDailyReviewEngine: Sendable {
         }
         result.items = Array(highlights.prefix(limit))
         result.ledger = ledger.isEmpty ? nil : ledger
-        // Only promote verified progress. Rows found only in the ledger must not start a new reminder.
-        if final {
-            let visibleProgress = result.items.filter { isProgress($0, documents: byID) }
-            var topics = Set(visibleProgress.map(progressKey))
-            let additional = ledger.filter { isProgress($0, documents: byID) && topics.insert(progressKey($0)).inserted }
-            if result.items.count == limit, visibleProgress.isEmpty, !additional.isEmpty {
-                let displaced = result.items.removeLast()
-                try validateItem(displaced, documents: byID)
-                result.ledger = ledger + [displaced]
-            }
-            result.items.append(contentsOf: additional.prefix(limit - result.items.count))
-        }
+        if final { try promoteProgress(in: &result, documents: byID) }
         if result.items.isEmpty, !draft.items.isEmpty { throw ModelReviewError.validation(.evidence) }
         let hasNarrative = result.items.contains { $0.section != "actions" }
         result.overview = Self.fittedOverview(clean(draft.overview), final: final && hasNarrative)
@@ -509,28 +487,88 @@ public struct DirectDailyReviewEngine: Sendable {
     private func progressKey(_ item: DailyReviewDraft.Item) -> String {
         DailyReviewPresentation.key(Self.cleanTopic(item.topic) ?? item.title)
     }
-    private func missingProgressSources(in draft: DailyReviewDraft, documents: [DailyReviewDocument],
-                                        input: DailyReviewInput) -> Set<UUID> {
-        guard !input.previousProgress.isEmpty else { return [] }
+
+    private func promoteProgress(in draft: inout DailyReviewDraft, documents: [String: DailyReviewDocument]) throws {
+        let limit = 7
+        let visibleProgress = draft.items.filter { isProgress($0, documents: documents) }
+        var topics = Set(visibleProgress.map(progressKey))
+        let additional = (draft.ledger ?? []).filter { isProgress($0, documents: documents) && topics.insert(progressKey($0)).inserted }
+        if draft.items.count == limit, visibleProgress.isEmpty, !additional.isEmpty {
+            let displaced = draft.items.removeLast()
+            try validateItem(displaced, documents: documents)
+            draft.ledger?.append(displaced)
+        }
+        draft.items.append(contentsOf: additional.prefix(limit - draft.items.count))
+    }
+
+    private func restoringPreviousProgress(in draft: DailyReviewDraft, documents: [DailyReviewDocument],
+                                           input: DailyReviewInput) throws -> (DailyReviewDraft, [DailyReviewDocument]) {
+        guard !input.previousProgress.isEmpty else { return (draft, documents) }
         let byID = Dictionary(uniqueKeysWithValues: documents.map { ($0.id, $0) })
         let progress = draft.allItems.filter { isProgress($0, documents: byID) }.map { item in
-            (key: progressKey(item), proofs: matched(item, documents: byID))
+            (key: progressKey(item), title: DailyReviewPresentation.key(item.title), proofs: matched(item, documents: byID))
         }
-        var missing = Set<UUID>()
+        // A final pass may only have the reduced material. Match older quotes against the full day's prepared sources.
+        let originalByID = Dictionary(uniqueKeysWithValues: input.documents.map { ($0.id, $0) })
+        var restored: [DailyReviewDraft.Item] = []
         for previous in input.previousProgress {
+            try Task.checkCancellation()
+            guard let knowledge = previous.knowledge else { continue }
             let sourceIDs = Set(previous.evidenceIDs)
-            let quotes = previous.knowledge?.quotes ?? []
-            func confirmsPrevious(_ proof: DailyReviewProof) -> Bool {
-                !proof.isReference && proof.sourceIDs.contains(where: sourceIDs.contains) && quotes.contains { quote in
-                    quote.count >= 4 && (proof.text.contains(quote) || (proof.text.count >= 8 && quote.contains(proof.text)))
+            let title = DailyReviewPresentation.key(previous.title)
+            let topic = DailyReviewPresentation.key(Self.cleanTopic(knowledge.topic) ?? previous.title)
+            let represented = progress.contains { current in
+                if (!topic.isEmpty && current.key == topic) || (!title.isEmpty && current.title == title) { return true }
+                return current.proofs.contains { proof in
+                    !proof.isReference && proof.sourceIDs.contains(where: sourceIDs.contains) && knowledge.quotes.contains { quote in
+                        quote.count >= 4 && (proof.text.contains(quote) || (proof.text.count >= 8 && quote.contains(proof.text)))
+                    }
                 }
             }
-            guard input.documents.contains(where: { $0.proofs.contains(where: confirmsPrevious) }) else { continue }
-            let key = DailyReviewPresentation.key(previous.knowledge?.topic ?? previous.title)
-            let represented = progress.contains { (!key.isEmpty && $0.key == key) || $0.proofs.contains(where: confirmsPrevious) }
-            if !represented { missing.formUnion(sourceIDs) }
+            guard !represented,
+                  let evidence = restoredEvidence(quotes: knowledge.quotes, sourceIDs: sourceIDs, input: input) else { continue }
+            let item = DailyReviewDraft.Item(section: "progress", title: clean(previous.title), detail: clean(previous.detail),
+                owner: knowledge.ownedByUser ? .user : .unknown, status: UnderstandingStatus(rawValue: knowledge.status) ?? .unknown,
+                explicitCommitment: false, condition: knowledge.condition, evidence: evidence, topic: knowledge.topic,
+                kind: knowledge.kind.rawValue, category: knowledge.category)
+            // Recheck the same attribution and structure rules as a fresh row. Historical progress carries no reminder link.
+            if isProgress(item, documents: originalByID), (try? validateItem(item, documents: originalByID)) != nil {
+                restored.append(item)
+            }
         }
-        return missing
+        guard !restored.isEmpty else { return (draft, documents) }
+        let used = Set(restored.flatMap { $0.evidence.map(\.id) })
+        let sources = documents + input.documents.filter { used.contains($0.id) && byID[$0.id] == nil }
+        var result = draft
+        result.ledger = (draft.ledger ?? []) + restored
+        try promoteProgress(in: &result, documents: Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) }))
+        let coverage = Dictionary(uniqueKeysWithValues: draft.coverage.map { ($0.id, $0.disposition) })
+        result.coverage = sources.map { .init(id: $0.id, disposition: used.contains($0.id) ? "used" : coverage[$0.id] ?? "uncertain") }
+        result.localUncertainCount = result.coverage.filter { $0.disposition == "uncertain" }.count
+        try validate(result, documents: sources, final: true)
+        return (result, sources)
+    }
+
+    private func restoredEvidence(quotes: [String], sourceIDs: Set<UUID>, input: DailyReviewInput) -> [DailyReviewDraft.Evidence]? {
+        let documents = input.documents.filter { doc in doc.proofs.contains { $0.sourceIDs.contains(where: sourceIDs.contains) } }
+        var evidence: [DailyReviewDraft.Evidence] = []
+        var verified = Set<UUID>()
+        for quote in quotes {
+            guard (4...180).contains(quote.count) else { return nil }
+            var seen = Set<UUID>()
+            for doc in documents {
+                let matched = Set(doc.proofs.filter { $0.text.contains(quote) }.flatMap(\.sourceIDs))
+                guard matched.isSubset(of: input.recordIDs) else { continue }
+                let cited = matched.intersection(sourceIDs)
+                guard !cited.isSubset(of: seen) else { continue }
+                seen.formUnion(cited)
+                evidence.append(.init(id: doc.id, quote: quote))
+            }
+            guard !seen.isEmpty else { return nil }
+            verified.formUnion(seen)
+        }
+        guard verified == sourceIDs, (1...8).contains(evidence.count) else { return nil }
+        return evidence
     }
     private func validate(_ draft: DailyReviewDraft, documents: [DailyReviewDocument], final: Bool) throws {
         let byID = Dictionary(uniqueKeysWithValues: documents.map { ($0.id, $0) })
