@@ -114,6 +114,7 @@ public struct RecallTaskStatus: Identifiable, Sendable {
     public var kind: String
     public var target: String
     public var reviewDay: Date? = nil
+    public var replacingDailyReviewID: UUID? = nil
     public var phase: String
     public var detail: String? = nil
     public var state: RecallTaskState = .running

@@ -1981,9 +1981,11 @@ final class RecallAppModel: ObservableObject {
                 $0.eventTemplate != .dailyReview && calendar.isDate($0.createdAt, inSameDayAs: day)
             }) else { return }
         }
-        let taskID = beginTask("每日回顾", target: day.formatted(date: .abbreviated, time: .omitted), phase: "准备记录", reviewDay: day, retry: { [weak self] in
+        let replacingID = reason == .regenerate ? state.dailyReview(on: day)?.id : nil
+        let taskID = beginTask("每日回顾", target: day.formatted(date: .abbreviated, time: .omitted), phase: "准备记录",
+                               reviewDay: day, replacingDailyReviewID: replacingID) { [weak self] in
             self?.generateDailyReview(on: day)
-        })
+        }
         guard let responder else {
             finishTask(taskID, state: .failed, message: ModelReviewError.unavailable.localizedDescription)
             return

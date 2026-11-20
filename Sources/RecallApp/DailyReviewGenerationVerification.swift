@@ -163,7 +163,7 @@ extension RecallLayoutPreviews {
         let old = model.state.dailySummaries[0]
         model.generateDailyReview(on: old.day)
         try await waitForDailyGeneration(model)
-        guard let failed = model.dailyReviewTask(on: old.day), failed.state == .failed,
+        guard let failed = model.dailyReviewTask(on: old.day), failed.state == .failed, model.canRetryTask(failed),
               model.state.dailySummaries.first?.id == old.id else {
             throw DailyGenerationFailure.failed("重生成失败时未保留原回顾")
         }
