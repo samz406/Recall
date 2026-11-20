@@ -4,8 +4,10 @@ import RecallKit
 @MainActor
 extension RecallAppModel {
     @discardableResult
-    func beginTask(_ kind: String, target: String, phase: String, reviewDay: Date? = nil, retry: (() -> Void)? = nil) -> UUID {
-        let task = RecallTaskStatus(kind: kind, target: target, phase: phase, reviewDay: reviewDay)
+    func beginTask(_ kind: String, target: String, phase: String, reviewDay: Date? = nil,
+                   replacingDailyReviewID: UUID? = nil, retry: (() -> Void)? = nil) -> UUID {
+        var task = RecallTaskStatus(kind: kind, target: target, phase: phase, reviewDay: reviewDay)
+        task.replacingDailyReviewID = replacingDailyReviewID
         tasks.removeAll { !$0.isRunning && Date.now.timeIntervalSince($0.startedAt) > 86_400 }
         if let reviewDay {
             tasks.removeAll { previous in
@@ -32,7 +34,7 @@ extension RecallAppModel {
     }
     func canRetryTask(_ task: RecallTaskStatus) -> Bool {
         guard !task.isRunning, taskRetryActions[task.id] != nil else { return false }
-        if let day = task.reviewDay { return state.dailyReview(on: day) == nil }
+        if let day = task.reviewDay { return state.dailyReview(on: day)?.id == task.replacingDailyReviewID }
         return true
     }
     func retryTask(_ id: UUID) {

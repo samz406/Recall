@@ -76,9 +76,10 @@ extension RecallLayoutPreviews {
         try await verifySingleDayIsolation()
         try await verifyStaleDailyQueue()
         try await verifyFailedDailyTaskIsSuperseded()
+        try await verifyFailedRegenerationCanBeRetried()
         try await verifyExplicitDailyBatch()
         try await verifyDailyBatchCancellation()
-        print("PASS: native daily generation saved-date skip, manual isolation, same-date deduplication, failed-task supersession, date-scoped status, stale-queue revalidation, explicit batch and cancellation")
+        print("PASS: native daily generation saved-date skip, manual isolation, deduplication, failed-task supersession, regeneration retry, date-scoped status, batch and cancellation")
     }
     @MainActor private static func verifySingleDayIsolation() async throws {
         let responder = DailyGenerationModel(pauseFirst: true)
@@ -152,6 +153,27 @@ extension RecallLayoutPreviews {
               status == .succeeded || status == .partial, model.taskRetryActions[failed.id] == nil,
               !model.isGeneratingDailySummary else {
             throw DailyGenerationFailure.failed("手动补生成后旧失败仍可执行，或同日期出现多份回顾/任务")
+        }
+    }
+
+    @MainActor private static func verifyFailedRegenerationCanBeRetried() async throws {
+        let responder = DailyGenerationModel(invalidResponses: 2)
+        let model = try dailyGenerationFixture(savedYesterday: true, responder: responder)
+        defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
+        let old = model.state.dailySummaries[0]
+        model.generateDailyReview(on: old.day)
+        try await waitForDailyGeneration(model)
+        guard let failed = model.dailyReviewTask(on: old.day), failed.state == .failed, model.canRetryTask(failed),
+              model.state.dailySummaries.first?.id == old.id else {
+            throw DailyGenerationFailure.failed("重生成失败时未保留原回顾")
+        }
+        model.retryTask(failed.id)
+        try await waitForDailyGeneration(model)
+        let calls = await responder.count()
+        guard calls == 3, model.state.dailySummaries.count == 1,
+              model.state.dailySummaries.first?.versions?.first?.id == old.id,
+              model.dailyReviewTask(on: old.day)?.state == .succeeded else {
+            throw DailyGenerationFailure.failed("重试重生成任务时跳过了已有回顾的日期")
         }
     }
 
