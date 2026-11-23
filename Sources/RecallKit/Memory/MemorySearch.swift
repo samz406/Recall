@@ -238,7 +238,7 @@ public struct MemorySearchEngine: Sendable {
         func contains(_ value: String?) -> Bool {
             value?.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil
         }
-        return contains(capture.ocrText) || contains(capture.summary) || contains(capture.sourceAppName)
+        return contains(capture.ocrText) || contains(capture.userNote) || contains(capture.correctedText) || contains(capture.summary) || contains(capture.sourceAppName)
             || contains(capture.windowTitle) || capture.tags.contains { contains($0) }
     }
 

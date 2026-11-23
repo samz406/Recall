@@ -8,6 +8,7 @@ struct WeeklyReviewView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var template = ReviewTemplate(kind: .personal)
     @State private var periodKind: ReviewPeriodKind = .recentSeven
+    @AppStorage("recall.review.moreRanges") private var showsMoreRanges = false
     @State private var rangeNow = Date.now
     @State private var customStart = Calendar.current.date(byAdding: .day, value: -6, to: .now) ?? .now
     @State private var customEnd = Date.now
@@ -238,12 +239,14 @@ struct WeeklyReviewView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(RecallLocalization.text("时间范围")).font(.caption).foregroundStyle(RecallPalette.secondary)
             Menu {
-                ForEach(ReviewPeriodKind.allCases) { option in
+                ForEach(showsMoreRanges || !periodKind.isStable ? ReviewPeriodKind.allCases : ReviewPeriodKind.stableCases) { option in
                     Button { periodKind = option; rangeNow = .now } label: {
                         if periodKind == option { Label(option.title, systemImage: "checkmark") }
-                        else { Text(option.title) }
+                        else { Text(RecallLocalization.text(option.title) + (option.isStable ? "" : RecallLocalization.both("（实验）", " (experimental)"))) }
                     }
                 }
+                Divider()
+                Toggle(RecallLocalization.both("显示按月与自选日期（实验）", "Show monthly and custom ranges (experimental)"), isOn: $showsMoreRanges)
             } label: { selectionLabel(periodKind.title, symbol: "calendar") }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden)
                 .accessibilityLabel("时间范围").accessibilityValue(periodKind.title)
@@ -429,6 +432,9 @@ struct WeeklyReviewView: View {
         VStack(alignment: .leading, spacing: 10) {
             Label(report.displayName, systemImage: report.template.kind.symbol).font(.title2.weight(.semibold))
             Text(report.period.label).font(.callout.monospacedDigit()).foregroundStyle(RecallPalette.secondary)
+            if let glance = LocalBriefing.glance(report.period, in: model.state) {
+                Label(glance.sentence, systemImage: "chart.bar").font(.callout).foregroundStyle(RecallPalette.text.opacity(0.85))
+            }
             let gaps = PeriodReviewFromDaily.gaps(in: model.state, period: report.period)
             Text(gaps.headline).font(.caption).foregroundStyle(RecallPalette.secondary)
             if gaps.hasMissingRecords && !report.hasNoBody {
@@ -888,7 +894,8 @@ struct ReviewScheduleEditor: View {
                 }), displayedComponents: .hourAndMinute).labelsHidden().environment(\.timeZone, schedule.calendar.timeZone)
             }
             Picker(RecallLocalization.text("回顾范围"), selection: $schedule.periodKind) {
-                ForEach(ReviewPeriodKind.allCases.filter { $0 != .custom }) { Text($0.title).tag($0) }
+                // Monthly ranges stay listed only for a schedule that already uses one.
+                ForEach(ReviewPeriodKind.allCases.filter { $0 != .custom && ($0.isStable || $0 == schedule.periodKind) }) { Text($0.title).tag($0) }
             }
             if schedule.scope.useSelectedTopics {
                 HStack {

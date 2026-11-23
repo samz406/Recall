@@ -870,6 +870,22 @@ public final class LocalNotificationScheduler {
         } catch { throw notificationError(from: error) }
     }
 
+    /// A plain informational notice (meeting brief). Requires existing permission; never asks for it.
+    public func deliverNotice(title: String, body: String, identifier: String) async throws {
+        let center = try notificationCenter()
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+            throw ReminderNotificationError.authorizationRequired
+        }
+        let content = UNMutableNotificationContent()
+        content.title = title; content.body = body; content.sound = .default
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
+        do {
+            try await center.add(UNNotificationRequest(identifier: identifier, content: content,
+                trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)))
+        } catch { throw notificationError(from: error) }
+    }
+
     public func cancelDailyReview() {
         guard isNotificationHostAvailable else { return }
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["im.recall.app.daily-review"])

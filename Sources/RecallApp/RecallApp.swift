@@ -141,6 +141,14 @@ private struct MenuBarPanel: View {
                 }
             }
             .disabled(model.state.privacy.screenCapturePaused || model.isRecording)
+            Button(RecallLocalization.both("保存选中文字", "Save selected text") + " " + GlobalShortcutBinding.load("saveSelection", fallback: .saveSelection).label) { model.saveFrontSelection() }
+                .disabled(model.state.privacy.screenCapturePaused || model.isRecording)
+            Button(RecallLocalization.both("保存剪贴板文字", "Save clipboard text")) { model.saveClipboard() }
+                .disabled(model.state.privacy.screenCapturePaused || model.isRecording)
+            Button(RecallLocalization.both("我上次怎么做的", "How did I do this last time") + " " + GlobalShortcutBinding.load("lastTime", fallback: .lastTime).label) { model.showLastTime() }
+            Button(RecallLocalization.both("搜索记忆", "Search memory") + " " + GlobalShortcutBinding.load("search", fallback: .search).label) {
+                openWindow(id: "main"); model.showsGlobalSearch = true; RecallAppDelegate.activateMainWindow()
+            }
             Button(RecallLocalization.text(model.state.privacy.screenCapturePaused ? "恢复屏幕采集" : "暂停屏幕采集")) {
                 var privacy = model.state.privacy
                 privacy.screenCapturePaused.toggle()

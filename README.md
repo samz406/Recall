@@ -10,7 +10,7 @@ Connect moments you chose to save into a searchable history of your work.
 
 Core workflows support English and Simplified Chinese. See [workflow guide](docs/work-ledger-usage.md).
 
-Memory has two reading areas: **Topics** for ongoing context and past decisions, and **About me** for background and preferences used in relevant answers. The sidebar **Reviews** entry brings daily and weekly/monthly reviews together.
+The sidebar has four entries: **Today**, **Memory**, **Ask**, **Settings**. Today shows where to pick up (last record, open topics, reminders due), commitments in both directions, and an inbox for notifications past the daily limit; reviews and reminders live there too. Memory holds Topics, Timeline and About me.
 
 ## Quick start
 
@@ -37,7 +37,9 @@ Three actions cover the first week.
 
 Press **⌃⌥⌘R** in your working app, or choose **Record a moment** in the menu bar. This saves one record of the current window: a single screenshot, then on-device OCR (Apple Vision) for Chinese and English. Time, source app, text, and the image go to `~/Library/Application Support/Recall/`. The same menu can pause screen capture. Customize shortcuts in Settings → Preferences; Recall must be running.
 
-In **Recording** you can switch that rule to the current display or to text only (no screenshot). Other templates live there too. Recording when you press Enter in another app stays off until you enable it.
+In **Settings → Recording** you can switch that rule to the current display or to text only (no screenshot). Three common templates show by default; the rest are under More templates. Recording when you press Enter in another app stays off until you enable it.
+
+To keep text without a screenshot, press **⌃⌥⌘S** to save the selection in the front app (needs Accessibility), use **Services → Save to Recall**, save the clipboard from the menu bar, or drop images, PDFs and text files on the window. The confirmation shows how much text was kept, offers Undo, and lets you **add a note** on why it matters; notes are searchable and feed reviews.
 
 ### Daily review
 
@@ -47,7 +49,9 @@ Open **Daily Review** and generate a review for a chosen day. Yesterday is the d
 - **Next actions** — what to handle next
 - **Worth noticing** — what deserves attention
 
-A section with nothing reliable behind it stays hidden. A full daily review needs a model connection you configure, plus permission to send redacted text. Saved records stay in **Timeline** either way. **Add to Today** accepts a proposed action without scheduling a notification; **Remind me** separately asks you to choose a time.
+A section with nothing reliable behind it stays hidden; each shows its first three items. A full daily review needs a model connection plus permission to send redacted text. Ollama or LM Studio on this Mac works without an API key and keeps text on the machine (Settings → Model → Find local models). Without a model, Today offers a local review grouped by app, with rule-based to-do leads, and sends nothing.
+
+Press **⌃⌥⌘L** for past records related to the current window ("how did I do this last time"), or **⌃⌥⌘F** to search. **Add to Today** accepts a proposed action without scheduling a notification; **Remind me** separately asks you to choose a time.
 
 ### Ask
 
@@ -56,6 +60,8 @@ Open **Ask Recall** or press **⌃⌥⌘A**. Each answer cites local records, an
 ## Privacy snapshot
 
 - **Local-first.** Screenshots, OCR, the SQLite index, and chat history stay in `~/Library/Application Support/Recall/`. Search and storage work offline. You can pause capture, stop saving original screenshots, and exclude apps by bundle ID.
+- **Sensitive content stays out.** Nothing is recorded while you type a password, in private browsing windows, or on sites you exclude. Page addresses are off by default. Settings shows whether FileVault is on.
+- **Few interruptions.** Recall's own notifications are capped at 2 a day (adjustable); the rest wait in the Today inbox. Habit learning in About me and meeting briefs are off by default.
 - **Explicit trigger.** A record starts when you trigger it. Continuous screenshots, scheduled screenshots, audio recording, and automatic message collection stay off. Enter-key capture in other apps stays off until you enable it, can be paused, and does not run while Recall is frontmost.
 - **Deletable and traceable.** Delete a record and restore it from **Recently Deleted** for 7 days, or clear local memory. Dependent reviews and unconfirmed suggestions are withdrawn. User-accepted Today actions keep your intent without the deleted proof.
 - **Cloud is opt-in.** Connect an OpenAI-compatible or Anthropic-compatible API with your own key, or leave cloud text off. The key is stored in the macOS Keychain, not in `recall-state.json`. It is not written to logs or committed to this repository. A reminder is scheduled only after you confirm it. Recall does not send messages, create calendar events, or edit your files.
@@ -68,7 +74,6 @@ Planned, and not in this tree yet:
 
 - Optional vector search
 - End-to-end encrypted sync
-- Finer exclusion of sensitive pages
 - An accessibility audit
 
 ## Go deeper

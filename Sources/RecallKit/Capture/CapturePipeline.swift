@@ -185,19 +185,31 @@ public final class CapturePipeline {
     private let screenCapturer: any ScreenCapturing
     private let recognizer: any TextRecognizing
     private let privacyEngine: PrivacyEngine
+    private let contextReader: (any CaptureContextReading)?
 
     public init(
         store: FileMemoryStore,
         storage: RecallStorage,
         screenCapturer: any ScreenCapturing = ScreenCaptureService(),
         recognizer: any TextRecognizing = VisionTextRecognizer(),
-        privacyEngine: PrivacyEngine = PrivacyEngine()
+        privacyEngine: PrivacyEngine = PrivacyEngine(),
+        contextReader: (any CaptureContextReading)? = nil
     ) {
         self.store = store
         self.storage = storage
         self.screenCapturer = screenCapturer
         self.recognizer = recognizer
         self.privacyEngine = privacyEngine
+        self.contextReader = contextReader
+    }
+
+    /// Runs before any pixels or text are read. A nil reader (tests, previews) skips the window-level checks.
+    private func preflight(target: CaptureTarget?, settings: PrivacySettings) throws -> CaptureContext? {
+        guard let contextReader else { return nil }
+        let context = contextReader.context(for: target, settings: settings)
+        let decision = privacyEngine.decision(for: context, settings: settings)
+        guard decision.mayCapture else { throw CapturePipelineError.captureExcluded(decision.reason ?? "该内容被隐私策略排除。") }
+        return context
     }
 
     @discardableResult
@@ -212,7 +224,15 @@ public final class CapturePipeline {
         if !rule.appAllowList.isEmpty, let target, !rule.appAllowList.contains(target.bundleIdentifier) {
             throw CapturePipelineError.captureExcluded("当前应用不在此事件的应用白名单中。")
         }
+        let context = try preflight(target: target, settings: currentState.privacy)
         let payload = try await screenCapturer.capture(scope: rule.scope, target: target)
+        // The window title from ScreenCaptureKit can differ from the earlier read; check it again.
+        if contextReader != nil, let title = payload.windowTitle {
+            var after = context ?? CaptureContext(bundleIdentifier: payload.sourceBundleIdentifier)
+            after.windowTitle = title; after.secureInputActive = false
+            let titleDecision = privacyEngine.decision(for: after, settings: currentState.privacy)
+            guard titleDecision.mayCapture else { throw CapturePipelineError.captureExcluded(titleDecision.reason ?? "该内容被隐私策略排除。") }
+        }
         let decision = privacyEngine.decision(for: payload.sourceBundleIdentifier, settings: currentState.privacy)
         guard decision.mayCapture else {
             throw CapturePipelineError.captureExcluded(decision.reason ?? "该内容被隐私策略排除。")
@@ -276,6 +296,7 @@ public final class CapturePipeline {
             recognition: recognition
         )
         record.meetingSessionID = meetingID
+        if currentState.privacy.recordPageAddress { record.pageURL = PrivacyEngine.sanitizedPageURL(context?.pageURL) }
         record.sourceMessages = SourceNormalizer.messages(for: record, bindings: currentState.workflow.identityBindings)
         let latest = await store.snapshot()
         guard latest.dataGeneration == currentState.dataGeneration,
@@ -290,6 +311,47 @@ public final class CapturePipeline {
             throw error
         }
         return record
+    }
+
+    /// Saves text the user handed over (selected text, clipboard, dropped file). No screenshot is taken.
+    /// The same pause, app, window, site and suppression rules apply as for a screen record.
+    @discardableResult
+    public func recordText(_ text: String, origin: CaptureTextOrigin, sourceAppName: String?, sourceBundleIdentifier: String?,
+                           windowTitle: String? = nil, target: CaptureTarget? = nil, note: String? = nil) async throws -> CaptureRecord {
+        let currentState = await store.snapshot()
+        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { throw CapturePipelineError.captureExcluded("没有可保存的文字。") }
+        guard raw.utf8.count <= 250_000 else { throw CapturePipelineError.captureExcluded("文字过长（超过 250 KB），未保存。") }
+        let decision = privacyEngine.decision(for: sourceBundleIdentifier, settings: currentState.privacy)
+        guard decision.mayCapture else { throw CapturePipelineError.captureExcluded(decision.reason ?? "采集已暂停") }
+        let context = target == nil ? nil : try preflight(target: target, settings: currentState.privacy)
+        let redacted = privacyEngine.redact(raw)
+        guard !currentState.memorySuppressionRules.contains(where: { $0.matches(text: redacted, sourceBundleIdentifier: sourceBundleIdentifier) }) else {
+            throw CapturePipelineError.suppressedByUser
+        }
+        let digest = SHA256.hash(data: Data(CaptureTextFingerprint.normalized(redacted).utf8)).map { String(format: "%02x", $0) }.joined()
+        if await store.hasRecentHash(digest) { throw CapturePipelineError.duplicateCapture }
+        var record = CaptureRecord(eventTemplate: .manualMoment, sourceAppName: sourceAppName, sourceBundleIdentifier: sourceBundleIdentifier,
+            windowTitle: windowTitle ?? context?.windowTitle, contentHash: digest, isRedacted: redacted != raw, ocrText: redacted,
+            summary: LocalSummary.make(from: redacted), tags: LocalSummary.tags(from: redacted), textOrigin: origin)
+        record.userNote = Self.cleanNote(note)
+        if currentState.privacy.recordPageAddress { record.pageURL = PrivacyEngine.sanitizedPageURL(context?.pageURL) }
+        record.sourceMessages = SourceNormalizer.messages(for: record, bindings: currentState.workflow.identityBindings)
+        let latest = await store.snapshot()
+        guard latest.dataGeneration == currentState.dataGeneration,
+              privacyEngine.decision(for: sourceBundleIdentifier, settings: latest.privacy).mayCapture else {
+            throw CapturePipelineError.captureExcluded("采集设置已变化，未保存记录。")
+        }
+        try await store.addCapture(record)
+        return record
+    }
+
+    /// Notes are one line of the user's own words; redaction still applies.
+    public nonisolated static func cleanNote(_ note: String?) -> String? { cleanNoteText(note) }
+    public nonisolated static func cleanNoteText(_ note: String?) -> String? {
+        guard let note else { return nil }
+        let line = note.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return line.isEmpty ? nil : PrivacyEngine().redact(String(line.prefix(500)))
     }
 
     private static func recognitionContext(for payload: CapturePayload, scope: CaptureScope) -> TextRecognitionContext {

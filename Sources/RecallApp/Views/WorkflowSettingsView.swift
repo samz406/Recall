@@ -12,6 +12,9 @@ struct WorkflowSettingsView: View {
     @AppStorage(RecallLocalization.outputKey) private var outputLanguage = "system"
     @State private var recordShortcut = GlobalShortcutBinding.load("record", fallback: .record)
     @State private var askShortcut = GlobalShortcutBinding.load("ask", fallback: .ask)
+    @State private var selectionShortcut = GlobalShortcutBinding.load("saveSelection", fallback: .saveSelection)
+    @State private var searchShortcut = GlobalShortcutBinding.load("search", fallback: .search)
+    @State private var lastTimeShortcut = GlobalShortcutBinding.load("lastTime", fallback: .lastTime)
     @State private var identityCapture: UUID?
     @State private var sender = ""
     @State private var client = ""
@@ -21,6 +24,7 @@ struct WorkflowSettingsView: View {
     @State private var allowedApp = ""
     @State private var showsAdvanced = false
     @State private var confirmMCP = false
+    @State private var mcpClient = MCPClientConfig.Client.claudeDesktop
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             if let warning = model.credentialMaintenanceWarning {
@@ -35,7 +39,7 @@ struct WorkflowSettingsView: View {
             languageSection
             shortcutSection
             MeetingMomentsSection()
-            DisclosureGroup(w("高级：聊天身份与 Agent 访问", "Advanced: chat identity & agent access"), isExpanded: $showsAdvanced) {
+            DisclosureGroup(w("高级：聊天身份与 Agent 访问（MCP）", "Advanced: chat identity & agent access (MCP)"), isExpanded: $showsAdvanced) {
                 VStack(spacing: 18) { identitySection; mcpSection }.padding(.top, 14)
             }.font(.headline)
         }
@@ -63,6 +67,9 @@ struct WorkflowSettingsView: View {
             Text(w("全局快捷键", "Global shortcuts")).font(.headline)
             shortcutRow(w("记录此刻", "Record a moment"), binding: $recordShortcut, action: "record")
             shortcutRow(w("打开问一问", "Open Ask Recall"), binding: $askShortcut, action: "ask")
+            shortcutRow(w("保存选中文字", "Save selected text"), binding: $selectionShortcut, action: "saveSelection")
+            shortcutRow(w("快速搜索", "Quick search"), binding: $searchShortcut, action: "search")
+            shortcutRow(w("我上次怎么做的", "How did I do this last time"), binding: $lastTimeShortcut, action: "lastTime")
             Label(model.shortcutsReady ? w("快捷键已注册", "Shortcuts registered") : w("快捷键未注册或有冲突，请更换组合。", "A shortcut could not be registered. Try another combination."), systemImage: model.shortcutsReady ? "checkmark.circle" : "exclamationmark.triangle")
                 .font(.caption).foregroundStyle(model.shortcutsReady ? RecallPalette.accent : RecallPalette.warning)
             Text(w("点击组合后按新组合，至少包含 ⌘ 或 ⌃。这是明确触发，不开启 Enter 监听。应用退出后快捷键停止。", "Click a shortcut and press a new combination including ⌘ or ⌃. This does not enable Enter monitoring. Shortcuts stop when Recall quits."))
@@ -115,14 +122,19 @@ struct WorkflowSettingsView: View {
             if let grant = model.state.workflow.mcpGrant {
                 Label(grant.clientName, systemImage: "lock.open").foregroundStyle(RecallPalette.accent)
                 Text(grant.from.formatted() + " — " + grant.through.formatted()).font(.caption)
-                Text(w("使用自行构建的 recall-cli 作为 command；参数为 mcp，环境变量见复制内容。", "Use your locally built recall-cli as the command, with argument mcp. The copied configuration includes the environment token."))
+                Picker(w("客户端", "Client"), selection: $mcpClient) { ForEach(MCPClientConfig.Client.allCases) { Text($0.title).tag($0) } }
+                Text(mcpClient.whereToPaste + " " + (MCPClientConfig.bundledCLI() == nil ? w("未在构建目录找到 recall-cli，复制时会请你选择。", "recall-cli was not found in the build directory; you will be asked to choose it.") : w("已自动找到 recall-cli。", "recall-cli was found automatically.")))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
                 HStack {
                     Button(w("复制连接配置", "Copy connection config")) { copyMCP(grant) }
                     Button(w("撤销访问", "Revoke access"), role: .destructive) { model.revokeMCP() }
                 }
             } else {
+                Picker(w("客户端", "Client"), selection: $mcpClient) { ForEach(MCPClientConfig.Client.allCases) { Text($0.title).tag($0) } }
+                    .onChange(of: mcpClient) { _, value in if !value.suggestedName.isEmpty { client = value.suggestedName } }
                 TextField(w("客户端名称（须与 MCP clientInfo.name 一致）", "Client name (must match MCP clientInfo.name)"), text: $client).textFieldStyle(.roundedBorder)
+                Text(w("预填的名称是常见值；若连接被拒绝，以客户端实际报告的名称为准修改。", "The prefilled name is a common value. If the connection is refused, change it to the name the client actually reports."))
+                    .font(.caption).foregroundStyle(RecallPalette.secondary)
                 DatePicker(w("从", "From"), selection: $from)
                 DatePicker(w("至", "Through"), selection: $through)
                 Picker(w("应用范围", "Application scope"), selection: $allowedApp) {
@@ -145,13 +157,18 @@ struct WorkflowSettingsView: View {
             guard let id = record.sourceBundleIdentifier, seen.insert(id).inserted else { return nil }; return (id, record.sourceAppName ?? id)
         }.sorted { $0.1 < $1.1 }
     }
+    /// Finds recall-cli next to the running app (same build products directory); asks only if it is not there.
     private func copyMCP(_ grant: MCPGrant) {
-        let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
-        panel.message = w("选择你构建的 recall-cli 可执行文件", "Choose your locally built recall-cli executable")
-        guard panel.runModal() == .OK, let executable = panel.url, FileManager.default.isExecutableFile(atPath: executable.path) else { return }
-        let config: [String: Any] = ["mcpServers": ["Recall": ["command": executable.path, "args": ["mcp", "--data-dir", model.storage.rootURL.path], "env": ["RECALL_MCP_TOKEN": grant.token]]]]
-        guard let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]), let text = String(data: data, encoding: .utf8) else { return }
+        var executable = MCPClientConfig.bundledCLI()
+        if executable == nil {
+            let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+            panel.message = w("没有在构建目录找到 recall-cli，请选择你构建的可执行文件", "recall-cli was not found next to the app. Choose your locally built executable")
+            guard panel.runModal() == .OK, let url = panel.url, FileManager.default.isExecutableFile(atPath: url.path) else { return }
+            executable = url
+        }
+        guard let executable, let text = MCPClientConfig.json(for: mcpClient, executable: executable, dataDir: model.storage.rootURL, token: grant.token) else { return }
         NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+        model.noticeMessage = w("已复制 \(mcpClient.title) 的连接配置。其中含访问令牌，只粘贴到你信任的客户端。", "Copied the \(mcpClient.title) config. It contains an access token; paste it only into a client you trust.")
     }
 }
 

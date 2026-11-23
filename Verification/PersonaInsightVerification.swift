@@ -108,7 +108,7 @@ enum PersonaInsightVerification {
         return result
     }
     static func fixture(days: Int = 3) throws -> (store: FileMemoryStore, storage: RecallStorage) {
-        var state = RecallState(); state.privacy.cloudUseEnabled = true
+        var state = RecallState(); state.privacy.cloudUseEnabled = true; state.personaProfileSettings.enabled = true
         state.llmConfiguration = LLMConfiguration(provider: .openAICompatible, baseURLString: "https://synthetic.invalid/v1", model: "synthetic")
         state.llmConfiguration.credentialReference = UUID().uuidString
         for offset in 0..<days {

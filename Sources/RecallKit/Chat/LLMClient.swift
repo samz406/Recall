@@ -39,7 +39,13 @@ public struct LLMConfiguration: Codable, Hashable, Sendable {
     public var connectionID: UUID
     public var credentialReference: String?
     public var credentialRevision: Int
-    public var hasCredential: Bool { !apiKey.isEmpty || credentialReference != nil }
+    /// A model server on this Mac (Ollama, LM Studio) needs no key, and requests never leave the machine.
+    public var isLocalEndpoint: Bool { Self.isLoopback(baseURLString) }
+    public var hasCredential: Bool { !apiKey.isEmpty || credentialReference != nil || isLocalEndpoint }
+    public static func isLoopback(_ value: String) -> Bool {
+        guard let host = URL(string: value)?.host?.lowercased() else { return false }
+        return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+    }
     /// A replaceable secret reference keeps the connection identity stable and failed writes isolated.
     public var credentialID: UUID { credentialReference.flatMap(UUID.init(uuidString:)) ?? connectionID }
     public var anthropicVersion: String
@@ -461,7 +467,7 @@ public struct CompatibleLLM: LLMResponding {
         )
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
-        urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if !apiKey.isEmpty { urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = try JSONEncoder().encode(body)
         if [.dailySummary, .reviewSynthesis, .reviewAudit, .captureUnderstanding, .captureUnderstandingAudit, .reminderDiscovery, .reminderDiscoveryAudit].contains(request.purpose) { urlRequest.timeoutInterval = 180 }

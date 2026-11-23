@@ -7,7 +7,7 @@ enum MemoryReadText {
     }
 
     static func excerpt(_ record: CaptureRecord) -> String {
-        "id: \(record.id.uuidString)\n" + PrivacyEngine().redact(record.correctedText ?? record.ocrText).prefix(4000)
+        "id: \(record.id.uuidString)\n" + PrivacyEngine().redact(record.searchableText).prefix(4000)
     }
 
     static func review(_ review: DailySummary) -> String {
@@ -263,7 +263,7 @@ struct MemoryReadTools: Sendable {
             matches = textIndex.ids(matching: QuestionTerms.topicTerms(query), start: start, end: end, limit: 20).compactMap { byID[$0] }
         }
         if matches.isEmpty {
-            matches = records.filter { ($0.correctedText ?? $0.ocrText).localizedCaseInsensitiveContains(query) }.sorted { $0.createdAt > $1.createdAt }
+            matches = records.filter { $0.searchableText.localizedCaseInsensitiveContains(query) }.sorted { $0.createdAt > $1.createdAt }
         }
         let found = matches.prefix(20)
         guard !found.isEmpty else { return pack("没有匹配的记录。", sources: []) }
@@ -288,7 +288,7 @@ struct MemoryReadTools: Sendable {
                 continue
             }
             sources.append(id)
-            let body = clip(record.correctedText ?? record.ocrText, 2_000)
+            let body = clip(record.searchableText, 2_000)
             materials[id] = body
             lines.append("id: \(id.uuidString) | \(Self.dayString(record.createdAt, calendar: calendar)) | \(record.sourceAppName ?? "记录")\n" + body)
         }

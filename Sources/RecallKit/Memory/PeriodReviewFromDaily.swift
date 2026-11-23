@@ -49,7 +49,7 @@ public struct PeriodReviewFromDaily: Sendable {
             let date = correctedDates[source.id] ?? source.createdAt
             guard period.contains(date), !invalid.contains(source.id), source.eventTemplate != .dailyReview,
                   source.memoryDirective == nil, source.isMemoryEvidenceArchive != true,
-                  !(source.correctedText ?? source.ocrText).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !source.searchableText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   !state.privacy.excludedBundleIdentifiers.contains(source.sourceBundleIdentifier ?? "") else { return nil }
             return calendar.startOfDay(for: date)
         })

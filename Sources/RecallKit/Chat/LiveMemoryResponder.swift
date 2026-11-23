@@ -21,7 +21,7 @@ struct LiveMemoryResponder: LLMResponding {
               SummaryFeedbackLearning.revision(in: live) == SummaryFeedbackLearning.revision(in: original) else {
             throw LLMError.serviceError(RecallLocalization.both("记忆或隐私设置已变化，请重新提问。", "Memory or privacy settings changed. Ask again to use the current scope."))
         }
-        func text(_ record: CaptureRecord) -> String { record.correctedText ?? record.ocrText }
+        func text(_ record: CaptureRecord) -> String { record.searchableText }
         // Captures are normally append-only, so a positional comparison avoids building a dictionary on every call.
         let unchanged = live.captures.count >= original.captures.count
             && zip(original.captures, live.captures).allSatisfy { $0.id == $1.id && text($0) == text($1) }

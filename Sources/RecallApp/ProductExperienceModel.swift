@@ -48,6 +48,27 @@ extension RecallAppModel {
         tasks[i].state = state; tasks[i].phase = message; tasks[i].destination = destination
         tasks[i].detail = detail
         if state == .succeeded || state == .partial { taskRetryActions[id] = nil }
+        recordReviewMetric(tasks[i])
+    }
+
+    /// Outcome and duration of every daily and period review, for the reliability card in Settings.
+    private func recordReviewMetric(_ task: RecallTaskStatus) {
+        guard !isPreview else { return }
+        let kind: ReviewAttemptMetric.Kind
+        switch task.kind { case "每日回顾": kind = .daily; case "周期回顾": kind = .period; default: return }
+        let outcome: ReviewAttemptMetric.Outcome
+        switch task.state {
+        case .succeeded: outcome = .succeeded
+        case .partial: outcome = .partial
+        case .cancelled: outcome = .cancelled
+        case .failed: outcome = .failed
+        case .running, .cancelling: return
+        }
+        let metric = ReviewAttemptMetric(kind: kind, outcome: outcome, milliseconds: Int(Date.now.timeIntervalSince(task.startedAt) * 1000))
+        Task {
+            do { try await store.recordReviewAttempt(metric); state.reviewAttemptMetrics = await store.snapshot().reviewAttemptMetrics }
+            catch { recordError(error, source: "ReviewMetrics", message: "记录回顾统计失败") }
+        }
     }
     func mergeTopics(title: String, members: Set<String>) async -> Bool {
         guard members.count >= 2, members.isSubset(of: Set(matterFiles.map(\.id))) else { return false }

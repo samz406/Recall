@@ -63,6 +63,9 @@ public enum ModelResponderFactory {
     public static func make(configuration: LLMConfiguration, credentials: any CredentialStore = KeychainCredentialStore.shared) throws -> CompatibleLLM {
         guard configuration.hasCredential else { throw CredentialError.unavailable }
         guard LLMConfiguration.credentialOrigin(configuration.baseURLString) != nil else { throw LLMError.invalidBaseURL }
+        if configuration.isLocalEndpoint && configuration.apiKey.isEmpty && configuration.credentialReference == nil {
+            return CompatibleLLM(configuration: configuration, apiKey: "")
+        }
         let key = configuration.apiKey.isEmpty ? try credentials.read(configuration.credentialID) : configuration.apiKey
         guard let key, !key.isEmpty else { throw CredentialError.unavailable }
         return CompatibleLLM(configuration: configuration, apiKey: key)

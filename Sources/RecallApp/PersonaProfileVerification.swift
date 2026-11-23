@@ -4,7 +4,7 @@ import RecallKit
 extension RecallLayoutPreviews {
     static let personaQuote = "我先系统查阅资料并核对日志，再逐项验证测试结果；连续三小时专注同一任务，没有切换。"
     static func personaFixtureState(seeded: Bool = false) -> RecallState {
-        var state = RecallState(); state.privacy.cloudUseEnabled = true
+        var state = RecallState(); state.privacy.cloudUseEnabled = true; state.personaProfileSettings.enabled = true
         state.personaProfileVersion = 1
         state.llmConfiguration = LLMConfiguration(provider: .openAICompatible, baseURLString: "https://synthetic.invalid/v1", model: "synthetic")
         state.llmConfiguration.credentialReference = UUID().uuidString
@@ -36,8 +36,9 @@ extension RecallLayoutPreviews {
     private actor PersonaPreviewResponder: LLMResponding {
         func answer(to request: LLMRequest) async throws -> LLMAnswer {
             let proof = try JSONDecoder().decode([PersonaInsightEngine.Evidence].self, from: Data(request.context[0].ocrText.utf8))[0]
-            let rows: [[String: Any]] = [("decisionStyle", "cautious_verifying"), ("learningStyle", "systematic_research"), ("workPace", "deep_focus")].map {
-                ["dimension": $0.0, "value": $0.1, "evidenceID": proof.id, "evidence": proof.quote, "confidence": 0.8]
+            // Same shape the model is asked for since habits became free-form: habit + guidance, not a preset value.
+            let rows: [[String: Any]] = [(PersonaDimension.decisionStyle, "cautious_verifying"), (.learningStyle, "systematic_research"), (.workPace, "deep_focus")].map {
+                ["dimension": $0.0.rawValue, "habit": $0.0.valueTitle($0.1), "guidance": $0.0.responseGuidance($0.1) ?? "", "evidenceID": proof.id, "evidence": proof.quote, "confidence": 0.8]
             }
             return LLMAnswer(content: String(decoding: try JSONSerialization.data(withJSONObject: ["traits": rows]), as: UTF8.self), citedCaptureIDs: [])
         }
@@ -47,8 +48,10 @@ extension RecallLayoutPreviews {
         let model = try RecallAppModel(previewState: personaFixtureState(), personaResponder: PersonaPreviewResponder())
         defer { try? FileManager.default.removeItem(at: model.storage.rootURL) }
         _ = await model.updatePersonaProfile(.enabled(true))
+        // The refresh starts asynchronously after enabling, so wait for its result rather than for an idle flag
+        // that is also false before the work begins.
         for _ in 0..<400 {
-            if !model.isRefreshingPersonaProfile { break }
+            if model.state.confirmedPersonaTraits.count == 3 && !model.isRefreshingPersonaProfile { break }
             try await Task.sleep(for: .milliseconds(10))
         }
         guard model.state.confirmedPersonaTraits.count == 3 else { throw Failure.failed("真实入口未累积三个独立观察日") }

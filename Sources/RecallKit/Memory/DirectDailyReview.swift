@@ -163,7 +163,7 @@ struct DailyReviewInput: Sendable {
             var lines: [String] = [], proofs: [DailyReviewProof] = [], size = 0
             func flush() {
                 guard !lines.isEmpty else { return }
-                let prefix = source.textOrigin == .userInput ? "来源为用户主动输入；原文：\n" : source.textOrigin == .importedText ? "来源为导入纪要/资料，不代表本人发言；原文：\n" : "来源为屏幕 OCR；角色未知时不可猜测；原文：\n"
+                let prefix = source.textOrigin == .userInput ? "来源为用户主动输入；原文：\n" : source.textOrigin == .importedText ? "来源为导入纪要/资料，不代表本人发言；原文：\n" : source.textOrigin == .selectedText ? "来源为用户在其他应用中选中保存的文字，作者未知；原文：\n" : "来源为屏幕 OCR；角色未知时不可猜测；原文：\n"
                 let index = append(basis: "raw", text: prefix + lines.joined(separator: "\n"), date: source.createdAt,
                     proofs: proofs, app: scope, meta: sourceMeta)
                 for key in pendingLineKeys { documentIndexByLine[key] = index }
@@ -193,7 +193,8 @@ struct DailyReviewInput: Sendable {
                 let note = source.manualMatter
                 // A chat line marked 角色未知 stays unknown. Screen text with no speaker mark is the user's own screen,
                 // so a model may attribute that work; it still cannot invent a speaker for an unknown chat line.
-                let unmarkedScreen = source.textOrigin != .importedText && source.textOrigin != .userInput
+                // Selected text may be anyone's words, so it never defaults to the user.
+                let unmarkedScreen = source.textOrigin != .importedText && source.textOrigin != .userInput && source.textOrigin != .selectedText
                     && block.speaker == .unknown && !block.isReference && !block.text.contains("[聊天·")
                 let speaker: UnderstandingSpeaker = unmarkedScreen ? .user : block.speaker
                 proofs.append(DailyReviewProof(text: block.text, sourceIDs: [source.id], speaker: speaker,

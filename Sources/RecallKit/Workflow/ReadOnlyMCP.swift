@@ -62,7 +62,7 @@ public final class ReadOnlyMCPServer {
                 switch name {
                 case "search_records":
                     guard !query.isEmpty else { return rpcError(-32602, "A query is required") }
-                    let found = records.filter { ($0.correctedText ?? $0.ocrText).localizedCaseInsensitiveContains(query) }
+                    let found = records.filter { $0.searchableText.localizedCaseInsensitiveContains(query) }
                         .sorted { $0.createdAt > $1.createdAt }.prefix(limit)
                     text = found.map { MemoryReadText.searchRecord($0) }.joined(separator: "\n\n")
                     let matchingReviews = allowedReviews.filter { $0.items.contains { ($0.title + " " + $0.detail).localizedCaseInsensitiveContains(query) } }.prefix(limit)

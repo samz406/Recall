@@ -596,12 +596,10 @@ private struct DailyBriefingView: View {
             Label(feedbackTitle(rating), systemImage: "checkmark.circle.fill")
                 .font(.caption).foregroundStyle(RecallPalette.secondary)
         } else {
-            HStack(spacing: 14) {
-                Text(RecallLocalization.text("这个判断准确吗？")).font(.caption).foregroundStyle(RecallPalette.secondary)
-                Button(RecallLocalization.text("准确")) { onReviewInsight(insight, .accurate) }
-                Button(RecallLocalization.text("部分准确")) { onReviewInsight(insight, .partiallyAccurate) }
-                Button(RecallLocalization.text("不准确")) { onReviewInsight(insight, .inaccurate) }
-            }
+            // One tap for "this is wrong" is all most people give; it still feeds the same suppression rule.
+            Button { onReviewInsight(insight, .inaccurate) } label: {
+                Label(RecallLocalization.both("不准确", "Not accurate"), systemImage: "hand.thumbsdown")
+            }.help(RecallLocalization.both("标记后，同类判断会减少出现", "Similar insights will appear less often"))
             .buttonStyle(.borderless)
             .font(.caption)
         }
