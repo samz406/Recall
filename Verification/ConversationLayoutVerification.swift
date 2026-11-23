@@ -134,6 +134,14 @@ enum ConversationLayoutVerification {
         try require(TextRecognitionContext.resolve(appName: "Signal", bundleIdentifier: nil, windowTitle: nil, scope: .selectedWindow) == .messaging, "未覆盖 Signal 原生窗口")
         try require(TextRecognitionContext.resolve(appName: "Beeper", bundleIdentifier: nil, windowTitle: nil, scope: .selectedWindow) == .messaging, "未覆盖 Beeper 原生窗口")
         try require(TextRecognitionContext.resolve(appName: "飞书", bundleIdentifier: nil, windowTitle: nil, scope: .activeDisplay).layoutStyle == nil, "整屏采集误启用原生窗口裁剪")
+        for (app, bundle, title) in [("终端", "com.apple.Terminal", "local_assistant — claude --permission-mode -133x55"),
+                                     ("iTerm2", "com.googlecode.iterm2", "chatgpt.com/c/synthetic"),
+                                     ("Code", "com.microsoft.VSCode", "Slack integration.swift")] {
+            try require(TextRecognitionContext.resolve(appName: app, bundleIdentifier: bundle, windowTitle: title, scope: .selectedWindow) == .document,
+                        "终端或编辑器因窗口标题被当成聊天：\(app)")
+        }
+        try require(TextRecognitionContext.resolve(appName: "Google Chrome", bundleIdentifier: "com.google.Chrome", windowTitle: "ChatGPT", scope: .selectedWindow) == .conversation,
+                    "浏览器里的 ChatGPT 不再按对话处理")
         let fallback = ConversationOCRFormatter.format([PositionedTextLine(text: "无法确认说话人", boundingBox: CGRect(x: 0, y: 0, width: 0.2, height: 0.1))], context: .conversation)
         try require(fallback.hasPrefix("[聊天·角色未知]"), "未验证的会话布局仍按整图左右猜角色")
     }
