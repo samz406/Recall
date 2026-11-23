@@ -225,6 +225,44 @@ enum InternationalWorkflowVerification {
         try expect(try call("tools/list").contains("Access revoked"), "MCP did not revoke an active session")
         let log = try String(contentsOf: storage.rootURL.appendingPathComponent("mcp-access.log"), encoding: .utf8)
         try expect(!log.contains(source.ocrText) && !log.contains(grant.token), "MCP audit log leaked text/token")
+        try mcpInteractiveStdio()
+    }
+
+    /// Real clients keep stdin open and wait for each reply before sending the next request.
+    /// The server must answer every short frame without waiting for a full buffer or EOF.
+    static func mcpInteractiveStdio() throws {
+        let storage = try storage(); defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        var state = RecallState(captures: [record("Atlas interactive check")])
+        let grant = MCPGrant(clientName: "synthetic-client", from: .now.addingTimeInterval(-86_400), through: .now.addingTimeInterval(60))
+        state.workflow.mcpGrant = grant; try save(state, to: storage)
+        let input = Pipe(), output = Pipe()
+        let finished = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            try? ReadOnlyMCPServer(storage: storage, token: grant.token).run(input: input.fileHandleForReading, output: output.fileHandleForWriting)
+            finished.signal()
+        }
+        var buffer = Data()
+        func reply(within seconds: TimeInterval) -> String? {
+            let deadline = Date.now.addingTimeInterval(seconds)
+            while Date.now < deadline {
+                if let end = buffer.firstIndex(of: 10) {
+                    let line = String(decoding: buffer[..<end], as: UTF8.self); buffer.removeSubrange(...end); return line
+                }
+                let ready = DispatchSemaphore(value: 0); var chunk = Data()
+                DispatchQueue.global().async { chunk = output.fileHandleForReading.availableData; ready.signal() }
+                guard ready.wait(timeout: .now() + max(0, deadline.timeIntervalSinceNow)) == .success else { return nil }
+                buffer.append(chunk)
+            }
+            return nil
+        }
+        func send(_ body: [String: Any]) throws { input.fileHandleForWriting.write(try JSONSerialization.data(withJSONObject: body) + Data([10])) }
+        try send(["jsonrpc": "2.0", "id": 1, "method": "initialize", "params": ["clientInfo": ["name": "synthetic-client"], "protocolVersion": "2025-06-18"]])
+        try expect(reply(within: 5)?.contains("protocolVersion") == true, "MCP stdio did not answer initialize while stdin stayed open")
+        try send(["jsonrpc": "2.0", "method": "notifications/initialized"])
+        try send(["jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": ["name": "search_records", "arguments": ["query": "interactive"]]])
+        try expect(reply(within: 5)?.contains("Atlas interactive check") == true, "MCP stdio did not answer a tool call while stdin stayed open")
+        input.fileHandleForWriting.closeFile()
+        try expect(finished.wait(timeout: .now() + 5) == .success, "MCP stdio did not stop at EOF")
     }
     @MainActor static func preflightNeverCapturesExcluded() async throws {
         let storage = try storage(); defer { try? FileManager.default.removeItem(at: storage.rootURL) }

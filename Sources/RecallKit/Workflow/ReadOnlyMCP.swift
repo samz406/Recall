@@ -91,7 +91,10 @@ public final class ReadOnlyMCPServer {
     public func run(input: FileHandle = .standardInput, output: FileHandle = .standardOutput) throws {
         var pending = Data()
         while true {
-            let chunk = try input.read(upToCount: 8192) ?? Data()
+            // A client keeps stdin open and waits for each reply before sending the next message.
+            // `availableData` returns as soon as any bytes arrive; a fixed-size read would wait for
+            // 8 KB or EOF and hang the handshake. Empty data means EOF.
+            let chunk = input.availableData
             if chunk.isEmpty { break }; pending.append(chunk)
             while let end = pending.firstIndex(of: 10) {
                 let frame = Data(pending[..<end]); pending.removeSubrange(...end)
