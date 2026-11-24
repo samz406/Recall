@@ -363,7 +363,7 @@ struct ReminderScheduleSheet: View {
                 }
             }
 
-            ReminderDateTimeField(date: $selectedDate)
+            CalendarDateTimeField(title: RecallLocalization.text("提醒时间"), date: $selectedDate, earliestDay: .now)
             if selectedDate <= .now {
                 Text(RecallLocalization.both("请选择未来的提醒时间。", "Choose a future reminder time."))
                     .font(.caption).foregroundStyle(RecallPalette.warning)
@@ -424,7 +424,7 @@ struct NewReminderSheet: View {
             TextField(RecallLocalization.text("补充说明（可选）"), text: $detail, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(4...6).frame(minHeight: 82)
-            ReminderDateTimeField(date: $dueAt)
+            CalendarDateTimeField(title: RecallLocalization.text("提醒时间"), date: $dueAt, earliestDay: .now)
             if dueAt <= .now {
                 Text(RecallLocalization.both("请选择未来的提醒时间。", "Choose a future reminder time."))
                     .font(.caption).foregroundStyle(RecallPalette.warning)

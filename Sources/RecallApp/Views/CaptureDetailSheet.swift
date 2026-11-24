@@ -112,7 +112,8 @@ struct CaptureDetailSheet: View {
                 .padding(24)
             }
         }
-        .frame(minWidth: embedded ? 400 : 620, idealWidth: embedded ? 500 : 760, minHeight: 480, idealHeight: 680)
+        .frame(minWidth: embedded ? 0 : 620, idealWidth: embedded ? nil : 760,
+               minHeight: embedded ? 0 : 480, idealHeight: embedded ? nil : 680)
         .task(id: capture.id) {
             if let path = capture.imageRelativePath {
                 screenshot = NSImage(contentsOf: model.storage.screenshotURL(relativePath: path))
