@@ -7,18 +7,24 @@ struct ReviewWorkspaceView: View {
     @State private var period = false
     @State private var composing = false
     var initialPeriod = false
+    var showsHeader = true
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            RecallPageHeader(title: "回顾", subtitle: "回看一天、一周或一个月里值得记住的变化") {
-                if period {
-                    Button(RecallLocalization.both("写一份回顾", "Create a review")) { composing = true }.buttonStyle(.borderedProminent)
+            if showsHeader {
+                RecallPageHeader(title: "回顾", subtitle: "回看一天、一周或一个月里值得记住的变化") {
+                    if period {
+                        Button(RecallLocalization.both("写一份回顾", "Create a review")) { composing = true }.buttonStyle(.borderedProminent)
+                    }
                 }
             }
             HStack(spacing: 24) {
                 choice(RecallLocalization.both("按天", "Daily"), value: false)
-                choice(RecallLocalization.both("按周 / 月", "Weekly / monthly"), value: true)
+                choice(RecallLocalization.both("按周", "Weekly"), value: true)
                 Spacer()
-            }.padding(.horizontal, 24).padding(.bottom, 14)
+                if period && !showsHeader {
+                    Button(RecallLocalization.both("写一份回顾", "Create a review")) { composing = true }.buttonStyle(.borderedProminent)
+                }
+            }.padding(.horizontal, 24).padding(.vertical, 14)
             Divider()
             if period { WeeklyReviewView(showsComposer: $composing).environmentObject(model).padding(24) }
             else { DailySummariesView(embedded: true).environmentObject(model) }

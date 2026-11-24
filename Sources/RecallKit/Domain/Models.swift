@@ -13,6 +13,9 @@ public enum CaptureEventTemplate: String, CaseIterable, Codable, Identifiable, S
 
     public var id: String { rawValue }
 
+    /// The templates shown by default: record now, meetings, and to-dos. Others are advanced.
+    public var isEssential: Bool { self == .manualMoment || self == .meetingSession || self == .taskCommitment }
+
     public var title: String {
         switch self {
         case .manualMoment: "手动记录此刻"
@@ -156,6 +159,9 @@ public enum CaptureTextOrigin: String, Codable, Sendable {
     case userInput
     case importedText
     case screenOCR
+    /// Text the user selected in another app and chose to save. Same trust as screen text:
+    /// not the user's own statement, not imported material.
+    case selectedText
 }
 
 public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
@@ -184,6 +190,11 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
     public var meetingSessionID: UUID? = nil
     public var recognition: CaptureRecognition?
     public var understanding: CaptureUnderstanding?
+    /// One line the user wrote about why this was worth keeping. Never populated from OCR or a model.
+    public var userNote: String? = nil
+    /// Scheme, host and path of the browser page, only when the user enabled page addresses.
+    /// Query strings and fragments are never stored.
+    public var pageURL: String? = nil
 
     public init(
         id: UUID = UUID(),
@@ -222,6 +233,15 @@ public struct CaptureRecord: Identifiable, Codable, Hashable, Sendable {
         self.memoryDirective = memoryDirective
         self.isMemoryEvidenceArchive = isMemoryEvidenceArchive
         self.recognition = recognition; self.understanding = understanding
+    }
+}
+
+public extension CaptureRecord {
+    /// Recognized or corrected text followed by the user's note. Search and retrieval read this.
+    var searchableText: String {
+        let body = correctedText ?? ocrText
+        guard let note = userNote?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty else { return body }
+        return body.isEmpty ? note : body + "\n" + note
     }
 }
 
@@ -559,21 +579,56 @@ public struct ReminderCandidate: Identifiable, Codable, Hashable, Sendable {
 }
 
 public struct PrivacySettings: Codable, Hashable, Sendable {
+    public static let defaultExcludedTitleKeywords = ["Private Browsing", "InPrivate", "Incognito", "无痕", "隐私浏览", "隐身"]
     public var excludedBundleIdentifiers: Set<String>
     public var cloudUseEnabled: Bool
     public var retainScreenshots: Bool
     public var screenCapturePaused: Bool
+    /// Skip a record while macOS reports secure text entry (a focused password field in any app).
+    public var skipDuringSecureInput: Bool
+    /// Window titles containing any keyword are not recorded. Covers private browsing windows that name themselves.
+    public var excludedTitleKeywords: [String]
+    /// Pages on these domains (and their subdomains) are not recorded. Needs Accessibility to read the address.
+    public var excludedDomains: [String]
+    /// Off by default. When on, a browser record keeps the page address without query or fragment.
+    public var recordPageAddress: Bool
 
     public init(
         excludedBundleIdentifiers: Set<String> = ["com.apple.keychainaccess", "com.apple.Passwords", "com.apple.MobileSMS"],
         cloudUseEnabled: Bool = false,
         retainScreenshots: Bool = true,
-        screenCapturePaused: Bool = false
+        screenCapturePaused: Bool = false,
+        skipDuringSecureInput: Bool = true,
+        excludedTitleKeywords: [String] = PrivacySettings.defaultExcludedTitleKeywords,
+        excludedDomains: [String] = [],
+        recordPageAddress: Bool = false
     ) {
         self.excludedBundleIdentifiers = excludedBundleIdentifiers
         self.cloudUseEnabled = cloudUseEnabled
         self.retainScreenshots = retainScreenshots
         self.screenCapturePaused = screenCapturePaused
+        self.skipDuringSecureInput = skipDuringSecureInput
+        self.excludedTitleKeywords = excludedTitleKeywords
+        self.excludedDomains = excludedDomains
+        self.recordPageAddress = recordPageAddress
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case excludedBundleIdentifiers, cloudUseEnabled, retainScreenshots, screenCapturePaused
+        case skipDuringSecureInput, excludedTitleKeywords, excludedDomains, recordPageAddress
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        excludedBundleIdentifiers = try c.decode(Set<String>.self, forKey: .excludedBundleIdentifiers)
+        cloudUseEnabled = try c.decode(Bool.self, forKey: .cloudUseEnabled)
+        retainScreenshots = try c.decode(Bool.self, forKey: .retainScreenshots)
+        screenCapturePaused = try c.decode(Bool.self, forKey: .screenCapturePaused)
+        // Archives written before these settings existed get the protective defaults.
+        skipDuringSecureInput = try c.decodeIfPresent(Bool.self, forKey: .skipDuringSecureInput) ?? true
+        excludedTitleKeywords = try c.decodeIfPresent([String].self, forKey: .excludedTitleKeywords) ?? Self.defaultExcludedTitleKeywords
+        excludedDomains = try c.decodeIfPresent([String].self, forKey: .excludedDomains) ?? []
+        recordPageAddress = try c.decodeIfPresent(Bool.self, forKey: .recordPageAddress) ?? false
     }
 }
 

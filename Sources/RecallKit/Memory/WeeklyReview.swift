@@ -113,6 +113,10 @@ public enum ReviewPeriodKind: String, Codable, CaseIterable, Identifiable, Senda
     public var title: String {
         switch self { case .currentWeek: "本周截至现在"; case .previousWeek: "上一个完整周"; case .recentSeven: "最近七天"; case .currentMonth: "本月截至现在"; case .previousMonth: "上一个完整月"; case .custom: "自选日期" }
     }
+    /// Monthly and custom ranges are paused while weekly reviews are being stabilized. They stay
+    /// available behind "More ranges"; saved schedules and reports using them keep working.
+    public var isStable: Bool { self == .currentWeek || self == .previousWeek || self == .recentSeven }
+    public static let stableCases: [ReviewPeriodKind] = allCases.filter(\.isStable)
 }
 
 public struct ReviewPeriod: Codable, Equatable, Sendable {

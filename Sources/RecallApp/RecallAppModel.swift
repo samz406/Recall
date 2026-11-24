@@ -50,6 +50,11 @@ final class RecallAppModel: ObservableObject {
     @Published var showsMeetingPanel = false
     @Published var addedTodayUndo: ReminderCandidate?
     @Published var lastExternalTarget: CaptureTarget?
+    @Published var lastTimeQuery: LastTimeQuery?
+    @Published var meetingBriefToShow: MeetingBrief?
+    let serviceProvider = RecallServiceProvider()
+    var meetingBriefTimer: Timer?
+    let calendarReader: any CalendarReading = EventKitCalendarReader()
     var openMainWindow: (() -> Void)?
     private var targetObserver: NSObjectProtocol?
     private var shortcutWakeObserver: NSObjectProtocol?
@@ -140,7 +145,7 @@ final class RecallAppModel: ObservableObject {
     private var reminderDiscoveryRunID = UUID()
     private var reminderDiscoveryTaskID: UUID?
     @Published private(set) var reminderDiscoveryProgress = ReminderDiscoveryProgress(completedRecords: 0, totalRecords: 0, phase: "准备记录")
-    private let notificationScheduler = LocalNotificationScheduler()
+    let notificationScheduler = LocalNotificationScheduler()
     private let reminderCreationScheduler: any ReminderCreationScheduling
     private let enterKeyRecorder = GlobalEnterKeyRecorder()
     private var dailySummaryTimer: Timer?
@@ -187,7 +192,7 @@ final class RecallAppModel: ObservableObject {
             self.diagnosticEntries = diagnosticLog.entries
             let startupRead = Date.now
             self.store = try preloadedStore ?? FileMemoryStore(storage: storage, deferMaintenance: true, credentials: previewState == nil ? KeychainCredentialStore.shared : InMemoryCredentialStore())
-            self.pipeline = CapturePipeline(store: store, storage: storage)
+            self.pipeline = CapturePipeline(store: store, storage: storage, contextReader: previewState == nil ? LiveCaptureContextReader() : nil)
             self.assistant = MemoryAssistant(store: store)
             if let previewState {
                 state = previewState; isLoadingSavedState = false; isFinishingStartup = false
@@ -205,6 +210,8 @@ final class RecallAppModel: ObservableObject {
                 Task { @MainActor [weak self] in self?.shortcutConfigurationID = nil; self?.configureShortcuts() }
             }
             recordDiagnostic(.info, source: "App", message: "应用已启动")
+            serviceProvider.model = self
+            NSApp.servicesProvider = serviceProvider
             reminderActionObserver = NotificationCenter.default.addObserver(
                 forName: .recallReminderAction,
                 object: nil,
@@ -252,6 +259,7 @@ final class RecallAppModel: ObservableObject {
                 await cleanupExpiredRecentlyDeleted()
                 isFinishingStartup = false
                 await refresh()
+                armMeetingBriefs()
                 try? notificationScheduler.configureReminderActions()
             }
         } catch {
@@ -529,8 +537,12 @@ final class RecallAppModel: ObservableObject {
                         "\(metrics.sourceCount) days · \(metrics.documentCount) items · \(metrics.modelCalls) model requests · Model \(max(1, metrics.modelMilliseconds / 1000))s · Read \(metrics.readMilliseconds)ms · Check \(metrics.checkMilliseconds)ms · Local wait \(metrics.sourceWaitMilliseconds)ms · Save total \(metrics.saveMilliseconds)ms (queue \(saveQueueMs) · sources \(outcome.metrics.sourceCheckMilliseconds) · encode \(outcome.metrics.encodeMilliseconds) · write \(outcome.metrics.writeMilliseconds) · UI \(publishMs))"))
                 weeklyReviewMessage = nil
                 if !Task.isCancelled, let schedule, schedule.notifyWhenReady, !saved.refinementPending, !saved.digestRows.isEmpty {
-                    do { try await notificationScheduler.deliverWeeklyReview(saved) }
-                    catch { recordError(error, source: "WeeklyReview", message: "一周回顾已保存，通知投递失败") }
+                    let notice = AttentionNotice(kind: .periodReview, title: RecallLocalization.both("周期回顾已整理好", "Period review ready"),
+                                                 body: saved.period.label, weeklyReportID: saved.id)
+                    if await admitAttention(notice) {
+                        do { try await notificationScheduler.deliverWeeklyReview(saved) }
+                        catch { recordError(error, source: "WeeklyReview", message: "一周回顾已保存，通知投递失败") }
+                    }
                 }
             } catch let error where ModelCallCancellation.isCancellation(error) {
                 finishTask(taskID, state: .cancelled, message: "已取消，已有回顾保持不变")
@@ -933,7 +945,7 @@ final class RecallAppModel: ObservableObject {
         diagnosticEntries = diagnosticLog.entries
     }
 
-    private func recordDiagnostic(
+    func recordDiagnostic(
         _ level: RecallDiagnosticLevel,
         source: String,
         message: String,
@@ -1056,8 +1068,9 @@ final class RecallAppModel: ObservableObject {
             var saved: CaptureRecord?
             defer {
                 isRecording = false
+                // Every record started outside the main window gets the floating panel, success or failure.
                 if backgroundFeedback {
-                    if let saved { captureFeedback.show(RecallLocalization.both("已保存到时间线", "Saved to Timeline"), target: target, undo: { [weak self] in self?.deleteCapture(saved) }) }
+                    if let saved { showSavedFeedback(saved, target: target) }
                     else if let message = noticeMessage { captureFeedback.show(RecallLocalization.text(message), target: target) }
                 }
             }
@@ -1071,7 +1084,7 @@ final class RecallAppModel: ObservableObject {
                     message: "记录已写入时间线",
                     metadata: ["eventTemplate": record.eventTemplate.rawValue, "hasScreenshot": record.imageRelativePath == nil ? "false" : "true"]
                 )
-                noticeMessage = RecallLocalization.both("已记录：", "Saved: ") + (record.summary ?? RecallLocalization.both("无可提取文本", "No readable text"))
+                noticeMessage = Self.savedMessage(for: record) + (record.summary.map { "：" + $0 } ?? "")
             } catch CapturePipelineError.screenRecordingPermissionRequired {
                 recordDiagnostic(.warning, source: diagnosticSource, message: "屏幕权限不可用", metadata: ["eventTemplate": rule.template.rawValue])
                 // 记录失败不应阻塞其他本地功能；提醒发现只读取已有记录，无需此权限。
@@ -2022,8 +2035,12 @@ final class RecallAppModel: ObservableObject {
                 // Pending local derived work is drained on the existing maintenance cycle.
                 refreshPersonaProfileIfNeeded()
                 if !Task.isCancelled, state.dailySummarySettings.notifyWhenReady == true {
-                    do { try await notificationScheduler.deliverDailyBriefing(summary) }
-                    catch { recordError(error, source: "DailySummary", message: "回顾已保存，通知投递失败") }
+                    let notice = AttentionNotice(kind: .dailyReview, title: RecallLocalization.both("每日回顾已生成", "Daily review ready"),
+                                                 body: summary.day.formatted(date: .abbreviated, time: .omitted), dailyReviewID: summary.id)
+                    if await admitAttention(notice) {
+                        do { try await notificationScheduler.deliverDailyBriefing(summary) }
+                        catch { recordError(error, source: "DailySummary", message: "回顾已保存，通知投递失败") }
+                    }
                 }
             } catch is DailyReviewSkipped {
                 tasks.removeAll { $0.id == taskID }

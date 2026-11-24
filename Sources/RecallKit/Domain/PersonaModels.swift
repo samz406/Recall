@@ -212,10 +212,21 @@ public struct PersonaTraitState: Identifiable, Codable, Hashable, Sendable {
 }
 
 public struct PersonaProfileSettings: Codable, Hashable, Sendable {
-    /// Still requires the existing cloud permission and a configured model.
-    public var enabled = true
+    /// Off for new installs: being described by a model is opt-in. Recall asks once after the first
+    /// saved review. Archives that already stored a value keep it. Still requires cloud permission and a model.
+    public var enabled = false
     public var personalizesResponses = true
+    /// Set once the one-time question was answered or dismissed, so it is never repeated.
+    public var askedAt: Date? = nil
     public init() {}
+    private enum CodingKeys: String, CodingKey { case enabled, personalizesResponses, askedAt }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // Archives written before the default changed stored `enabled` explicitly; keep the user's value.
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        personalizesResponses = try c.decodeIfPresent(Bool.self, forKey: .personalizesResponses) ?? true
+        askedAt = try c.decodeIfPresent(Date.self, forKey: .askedAt)
+    }
 }
 
 public enum PersonaRefreshStatus: String, Codable, Sendable {

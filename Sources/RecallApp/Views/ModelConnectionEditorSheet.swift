@@ -37,7 +37,8 @@ final class ModelConnectionDraft: ObservableObject {
         return value
     }
     var requiresNewCredential: Bool { LLMConfiguration.credentialOrigin(baseURL) != LLMConfiguration.credentialOrigin(initialConfiguration.baseURLString) }
-    var hasCredentialForEndpoint: Bool { !normalizedAPIKey.isEmpty || (!requiresNewCredential && savedKeyExists) }
+    /// A server on this Mac needs no key.
+    var hasCredentialForEndpoint: Bool { !normalizedAPIKey.isEmpty || LLMConfiguration.isLoopback(baseURL) || (!requiresNewCredential && savedKeyExists) }
     var hasValidEndpoint: Bool {
         LLMConfiguration.credentialOrigin(configuration.baseURLString) != nil && !configuration.model.isEmpty
     }

@@ -261,3 +261,17 @@ extension FileMemoryStore {
     /// No model job can keep a quote alive after its source has gone away.
     func reconcileCaptureUnderstanding() { state.reconcileCaptureUnderstanding() }
 }
+
+extension FileMemoryStore {
+    /// Sets or clears the user's one-line note. Derived outputs from this record are re-checked,
+    /// exactly as for a text correction.
+    public func setCaptureNote(_ captureID: UUID, note: String?) throws {
+        guard let index = state.captures.firstIndex(where: { $0.id == captureID }) else { throw CaptureUnderstandingError.changed }
+        let cleaned = CapturePipeline.cleanNoteText(note)
+        guard state.captures[index].userNote != cleaned else { return }
+        let before = state
+        state.captures[index].userNote = cleaned
+        invalidateMemoryOutputs(sourceIDs: [captureID])
+        do { try persist() } catch { state = before; throw error }
+    }
+}

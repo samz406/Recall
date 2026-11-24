@@ -6,6 +6,9 @@ struct DailyReviewContentView: View {
     @EnvironmentObject private var model: RecallAppModel
     let summary: DailySummary
     @State private var pendingCorrection: (item: DailySummaryItem, kind: MatterCorrectionKind)?
+    /// Long sections show the first few items; the rest stay one click away, never removed.
+    @State private var expandedSections: Set<DailySummarySection> = []
+    static let visiblePerSection = 3
     private var items: [DailySummaryItem] {
         DailyReviewPresentation.items(in: summary, state: model.state)
     }
@@ -25,8 +28,15 @@ struct DailyReviewContentView: View {
                 if !sectionRows.isEmpty {
                     VStack(alignment: .leading, spacing: 18) {
                         sectionHeading(section)
+                        let expanded = expandedSections.contains(section)
                         VStack(alignment: .leading, spacing: 22) {
-                            ForEach(sectionRows) { item in itemRow(item) }
+                            ForEach(expanded ? sectionRows : Array(sectionRows.prefix(Self.visiblePerSection))) { item in itemRow(item) }
+                            if sectionRows.count > Self.visiblePerSection {
+                                Button(expanded ? RecallLocalization.both("收起", "Show less")
+                                                : RecallLocalization.both("再看 \(sectionRows.count - Self.visiblePerSection) 条", "Show \(sectionRows.count - Self.visiblePerSection) more")) {
+                                    if expanded { expandedSections.remove(section) } else { expandedSections.insert(section) }
+                                }.buttonStyle(.plain).font(.callout).foregroundStyle(RecallPalette.accent)
+                            }
                         }.padding(.leading, 28)
                     }
                 }

@@ -1,7 +1,7 @@
 import SwiftUI
 import RecallKit
 
-private enum MatterWorkspaceTab: String { case topics = "记忆主题", knowledge = "长期记忆" }
+private enum MatterWorkspaceTab: String { case topics = "记忆主题", knowledge = "长期记忆", timeline = "时间线" }
 
 struct MatterWorkspaceView: View {
     @EnvironmentObject private var model: RecallAppModel
@@ -40,10 +40,12 @@ struct MatterWorkspaceView: View {
             }
             HStack(spacing: 28) {
                 tabButton("主题", english: "Topics", value: .topics)
+                tabButton("时间线", english: "Timeline", value: .timeline)
                 tabButton("关于我", english: "About me", value: .knowledge)
                 Spacer()
             }.padding(.horizontal, 24).padding(.bottom, 14)
             Divider()
+            if tab == .timeline { RecordTimelineView() } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     if tab == .knowledge {
@@ -85,6 +87,7 @@ struct MatterWorkspaceView: View {
                     }
                 }.padding(24).frame(maxWidth: 1100).frame(maxWidth: .infinity)
             }.clipped()
+            }
         }
         .onAppear { openRequested() }
         .onChange(of: model.navigationRevision) { _, _ in openRequested() }
@@ -136,6 +139,7 @@ struct MatterWorkspaceView: View {
     private func openRequested() {
         if case .knowledge = model.destination { tab = .knowledge }
         if case .topic(let id) = model.destination { tab = .topics; selectedID = id }
+        if case .record = model.destination { tab = .timeline }
     }
 }
 

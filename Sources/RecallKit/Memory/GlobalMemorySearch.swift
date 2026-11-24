@@ -126,7 +126,7 @@ public struct GlobalMemorySearch: Sendable {
             rows.append(Document(hit: MemorySearchHit(id: "record:" + source.id.uuidString,
                 title: title.isEmpty ? (source.sourceAppName ?? "原始记录") : title, detail: "", kind: "原始记录",
                 date: source.createdAt, sourceIDs: [source.id], destination: .record(source.id)),
-                text: source.correctedText ?? source.ocrText))
+                text: source.searchableText))
         }
         // Topic matches use each event's own date and text, rather than its latest activity date.
         for file in matters {

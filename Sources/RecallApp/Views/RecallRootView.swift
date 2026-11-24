@@ -8,7 +8,7 @@ struct RecallRootView: View {
     @Environment(\.openWindow) private var openWindow
     @EnvironmentObject private var model: RecallAppModel
     @AppStorage(RecallLocalization.languageKey) private var interfaceLanguage = "system"
-    @State private var section: SidebarSection? = .matters
+    @State private var section: SidebarSection? = .today
     @State private var showingRecordSheet = false
     @State private var returnSection: SidebarSection?
     @State private var noticeDismissal: Task<Void, Never>?
@@ -21,16 +21,13 @@ struct RecallRootView: View {
 
         } detail: {
             Group {
-                switch section ?? .timeline {
+                switch section ?? .today {
+                case .today: TodayWorkspaceView()
                 case .matters: MatterWorkspaceView { topicID in
                     model.startTopicConversation(topicID)
                     section = .chat
                 }
-                case .timeline: TimelineView()
                 case .chat: ChatView()
-                case .dailySummaries: ReviewWorkspaceView()
-                case .reminders: RemindersView()
-                case .rules: EventRulesView()
                 case .privacy: PrivacyAndModelView()
                 }
             }
@@ -47,6 +44,8 @@ struct RecallRootView: View {
                                 Button(RecallLocalization.both("记录：", "Record: ") + target.appName) { model.record(rule: rule, targetOverride: target) }.disabled(model.isRecording || model.state.privacy.screenCapturePaused)
                             }
                             Button(RecallLocalization.both("写一条记录", "Write a record")) { model.showsTextEntry = true }
+                            Button(RecallLocalization.both("保存剪贴板文字", "Save clipboard text")) { model.saveClipboard() }
+                            Button(RecallLocalization.both("导入文件…", "Import files…")) { importFilesPanel() }
                             Button(RecallLocalization.both("会议记录", "Meeting moments")) { model.showsMeetingPanel = true }
                         } label: { Label(RecallLocalization.text("记录此刻"), systemImage: "plus.square") }
                         Button { model.showsGlobalSearch = true } label: { Label(RecallLocalization.text("搜索记忆"), systemImage: "magnifyingglass") }.keyboardShortcut("f", modifiers: [.command, .shift]).labelStyle(.titleAndIcon)
@@ -64,7 +63,7 @@ struct RecallRootView: View {
             if model.openAskRequested { section = .chat; model.openAskRequested = false }
         }
         .onChange(of: model.openAskRequested) { _, requested in if requested { section = .chat; model.openAskRequested = false } }
-        .onChange(of: model.reviewsRequested) { _, requested in if requested { section = .dailySummaries; model.reviewsRequested = false } }
+        .onChange(of: model.reviewsRequested) { _, requested in if requested { section = .today; DispatchQueue.main.async { model.reviewsRequested = false } } }
         .onReceive(NotificationCenter.default.publisher(for: .recallOpenAsk)) { _ in section = .chat }
         .onOpenURL { url in
             model.pendingEvidenceURL = url; model.resolveEvidenceURL()
@@ -80,11 +79,11 @@ struct RecallRootView: View {
             guard let target else { return }
             returnSection = section; model.showsTaskHistory = false
             switch target {
-            case .record: section = .timeline
+            case .record: section = .matters
             case .topic(let id): model.topicToOpen = id; section = .matters
-            case .daily(let id): model.dailyToOpen = id; section = .dailySummaries
-            case .review(let id): model.weeklyReportToOpen = id; section = .dailySummaries
-            case .reminder: section = .reminders
+            case .daily(let id): model.dailyToOpen = id; section = .today
+            case .review(let id): model.weeklyReportToOpen = id; section = .today
+            case .reminder: section = .today
             case .knowledge(let id): model.knowledgeToOpen = id; section = .matters
             }
         }
@@ -150,12 +149,21 @@ struct RecallRootView: View {
             noticeDismissal?.cancel()
         }
         .onReceive(NotificationCenter.default.publisher(for: .recallOpenReminders)) { _ in
-            section = .reminders
+            section = .today
         }
         .onReceive(NotificationCenter.default.publisher(for: .recallOpenWeeklyReview)) { note in
-            if let id = note.userInfo?["weeklyReportID"] as? String { model.weeklyReportToOpen = UUID(uuidString: id) }
-            section = .matters
+            if let id = note.userInfo?["weeklyReportID"] as? String { model.weeklyReportToOpen = UUID(uuidString: id); model.reviewsRequested = true }
+            section = .today
         }
+        .modifier(RecallCaptureEntryPoints())
+    }
+
+    private func importFilesPanel() {
+        let panel = NSOpenPanel(); panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.image, .pdf, .plainText, .text]
+        panel.message = RecallLocalization.both("选择图片、PDF 或文本文件。只保存识别出的文字，不复制原文件。", "Choose images, PDFs or text files. Only extracted text is kept; the file is not copied.")
+        guard panel.runModal() == .OK else { return }
+        model.importFiles(panel.urls)
     }
 
     @ToolbarContentBuilder
@@ -197,24 +205,23 @@ private struct RecallSidebarView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 25) {
                     Text("Recall").font(.system(size: 18, weight: .bold)).padding(.horizontal, 12).padding(.top, 14)
-                    sidebarGroup("回看", entries: [(.matters, "记忆", "square.stack.3d.up"), (.dailySummaries, "回顾", "calendar.badge.clock"), (.timeline, "时间线", "clock.arrow.circlepath")])
-                    sidebarGroup("行动", entries: [(.reminders, "提醒", "bell"), (.chat, "问一问", "bubble.left.and.bubble.right")])
-                    sidebarGroup("管理", entries: [(.rules, "记录管理", "checklist"), (.privacy, "设置", "gearshape")])
+                    sidebarGroup("", entries: [(.today, "今天", "sun.max"), (.matters, "记忆", "square.stack.3d.up"),
+                                               (.chat, "问一问", "bubble.left.and.bubble.right"), (.privacy, "设置", "gearshape")])
                     Spacer(minLength: 24)
                 }.padding(12)
             }.background(RecallPalette.sidebar)
     }
     private func sidebarGroup(_ title: String, entries: [(SidebarSection, String, String)]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(RecallLocalization.text(title)).font(.caption).foregroundStyle(RecallPalette.secondary).padding(.horizontal, 12).padding(.bottom, 5)
+            if !title.isEmpty { Text(RecallLocalization.text(title)).font(.caption).foregroundStyle(RecallPalette.secondary).padding(.horizontal, 12).padding(.bottom, 5) }
             ForEach(entries, id: \.0) { item in
                 Button { section = item.0 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: item.2).frame(width: 18)
                         Text(RecallLocalization.text(item.1)).fontWeight(section == item.0 ? .semibold : .regular)
                         Spacer(minLength: 0)
-                        if item.0 == .reminders && proposedReminderCount > 0 {
-                            Text("\(proposedReminderCount)").font(.caption.weight(.medium)).padding(.horizontal, 6).padding(.vertical, 2)
+                        if item.0 == .today && proposedReminderCount + model.state.attentionInbox.count > 0 {
+                            Text("\(proposedReminderCount + model.state.attentionInbox.count)").font(.caption.weight(.medium)).padding(.horizontal, 6).padding(.vertical, 2)
                                 .background(RecallPalette.surface, in: Capsule())
                         }
                     }.padding(.horizontal, 12).padding(.vertical, 10)
@@ -230,7 +237,7 @@ private struct RecallSidebarView: View {
 
 /// Renders the same sidebar and page without the OS compositor's split-view material layer.
 private struct RecallNavigationPreview: View {
-    @State private var section: SidebarSection? = .matters
+    @State private var section: SidebarSection? = .today
     var body: some View {
         HStack(spacing: 0) {
             RecallSidebarView(section: $section).frame(width: 196)
@@ -271,8 +278,32 @@ private struct DeletionUndoBanner: View {
     }
 }
 
+/// File drops and the briefing sheets, kept apart so the root body stays small enough to type-check.
+private struct RecallCaptureEntryPoints: ViewModifier {
+    @EnvironmentObject private var model: RecallAppModel
+    func body(content: Content) -> some View {
+        content
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            // Dropped files become text records; Recall never keeps a copy of the file.
+            Task { @MainActor in
+                var urls: [URL] = []
+                for provider in providers {
+                    if let url = try? await provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) as? URL { urls.append(url) }
+                    else if let data = try? await provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) { urls.append(url) }
+                }
+                model.importFiles(urls)
+            }
+            return true
+        }
+            .sheet(item: $model.lastTimeQuery) { LastTimeSheet(query: $0).environmentObject(model) }
+            .sheet(item: Binding(get: { model.meetingBriefToShow.map(MeetingBriefItem.init) }, set: { if $0 == nil { model.meetingBriefToShow = nil } })) {
+            MeetingBriefSheet(brief: $0.brief).environmentObject(model)
+        }
+    }
+}
+
 private enum SidebarSection: Hashable {
-    case matters, timeline, chat, dailySummaries, reminders, rules, privacy
+    case today, matters, chat, privacy
 }
 
 private struct NoticeBanner: View {
@@ -350,7 +381,7 @@ private struct TimelineDeletionRequest: Identifiable {
     let impact: MemoryDeletionImpact
 }
 
-private struct TimelineView: View {
+struct RecordTimelineView: View {
     @EnvironmentObject private var model: RecallAppModel
     var body: some View { TimelineContentView(workspace: model.timelineWorkspace) }
 }
@@ -1532,7 +1563,11 @@ extension RecallRootView {
         case "review-schedule", "review-schedule-saving": AnyView(ReviewScheduleEditor(schedule: ReviewSchedule(template: ReviewTemplate(kind: .personal)), previewSaving: name.hasSuffix("saving")))
         case "reminder-history", "reminder-history-empty": AnyView(RemindersView(initialTab: 2))
         case "reminder-history-hover": AnyView(RemindersView(initialTab: 2, previewHistoryHover: true))
-        case "timeline": AnyView(TimelineView())
+        case "timeline": AnyView(RecordTimelineView())
+        case "today": AnyView(TodayWorkspaceView())
+        case "today-offline": AnyView(ScrollView { OfflineDayCard().padding(24) })
+        case "settings-sensitive": AnyView(ScrollView { VStack(spacing: 14) { SensitiveContentSettings(); DiskEncryptionCard(); AttentionSettingsCard() }.padding(24) })
+        case "last-time": AnyView(LastTimeSheet(query: LastTimeQuery(title: "Atlas 发布计划", appName: "Synthetic Notes", records: [])))
         case "settings": AnyView(PrivacyAndModelView())
         case "appearance": AnyView(PrivacyAndModelView(initialCategory: "外观"))
         case "appearance-compact": AnyView(RecallSettingsPreview())

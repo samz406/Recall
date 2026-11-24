@@ -67,6 +67,23 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>仅在你开启“会前简报”后读取日程标题、时间和参会人，用于在会前汇总相关的本地记录。Recall 不会修改日历。</string>
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict><key>default</key><string>保存到 Recall</string></dict>
+            <key>NSMessage</key>
+            <string>saveToRecall</string>
+            <key>NSPortName</key>
+            <string>Recall</string>
+            <key>NSSendTypes</key>
+            <array><string>NSStringPboardType</string><string>public.utf8-plain-text</string></array>
+            <key>NSRequiredContext</key>
+            <dict/>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST
@@ -83,6 +100,8 @@ STABLE_REQUIREMENT='=designated => identifier "im.recall.app"'
 /usr/bin/codesign --force --sign - --identifier im.recall.app --requirements="$STABLE_REQUIREMENT" "$CONTENTS/MacOS/RecallApp"
 /usr/bin/codesign --force --sign - --identifier im.recall.app --requirements="$STABLE_REQUIREMENT" "$APP_BUNDLE"
 /usr/bin/codesign --verify --deep --strict "$APP_BUNDLE"
+# Make the "Save to Recall" Services entry visible without logging out.
+/System/Library/CoreServices/pbs -update >/dev/null 2>&1 || true
 open "$APP_BUNDLE"
 
 echo "Started $APP_BUNDLE"

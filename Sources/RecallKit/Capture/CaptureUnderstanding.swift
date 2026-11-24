@@ -153,7 +153,7 @@ public enum CaptureUnderstandingEngine {
         return MemoryKnowledgeEngine.version(of: copy, corrections: state.matterCorrections.filter { !$0.isTopicCompletion })
     }
     public static func eligible(_ source: CaptureRecord, in state: RecallState) -> Bool {
-        !source.ocrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !source.searchableText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && source.memoryDirective == nil && source.manualMatter == nil && source.isMemoryEvidenceArchive != true
             && source.eventTemplate != .dailyReview
             && !state.privacy.excludedBundleIdentifiers.contains(source.sourceBundleIdentifier ?? "")
@@ -188,6 +188,11 @@ public enum CaptureUnderstandingEngine {
                     text: String(characters[start..<min(start + 800, characters.count)]), speaker: speaker,
                     isReference: reference, confidence: confidence, capturedAt: capture.createdAt, contextOnly: contextOnly))
             }
+        }
+        // The user wrote the note, so it is the one block attributed to them on a screen record.
+        if let note = capture.userNote.map({ PrivacyEngine().redact($0).trimmingCharacters(in: .whitespacesAndNewlines) }), !note.isEmpty {
+            result.append(UnderstandingBlock(id: "\(capture.id.uuidString):note:0", text: "备注：" + String(note.prefix(800)), speaker: .user,
+                isReference: false, confidence: nil, capturedAt: capture.createdAt, contextOnly: contextOnly))
         }
         return result
     }

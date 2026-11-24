@@ -141,6 +141,12 @@ public struct RecallState: Codable, Sendable {
     public var personaProfileRevision = UUID()
     public var personaProfileVersion = 0
     public var rejectedPersonaEvidence: [String] = []
+    /// Outcome and duration only, newest last, capped. No review text or error detail.
+    public var reviewAttemptMetrics: [ReviewAttemptMetric] = []
+    public var attentionSettings = AttentionSettings()
+    /// Proactive notices that went past the daily budget wait here instead of interrupting.
+    public var attentionInbox: [AttentionNotice] = []
+    public var meetingBriefSettings = MeetingBriefSettings()
 
     public init(
         rules: [EventRule] = EventRule.defaults(),
@@ -218,6 +224,7 @@ public struct RecallState: Codable, Sendable {
         case pendingPersonaRefresh, personaTraitObservations, personaTraits
         case personaProfileSettings, personaRefreshJobs, personaProfileRevision, personaProfileVersion, rejectedPersonaEvidence
         case dismissedPersonaDimensions
+        case reviewAttemptMetrics, attentionSettings, attentionInbox, meetingBriefSettings
     }
 
     public init(from decoder: Decoder) throws {
@@ -276,6 +283,10 @@ public struct RecallState: Codable, Sendable {
         personaProfileVersion = try container.decodeIfPresent(Int.self, forKey: .personaProfileVersion) ?? 0
         rejectedPersonaEvidence = try container.decodeIfPresent([String].self, forKey: .rejectedPersonaEvidence) ?? []
         dismissedPersonaDimensions = try container.decodeIfPresent([PersonaDimension].self, forKey: .dismissedPersonaDimensions) ?? []
+        reviewAttemptMetrics = try container.decodeIfPresent([ReviewAttemptMetric].self, forKey: .reviewAttemptMetrics) ?? []
+        attentionSettings = try container.decodeIfPresent(AttentionSettings.self, forKey: .attentionSettings) ?? AttentionSettings()
+        attentionInbox = try container.decodeIfPresent([AttentionNotice].self, forKey: .attentionInbox) ?? []
+        meetingBriefSettings = try container.decodeIfPresent(MeetingBriefSettings.self, forKey: .meetingBriefSettings) ?? MeetingBriefSettings()
     }
 }
 
@@ -658,6 +669,10 @@ public actor FileMemoryStore {
             candidateCredentialID = id
             config.credentialReference = id.uuidString
             config.credentialRevision = max(config.credentialRevision, state.llmConfiguration.credentialRevision) + 1
+        } else if config.isLocalEndpoint && origin != LLMConfiguration.credentialOrigin(state.llmConfiguration.baseURLString) {
+            // A cloud key is never carried over to a local server: the reference is dropped, the key deleted after saving.
+            config.credentialReference = nil
+            config.credentialRevision = max(config.credentialRevision, state.llmConfiguration.credentialRevision) + 1
         } else if config.hasCredential && origin != LLMConfiguration.credentialOrigin(state.llmConfiguration.baseURLString) {
             throw CredentialError.endpointChanged
         }
@@ -669,8 +684,9 @@ public actor FileMemoryStore {
             if let candidateCredentialID { try? credentials.delete(candidateCredentialID) }
             throw error
         }
-        if candidateCredentialID != nil, before.llmConfiguration.hasCredential,
-           before.llmConfiguration.credentialID != config.credentialID {
+        if candidateCredentialID != nil || (config.credentialReference == nil && before.llmConfiguration.credentialReference != nil),
+           before.llmConfiguration.credentialReference != nil,
+           before.llmConfiguration.credentialID != config.credentialID || config.credentialReference == nil {
             try? credentials.delete(before.llmConfiguration.credentialID)
         }
     }

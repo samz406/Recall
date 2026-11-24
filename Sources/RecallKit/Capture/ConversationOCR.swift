@@ -22,6 +22,12 @@ public enum TextRecognitionContext: Sendable, Equatable {
         if scope == .selectedWindow, native.contains(where: app.contains) {
             return ["飞书", "lark", "feishu"].contains(where: app.contains) ? .leftAlignedMessaging : .messaging
         }
+        // A terminal, editor or IDE is a document whatever its title says: a window titled
+        // "claude …" or "chatgpt.com/…" in a terminal is not a chat to be split into speakers.
+        let documentApps = ["terminal", "iterm", "warp", "ghostty", "kitty", "alacritty", "wezterm", "hyper", "tabby",
+                            "xcode", "vscode", "visual studio code", "com.microsoft.vscode", "cursor", "todesktop", "zed", "jetbrains",
+                            "intellij", "pycharm", "webstorm", "goland", "android studio", "sublime", "textedit", "bbedit", "nova", "neovim", "macvim"]
+        if documentApps.contains(where: app.contains) { return .document }
         let identity = app + " " + (windowTitle ?? "").lowercased()
         return (native + ["messages", "slack", "teams", "discord", "chatgpt", "claude", "gemini", "perplexity"])
             .contains(where: identity.contains) ? .conversation : .document

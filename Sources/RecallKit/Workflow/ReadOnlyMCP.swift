@@ -7,9 +7,31 @@ public final class ReadOnlyMCPServer {
     private let token: String
     private var initialized = false
     private var ready = false
+    private var cached: (identity: FileIdentity, state: RecallState)?
     public init(storage: RecallStorage, token: String) { self.storage = storage; self.token = token }
+
+    /// Archive writes replace the file atomically, so any change gives it a new inode or modification time.
+    struct FileIdentity: Equatable {
+        var inode: UInt64, size: Int64, seconds: Int, nanoseconds: Int
+        init?(_ url: URL) {
+            var info = stat()
+            guard stat(url.path, &info) == 0 else { return nil }
+            inode = UInt64(info.st_ino); size = Int64(info.st_size)
+            seconds = Int(info.st_mtimespec.tv_sec); nanoseconds = Int(info.st_mtimespec.tv_nsec)
+        }
+    }
+
+    /// Every request checks the file; it is decoded again only when it changed. Revocation and deletion
+    /// both rewrite the archive, so they still apply to the very next request.
     private func snapshot() throws -> (RecallState, MCPGrant) {
-        let state = try ArchiveReliability.decode(Data(contentsOf: storage.stateURL))
+        guard let identity = FileIdentity(storage.stateURL) else { cached = nil; throw WorkflowError.denied }
+        let state: RecallState
+        if let cached, cached.identity == identity { state = cached.state }
+        else {
+            state = try ArchiveReliability.decode(Data(contentsOf: storage.stateURL))
+            // Keep the copy only if the file did not change while it was being read.
+            cached = FileIdentity(storage.stateURL) == identity ? (identity, state) : nil
+        }
         guard let grant = state.workflow.mcpGrant, !token.isEmpty, grant.token == token,
               grant.from <= grant.through else { throw WorkflowError.denied }
         return (state, grant)
@@ -62,7 +84,7 @@ public final class ReadOnlyMCPServer {
                 switch name {
                 case "search_records":
                     guard !query.isEmpty else { return rpcError(-32602, "A query is required") }
-                    let found = records.filter { ($0.correctedText ?? $0.ocrText).localizedCaseInsensitiveContains(query) }
+                    let found = records.filter { $0.searchableText.localizedCaseInsensitiveContains(query) }
                         .sorted { $0.createdAt > $1.createdAt }.prefix(limit)
                     text = found.map { MemoryReadText.searchRecord($0) }.joined(separator: "\n\n")
                     let matchingReviews = allowedReviews.filter { $0.items.contains { ($0.title + " " + $0.detail).localizedCaseInsensitiveContains(query) } }.prefix(limit)
@@ -91,7 +113,10 @@ public final class ReadOnlyMCPServer {
     public func run(input: FileHandle = .standardInput, output: FileHandle = .standardOutput) throws {
         var pending = Data()
         while true {
-            let chunk = try input.read(upToCount: 8192) ?? Data()
+            // A client keeps stdin open and waits for each reply before sending the next message.
+            // `availableData` returns as soon as any bytes arrive; a fixed-size read would wait for
+            // 8 KB or EOF and hang the handshake. Empty data means EOF.
+            let chunk = input.availableData
             if chunk.isEmpty { break }; pending.append(chunk)
             while let end = pending.firstIndex(of: 10) {
                 let frame = Data(pending[..<end]); pending.removeSubrange(...end)

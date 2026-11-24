@@ -15,15 +15,20 @@ extension RecallAppModel {
     func configureShortcuts() {
         guard !isLoadingSavedState, !isPreview, !isRecordingShortcut else { return }
         let record = GlobalShortcutBinding.load("record", fallback: .record), ask = GlobalShortcutBinding.load("ask", fallback: .ask)
-        let identity = "\(record)\(ask)"
+        let selection = GlobalShortcutBinding.load("saveSelection", fallback: .saveSelection)
+        let search = GlobalShortcutBinding.load("search", fallback: .search), lastTime = GlobalShortcutBinding.load("lastTime", fallback: .lastTime)
+        let identity = "\(record)\(ask)\(selection)\(search)\(lastTime)"
         guard shortcutConfigurationID != identity else { return }; shortcutConfigurationID = identity
-        shortcutsReady = globalShortcuts.configure(record: record, ask: ask, onRecord: { [weak self] in
-            guard let self, !self.isRecording, let rule = self.state.rules.first(where: { $0.template == .manualMoment && $0.isEnabled }) else { return }
-            self.record(rule: rule, backgroundFeedback: true)
-        }, onAsk: { [weak self] in
-            self?.openAskRequested = true
-            self?.openMainWindow?()
-        })
+        shortcutsReady = globalShortcuts.configure([
+            (.record, record, { [weak self] in
+                guard let self, !self.isRecording, let rule = self.state.rules.first(where: { $0.template == .manualMoment && $0.isEnabled }) else { return }
+                self.record(rule: rule, backgroundFeedback: true)
+            }),
+            (.ask, ask, { [weak self] in self?.openAskRequested = true; self?.openMainWindow?() }),
+            (.saveSelection, selection, { [weak self] in self?.saveFrontSelection() }),
+            (.search, search, { [weak self] in self?.showsGlobalSearch = true; self?.openMainWindow?() }),
+            (.lastTime, lastTime, { [weak self] in self?.showLastTime() })
+        ])
     }
     func setShortcutRecording(_ recording: Bool) {
         isRecordingShortcut = recording

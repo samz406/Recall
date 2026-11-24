@@ -94,7 +94,7 @@ public final class SQLiteIntelligenceIndex: @unchecked Sendable {
                 if try changed("captures_fts", column: "capture_id", id: id, payload: json(capture)) {
                     try insert(
                         "INSERT INTO captures_fts(capture_id, content, app_name, window_title, tags) VALUES (?, ?, ?, ?, ?);",
-                        [.text(id), .text(capture.ocrText), .text(capture.sourceAppName ?? ""), .text(capture.windowTitle ?? ""), .text(capture.tags.joined(separator: " "))]
+                        [.text(id), .text(capture.searchableText), .text(capture.sourceAppName ?? ""), .text(capture.windowTitle ?? ""), .text(capture.tags.joined(separator: " "))]
                     )
                     try writeTerms(for: capture)
                 } else if termDigests[id] == nil {
@@ -242,7 +242,7 @@ extension SQLiteIntelligenceIndex {
 
     private func writeTerms(for capture: CaptureRecord) throws {
         let id = capture.id.uuidString
-        let searchable = [capture.correctedText ?? capture.ocrText, capture.summary ?? "", capture.sourceAppName ?? "", capture.windowTitle ?? "", capture.tags.joined(separator: " ")]
+        let searchable = [capture.searchableText, capture.pageURL ?? "", capture.summary ?? "", capture.sourceAppName ?? "", capture.windowTitle ?? "", capture.tags.joined(separator: " ")]
             .joined(separator: " ")
         let digest = CaptureUnderstandingEngine.digest(searchable)
         guard termDigests[id] != digest else { return }

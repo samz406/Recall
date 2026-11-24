@@ -236,6 +236,9 @@ public struct MemoryKnowledgeEngine: Sendable {
         var correctedText: String?
         var understanding: CaptureUnderstanding?
         var sourceMessages: [SourceMessage]?
+        // Optional and omitted when nil, so existing source versions keep their hash.
+        var userNote: String?
+        var pageURL: String?
     }
     public init() {}
     public func canonicalConsolidation(day: Date, state: RecallState, fallback: IntelligenceConsolidation,
@@ -299,7 +302,7 @@ public struct MemoryKnowledgeEngine: Sendable {
         SourceSnapshot(text: capture.ocrText, recordedAt: capture.createdAt, title: capture.windowTitle,
             origin: capture.textOrigin, app: capture.sourceAppName, bundle: capture.sourceBundleIdentifier,
             note: capture.manualMatter, directive: capture.memoryDirective, correctedText: capture.correctedText, understanding: capture.understanding,
-            sourceMessages: capture.sourceMessages)
+            sourceMessages: capture.sourceMessages, userNote: capture.userNote, pageURL: capture.pageURL)
     }
 
     /// The same content that version() hashes, compared without serializing it on every preflight.

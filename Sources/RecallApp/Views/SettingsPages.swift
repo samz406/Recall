@@ -7,21 +7,29 @@ import UniformTypeIdentifiers
 struct EventRulesView: View {
     @EnvironmentObject private var model: RecallAppModel
     @State private var selectedID: UUID?
+    @State private var showsAdvanced = false
+    var embedded = false
     private var selected: EventRule? { model.state.rules.first { $0.id == selectedID } ?? model.state.rules.first }
+    /// Most people only need these three; the rest stay under "More templates".
+    private var visibleRules: [EventRule] {
+        model.state.rules.filter { showsAdvanced || $0.template.isEssential || $0.isEnabled || $0.id == selectedID }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            RecallPageHeader(title: "记录管理", subtitle: "选择何时记录、记录什么") {
-                Button(RecallLocalization.text("查看已保存记录")) { if let source = model.state.captures.first { model.destination = .record(source.id) } }.disabled(model.state.captures.isEmpty)
+            if !embedded {
+                RecallPageHeader(title: "记录管理", subtitle: "选择何时记录、记录什么") {
+                    Button(RecallLocalization.text("查看已保存记录")) { if let source = model.state.captures.first { model.destination = .record(source.id) } }.disabled(model.state.captures.isEmpty)
+                }
             }
             HStack(spacing: 12) {
                 RecallStatusBadge(title: "原图保留 " + retention(images: true))
                 RecallStatusBadge(title: "文本保留 " + retention(images: false))
                 RecallStatusBadge(title: model.state.rules.contains { $0.template == .enterKeyTrigger && $0.isEnabled } ? "裸 Enter 监听已启用" : "裸 Enter 监听关闭", warning: model.state.rules.contains { $0.template == .enterKeyTrigger && $0.isEnabled })
-            }.padding(.horizontal, 24).padding(.bottom, 16)
+            }.padding(.horizontal, embedded ? 0 : 24).padding(.bottom, 16)
             HStack(alignment: .top, spacing: 18) {
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(model.state.rules) { rule in
+                        ForEach(visibleRules) { rule in
                             HStack(spacing: 12) {
                                 Button { selectedID = rule.id } label: {
                                     VStack(alignment: .leading, spacing: 5) {
@@ -34,6 +42,8 @@ struct EventRulesView: View {
                             }.padding(14).background(selected?.id == rule.id ? RecallPalette.selected : RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
                                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(selected?.id == rule.id ? RecallPalette.accent : RecallPalette.border, lineWidth: 1))
                         }
+                        Button(showsAdvanced ? RecallLocalization.both("收起更多模板", "Hide more templates") : RecallLocalization.both("更多模板（高级）", "More templates (advanced)")) { showsAdvanced.toggle() }
+                            .buttonStyle(.plain).font(.caption).foregroundStyle(RecallPalette.accent).padding(.top, 4)
                     }
                 }.frame(width: 290).clipped()
                 ScrollView {
@@ -50,7 +60,9 @@ struct EventRulesView: View {
                         }.recallSurface().padding(.bottom, 24)
                     }
                 }.clipped()
-            }.padding(.horizontal, 24).padding(.bottom, 16)
+            }.padding(.horizontal, embedded ? 0 : 24).padding(.bottom, 16)
+            // Inside the settings scroll view a nested scroll needs a definite height.
+            .frame(minHeight: embedded ? 560 : nil)
         }
     }
     private func retention(images: Bool) -> String {
@@ -275,7 +287,7 @@ struct PrivacyAndModelView: View {
     @State private var showsDiagnosticSettings = false
     @State private var showsGovernance = false
     @State private var showsTime = false
-    private let categories = ["使用偏好", "隐私与采集", "模型连接", "每日回顾", "记忆整理", "外观", "本地诊断"]
+    private let categories = ["使用偏好", "记录管理", "隐私与采集", "模型连接", "每日回顾", "通知与打扰", "记忆整理", "外观", "本地诊断"]
 
     init(initialCategory: String = "隐私与采集") { _settingsCategory = State(initialValue: initialCategory) }
 
@@ -299,14 +311,19 @@ struct PrivacyAndModelView: View {
                     ScrollView {
                         if settingsCategory == "使用偏好" {
                             WorkflowSettingsView().padding(.bottom, 24)
+                        } else if settingsCategory == "记录管理" {
+                            EventRulesView(embedded: true).padding(.bottom, 24)
                         } else if settingsCategory == "外观" {
                             AppearanceSettingsView().padding(.bottom, 24)
                         } else {
                         VStack(alignment: .leading, spacing: 14) {
                             privacyStatus
                             privacyCard.id("隐私与采集")
+                            SensitiveContentSettings()
+                            DiskEncryptionCard()
                             modelCard.id("模型连接")
                             dailyCard.id("每日回顾")
+                            AttentionSettingsCard().id("通知与打扰")
                             DisclosureGroup(isExpanded: $showsMemorySettings) {
                                 VStack(alignment: .leading, spacing: 18) {
                                     CaptureUnderstandingSettingsView().environmentObject(model)
@@ -349,7 +366,7 @@ struct PrivacyAndModelView: View {
                     }.clipped().onChange(of: settingsCategory) { _, category in
                         if category == "记忆整理" { showsMemorySettings = true }
                         if category == "本地诊断" { showsDiagnosticSettings = true }
-                        if category != "外观" { withAnimation { proxy.scrollTo(category, anchor: .top) } }
+                        if category != "外观" && category != "记录管理" { withAnimation { proxy.scrollTo(category, anchor: .top) } }
                     }
                 }
             }.padding(.horizontal, 24).padding(.bottom, 16)
@@ -437,13 +454,22 @@ struct PrivacyAndModelView: View {
                     Text(model.state.llmConfiguration.provider.title).font(.subheadline.weight(.medium))
                     Text(model.state.llmConfiguration.model).font(.caption)
                     Text(model.state.llmConfiguration.baseURLString).font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(1).textSelection(.enabled)
-                    Text(!model.state.llmConfiguration.hasCredential ? "尚未配置凭据" : "连接已配置 · 凭据仅保存在本机").font(.caption).foregroundStyle(RecallPalette.secondary)
+                    Text(model.state.llmConfiguration.isLocalEndpoint ? RecallLocalization.both("本机模型 · 文字不离开这台 Mac", "On-device model · text stays on this Mac") : !model.state.llmConfiguration.hasCredential ? "尚未配置凭据" : "连接已配置 · 凭据仅保存在本机").font(.caption).foregroundStyle(RecallPalette.secondary)
                 }
                 Spacer(minLength: 0)
                 Button(RecallLocalization.text("删除凭据"), role: .destructive) { model.deleteModelKey() }
                 Button(RecallLocalization.text("编辑")) { activeConfiguration = model.state.llmConfiguration; savedKeyExists = activeConfiguration.hasCredential; isEditingModelConnection = true }
             }
             RecallSwitchRow(title: "允许发送脱敏文本", detail: "关闭后，问一问使用本地摘录；模型回顾和自动理解会暂停。", isOn: privacyBinding(\.cloudUseEnabled))
+            Divider()
+            LocalModelPicker { server, name in
+                var configuration = LLMConfiguration(provider: .openAICompatible, baseURLString: server.baseURL, model: name)
+                configuration.maxOutputTokens = model.state.llmConfiguration.maxOutputTokens
+                activeConfiguration = configuration
+                model.saveModelConnection(configuration: configuration, apiKey: "", excludedBundleIdentifiers: model.state.privacy.excludedBundleIdentifiers)
+            }
+            Divider()
+            ReviewReliabilityCard()
         }.recallSurface()
     }
     private var dailyCard: some View {
