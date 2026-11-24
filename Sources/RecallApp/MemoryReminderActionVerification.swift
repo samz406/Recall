@@ -188,7 +188,7 @@ extension RecallLayoutPreviews {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
         let date = calendar.date(from: DateComponents(year: 2026, month: 12, day: 1, hour: 16, minute: 45))!
         let nextYear = calendar.date(from: DateComponents(year: 2027, month: 1, day: 5))!
-        let moved = ReminderDateTimeField.moving(date, to: nextYear, calendar: calendar)
+        let moved = CalendarDateTimeField.moving(date, to: nextYear, calendar: calendar)
         let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: moved)
         guard parts.year == 2027, parts.month == 1, parts.day == 5, parts.hour == 16, parts.minute == 45 else {
             throw MemoryReminderFailure.failed("更换提醒日期改变了时刻或年份")

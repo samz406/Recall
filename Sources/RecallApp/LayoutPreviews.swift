@@ -97,7 +97,7 @@ enum RecallLayoutPreviews {
         while model.isBuildingMatters { try await Task.sleep(for: .milliseconds(10)) }
         let defaults = UserDefaults(suiteName: "im.recall.synthetic-layout")!
         defer { defaults.removePersistentDomain(forName: "im.recall.synthetic-layout") }
-        let names = ["global-search", "global-search-results", "global-search-dates", "global-search-calendar", "archive-recovery", "archive-safety", "record-retention", "preferences", "first-moment", "sample", "daily", "daily-long", "daily-calendar", "daily-calendar-missing", "daily-calendar-empty", "topics", "topic-detail", "period", "period-stale", "period-work", "period-work-sources", "period-work-empty", "review-schedule", "review-schedule-saving", "knowledge", "knowledge-empty", "knowledge-many", "knowledge-persona", "knowledge-persona-kept", "knowledge-persona-paused", "knowledge-persona-failed", "persona-evidence", "rules", "reminders", "reminder-new", "reminder-source-manual", "reminder-source-manual-long", "reminder-source-missing", "reminder-source-single", "reminder-source-multiple", "reminder-calendar", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "chat-busy", "chat-sources", "navigation", "today", "today-offline", "settings-sensitive", "last-time"]
+        let names = ["global-search", "global-search-results", "global-search-dates", "global-search-calendar", "archive-recovery", "archive-safety", "record-retention", "preferences", "first-moment", "sample", "daily", "daily-long", "daily-calendar", "daily-calendar-missing", "daily-calendar-empty", "topics", "topic-detail", "period", "period-stale", "period-work", "period-work-sources", "period-work-empty", "review-schedule", "review-schedule-saving", "knowledge", "knowledge-empty", "knowledge-many", "knowledge-persona", "knowledge-persona-kept", "knowledge-persona-paused", "knowledge-persona-failed", "persona-evidence", "rules", "reminders", "reminder-new", "reminder-source-manual", "reminder-source-manual-long", "reminder-source-missing", "reminder-source-single", "reminder-source-multiple", "reminder-calendar", "reminder-history", "reminder-history-hover", "reminder-history-empty", "timeline", "settings", "appearance", "appearance-compact", "model-editor", "model-editor-new", "model-editor-success", "model-editor-failure", "chat", "chat-empty", "chat-busy", "chat-sources", "navigation", "navigation-timeline-detail", "today", "today-offline", "settings-sensitive", "last-time"]
         for mode in ["wide", "narrow", "dark", "english"] {
             UserDefaults.standard.set(mode == "english" ? "en" : "zh-Hans", forKey: RecallLocalization.languageKey)
             let width: CGFloat = mode == "narrow" ? 780 : 1050
@@ -142,7 +142,10 @@ enum RecallLayoutPreviews {
                         detail: "这是合成的完整说明：方案、实现与发布分别记录状态，内容自然换行，不截断标题，也不重复标题。保留原始记录用于后续核对。", evidenceIDs: [proof.id]) }
                     if let i = model.state.dailySummaries.firstIndex(where: { $0.id == first.id }) { model.state.dailySummaries[i].items += extra }
                 }
-                let pageWidth: CGFloat = name == "navigation" ? width + 196 : (name == "appearance-compact" ? 620 : (name.hasPrefix("model-editor") ? 700 : width))
+                let isNavigation = name.hasPrefix("navigation")
+                let opensTimelineDetail = name == "navigation-timeline-detail"
+                let timelineQuery = model.timelineWorkspace.query
+                let pageWidth: CGFloat = isNavigation ? max(980, width + 196) : (name == "appearance-compact" ? 620 : (name.hasPrefix("model-editor") ? 700 : width))
                 let pageHeight: CGFloat = name.hasPrefix("model-editor") ? min(744, (NSScreen.main?.visibleFrame.height ?? 900) - 48) : (name == "topic-detail" ? 430 : (name == "appearance-compact" ? 560 : 740))
                 let intrinsic = name.hasPrefix("reminder-source-")
                 let page = RecallRootView.previewPage(name)
@@ -152,16 +155,26 @@ enum RecallLayoutPreviews {
                 let host = NSHostingView(rootView: page)
                 let size = intrinsic ? host.fittingSize : NSSize(width: pageWidth, height: pageHeight)
                 if intrinsic { print("LAYOUT: \(mode)-\(name) \(Int(size.width)) × \(Int(size.height))") }
-                let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+                let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: opensTimelineDetail ? [.titled, .resizable] : [.borderless], backing: .buffered, defer: false)
                 window.appearance = NSAppearance(named: mode == "dark" ? .darkAqua : .aqua)
                 window.contentView = host; window.makeKeyAndOrderFront(nil)
-                try await Task.sleep(for: .milliseconds(name == "navigation" ? 600 : 150))
+                if opensTimelineDetail, let record = model.state.captures.first {
+                    try await Task.sleep(for: .milliseconds(150))
+                    model.timelineWorkspace.query.searchText = "Synthetic filter with no matching records"
+                    model.destination = .record(record.id)
+                }
+                try await Task.sleep(for: .milliseconds(isNavigation ? 600 : 150))
+                if opensTimelineDetail && model.timelineWorkspace.query.isSearching { throw PreviewFailure.timelineDestinationNotOpened }
                 host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
                 guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw PreviewFailure.noImage }
                 host.cacheDisplay(in: host.bounds, to: bitmap)
                 guard let data = bitmap.representation(using: .png, properties: [:]), data.count > 1000 else { throw PreviewFailure.noImage }
                 try data.write(to: directory.appendingPathComponent(mode + "-" + name + ".png"))
                 window.orderOut(nil)
+                if opensTimelineDetail {
+                    model.destination = nil
+                    model.timelineWorkspace.query = timelineQuery
+                }
                 model.state = saved
                 model.isThinking = savedThinking
                 model.weeklyReportToOpen = savedReportSelection
@@ -169,6 +182,6 @@ enum RecallLayoutPreviews {
         }
         print("PASS: rendered \(names.count * 4) native SwiftUI page previews (wide, minimum detail width, compact settings and dark appearance)")
     }
-    private enum PreviewFailure: Error { case noImage }
+    private enum PreviewFailure: Error { case noImage, timelineDestinationNotOpened }
 }
 

@@ -37,8 +37,12 @@ struct TimelineCalendarPopover: View {
         return reviewDays.contains(day) ? .saved : .missing
     }
     private var monthTitle: String {
-        let parts = calendar.dateComponents([.year, .month], from: displayedMonth)
-        return "\(parts.year ?? 0)年 \(parts.month ?? 1)月"
+        displayedMonth.formatted(.dateTime.locale(RecallLocalization.locale).year().month(.wide))
+    }
+    private var weekdaySymbols: [String] {
+        var localizedCalendar = calendar
+        localizedCalendar.locale = RecallLocalization.locale
+        return RecallLocalization.isEnglish ? localizedCalendar.shortStandaloneWeekdaySymbols : localizedCalendar.veryShortStandaloneWeekdaySymbols
     }
     private var days: [Date] {
         let first = calendar.dateInterval(of: .month, for: displayedMonth)?.start ?? displayedMonth
@@ -63,15 +67,15 @@ struct TimelineCalendarPopover: View {
                     .font(.system(size: 20, weight: .medium))
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
-                monthButton(offset: -1, symbol: "chevron.up", title: "上个月")
+                monthButton(offset: -1, symbol: "chevron.up", title: RecallLocalization.both("上个月", "Previous month"))
                     .disabled(!canMoveBack)
-                monthButton(offset: 1, symbol: "chevron.down", title: "下个月")
+                monthButton(offset: 1, symbol: "chevron.down", title: RecallLocalization.both("下个月", "Next month"))
                     .disabled(!canMoveForward)
             }
             .padding(.horizontal, 8)
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 0), count: 7), spacing: 4) {
-                ForEach(Array(["日", "一", "二", "三", "四", "五", "六"].enumerated()), id: \.offset) { _, label in
+                ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { _, label in
                     Text(label)
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(RecallPalette.secondary)
@@ -124,7 +128,8 @@ struct TimelineCalendarPopover: View {
         let isTooEarly = earliestDay.map { calendar.startOfDay(for: day) < $0 } ?? false
         let status = reviewStatus(on: day)
         let dayColor = isCurrentMonth && !isTooLate && !isTooEarly ? (status?.color ?? RecallPalette.text) : RecallPalette.secondary.opacity(0.6)
-        let description = ([day.formatted(date: .complete, time: .omitted)] + (status.map { [$0.title] } ?? [])).joined(separator: " · ")
+        let dayLabel = day.formatted(.dateTime.locale(RecallLocalization.locale).year().month(.wide).day().weekday(.wide))
+        let description = ([dayLabel] + (status.map { [$0.title] } ?? [])).joined(separator: " · ")
         let accessibilityStatus = [isSelected ? RecallLocalization.both("已选择", "Selected") : nil,
                                    isToday ? RecallLocalization.both("今天", "Today") : nil, status?.title].compactMap { $0 }.joined(separator: " · ")
         return Button {
@@ -150,7 +155,7 @@ struct TimelineCalendarPopover: View {
         }
         .buttonStyle(.plain)
         .disabled(isTooLate || isTooEarly)
-        .accessibilityLabel(day.formatted(.dateTime.year().month().day().weekday(.wide)))
+        .accessibilityLabel(dayLabel)
         .accessibilityValue(accessibilityStatus)
         .help(description)
     }

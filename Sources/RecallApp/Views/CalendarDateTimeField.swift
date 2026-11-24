@@ -1,29 +1,33 @@
 import SwiftUI
 import RecallKit
 
-/// Shared month grid with the timeline, but future days are allowed and the chosen clock time is retained.
-struct ReminderDateTimeField: View {
+/// Chooses a day in Recall's month grid and lets the user edit the clock time separately.
+struct CalendarDateTimeField: View {
+    let title: String
     @Binding var date: Date
+    var earliestDay: Date? = nil
     @State private var showsCalendar = false
 
     var body: some View {
         HStack(spacing: 12) {
-            Text(RecallLocalization.text("提醒时间"))
+            Text(title)
             Button { showsCalendar.toggle() } label: {
-                Label(date.formatted(date: .abbreviated, time: .omitted), systemImage: "calendar")
+                Label(date.formatted(.dateTime.locale(RecallLocalization.locale).year().month(.abbreviated).day()), systemImage: "calendar")
                     .foregroundStyle(RecallPalette.accent)
             }
             .buttonStyle(.bordered)
-            .accessibilityLabel(RecallLocalization.both("选择提醒日期", "Choose reminder date"))
+            .accessibilityLabel(RecallLocalization.both("\(title) · 日期", "\(title), date"))
+            .accessibilityValue(date.formatted(.dateTime.locale(RecallLocalization.locale).year().month(.wide).day()))
             .popover(isPresented: $showsCalendar) {
-                TimelineCalendarPopover(selectedDay: date, earliestDay: .now, latestDay: nil) { day in
+                TimelineCalendarPopover(selectedDay: date, earliestDay: earliestDay, latestDay: nil) { day in
                     date = Self.moving(date, to: day)
                     showsCalendar = false
                 }
             }
-            DatePicker(RecallLocalization.both("时间", "Time"), selection: $date, displayedComponents: .hourAndMinute)
+            let timeLabel = RecallLocalization.both("\(title) · 时刻", "\(title), time")
+            DatePicker(timeLabel, selection: $date, displayedComponents: .hourAndMinute)
                 .datePickerStyle(.field).labelsHidden().fixedSize()
-                .accessibilityLabel(RecallLocalization.both("提醒时刻", "Reminder time"))
+                .accessibilityLabel(timeLabel)
             Spacer(minLength: 0)
         }
     }

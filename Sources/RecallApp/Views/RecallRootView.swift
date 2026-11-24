@@ -288,8 +288,14 @@ private struct RecallCaptureEntryPoints: ViewModifier {
             Task { @MainActor in
                 var urls: [URL] = []
                 for provider in providers {
-                    if let url = try? await provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) as? URL { urls.append(url) }
-                    else if let data = try? await provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) { urls.append(url) }
+                    // Convert the provider's non-Sendable object before returning to the main actor.
+                    let url: URL? = await withCheckedContinuation { continuation in
+                        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { @Sendable item, error in
+                            let url = (item as? URL) ?? (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
+                            continuation.resume(returning: error == nil ? url : nil)
+                        }
+                    }
+                    if let url { urls.append(url) }
                 }
                 model.importFiles(urls)
             }
@@ -398,6 +404,7 @@ private struct TimelineContentView: View {
     @State private var selectedCaptureIDs: Set<UUID> = []
     @State private var deletionRequest: TimelineDeletionRequest?
     @State private var captureShowingDetail: CaptureRecord?
+    @State private var recordToScroll: UUID?
 
     private var selectedDay: Date {
         get { workspace.query.day }
@@ -420,6 +427,63 @@ private struct TimelineContentView: View {
     private var isSearching: Bool { workspace.query.isSearching }
 
     var body: some View {
+        GeometryReader { viewport in
+            // Keep the record detail inside the timeline's assigned width so it cannot resize the sidebar.
+            let minimumTimelineWidth: CGFloat = RecallLocalization.isEnglish ? 600 : 560
+            let availableDetailWidth = viewport.size.width - minimumTimelineWidth
+            let showsInline = availableDetailWidth >= 400
+            let detailWidth = showsInline ? min(500, availableDetailWidth) : viewport.size.width
+            let showsDetail = captureShowingDetail != nil
+            let timelineWidth = showsDetail && showsInline ? viewport.size.width - detailWidth : viewport.size.width
+            let coversTimeline = showsDetail && !showsInline
+
+            ZStack(alignment: .trailing) {
+                timeline
+                    .frame(width: timelineWidth, height: viewport.size.height, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .disabled(coversTimeline)
+                    .accessibilityHidden(coversTimeline)
+                if let capture = captureShowingDetail {
+                    CaptureDetailSheet(capture: capture, embedded: true, close: { captureShowingDetail = nil })
+                        .frame(width: detailWidth, height: viewport.size.height, alignment: .topLeading)
+                        .background(RecallPalette.background)
+                        .overlay(alignment: .leading) {
+                            if showsInline { Rectangle().fill(RecallPalette.border).frame(width: 1) }
+                        }
+                }
+            }
+            .clipped()
+        }
+        .onAppear {
+            openRequestedRecord()
+            updateGrouping()
+            visibleDayCount = max(visibleDayCount, (availableDayOptions.firstIndex { $0.day == selectedDay } ?? 0) + 1)
+        }
+        .onChange(of: model.navigationRevision) { _, _ in openRequestedRecord() }
+        .onChange(of: collapseDuplicates) { _, _ in updateGrouping() }
+        .onChange(of: isManaging) { _, _ in updateGrouping() }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.NSSystemTimeZoneDidChange)) { _ in
+            workspace.update(captures: model.state.captures)
+        }
+        .onChange(of: workspace.sourceRevision) { _, _ in
+            selectedCaptureIDs.formIntersection(Set(model.state.captures.map(\.id)))
+            if let capture = captureShowingDetail {
+                captureShowingDetail = model.state.captures.first { $0.id == capture.id }
+            }
+        }
+        .sheet(item: $deletionRequest) { request in
+            CaptureDeletionSheet(
+                captures: request.captures,
+                impact: request.impact
+            ) { reason, suppressSimilar in
+                model.deleteCaptures(request.captures, reason: reason, suppressSimilar: suppressSimilar)
+                selectedCaptureIDs.subtract(request.captures.map(\.id))
+                if selectedCaptureIDs.isEmpty { isManaging = false }
+            }
+        }
+    }
+
+    private var timeline: some View {
         VStack(spacing: 0) {
             timelineHeader
             toolbar.padding(.horizontal, 24).padding(.bottom, 16)
@@ -451,62 +515,38 @@ private struct TimelineContentView: View {
                                         }
                                     }
                                 }.padding(.bottom, 24)
-                            }.clipped().onAppear { locateRequestedRecord(proxy: proxy) }
-                                .onChange(of: model.navigationRevision) { _, _ in locateRequestedRecord(proxy: proxy) }
+                            }
+                            .clipped()
+                            .onAppear { scrollToRequestedRecord(proxy: proxy) }
+                            .onChange(of: recordToScroll) { _, _ in scrollToRequestedRecord(proxy: proxy) }
                         }
                     }
                 }.padding(.horizontal, 24).padding(.bottom, 16)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onAppear {
-            if case .record(let id) = model.destination, let source = model.state.captures.first(where: { $0.id == id }) {
-                selectedDay = Calendar.current.startOfDay(for: source.createdAt)
-            }
-            updateGrouping()
-            visibleDayCount = max(visibleDayCount, (availableDayOptions.firstIndex { $0.day == selectedDay } ?? 0) + 1)
-        }
-        .onChange(of: model.navigationRevision) { _, _ in
-            let target = model.destination
-            if case .record(let id) = target, let source = model.state.captures.first(where: { $0.id == id }) { selectedDay = Calendar.current.startOfDay(for: source.createdAt) }
-        }
-        .onChange(of: collapseDuplicates) { _, _ in updateGrouping() }
-        .onChange(of: isManaging) { _, _ in updateGrouping() }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.NSSystemTimeZoneDidChange)) { _ in
-            workspace.update(captures: model.state.captures)
-        }
         .safeAreaInset(edge: .bottom) {
             if isManaging { selectionBar }
         }
-        .inspector(isPresented: Binding(get: { captureShowingDetail != nil }, set: { if !$0 { captureShowingDetail = nil } })) {
-            if let capture = captureShowingDetail {
-                CaptureDetailSheet(capture: capture, embedded: true, close: { captureShowingDetail = nil }).environmentObject(model)
-                    .inspectorColumnWidth(min: 440, ideal: 500, max: 620)
-            }
-        }
-        .onChange(of: workspace.sourceRevision) { _, _ in
-            selectedCaptureIDs.formIntersection(Set(model.state.captures.map(\.id)))
-            if let capture = captureShowingDetail {
-                captureShowingDetail = model.state.captures.first { $0.id == capture.id }
-            }
-        }
-        .sheet(item: $deletionRequest) { request in
-            CaptureDeletionSheet(
-                captures: request.captures,
-                impact: request.impact
-            ) { reason, suppressSimilar in
-                model.deleteCaptures(request.captures, reason: reason, suppressSimilar: suppressSimilar)
-                selectedCaptureIDs.subtract(request.captures.map(\.id))
-                if selectedCaptureIDs.isEmpty { isManaging = false }
-            }
-        }
     }
 
-    private func locateRequestedRecord(proxy: ScrollViewProxy) {
+    private func openRequestedRecord() {
         guard case .record(let id) = model.destination,
               let capture = model.state.captures.first(where: { $0.id == id }) else { return }
-        selectedDay = Calendar.current.startOfDay(for: capture.createdAt); sourceFilter = ""; searchText = ""
-        collapseDuplicates = false; updateGrouping(); captureShowingDetail = capture
+        var query = workspace.query
+        query.day = Calendar.current.startOfDay(for: capture.createdAt)
+        query.source = ""
+        query.searchText = ""
+        query.collapseDuplicates = false
+        collapseDuplicates = false
+        workspace.query = query
+        captureShowingDetail = capture
+        recordToScroll = id
+    }
+
+    private func scrollToRequestedRecord(proxy: ScrollViewProxy) {
+        guard let id = recordToScroll, captures.contains(where: { $0.id == id }) else { return }
+        recordToScroll = nil
         DispatchQueue.main.async { proxy.scrollTo(id, anchor: .center) }
     }
     private var timelineHeader: some View {
@@ -1546,6 +1586,7 @@ extension RecallRootView {
         case "first-moment": AnyView(FirstMomentView())
         case "sample": AnyView(FirstMomentView(sampleMode: true))
         case "navigation": AnyView(RecallNavigationPreview())
+        case "navigation-timeline-detail": AnyView(RecallRootView())
         case "daily", "daily-long": AnyView(DailySummariesView())
         case "daily-calendar", "daily-calendar-missing", "daily-calendar-empty":
             AnyView(DailyReviewCalendarPreview(missingSelection: name.hasSuffix("missing"), empty: name.hasSuffix("empty")))

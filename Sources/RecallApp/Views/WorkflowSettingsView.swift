@@ -135,8 +135,8 @@ struct WorkflowSettingsView: View {
                 TextField(w("客户端名称（须与 MCP clientInfo.name 一致）", "Client name (must match MCP clientInfo.name)"), text: $client).textFieldStyle(.roundedBorder)
                 Text(w("预填的名称是常见值；若连接被拒绝，以客户端实际报告的名称为准修改。", "The prefilled name is a common value. If the connection is refused, change it to the name the client actually reports."))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
-                DatePicker(w("从", "From"), selection: $from)
-                DatePicker(w("至", "Through"), selection: $through)
+                CalendarDateTimeField(title: w("从", "From"), date: $from)
+                CalendarDateTimeField(title: w("至", "Through"), date: $through)
                 Picker(w("应用范围", "Application scope"), selection: $allowedApp) {
                     Text(w("全部可用来源", "All eligible sources")).tag("")
                     ForEach(apps, id: \.0) { Text($0.1).tag($0.0) }
