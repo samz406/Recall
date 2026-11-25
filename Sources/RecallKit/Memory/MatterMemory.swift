@@ -91,6 +91,8 @@ public struct MatterEvent: Identifiable, Equatable, Sendable {
     public var status: WorkEpisodeStatus
     public var evidenceIDs: [UUID]
     public var nextAction: String?
+    /// 每日回顾写下的“具体事情”标题，列表摘要优先用它，而不是带执行细节的 detail。
+    public var headline: String? = nil
     /// Verbatim source quotes. Empty for events that were not projected from a daily review.
     public var quotes: [String] = []
     public var sequence: Int = 0

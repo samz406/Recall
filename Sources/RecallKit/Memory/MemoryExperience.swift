@@ -3,6 +3,8 @@ import Foundation
 /// Reading a topic never requires a model call. Only saved, evidence-backed text is used here.
 public struct TopicReading: Sendable {
     public let overview: String
+    /// 一句话摘要：最新主题小结的首句，否则最近一件具体事情的标题。
+    public let headline: String
     public let records: [MatterEvent]
     public let points: [TopicReviewPoint]
     public let hasUpdatedSummary: Bool
@@ -22,6 +24,10 @@ public struct TopicReading: Sendable {
         let current = usable.map { $0.inputFingerprint == Self.fingerprint(file) && Set(file.evidenceIDs).isSubset(of: Set($0.sourceVersions.keys)) } ?? false
         let resolvedOverview = current ? (usable?.overview.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? file.latest.detail) : file.latest.detail
         overview = resolvedOverview
+        let summarySentence = (current ? usable?.overview : nil)?
+            .split(whereSeparator: { "。！？!?\n".contains($0) }).first.map(String.init)
+        let eventHeadline = file.latest.headline?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        headline = String((summarySentence ?? eventHeadline ?? file.latest.detail).prefix(60))
         if let usable, current { points = usable.points }
         else {
             // Select actual milestones; no generated explanations or guessed decisions.

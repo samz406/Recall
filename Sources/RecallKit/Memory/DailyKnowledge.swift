@@ -143,6 +143,7 @@ public struct DailyKnowledgeEngine: Sendable {
                 evidenceIDs: entry.sources.sorted { $0.uuidString < $1.uuidString },
                 nextAction: entry.item.section.canonical == .actions ? entry.item.title : nil)
             event.quotes = entry.knowledge.quotes
+            event.headline = entry.item.title
             event.sequence = 0
             var current = groups[key] ?? (topic, [])
             // The latest name wins as the display title.
