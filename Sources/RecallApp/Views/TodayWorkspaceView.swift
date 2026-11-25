@@ -72,6 +72,9 @@ private struct TodayOverview: View {
                     }
                 }
             }
+            if let latest = model.state.dailySummaries.max(by: { $0.day < $1.day }) {
+                recentReview(latest)
+            }
             if !commitments.isEmpty {
                 section(t("往来承诺", "Commitments"), detail: t("仅来自已理解的聊天记录；对象是会话窗口，不代表具体某人。", "Only from understood conversations. The counterpart is the conversation window, not a verified person.")) {
                     let iOwe = commitments.filter { $0.direction == .iOwe }, owed = commitments.filter { $0.direction == .owedToMe }
@@ -90,6 +93,41 @@ private struct TodayOverview: View {
         // A single reading column instead of lines that stretch to the window edge.
         .frame(maxWidth: 760, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The day's review is the other half of "where did I stop": the list says what is
+    /// still open, this says what actually happened. Read-only, from already saved text.
+    private func recentReview(_ summary: DailySummary) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(t("最近回顾", "Latest review")).font(.headline)
+                Text(summary.day.formatted(.dateTime.month().day().weekday()))
+                    .font(.caption).foregroundStyle(RecallPalette.secondary)
+                Spacer(minLength: 12)
+                Button(t("打开回顾", "Open review")) { model.destination = .daily(summary.id) }
+                    .buttonStyle(.plain).font(.caption).foregroundStyle(RecallPalette.accent)
+            }
+            let preview = reviewPreview(summary)
+            if !preview.isEmpty {
+                Text(preview)
+                    .font(.system(size: 14))
+                    .foregroundStyle(RecallPalette.text.opacity(0.85))
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }.recallSurface()
+    }
+
+    private func reviewPreview(_ summary: DailySummary) -> String {
+        let raw = summary.modelOverview.flatMap { $0.isEmpty ? nil : $0 } ?? summary.content
+        let cleaned = DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(
+            from: DailySummaryContentFormatter.removingCitationMarkers(from: raw)
+        )
+        return cleaned
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+            .joined(separator: " ")
     }
 
     /// The old footnote explained where the data came from. A count tells the
@@ -125,7 +163,12 @@ private struct TodayOverview: View {
                     .foregroundStyle(RecallPalette.secondary.opacity(0.7))
             }
             .padding(.vertical, 7)
-            .background(hoveredItemID == item.id ? RecallPalette.selected : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+            // Inset the highlight from the separators; flush edges read as cut lines.
+            .background {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(hoveredItemID == item.id ? RecallPalette.selected : Color.clear)
+                    .padding(.vertical, 3)
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

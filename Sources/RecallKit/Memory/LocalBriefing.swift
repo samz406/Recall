@@ -87,10 +87,12 @@ public enum LocalBriefing {
         let records = usable(state)
         var items: [ResumeItem] = []
         if let previous = records.filter({ $0.createdAt < today }).max(by: { $0.createdAt < $1.createdAt }) {
-            // The summary says what happened; a window title is often just the app name
-            // ("WeChat"), which told the reader nothing about where they stopped.
-            let title = previous.userNote ?? previous.summary ?? previous.windowTitle ?? RecallLocalization.both("上一条记录", "Last record")
-            items.append(ResumeItem(id: "last-" + previous.id.uuidString, kind: .lastRecord, title: String(title.prefix(90)),
+            let title = Self.resumeTitle(
+                userNote: previous.userNote,
+                summary: previous.summary,
+                windowTitle: previous.windowTitle
+            )
+            items.append(ResumeItem(id: "last-" + previous.id.uuidString, kind: .lastRecord, title: title,
                 detail: (previous.sourceAppName ?? "") + " · " + Self.relativeStamp(previous.createdAt),
                 destination: .record(previous.id), date: previous.createdAt))
         }
@@ -117,6 +119,35 @@ public enum LocalBriefing {
         }
         let rank: [ResumeItem.Kind: Int] = [.dueReminder: 0, .lastRecord: 1, .openTopic: 2, .waitingOnOthers: 3]
         return Array(items.sorted { rank[$0.kind]! == rank[$1.kind]! ? $0.date > $1.date : rank[$0.kind]! < rank[$1.kind]! }.prefix(5))
+    }
+
+    /// A resume row needs a title, and a chat reply is not one. Prefer text that
+    /// reads like a subject: a note the user wrote, then a short summary, then the
+    /// window name, and only then a trimmed prefix of a long summary.
+    static func resumeTitle(userNote: String?, summary: String?, windowTitle: String?) -> String {
+        let note = userNote?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !note.isEmpty { return note }
+        let summaryText = summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if isTitleLike(summaryText) { return summaryText }
+        let window = windowTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !window.isEmpty { return window }
+        if !summaryText.isEmpty { return truncatedAtClause(summaryText, limit: 40) }
+        return RecallLocalization.both("上一条记录", "Last record")
+    }
+
+    private static func isTitleLike(_ text: String) -> Bool {
+        guard !text.isEmpty, text.count <= 24 else { return false }
+        return !text.contains { "，。；！？、,.;!?".contains($0) }
+    }
+
+    /// Cut on a clause boundary so a long summary never ends mid-phrase.
+    private static func truncatedAtClause(_ text: String, limit: Int) -> String {
+        guard text.count > limit else { return text }
+        let head = String(text.prefix(limit))
+        if let cutoff = head.lastIndex(where: { "，。；！？、,.;!? ".contains($0) }), cutoff > head.startIndex {
+            return String(head[head.startIndex..<cutoff])
+        }
+        return String(text.prefix(limit - 1)) + "…"
     }
 
     /// "昨天 19:20" reads better on a resume card than a full calendar date.
