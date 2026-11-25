@@ -427,6 +427,19 @@ public actor FileMemoryStore {
                 let registry = TopicRegistry.migrated(from: restoredState)
                 if !registry.topics.isEmpty {
                     restoredState.topicRegistry = registry
+                    // 一次性改写现有引用：合并组、完成标记、主题小结都改挂到稳定 ID，
+                    // 界面里的查找不用再关心旧键。
+                    for i in restoredState.topicReviews.indices {
+                        restoredState.topicReviews[i].id = registry.rewritten(restoredState.topicReviews[i].id)
+                    }
+                    for i in restoredState.matterCorrections.indices {
+                        if let topicID = restoredState.matterCorrections[i].topicID {
+                            restoredState.matterCorrections[i].topicID = registry.rewritten(topicID)
+                        }
+                    }
+                    for i in restoredState.topicGroups.indices {
+                        restoredState.topicGroups[i].memberIDs = restoredState.topicGroups[i].memberIDs.map { registry.rewritten($0) }
+                    }
                     do { initialDigest = try Self.write(restoredState, encoder: encoder, to: storage.stateURL, expectedDigest: initialDigest) }
                     catch { credentialMaintenanceWarning = "Topic registry migration pending. Saved topics remain readable." }
                 }

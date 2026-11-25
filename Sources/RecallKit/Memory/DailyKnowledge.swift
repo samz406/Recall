@@ -143,7 +143,9 @@ public struct DailyKnowledgeEngine: Sendable {
         let recordedAt = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
         for entry in entries(in: state, alreadyCorrected: alreadyCorrected) where entry.knowledge.kind == .matter && entry.knowledge.ownedByUser {
             guard let topic = entry.knowledge.topic, !Self.topicKey(topic).isEmpty else { continue }
-            let key = "topic:" + Self.canonicalKey(topic, aliases: state.topicAliases)
+            // 登记表启用后主题 ID 不再由名字决定；名字只作为显示与匹配依据。
+            let key = state.topicRegistry.topic(forName: topic).map { "topic:" + $0.id.uuidString }
+                ?? "topic:" + Self.canonicalKey(topic, aliases: state.topicAliases)
             let earliest = entry.sources.compactMap { recordedAt[$0] }.min()
             var event = MatterEvent(id: Self.eventID(entry, key: key), title: topic,
                 detail: entry.item.detail.isEmpty ? entry.item.title : entry.item.title + "：" + entry.item.detail,

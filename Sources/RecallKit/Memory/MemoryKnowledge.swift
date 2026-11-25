@@ -445,7 +445,7 @@ public struct MemoryKnowledgeEngine: Sendable {
                 let evidence = event.evidenceIDs.compactMap { sourceID -> MemoryEvidence? in
                     guard let source = sources[sourceID] else { return nil }
                     if let correction = state.matterCorrections.last(where: {
-                        $0.isTopicCompletion && $0.topicID == file.id && $0.evidenceIDs.contains(sourceID)
+                        $0.isTopicCompletion && state.canonicalTopicID($0.topicID ?? "") == file.id && $0.evidenceIDs.contains(sourceID)
                             && event.id == file.latest.id && event.status == .completed
                             && Set(file.evidenceIDs).isSubset(of: Set($0.evidenceIDs)) && event.recordedAt <= $0.createdAt
                     }) {

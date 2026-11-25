@@ -56,6 +56,9 @@ public struct TopicRegistry: Codable, Equatable, Sendable {
         return topic(id: id)
     }
 
+    /// 把旧的 `topic:<键>` 引用改写成稳定 ID；不是旧键时原样返回。
+    public func rewritten(_ legacyID: String) -> String { canonicalID(legacyID) }
+
     /// 旧 ID 归一：`topic:<uuid>` 原样返回；旧键命中迁移表则返回新 ID；其余原样返回。
     public func canonicalID(_ id: String) -> String {
         guard id.hasPrefix("topic:") else { return id }

@@ -201,9 +201,14 @@ public struct MatterMemoryEngine: Sendable {
                 reviewedAt[key, default: [:]][day] = max(reviewedAt[key]?[day] ?? .distantPast, entry.summary.createdAt)
             }
         }
+        // 分桶用规范键（含别名映射）；主题 ID 优先取登记表里的稳定 ID。
+        func bucketKey(_ title: String) -> String { DailyKnowledgeEngine.canonicalKey(title, aliases: state.topicAliases) }
+        func fileID(_ key: String, title: String) -> String {
+            state.topicRegistry.topic(forName: title).map { "topic:" + $0.id.uuidString } ?? "topic:" + key
+        }
         var buckets: [String: (title: String, events: [MatterEvent])] = [:]
         func add(_ file: MatterFile, fromReview: Bool) {
-            let key = DailyKnowledgeEngine.topicKey(file.title)
+            let key = bucketKey(file.title)
             guard !key.isEmpty else { return }
             var bucket = buckets[key] ?? (file.title, [])
             if fromReview { bucket.title = file.title }
@@ -236,7 +241,7 @@ public struct MatterMemoryEngine: Sendable {
                 if $0.recordedAt != $1.recordedAt { return $0.recordedAt < $1.recordedAt }
                 return $0.sequence == $1.sequence ? $0.id.uuidString < $1.id.uuidString : $0.sequence < $1.sequence
             }
-            return state.applyingTopicCompletion(to: MatterFile(id: "topic:" + key, title: value.title, events: ordered))
+            return state.applyingTopicCompletion(to: MatterFile(id: fileID(key, title: value.title), title: value.title, events: ordered))
         }.sorted { $0.latest.date == $1.latest.date ? $0.id < $1.id : $0.latest.date > $1.latest.date }
     }
 
@@ -384,9 +389,12 @@ public struct MatterMemoryEngine: Sendable {
 
 public extension RecallState {
     /// A completion applies to the evidence the user saw. New evidence can reopen the topic.
+    /// 旧主题 ID（topic:key）归一为登记表里的稳定 ID；没有登记表时原样返回。
+    public func canonicalTopicID(_ id: String) -> String { topicRegistry.canonicalID(id) }
+
     func applyingTopicCompletion(to file: MatterFile) -> MatterFile {
         guard matterCorrections.last(where: {
-            $0.isTopicCompletion && $0.topicID == file.id
+            $0.isTopicCompletion && canonicalTopicID($0.topicID ?? "") == file.id
                 && Set(file.evidenceIDs).isSubset(of: Set($0.evidenceIDs))
                 && file.latest.recordedAt <= $0.createdAt
         }) != nil else { return file }
