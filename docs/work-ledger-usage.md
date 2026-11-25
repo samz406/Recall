@@ -14,7 +14,7 @@ This change implements the international workflow plan except distribution packa
 ## Local stdio MCP
 
 1. Build with the existing SwiftPM workflow: `swift build --product recall-cli`.
-2. In Preferences, enter the exact `clientInfo.name` used by your MCP client, select dates, an application or all eligible sources, and review access.
+2. In Settings → MCP, enter the exact `clientInfo.name` used by your MCP client, select dates, an application or all eligible sources, and review access.
 3. Authorize and choose Copy connection config. Select your actual compiled `recall-cli` executable. The copied configuration contains a token; share it only with the chosen local client.
 4. Start the MCP client. The command runs `recall-cli mcp --data-dir …` with `RECALL_MCP_TOKEN` in its environment. Do not put the token in command arguments or logs.
 5. Available tools: `search_records`, `get_record_excerpt`, and (if authorized) `get_daily_review`. Requests outside the grant, deleted sources and revoked grants are denied. Tools cannot write memory, schedule notifications, load images or access API credentials.

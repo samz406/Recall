@@ -1152,7 +1152,7 @@ private struct ChatView: View {
                 } else {
                     messageTimeline
                 }
-                if !model.isThinking && model.typingMessageID == nil {
+                if !model.isThinking {
                     ChatReadingColumn {
                         HStack(spacing: 8) {
                             ForEach(["总结本周进展", "我答应了谁什么事？", "上次讨论的结论是什么？"], id: \.self) { prompt in
@@ -1164,14 +1164,14 @@ private struct ChatView: View {
                 }
                 ChatComposer(
                     question: $question,
-                    isSending: model.isThinking || model.typingMessageID != nil,
+                    isSending: model.isThinking,
                     onSend: send
                 )
                 .zIndex(1)
             }
         }
         .onExitCommand {
-            if model.isThinking || model.typingMessageID != nil { model.stopChat() }
+            if model.isThinking { model.stopChat() }
         }
     }
 
@@ -1196,7 +1196,7 @@ private struct ChatView: View {
                 }
             }
         } label: { Label(RecallLocalization.text("范围：") + scopeTitle, systemImage: "line.3.horizontal.decrease") }
-            .disabled(model.isThinking || model.typingMessageID != nil).help(RecallLocalization.text("限制本次提问检索的记忆范围"))
+            .disabled(model.isThinking).help(RecallLocalization.text("限制本次提问检索的记忆范围"))
     }
     private func setRange(days: Int) {
         model.chatScope = MemoryQueryScope(recentDays: days)
@@ -1218,13 +1218,11 @@ private struct ChatView: View {
                             ForEach(model.state.messages.filter { $0.role != .system || $0.id == model.state.messages.last?.id }) { message in
                                 RecallMessageCard(
                                     message: message,
-                                    displayedContent: message.id == model.typingMessageID ? model.typingMessageContent : message.content,
-                                    isTyping: message.id == model.typingMessageID,
                                     userMaxWidth: min(ChatLayout.readingWidth, max(100, viewport.size.width - 2 * (ChatLayout.edgeInset + ChatLayout.avatarGutter))) * 0.7
                                 )
                                 .id(message.id)
                             }
-                            if model.isThinking && model.typingMessageID == nil {
+                            if model.isThinking {
                                 ThinkingCard()
                             }
                             Color.clear
@@ -1346,39 +1344,33 @@ private struct ChatWelcomeView: View {
 private struct RecallMessageCard: View {
     @EnvironmentObject private var model: RecallAppModel
     let message: ConversationMessage
-    let displayedContent: String
-    let isTyping: Bool
     var userMaxWidth: CGFloat = ChatLayout.readingWidth * 0.7
     var body: some View {
         Group {
             if message.role == .system {
-                Text(displayedContent).font(.caption).foregroundStyle(RecallPalette.secondary).frame(maxWidth: .infinity).padding(.vertical, 8)
+                Text(message.content).font(.caption).foregroundStyle(RecallPalette.secondary).frame(maxWidth: .infinity).padding(.vertical, 8)
             } else if message.role == .user {
                 HStack {
                     Spacer(minLength: 30)
-                    Text(displayedContent).font(RecallTypography.body).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    Text(message.content).font(RecallTypography.body).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 14).padding(.vertical, 10)
                         .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 14))
                         .frame(maxWidth: userMaxWidth, alignment: .trailing)
                 }.frame(maxWidth: .infinity, alignment: .trailing)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
-                    MarkdownParagraphText(markdown: isTyping ? displayedContent : ChatResponseFormatter().format(displayedContent))
-                    if isTyping {
-                        ChatThinkingWave()
-                    } else {
-                        ChatAnswerSources(workspace: model.chatSources, citations: message.citations)
-                        HStack(spacing: 14) {
-                            Button(RecallLocalization.text("复制")) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.content, forType: .string) }
-                            Menu {
-                                Button(RecallLocalization.text("复制并附来源")) { model.exportAnswer(message, toFile: false) }
-                                Button(RecallLocalization.text("导出 Markdown")) { model.exportAnswer(message, toFile: true) }
-                            } label: { Image(systemName: "square.and.arrow.up") }.disabled(message.citations.isEmpty)
-                            Button(RecallLocalization.text("重新回答")) { if let index = model.state.messages.firstIndex(where: { $0.id == message.id }), let question = model.state.messages[..<index].last(where: { $0.role == .user })?.content { model.ask(question) } }.disabled(model.isThinking || model.typingMessageID != nil)
-                            Button { model.rateChatMessage(message, helpful: true) } label: { Image(systemName: message.helpful == true ? "hand.thumbsup.fill" : "hand.thumbsup") }.help(RecallLocalization.text("回答有帮助"))
-                            Button { model.rateChatMessage(message, helpful: false) } label: { Image(systemName: message.helpful == false ? "hand.thumbsdown.fill" : "hand.thumbsdown") }.help(RecallLocalization.text("回答不准确"))
-                        }.buttonStyle(.plain).font(.caption).foregroundStyle(RecallPalette.secondary)
-                    }
+                    MarkdownParagraphText(markdown: ChatResponseFormatter().format(message.content))
+                    ChatAnswerSources(workspace: model.chatSources, citations: message.citations)
+                    HStack(spacing: 14) {
+                        Button(RecallLocalization.text("复制")) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.content, forType: .string) }
+                        Menu {
+                            Button(RecallLocalization.text("复制并附来源")) { model.exportAnswer(message, toFile: false) }
+                            Button(RecallLocalization.text("导出 Markdown")) { model.exportAnswer(message, toFile: true) }
+                        } label: { Image(systemName: "square.and.arrow.up") }.disabled(message.citations.isEmpty)
+                        Button(RecallLocalization.text("重新回答")) { if let index = model.state.messages.firstIndex(where: { $0.id == message.id }), let question = model.state.messages[..<index].last(where: { $0.role == .user })?.content { model.ask(question) } }.disabled(model.isThinking)
+                        Button { model.rateChatMessage(message, helpful: true) } label: { Image(systemName: message.helpful == true ? "hand.thumbsup.fill" : "hand.thumbsup") }.help(RecallLocalization.text("回答有帮助"))
+                        Button { model.rateChatMessage(message, helpful: false) } label: { Image(systemName: message.helpful == false ? "hand.thumbsdown.fill" : "hand.thumbsdown") }.help(RecallLocalization.text("回答不准确"))
+                    }.buttonStyle(.plain).font(.caption).foregroundStyle(RecallPalette.secondary)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                     .overlay(alignment: .topLeading) {
                         Image(systemName: "sparkle").font(.caption.weight(.semibold)).foregroundStyle(RecallPalette.onAccent)

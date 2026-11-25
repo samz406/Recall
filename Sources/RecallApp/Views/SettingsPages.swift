@@ -287,7 +287,7 @@ struct PrivacyAndModelView: View {
     @State private var showsDiagnosticSettings = false
     @State private var showsGovernance = false
     @State private var showsTime = false
-    private let categories = ["使用偏好", "记录管理", "隐私与采集", "模型连接", "每日回顾", "通知与打扰", "记忆整理", "外观", "本地诊断"]
+    private let categories = ["使用偏好", "MCP", "记录管理", "隐私与采集", "模型连接", "每日回顾", "通知与打扰", "记忆整理", "外观", "本地诊断"]
 
     init(initialCategory: String = "隐私与采集") { _settingsCategory = State(initialValue: initialCategory) }
 
@@ -311,6 +311,8 @@ struct PrivacyAndModelView: View {
                     ScrollView {
                         if settingsCategory == "使用偏好" {
                             WorkflowSettingsView().padding(.bottom, 24)
+                        } else if settingsCategory == "MCP" {
+                            MCPSettingsView().padding(.bottom, 24)
                         } else if settingsCategory == "记录管理" {
                             EventRulesView(embedded: true).padding(.bottom, 24)
                         } else if settingsCategory == "外观" {

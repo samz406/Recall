@@ -17,10 +17,10 @@ extension RecallLayoutPreviews {
             throw MemoryExperienceFailure(errorDescription: "继续问未携带主题")
         }
         for _ in 0..<2_000 {
-            if !model.isThinking && model.typingMessageID == nil { break }
+            if !model.isThinking { break }
             try await Task.sleep(for: .milliseconds(5))
         }
-        guard model.state.messages.count >= messages.count + 2, !model.isThinking, model.typingMessageID == nil,
+        guard model.state.messages.count >= messages.count + 2, !model.isThinking,
               model.state.messages.last(where: { $0.role == .user })?.content.contains(topic.title) == true else {
             throw MemoryExperienceFailure(errorDescription: "继续问没有自动发起带主题的提问")
         }

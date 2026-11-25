@@ -26,8 +26,14 @@ public struct AnswerGrounding: Sendable {
         }
     }
 
-    public static var noEvidence: String {
-        RecallLocalization.both("在当前范围内没有找到可用的记录，无法确认这件事。检索不到不代表它没有发生；可以调整日期、来源或关键词再查。", "No usable records were found in this scope, so I cannot confirm this. Missing records do not mean it never happened. Try another date, source, or keyword.")
+    private static let noEvidenceChinese = "在当前范围内没有找到可用的记录，无法确认这件事。检索不到不代表它没有发生；可以调整日期、来源或关键词再查。"
+    private static let noEvidenceEnglish = "No usable records were found in this scope, so I cannot confirm this. Missing records do not mean it never happened. Try another date, source, or keyword."
+    public static var noEvidence: String { RecallLocalization.both(noEvidenceChinese, noEvidenceEnglish) }
+
+    static func isNoEvidenceReply(_ text: String) -> Bool {
+        text == noEvidenceChinese || text == noEvidenceEnglish
+            || (text.hasPrefix("我没有在本地记忆中找到与“") && text.hasSuffix("”相关的记录。你可以先使用“记录此刻”保存一个工作节点。"))
+            || (text.hasPrefix("No matching saved records for ‘") && text.hasSuffix("’. Record a moment first."))
     }
     struct PrecheckResult: Sendable {
         /// 草稿里有完成/上线断言、日期或来源没有的数字，或完全没有引用标记。
@@ -79,6 +85,9 @@ public struct AnswerGrounding: Sendable {
     /// Independent semantic check, followed by deterministic quote/identity/state checks.
     /// No draft is streamed before this boundary. Audit failure falls back to source text, never guessed facts.
     static func verify(draft: String, question: String, sourceIDs: [UUID], state: RecallState, responder: any LLMResponding, materials: [CaptureRecord]? = nil) async throws -> Result {
+        if isNoEvidenceReply(draft.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return Result(content: noEvidence, sourceIDs: [], rejectedCount: 0)
+        }
         let wanted = Set(sourceIDs)
         let candidates = EvidenceAccess.records(state).filter { wanted.contains($0.id) }
         guard !candidates.isEmpty else { return Result(content: noEvidence, sourceIDs: [], rejectedCount: 0) }

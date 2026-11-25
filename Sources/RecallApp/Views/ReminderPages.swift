@@ -701,7 +701,7 @@ private struct ReminderCandidateCard: View {
                 }
             }
             Spacer(minLength: 12)
-            actionArea
+            actionArea.disabled(model.completingReminderIDs.contains(reminder.id))
         }
         .padding(18)
         .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
@@ -767,6 +767,12 @@ private struct ReminderCandidateCard: View {
         .lineLimit(1)
     }
 
+    private var completionButton: some View {
+        let saving = model.completingReminderIDs.contains(reminder.id)
+        return Button(saving ? RecallLocalization.both("保存中…", "Saving…") : RecallLocalization.text("标记完成"), action: complete)
+            .buttonStyle(.borderedProminent)
+    }
+
     /// One primary action, one frequent secondary, and everything else behind
     /// the overflow menu so destructive choices never sit beside the main button.
     @ViewBuilder
@@ -774,13 +780,13 @@ private struct ReminderCandidateCard: View {
         switch reminder.status {
         case .planned:
             HStack(spacing: 8) {
-                Button(RecallLocalization.text("标记完成"), action: complete).buttonStyle(.borderedProminent)
+                completionButton
                 Button(RecallLocalization.text("提醒我…"), action: schedule)
                 overflowMenu(removeTitle: RecallLocalization.both("移出今天", "Remove from today"))
             }
         case .scheduled, .snoozed:
             HStack(spacing: 8) {
-                Button(RecallLocalization.text("标记完成"), action: complete).buttonStyle(.borderedProminent)
+                completionButton
                 Menu(RecallLocalization.text("稍后")) {
                     ForEach(ReminderSnoozeOption.allCases.filter { $0.isAvailable(now: now) }) { option in
                         Button(option.title(preferredHour: preferredHour)) { snooze(option.date(preferredHour: preferredHour, now: .now)) }

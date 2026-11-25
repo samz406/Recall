@@ -17,14 +17,7 @@ struct WorkflowSettingsView: View {
     @State private var lastTimeShortcut = GlobalShortcutBinding.load("lastTime", fallback: .lastTime)
     @State private var identityCapture: UUID?
     @State private var sender = ""
-    @State private var client = ""
-    @State private var from = Calendar.current.date(byAdding: .day, value: -7, to: .now) ?? .now
-    @State private var through = Date.now
-    @State private var reviews = true
-    @State private var allowedApp = ""
     @State private var showsAdvanced = false
-    @State private var confirmMCP = false
-    @State private var mcpClient = MCPClientConfig.Client.claudeDesktop
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             if let warning = model.credentialMaintenanceWarning {
@@ -39,8 +32,8 @@ struct WorkflowSettingsView: View {
             languageSection
             shortcutSection
             MeetingMomentsSection()
-            DisclosureGroup(w("高级：聊天身份与 Agent 访问（MCP）", "Advanced: chat identity & agent access (MCP)"), isExpanded: $showsAdvanced) {
-                VStack(spacing: 18) { identitySection; mcpSection }.padding(.top, 14)
+            DisclosureGroup(w("聊天身份", "Chat identity"), isExpanded: $showsAdvanced) {
+                identitySection.padding(.top, 14)
             }.font(.headline)
         }
     }
@@ -114,7 +107,19 @@ struct WorkflowSettingsView: View {
             return [.slack, .teams].contains(profile) && seen.insert(($0.sourceBundleIdentifier ?? "") + "\n" + ($0.windowTitle ?? "")).inserted
         }
     }
-    private var mcpSection: some View {
+}
+
+struct MCPSettingsView: View {
+    @EnvironmentObject private var model: RecallAppModel
+    @State private var client = ""
+    @State private var from = Calendar.current.date(byAdding: .day, value: -7, to: .now) ?? .now
+    @State private var through = Date.now
+    @State private var reviews = true
+    @State private var allowedApp = ""
+    @State private var confirmMCP = false
+    @State private var mcpClient = MCPClientConfig.Client.claudeDesktop
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(w("Agent 只读访问", "Read-only access for agents")).font(.headline)
             Text(w("仅开放所选范围的文本，不提供图片、密钥或写入工具。Agent 收到文字后可能发给它使用的模型。客户端名称只是标签，访问令牌才是授权，请仅交给信任的本机客户端。", "Expose only text within your chosen scope. No images, credentials or write tools. An agent may send excerpts to its model. Client names are labels; protect the access token and share it only with a trusted local client."))

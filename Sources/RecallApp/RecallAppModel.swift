@@ -112,6 +112,7 @@ final class RecallAppModel: ObservableObject {
     private var memoryMaintenanceAfter: Date = .distantPast
     @Published private(set) var matterBuildMessage: String?
     @Published private(set) var completingMatterIDs: Set<String> = []
+    @Published private(set) var completingReminderIDs: Set<UUID> = []
     @Published private(set) var completingSummaryActionIDs: Set<UUID> = []
     @Published private(set) var dailyReviewActionMessages: [UUID: String] = [:]
     @Published private(set) var dismissingExperienceIDs: Set<String> = []
@@ -121,7 +122,6 @@ final class RecallAppModel: ObservableObject {
     @Published private(set) var chatStatusMessage: String?
     @Published var chatScope = MemoryQueryScope.all
     @Published private(set) var chatEvidenceCount: Int?
-    @Published private(set) var typingMessageID: UUID?
     @Published private(set) var typingMessageContent = ""
     private var chatTask: Task<Void, Never>?
     private var chatRequestID = UUID()
@@ -1271,11 +1271,10 @@ final class RecallAppModel: ObservableObject {
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return }
         let isClear = ChatCommand.parse(question) == .clear
-        guard isClear || (!isThinking && typingMessageID == nil) else { return }
+        guard isClear || !isThinking else { return }
         chatTask?.cancel()
         let requestID = UUID()
         chatRequestID = requestID
-        typingMessageID = nil
         typingMessageContent = ""
         chatEvidenceCount = nil
         chatStatusMessage = RecallLocalization.both("正在理解这个问题…", "Reading the question…")
@@ -1289,7 +1288,7 @@ final class RecallAppModel: ObservableObject {
             do {
                 // 每个作用域一套会话：切换后消息互不相通，在途回答也不会写错会话。
                 try? await store.activateSession(topicID: requestScope.topicID)
-                let answer = try await assistant.ask(question, userMessage: userMessage, scope: requestScope) { [weak self] in
+                _ = try await assistant.ask(question, userMessage: userMessage, scope: requestScope) { [weak self] in
                     guard let self else { return }
                     let snapshot = await self.store.snapshot()
                     guard !Task.isCancelled, self.chatRequestID == requestID else { return }
@@ -1311,17 +1310,10 @@ final class RecallAppModel: ObservableObject {
                 }
                 let snapshot = await store.snapshot()
                 guard !Task.isCancelled, chatRequestID == requestID else { return }
-                let streamed = !typingMessageContent.isEmpty
                 isThinking = false
                 chatStatusMessage = nil
+                typingMessageContent = ""
                 state = snapshot
-                if answer.role == .assistant, streamed {
-                    typingMessageID = nil
-                    typingMessageContent = ""
-                } else if answer.role == .assistant {
-                    typingMessageID = answer.id
-                    await revealAssistantMessage(answer)
-                }
                 if chatRequestID == requestID { chatTask = nil }
             } catch is CancellationError {
                 guard chatRequestID == requestID else { return }
@@ -1346,7 +1338,7 @@ final class RecallAppModel: ObservableObject {
     func stopChat() {
         chatRequestID = UUID()
         chatTask?.cancel(); chatTask = nil
-        isThinking = false; chatStatusMessage = nil; typingMessageID = nil; typingMessageContent = ""
+        isThinking = false; chatStatusMessage = nil; typingMessageContent = ""
         noticeMessage = "已停止回答"
     }
 
@@ -1363,17 +1355,6 @@ final class RecallAppModel: ObservableObject {
         if enabled { keys.remove(claim.key) } else { keys.insert(claim.key) }
         settings.disabledClaimKeys = keys.sorted()
         updateMemorySettings(settings)
-    }
-
-    private func revealAssistantMessage(_ message: ConversationMessage) async {
-        for chunk in TypewriterTextSequence.chunks(for: message.content) {
-            guard !Task.isCancelled, typingMessageID == message.id else { return }
-            typingMessageContent += chunk
-            try? await Task.sleep(for: TypewriterTextSequence.stepInterval)
-        }
-        guard typingMessageID == message.id else { return }
-        typingMessageID = nil
-        typingMessageContent = ""
     }
 
     func proposeReminders() {
@@ -1632,31 +1613,39 @@ final class RecallAppModel: ObservableObject {
     }
 
     func completeReminder(_ reminder: ReminderCandidate) {
+        guard reminder.status == .planned || reminder.status.needsNotification,
+              state.reminders.contains(reminder), completingReminderIDs.insert(reminder.id).inserted else { return }
         Task {
+            defer { completingReminderIDs.remove(reminder.id) }
+            let updated = ReminderTimeline.completing(reminder)
+            var scheduledNext = false
             do {
-                let updated = ReminderTimeline.completing(reminder)
-                var learningProfile = state.reminderLearningProfile
-                learningProfile.record(.completed, semanticKey: reminderSemanticKey(updated))
-                if updated.status == .scheduled, let nextDueAt = updated.dueAt {
-                    var notified = true
-                    do { try await reminderCreationScheduler.schedule(updated) }
-                    catch { notified = false; recordError(error, source: "Reminders", message: "下次重复提醒未写入系统通知") }
+                if updated.status == .scheduled {
                     do {
-                        try await store.updateReminder(updated, learningProfile: learningProfile)
-                    } catch {
-                        if notified { try? await reminderCreationScheduler.schedule(reminder) }
-                        throw error
-                    }
-                    noticeMessage = notified
+                        try await reminderCreationScheduler.schedule(updated)
+                        scheduledNext = true
+                    } catch { recordError(error, source: "Reminders", message: "下次重复提醒未写入系统通知") }
+                }
+                try await store.completeReminder(reminder, updated: updated, semanticKey: reminderSemanticKey(updated))
+                if updated.status == .scheduled, let nextDueAt = updated.dueAt {
+                    reminderDeliveryStates[updated.id] = scheduledNext ? .pending : .notFound
+                    noticeMessage = scheduledNext
                         ? "本次已完成，下次将在 \(nextDueAt.formatted(date: .abbreviated, time: .shortened)) 提醒。"
                         : "本次已完成。系统通知未开启，下次提醒暂不会推送。"
                 } else {
-                    try await store.updateReminder(updated, learningProfile: learningProfile)
                     reminderCreationScheduler.cancel(updated)
+                    reminderDeliveryStates.removeValue(forKey: updated.id)
                     noticeMessage = "提醒已完成。"
                 }
-                await refresh()
+                state = await store.snapshot()
             } catch {
+                state = await store.snapshot()
+                if scheduledNext {
+                    reminderCreationScheduler.cancel(updated)
+                    if let current = state.reminders.first(where: { $0.id == reminder.id }), current.status.needsNotification {
+                        try? await reminderCreationScheduler.schedule(current)
+                    }
+                }
                 noticeMessage = "未能保存完成状态，请重试。"
                 recordError(error, source: "Reminders", message: "完成提醒失败")
             }

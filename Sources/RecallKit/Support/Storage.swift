@@ -1679,6 +1679,20 @@ public actor FileMemoryStore {
         _ reminder: ReminderCandidate,
         learningProfile: ReminderLearningProfile
     ) throws {
+        try saveReminder(reminder, learningProfile: learningProfile, isCompletion: false)
+    }
+
+    public func completeReminder(_ original: ReminderCandidate, updated: ReminderCandidate, semanticKey: String) throws {
+        guard updated.id == original.id, state.reminders.contains(original),
+              original.status == .planned || original.status.needsNotification else {
+            throw DailyReviewActionError.changed
+        }
+        var profile = state.reminderLearningProfile
+        profile.record(.completed, semanticKey: semanticKey)
+        try saveReminder(updated, learningProfile: profile, isCompletion: true)
+    }
+
+    private func saveReminder(_ reminder: ReminderCandidate, learningProfile: ReminderLearningProfile, isCompletion: Bool) throws {
         let previous = state
         if let index = state.reminders.firstIndex(where: { $0.id == reminder.id }) {
             state.reminders[index] = reminder
@@ -1695,7 +1709,9 @@ public actor FileMemoryStore {
             }
         }
         do {
-            if reminder.origin == .manual && reminder.sourceCaptureIDs.isEmpty {
+            if isCompletion {
+                try persistReviewState(indexChanged: true)
+            } else if reminder.origin == .manual && reminder.sourceCaptureIDs.isEmpty {
                 try persistReviewState()
             } else { try persist() }
         } catch { state = previous; throw error }
