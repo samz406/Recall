@@ -1269,6 +1269,8 @@ final class RecallAppModel: ObservableObject {
         isThinking = true
         chatTask = Task {
             do {
+                // 每个作用域一套会话：切换后消息互不相通，在途回答也不会写错会话。
+                try? await store.activateSession(topicID: requestScope.topicID)
                 let answer = try await assistant.ask(question, userMessage: userMessage, scope: requestScope) { [weak self] in
                     guard let self else { return }
                     let snapshot = await self.store.snapshot()

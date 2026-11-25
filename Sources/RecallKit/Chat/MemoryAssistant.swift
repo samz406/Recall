@@ -261,13 +261,15 @@ public final class MemoryAssistant: Sendable {
             throw LLMError.serviceError("记忆或隐私设置已更新，请重新提问。")
         }
         guard live.llmConfiguration == originalState.llmConfiguration else { throw CredentialError.unavailable }
+        let previousSources = await store.lastCitedSourceIDs()
         let outcome: AskTranscript
         do {
             let base = if let model { model } else { try await store.modelResponder() }
             let responder = LiveMemoryResponder(base: base, store: store, original: originalState, originalCaptureRevision: originalCaptureRevision)
             outcome = try await AskAgent.answer(
                 question: question, conversationID: conversationID, state: fullState, scope: scope, textIndex: textIndex, responder: responder,
-                history: state.messages, limits: limits, onPartial: onPartial, onStatus: onStatus, onStep: onStep
+                history: state.messages, previousSourceIDs: previousSources, limits: limits,
+                onPartial: onPartial, onStatus: onStatus, onStep: onStep
             )
         } catch is CancellationError {
             throw CancellationError()
@@ -276,6 +278,7 @@ public final class MemoryAssistant: Sendable {
             return nil
         }
         await onEvidenceReady?(outcome.citations.count)
+        await store.recordAnswerCitations(outcome.citations)
         let latestState = await store.snapshot()
         guard latestState.privacy.cloudUseEnabled == originalState.privacy.cloudUseEnabled,
               latestState.privacy.excludedBundleIdentifiers == originalState.privacy.excludedBundleIdentifiers,

@@ -325,6 +325,8 @@ public actor FileMemoryStore {
     var archiveRevision: UInt64 = 0
     /// Changes only when the set of captures or their searchable text changes. Chat writes,
     /// reminders and preferences do not bump it, so 问一问 can skip re-comparing every screenshot.
+    /// 各作用域的会话消息与上一轮来源，随 conversation.json 一起落盘。
+    private var conversationArchive = ConversationArchive()
     private var captureDigest: Int?
     private var captureContentRev: UInt64 = 0
 
@@ -373,9 +375,11 @@ public actor FileMemoryStore {
             Self.overlayNewerReviewSchedules(&restoredState, storage: storage, decoder: decoder)
             // 会话消息以 sidecar 为准。旧存档里仍带消息时先写 sidecar，
             // 下一次写盘就不再把它们放进主存档。
-            if let sidecar = ConversationStore.read(from: storage.conversationURL, decoder: decoder) {
-                restoredState.messages = sidecar
+            if let archive = ConversationStore.readArchive(from: storage.conversationURL, decoder: decoder) {
+                conversationArchive = archive
+                restoredState.messages = archive.scopes[archive.activeScope]?.messages ?? []
             } else if !restoredState.messages.isEmpty {
+                conversationArchive.scopes[ConversationArchive.globalScope] = .init(messages: restoredState.messages)
                 try? ConversationStore.write(restoredState.messages, to: storage.conversationURL, encoder: encoder)
             }
             if !restoredState.llmConfiguration.apiKey.isEmpty {
@@ -850,6 +854,7 @@ public actor FileMemoryStore {
         state.topicGroups.removeAll { $0.memberIDs.count < 2 }
         state.conversationSummary = nil
         state.conversationSummaryCoveredMessageCount = state.messages.count
+        try? deleteSession(topicID: id)
         do { try persistReviewState() } catch { state = before; throw error }
     }
 
@@ -1523,7 +1528,57 @@ public actor FileMemoryStore {
     private func persistConversation() throws {
         try Task.checkCancellation()
         guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
-        try ConversationStore.write(state.messages, to: storage.conversationURL, encoder: encoder)
+        conversationArchive.scopes[conversationArchive.activeScope]?.messages = state.messages
+        conversationArchive.scopes[conversationArchive.activeScope]?.updatedAt = .now
+        if conversationArchive.scopes[conversationArchive.activeScope] == nil {
+            conversationArchive.scopes[conversationArchive.activeScope] = .init(messages: state.messages)
+        }
+        let data = try encoder.encode(conversationArchive)
+        try data.write(to: storage.conversationURL, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storage.conversationURL.path)
+    }
+
+    /// 切到某个作用域的会话：全局传 nil，主题传主题 ID。消息互不相通。
+    public func activateSession(topicID: String?) throws {
+        let scope = topicID.map(ConversationArchive.topicScope) ?? ConversationArchive.globalScope
+        guard scope != conversationArchive.activeScope else { return }
+        let previousMessages = state.messages
+        do { try persistConversation() }
+        catch {
+            state.messages = previousMessages
+            throw error
+        }
+        conversationArchive.activeScope = scope
+        if conversationArchive.scopes[scope] == nil { conversationArchive.scopes[scope] = .init() }
+        state.messages = conversationArchive.scopes[scope]?.messages ?? []
+        // 在途回答不应再写进新切换的会话。
+        conversationID = UUID()
+        try persistConversation()
+    }
+
+    /// 删除某个作用域的会话（删除主题时联动）。
+    public func deleteSession(topicID: String) throws {
+        let scope = ConversationArchive.topicScope(topicID)
+        guard conversationArchive.scopes.removeValue(forKey: scope) != nil else { return }
+        if conversationArchive.activeScope == scope {
+            conversationArchive.activeScope = ConversationArchive.globalScope
+            if conversationArchive.scopes[ConversationArchive.globalScope] == nil {
+                conversationArchive.scopes[ConversationArchive.globalScope] = .init()
+            }
+            state.messages = conversationArchive.scopes[ConversationArchive.globalScope]?.messages ?? []
+            conversationID = UUID()
+        }
+        try persistConversation()
+    }
+
+    /// 当前会话上一轮回答引用的来源，追问时优先作为候选。
+    public func lastCitedSourceIDs() -> [UUID] {
+        conversationArchive.scopes[conversationArchive.activeScope]?.lastCitedSourceIDs ?? []
+    }
+
+    func recordAnswerCitations(_ ids: [UUID]) {
+        guard conversationArchive.scopes[conversationArchive.activeScope] != nil else { return }
+        conversationArchive.scopes[conversationArchive.activeScope]?.lastCitedSourceIDs = ids
     }
 
     public func addMessage(_ message: ConversationMessage, inConversation expectedID: UUID? = nil) throws {
