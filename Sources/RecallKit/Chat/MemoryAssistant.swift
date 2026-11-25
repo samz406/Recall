@@ -42,9 +42,10 @@ public final class MemoryAssistant {
             await onUserMessageSaved?()
             return result
         }
-        let conversation = await store.conversationSnapshot()
+        let conversation = await store.conversationSnapshotWithRevision()
         try Task.checkCancellation()
         let originalState = conversation.state
+        let originalCaptureRevision = conversation.captureRevision
         if ChatCommand.isCommandInput(question) {
             let result = ConversationMessage(role: .system, content: "未识别的命令或参数。输入 / 查看可用命令；清空会话请发送 /clear。")
             try await store.addMessage(result, inConversation: conversation.id)
@@ -91,7 +92,7 @@ public final class MemoryAssistant {
         state.messages.removeAll { $0.id == userMessage.id }
         if let answer = try await cloudAgentAnswer(
             question: question, conversationID: conversation.id, scope: scope,
-            fullState: fullState, state: state, originalState: originalState, textIndex: textIndex,
+            fullState: fullState, state: state, originalState: originalState, originalCaptureRevision: originalCaptureRevision, textIndex: textIndex,
             model: model, limits: limits, onPartial: onPartial, onStatus: onStatus, onStep: onStep, onRetrievalWarning: onRetrievalWarning, onEvidenceReady: onEvidenceReady
         ) { return answer }
         let retrievalStarted = clock.now
@@ -249,7 +250,7 @@ public final class MemoryAssistant {
             )
             let modelStarted = clock.now
             let base = if let model { model } else { try await store.modelResponder() }
-            let responder = LiveMemoryResponder(base: base, store: store, original: originalState)
+            let responder = LiveMemoryResponder(base: base, store: store, original: originalState, originalCaptureRevision: originalCaptureRevision)
             let cloudAnswer = try await responder.answerCancellably(to: cloudRequest)
             onStep?("model", Self.milliseconds(from: modelStarted, clock: clock))
             // 已传入证据时，不能接受模型仍声称“记忆为空”的幻觉式回答。
@@ -301,6 +302,7 @@ public final class MemoryAssistant {
         fullState: RecallState,
         state: RecallState,
         originalState: RecallState,
+        originalCaptureRevision: UInt64,
         textIndex: CaptureTextIndex?,
         model: (any LLMResponding)?,
         limits: AskLimits,
@@ -325,7 +327,7 @@ public final class MemoryAssistant {
         let outcome: AskTranscript
         do {
             let base = if let model { model } else { try await store.modelResponder() }
-            let responder = LiveMemoryResponder(base: base, store: store, original: originalState)
+            let responder = LiveMemoryResponder(base: base, store: store, original: originalState, originalCaptureRevision: originalCaptureRevision)
             outcome = try await AskAgent.answer(
                 question: question, conversationID: conversationID, state: fullState, scope: scope, textIndex: textIndex, responder: responder,
                 history: state.messages, limits: limits, onPartial: onPartial, onStatus: onStatus, onStep: onStep

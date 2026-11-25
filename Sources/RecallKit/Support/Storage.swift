@@ -314,6 +314,22 @@ public actor FileMemoryStore {
     private var committedState: RecallState?
     private var lastDiskDigest: String?
     var archiveRevision: UInt64 = 0
+    /// Changes only when the set of captures or their searchable text changes. Chat writes,
+    /// reminders and preferences do not bump it, so 问一问 can skip re-comparing every screenshot.
+    private var captureDigest: Int?
+    private var captureContentRev: UInt64 = 0
+
+    public func captureContentRevision() -> UInt64 { captureContentRev }
+
+    private func refreshCaptureRevision() {
+        var hasher = Hasher()
+        for capture in state.captures {
+            hasher.combine(capture.id)
+            hasher.combine(capture.searchableText)
+        }
+        let digest = hasher.finalize()
+        if digest != captureDigest { captureDigest = digest; captureContentRev &+= 1 }
+    }
     var backgroundMaintenanceInFlight = false
     private var lastMaintenanceRevision: UInt64?
     public private(set) var backupPending = false
@@ -444,6 +460,12 @@ public actor FileMemoryStore {
 
     public func conversationSnapshot() -> (id: UUID, state: RecallState) {
         (conversationID, state)
+    }
+
+    /// Snapshot and capture revision read in one actor call. 问一问 compares the revision later
+    /// instead of re-reading every screenshot, which needs the two values to be consistent.
+    public func conversationSnapshotWithRevision() -> (id: UUID, state: RecallState, captureRevision: UInt64) {
+        (conversationID, state, captureContentRev)
     }
 
     @discardableResult
@@ -1606,6 +1628,7 @@ public actor FileMemoryStore {
     private func writeState() throws -> ArchiveWriteMetrics {
         do {
             state.reconcilePersonaProfile()
+            refreshCaptureRevision()
             let started = Date.now
             let data = try encoder.encode(state)
             let encodeMs = Int(Date.now.timeIntervalSince(started) * 1000)

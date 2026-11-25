@@ -5,6 +5,9 @@ struct LiveMemoryResponder: LLMResponding {
     let base: any LLMResponding
     let store: FileMemoryStore
     let original: RecallState
+    /// Capture content revision at the time `original` was read. Unchanged means the slow
+    /// per-capture text comparison below can be skipped entirely.
+    let originalCaptureRevision: UInt64
     private func validate() async throws {
         try Task.checkCancellation()
         let live = await store.snapshot()
@@ -21,6 +24,7 @@ struct LiveMemoryResponder: LLMResponding {
               SummaryFeedbackLearning.revision(in: live) == SummaryFeedbackLearning.revision(in: original) else {
             throw LLMError.serviceError(RecallLocalization.both("记忆或隐私设置已变化，请重新提问。", "Memory or privacy settings changed. Ask again to use the current scope."))
         }
+        if await store.captureContentRevision() == originalCaptureRevision { return }
         func text(_ record: CaptureRecord) -> String { record.searchableText }
         // Captures are normally append-only, so a positional comparison avoids building a dictionary on every call.
         let unchanged = live.captures.count >= original.captures.count

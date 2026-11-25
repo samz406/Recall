@@ -16,6 +16,7 @@ struct RecallVerifier {
             try await PeriodReviewDeletionVerification.run()
             try await PageExperienceVerification.run()
             try await AskAgentVerification.run()
+            try await AskPerformanceVerification.run()
             try await MemoryReliabilityVerification.run()
             try await ChatSourceIndexVerification.run()
             try await GlobalSearchVerification.run()
