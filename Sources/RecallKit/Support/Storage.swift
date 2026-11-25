@@ -133,6 +133,8 @@ public struct RecallState: Codable, Sendable {
     public var topicGroups: [MemoryTopicGroup] = []
     /// 旧主题键 → 规范主题键。用户合并主题后把旧名写进来，换个叫法的新记录仍归到同一主题。
     public var topicAliases: [String: String] = [:]
+    /// 主题的稳定身份、别名与生命周期。首次在有每日回顾的存档上启动时自动迁移。
+    public var topicRegistry: TopicRegistry = TopicRegistry()
     public var dismissedExperienceIDs: [String]
     public var experienceHintsEnabled: Bool
     public var memoryKnowledge: MemoryKnowledge
@@ -225,7 +227,7 @@ public struct RecallState: Codable, Sendable {
         case privacy, llmConfiguration, conversationSummary, conversationSummaryCoveredMessageCount
         case weeklyReports, reviewTemplates, reviewSchedules, reviewCategories, memoryKnowledge, memoryKnowledgeSettings
         case episodes, projects, userMemories, insights, insightFeedback, learnedRoutines
-        case recentlyDeletedMemories, memorySuppressionRules, matterCorrections, dismissedExperienceIDs, experienceHintsEnabled, topicGroups, topicAliases
+        case recentlyDeletedMemories, memorySuppressionRules, matterCorrections, dismissedExperienceIDs, experienceHintsEnabled, topicGroups, topicAliases, topicRegistry
         case pendingPersonaRefresh, personaTraitObservations, personaTraits
         case personaProfileSettings, personaRefreshJobs, personaProfileRevision, personaProfileVersion, rejectedPersonaEvidence
         case dismissedPersonaDimensions
@@ -271,6 +273,7 @@ public struct RecallState: Codable, Sendable {
         memorySuppressionRules = try container.decodeIfPresent([MemorySuppressionRule].self, forKey: .memorySuppressionRules) ?? []
         topicGroups = try container.decodeIfPresent([MemoryTopicGroup].self, forKey: .topicGroups) ?? []
         topicAliases = try container.decodeIfPresent([String: String].self, forKey: .topicAliases) ?? [:]
+        topicRegistry = try container.decodeIfPresent(TopicRegistry.self, forKey: .topicRegistry) ?? TopicRegistry()
         matterCorrections = try container.decodeIfPresent([MatterCorrection].self, forKey: .matterCorrections) ?? []
         dismissedExperienceIDs = try container.decodeIfPresent([String].self, forKey: .dismissedExperienceIDs) ?? []
         experienceHintsEnabled = try container.decodeIfPresent(Bool.self, forKey: .experienceHintsEnabled) ?? false
@@ -418,6 +421,15 @@ public actor FileMemoryStore {
             let credentialsReady = pendingLegacyCredential == nil
             if !deferMaintenance && credentialsReady {
                 initialDigest = try Self.write(restoredState, encoder: encoder, to: storage.stateURL, expectedDigest: initialDigest)
+            }
+            // 主题登记表首次迁移：只迁移有每日回顾的存档，重复运行得到同一组 ID。
+            if restoredState.topicRegistry.topics.isEmpty, !restoredState.dailySummaries.isEmpty {
+                let registry = TopicRegistry.migrated(from: restoredState)
+                if !registry.topics.isEmpty {
+                    restoredState.topicRegistry = registry
+                    do { initialDigest = try Self.write(restoredState, encoder: encoder, to: storage.stateURL, expectedDigest: initialDigest) }
+                    catch { credentialMaintenanceWarning = "Topic registry migration pending. Saved topics remain readable." }
+                }
             }
             state = restoredState
         } else {

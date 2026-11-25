@@ -11,7 +11,9 @@ enum TopicRegistryVerification {
     static func run() async throws {
         try aliasesMapToCanonicalKey()
         try await renamedTopicStaysOneTopic()
-        print("PASS: 2 topic registry scenarios (alias mapping, renamed topic stays one)")
+        try identitySurvivesRenameAndMerge()
+        try await migrationIsIdempotent()
+        print("PASS: 4 topic registry scenarios (alias mapping, renamed topic stays one, stable identity, idempotent migration)")
     }
 
     private static func aliasesMapToCanonicalKey() throws {
@@ -51,6 +53,45 @@ enum TopicRegistryVerification {
         try expect(merged.first?.events.count == 2, "合并后的主题应保留两天的事件")
         try expect(Set(merged.first?.evidenceIDs ?? []) == [first.id, second.id], "合并后的来源应为两天的并集")
         try expect(merged.first?.title == "一键发版上线", "显示名应取最新一天的叫法")
+    }
+
+    /// 改名、合并、删除都作用在稳定 UUID 上；旧 ID 通过迁移表仍能解析。
+    private static func identitySurvivesRenameAndMerge() throws {
+        var registry = TopicRegistry()
+        let first = registry.resolveOrCreate(name: "一键发版功能", at: .now)
+        registry.rename(id: first.id, to: "一键发版上线")
+        try expect(registry.topic(forName: "一键发版功能")?.id == first.id, "旧名应解析到同一主题")
+        try expect(registry.topic(forName: "一键发版上线")?.id == first.id, "新名也应解析到同一主题")
+        try expect(registry.topics.count == 1, "改名不应新建主题")
+
+        let second = registry.resolveOrCreate(name: "聊天多段回复合并", at: .now)
+        registry.merge(second.id, into: first.id)
+        try expect(registry.topics.count == 1, "合并后应只剩一个主题")
+        try expect(registry.topic(forName: "聊天多段回复合并")?.id == first.id, "被合并的名字应成为别名")
+
+        var legacy = TopicRegistry(topics: registry.topics, legacyAliases: ["topic:oldkey": first.id])
+        try expect(legacy.canonicalID("topic:oldkey") == "topic:" + first.id.uuidString, "旧 ID 应归一为稳定 ID")
+
+        legacy.remove(id: first.id)
+        try expect(legacy.topics.isEmpty && legacy.topic(forName: "一键发版功能") == nil, "删除主题应连带删除别名")
+        try expect(legacy.legacyAliases.isEmpty, "删除主题应清理指向它的旧 ID 映射")
+    }
+
+    /// 同一存档迁移两次得到同一组 UUID，旧主题 ID 仍能映射。
+    private static func migrationIsIdempotent() async throws {
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-topic-migrate-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let store = try verificationStore(storage: storage)
+        let source = CaptureRecord(eventTemplate: .manualMoment, createdAt: .now, sourceAppName: "合成验证",
+            sourceBundleIdentifier: "example.topic-migrate", contentHash: UUID().uuidString, ocrText: "合成：迁移夹具", textOrigin: .userInput)
+        try await store.addCapture(source)
+        try await store.upsertDailySummary(summary(day: .now, topic: "迁移主题", source: source, title: "迁移夹具条目"))
+        let state = await store.snapshot()
+        let once = TopicRegistry.migrated(from: state)
+        let twice = TopicRegistry.migrated(from: state)
+        try expect(once.topics.map(\.id) == twice.topics.map(\.id), "迁移不是幂等的")
+        try expect(once.topics.first?.title == "迁移主题", "迁移应保留主题名")
+        try expect(once.legacyAliases.keys.contains("topic:" + DailyKnowledgeEngine.topicKey("迁移主题")), "应记录旧主题 ID 映射")
     }
 
     private static func summary(day: Date, topic: String, source: CaptureRecord, title: String) -> DailySummary {
