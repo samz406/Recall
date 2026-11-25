@@ -29,6 +29,53 @@ public struct AnswerGrounding: Sendable {
     public static var noEvidence: String {
         RecallLocalization.both("在当前范围内没有找到可用的记录，无法确认这件事。检索不到不代表它没有发生；可以调整日期、来源或关键词再查。", "No usable records were found in this scope, so I cannot confirm this. Missing records do not mean it never happened. Try another date, source, or keyword.")
     }
+    struct PrecheckResult: Sendable {
+        /// 草稿里有完成/上线断言、日期或来源没有的数字，或完全没有引用标记。
+        var needsModelAudit: Bool
+        /// 本地就能判定不被来源支持的句子下标。
+        var unsupportedSentenceIndexes: [Int]
+    }
+
+    /// 本地确定性预检：先按句切开，完成/上线断言、日期、数字必须在引用来源里出现过。
+    /// 只有出现这类结论时才值得花一次模型调用；普通事实直接返回草稿。
+    static func localPrecheck(draft: String, records: [CaptureRecord]) -> PrecheckResult {
+        let corpus = records.map { $0.correctedText ?? $0.ocrText }.joined(separator: "\n")
+        let stamps = records.map(recordedDateText).joined(separator: " ")
+        var risky = false, unsupported: [Int] = []
+        for (index, sentence) in sentences(draft).enumerated() {
+            let assertsOutcome = sentence.range(of: #"已完成|完成了|已经完成|已上线|已发布|已部署|已经上线|already deployed|has been deployed|completed"#,
+                                                options: [.regularExpression, .caseInsensitive]) != nil
+            let cited = citationNumbers(sentence)
+            let ownNumbers = numbers(sentence).subtracting(Set(cited))
+            let sentenceDates = dateTerms(sentence)
+            if assertsOutcome || !ownNumbers.isEmpty || !sentenceDates.isEmpty { risky = true }
+            if !ownNumbers.isSubset(of: numbers(corpus + " " + stamps)) || !sentenceDates.isSubset(of: dateTerms(corpus + " " + stamps)) {
+                unsupported.append(index)
+            }
+        }
+        return PrecheckResult(needsModelAudit: risky, unsupportedSentenceIndexes: unsupported)
+    }
+
+    /// 按句号、问号、感叹号与换行切句，保留引用标记。
+    static func sentences(_ draft: String) -> [String] {
+        var result: [String] = [], current = ""
+        for character in draft {
+            current.append(character)
+            if "。！？!?\n".contains(character) {
+                if !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { result.append(current) }
+                current = ""
+            }
+        }
+        if !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { result.append(current) }
+        return result
+    }
+
+    private static func citationNumbers(_ sentence: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"\[(\d+)\]"#) else { return [] }
+        let ns = sentence as NSString
+        return regex.matches(in: sentence, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range(at: 1)) }
+    }
+
     /// Independent semantic check, followed by deterministic quote/identity/state checks.
     /// No draft is streamed before this boundary. Audit failure falls back to source text, never guessed facts.
     static func verify(draft: String, question: String, sourceIDs: [UUID], state: RecallState, responder: any LLMResponding, materials: [CaptureRecord]? = nil) async throws -> Result {
@@ -62,6 +109,13 @@ public struct AnswerGrounding: Sendable {
             return copy
         }
         guard !records.isEmpty else { return fallback(records: candidates, reason: "no-checkable-text") }
+
+        // 方案 B：先本地判断，普通事实不再调用模型核对。
+        let precheck = localPrecheck(draft: draft, records: candidates)
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !precheck.needsModelAudit && precheck.unsupportedSentenceIndexes.isEmpty && !trimmed.isEmpty && !sourceIDs.isEmpty {
+            return Result(content: trimmed, sourceIDs: sourceIDs, rejectedCount: 0, reason: "local-precheck")
+        }
         let instruction = """
         核对回答草稿，仅保留原文确实支持的结论；不补充草稿未提出的新事实。
         每项必须有 sourceID 和至少 8 字符的逐字 quote。引用必须取自给出的正文，不能引用 sourceID、记录时间或问题本身。

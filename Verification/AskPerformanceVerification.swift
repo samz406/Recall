@@ -13,7 +13,42 @@ enum AskPerformanceVerification {
         try await messagesDoNotBumpCaptureRevision()
         try await finalRequestDropsDuplicatedToolText()
         try await messagesLiveInSidecar()
-        print("PASS: 3 ask performance scenarios (capture revision, duplicated tool text, message sidecar)")
+        try await plainFactsSkipModelAudit()
+        try await completionClaimsAreStillAudited()
+        print("PASS: 5 ask performance scenarios (capture revision, duplicated tool text, message sidecar, local precheck, audit retained for outcomes)")
+    }
+
+    /// 方案 B：没有完成/上线/日期/数字断言的普通事实，由本地预检放行，不再调用模型核对。
+    private static func plainFactsSkipModelAudit() async throws {
+        let (storage, store, capture) = try await AskAgentVerification.fixture("今天整理了发布文档的目录结构。")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let script = ScriptedAskModel { request in
+            if request.purpose == .chatPlanning {
+                return LLMAnswer(content: #"{"answer":"整理了发布文档的目录结构","citations":[""# + capture.id.uuidString + #""]}"#, citedCaptureIDs: [])
+            }
+            return LLMAnswer(content: "不应被调用", citedCaptureIDs: [])
+        }
+        let answer = try await MemoryAssistant(store: store).ask("发布文档", model: script)
+        let purposes = await script.recorded().map(\.purpose)
+        try expect(!purposes.contains(.answerVerification), "普通事实仍调用了模型核对")
+        try expect(answer.content.contains("目录结构"), "回答被改写或丢失")
+    }
+
+    /// 涉及“已上线”这类结论时仍要核对，不能被本地预检放行。
+    private static func completionClaimsAreStillAudited() async throws {
+        let (storage, store, capture) = try await AskAgentVerification.fixture("测试通过，等审批后再上线。")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let script = ScriptedAskModel { request in
+            if request.purpose == .chatPlanning {
+                return LLMAnswer(content: #"{"answer":"功能已上线","citations":[""# + capture.id.uuidString + #""]}"#, citedCaptureIDs: [])
+            }
+            if request.purpose == .answerVerification { return LLMAnswer(content: #"{"claims":[]}"#, citedCaptureIDs: []) }
+            return LLMAnswer(content: "已核对", citedCaptureIDs: [])
+        }
+        let answer = try await MemoryAssistant(store: store).ask("上线了吗", model: script)
+        let purposes = await script.recorded().map(\.purpose)
+        try expect(purposes.contains(.answerVerification), "完成类断言没有进入核对")
+        try expect(!answer.content.contains("已上线") || answer.content.contains("审批"), "不被支持的完成断言原样返回")
     }
 
     /// 每条消息原本都会编码整份存档（含全部 OCR）。消息改存 sidecar 后，
