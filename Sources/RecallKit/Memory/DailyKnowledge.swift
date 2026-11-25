@@ -9,6 +9,14 @@ public struct DailyKnowledgeEngine: Sendable {
     /// Stable key for a topic name: case, spacing and punctuation do not split one matter in two.
     public static func topicKey(_ name: String) -> String { MatterEvidence.key(name) }
 
+    /// 跟着别名映射到规范键。最多 4 跳，避免别名成环时死循环。
+    public static func canonicalKey(_ topic: String, aliases: [String: String]) -> String {
+        var key = topicKey(topic)
+        var hops = 0
+        while let next = aliases[key], next != key, hops < 4 { key = next; hops += 1 }
+        return key
+    }
+
     struct Entry: Sendable {
         var summary: DailySummary
         var item: DailySummaryItem
@@ -131,11 +139,11 @@ public struct DailyKnowledgeEngine: Sendable {
     /// Own matters grouped by topic, each day's item becoming one event. A later day's state replaces
     /// the earlier one in the topic's timeline order; nothing is merged away.
     public func matterFiles(in state: RecallState, alreadyCorrected: Bool = false) -> [MatterFile] {
-        var groups: [String: (name: String, events: [MatterEvent])] = [:]
+        var groups: [String: (name: String, events: [MatterEvent], latestDay: Date)] = [:]
         let recordedAt = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0.createdAt) })
         for entry in entries(in: state, alreadyCorrected: alreadyCorrected) where entry.knowledge.kind == .matter && entry.knowledge.ownedByUser {
             guard let topic = entry.knowledge.topic, !Self.topicKey(topic).isEmpty else { continue }
-            let key = "topic:" + Self.topicKey(topic)
+            let key = "topic:" + Self.canonicalKey(topic, aliases: state.topicAliases)
             let earliest = entry.sources.compactMap { recordedAt[$0] }.min()
             var event = MatterEvent(id: Self.eventID(entry, key: key), title: topic,
                 detail: entry.item.detail.isEmpty ? entry.item.title : entry.item.title + "：" + entry.item.detail,
@@ -145,9 +153,12 @@ public struct DailyKnowledgeEngine: Sendable {
             event.quotes = entry.knowledge.quotes
             event.headline = entry.item.title
             event.sequence = 0
-            var current = groups[key] ?? (topic, [])
-            // The latest name wins as the display title.
-            current.name = topic
+            var current = groups[key] ?? (name: topic, events: [MatterEvent](), latestDay: entry.summary.day)
+            // The latest name wins as the display title; compare days so order of iteration cannot decide it.
+            if entry.summary.day >= current.latestDay {
+                current.name = topic
+                current.latestDay = entry.summary.day
+            }
             current.events.append(event)
             groups[key] = current
         }

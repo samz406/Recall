@@ -131,6 +131,8 @@ public struct RecallState: Codable, Sendable {
     public var summaryFeedback: [SummaryFeedback] = []
     public var summaryFeedbackSettings = SummaryFeedbackSettings()
     public var topicGroups: [MemoryTopicGroup] = []
+    /// 旧主题键 → 规范主题键。用户合并主题后把旧名写进来，换个叫法的新记录仍归到同一主题。
+    public var topicAliases: [String: String] = [:]
     public var dismissedExperienceIDs: [String]
     public var experienceHintsEnabled: Bool
     public var memoryKnowledge: MemoryKnowledge
@@ -223,7 +225,7 @@ public struct RecallState: Codable, Sendable {
         case privacy, llmConfiguration, conversationSummary, conversationSummaryCoveredMessageCount
         case weeklyReports, reviewTemplates, reviewSchedules, reviewCategories, memoryKnowledge, memoryKnowledgeSettings
         case episodes, projects, userMemories, insights, insightFeedback, learnedRoutines
-        case recentlyDeletedMemories, memorySuppressionRules, matterCorrections, dismissedExperienceIDs, experienceHintsEnabled, topicGroups
+        case recentlyDeletedMemories, memorySuppressionRules, matterCorrections, dismissedExperienceIDs, experienceHintsEnabled, topicGroups, topicAliases
         case pendingPersonaRefresh, personaTraitObservations, personaTraits
         case personaProfileSettings, personaRefreshJobs, personaProfileRevision, personaProfileVersion, rejectedPersonaEvidence
         case dismissedPersonaDimensions
@@ -268,6 +270,7 @@ public struct RecallState: Codable, Sendable {
         recentlyDeletedMemories = try container.decodeIfPresent([RecentlyDeletedMemory].self, forKey: .recentlyDeletedMemories) ?? []
         memorySuppressionRules = try container.decodeIfPresent([MemorySuppressionRule].self, forKey: .memorySuppressionRules) ?? []
         topicGroups = try container.decodeIfPresent([MemoryTopicGroup].self, forKey: .topicGroups) ?? []
+        topicAliases = try container.decodeIfPresent([String: String].self, forKey: .topicAliases) ?? [:]
         matterCorrections = try container.decodeIfPresent([MatterCorrection].self, forKey: .matterCorrections) ?? []
         dismissedExperienceIDs = try container.decodeIfPresent([String].self, forKey: .dismissedExperienceIDs) ?? []
         experienceHintsEnabled = try container.decodeIfPresent(Bool.self, forKey: .experienceHintsEnabled) ?? false
@@ -762,14 +765,37 @@ public actor FileMemoryStore {
         let before = state
         var group = group
         group.sourceIDs = files.filter { group.memberIDs.contains($0.id) }.flatMap(\.evidenceIDs)
+        // 合并后把成员旧键写成别名：以后模型换个叫法，新记录仍归到同一主题。
+        let canonical = files.filter { group.memberIDs.contains($0.id) }
+            .max { $0.evidenceIDs.count == $1.evidenceIDs.count ? $0.id > $1.id : $0.evidenceIDs.count < $1.evidenceIDs.count }
+            .map { DailyKnowledgeEngine.topicKey($0.title) }
+        if let canonical {
+            for member in group.memberIDs where member.hasPrefix("topic:") {
+                let key = String(member.dropFirst("topic:".count))
+                if key != canonical { state.topicAliases[key] = canonical }
+            }
+        }
         state.topicGroups.append(group)
         invalidateGroupedReports(Set(group.memberIDs))
         do { try persist() } catch { state = before; throw error }
     }
+    /// 写入主题别名（旧键 → 规范键）。合并主题时自动调用，也用于迁移。
+    public func saveTopicAliases(_ aliases: [String: String]) throws {
+        let merged = aliases.filter { $0.key != $0.value && state.topicAliases[$0.key] != $0.value }
+        guard !merged.isEmpty else { return }
+        let before = state
+        for (old, canonical) in merged { state.topicAliases[old] = canonical }
+        do { try persist() } catch { state = before; throw error }
+    }
+
     public func undoTopicGroup(_ id: String) throws {
         guard let group = state.topicGroups.first(where: { $0.id == id }) else { return }
         let before = state
         state.topicGroups.removeAll { $0.id == id }
+        let keys = Set(group.memberIDs.map { $0.hasPrefix("topic:") ? String($0.dropFirst("topic:".count)) : $0 })
+        for (old, canonical) in state.topicAliases where keys.contains(old) && keys.contains(canonical) {
+            state.topicAliases.removeValue(forKey: old)
+        }
         invalidateGroupedReports(Set(group.memberIDs + [id]))
         do { try persist() } catch { state = before; throw error }
     }
