@@ -290,7 +290,10 @@ private struct ReminderHistoryEntry: View {
 
     private var describedRow: some View {
         keyboardRow
-            .contextMenu { actions }
+            .contextMenu {
+                Button(RecallLocalization.text("查看来源"), action: source)
+                actions
+            }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(accessibilityDescription)
     }
@@ -355,7 +358,6 @@ private struct ReminderHistoryEntry: View {
         }.buttonStyle(.plain)
     }
     @ViewBuilder private var actions: some View {
-        Button(RecallLocalization.text("查看来源"), action: source)
         Button(RecallLocalization.text("恢复为待确认"), action: restore)
         applicationActions
         Divider()

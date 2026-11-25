@@ -335,6 +335,7 @@ public enum RecallLocalization {
         "只合并浏览方式，原始记录、时间和状态都会保留。可以在主题中撤销合并，相关旧回顾需重新生成。": "Only the browsing view is merged. Original records, dates and states stay intact. Undo in the topic; regenerate affected older reviews.",
         "合并后的主题名称": "Merged topic name",
         "筛选主题": "Filter topics",
+        "MCP": "MCP",
         "使用偏好": "Preferences",
         "删除凭据": "Delete credential",
         "识别文本已脱敏": "Recognized text is redacted",

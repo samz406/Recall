@@ -36,10 +36,27 @@ struct ConversationArchive: Codable, Sendable {
 
     /// 兼容旧的裸消息数组。
     static func decode(_ data: Data, decoder: JSONDecoder) -> ConversationArchive? {
-        if let archive = try? decoder.decode(ConversationArchive.self, from: data) { return archive }
-        guard let legacy = try? decoder.decode([ConversationMessage].self, from: data) else { return nil }
-        var archive = ConversationArchive()
-        archive.scopes[Self.globalScope] = Scope(messages: legacy)
+        var archive: ConversationArchive
+        if let scoped = try? decoder.decode(Self.self, from: data) {
+            archive = scoped
+        } else if let legacy = try? decoder.decode([ConversationMessage].self, from: data) {
+            archive = ConversationArchive()
+            archive.scopes[globalScope] = Scope(messages: legacy)
+        } else { return nil }
+        archive.scopes = archive.scopes.mapValues { scope in
+            var restored = scope
+            for i in restored.messages.indices where !restored.messages[i].citations.isEmpty {
+                let message = restored.messages[i]
+                if message.role == .assistant && AnswerGrounding.isNoEvidenceReply(message.content) {
+                    restored.messages[i].citations = []
+                    restored.messages[i].sourceVersions = nil
+                }
+            }
+            if let last = restored.messages.last(where: { $0.role == .assistant }), AnswerGrounding.isNoEvidenceReply(last.content) {
+                restored.lastCitedSourceIDs = []
+            }
+            return restored
+        }
         return archive
     }
 }

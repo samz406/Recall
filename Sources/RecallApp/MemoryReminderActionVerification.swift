@@ -164,6 +164,8 @@ extension RecallLayoutPreviews {
         let snoozed = model.state.reminders.first { $0.id == series.id }!
         guard snoozed.dueAt == rolled.dueAt, snoozed.snoozedUntil == snoozeUntil else { throw MemoryReminderFailure.failed("稍后改变了重复提醒的原时间") }
         model.completeReminder(snoozed)
+        guard model.completingReminderIDs.contains(snoozed.id) else { throw MemoryReminderFailure.failed("点击完成后缺少即时反馈") }
+        model.completeReminder(snoozed)
         try await wait { model.state.reminders.first { $0.id == series.id }?.status == .scheduled }
         let next = model.state.reminders.first { $0.id == series.id }!
         guard let nextDue = next.dueAt, calendar.isDateInTomorrow(nextDue) || nextDue > .now,

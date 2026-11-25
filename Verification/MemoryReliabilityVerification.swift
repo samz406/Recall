@@ -175,7 +175,29 @@ enum MemoryReliabilityVerification {
         try await store.updatePrivacy(PrivacySettings(cloudUseEnabled: true))
         let empty = ReliabilityModel(source: source)
         let missing = try await MemoryAssistant(store: store).ask("Atlas 是否上线", model: empty)
-        try expect(await empty.calls == 0 && missing.content == AnswerGrounding.noEvidence, "Empty scope called a model or asserted that no event happened")
+        try expect(await empty.calls == 0 && missing.content == AnswerGrounding.noEvidence && missing.citations.isEmpty, "Empty scope called a model or asserted that no event happened")
+        try await store.addCapture(source)
+        _ = try await MemoryAssistant(store: store).ask("记住：以后回答简洁一点，先给结论")
+        try await store.updateLLMConfiguration(LLMConfiguration(provider: .openAICompatible, baseURLString: "https://example.test/v1", model: "synthetic", apiKey: "synthetic"))
+        let unrelated = try await MemoryAssistant(store: store).ask("SyntheticMissingPerson", model: NoMatchModel())
+        try expect(unrelated.content == AnswerGrounding.noEvidence && unrelated.citations.isEmpty,
+                   "A style preference became evidence for a missing person")
+        let valid = ConversationMessage(role: .assistant, content: "Synthetic fact [1]", citations: [source.id])
+        let legacy = ConversationMessage(role: .assistant, content: AnswerGrounding.noEvidence, citations: [UUID()])
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode([valid, legacy]).write(to: storage.conversationURL, options: .atomic)
+        let reopened = try verificationStore(storage: storage)
+        let restored = await reopened.snapshot().messages
+        try expect(restored.count == 2 && restored.first?.citations == [source.id] && restored.last?.citations == [],
+                   "Reloading a no-result answer kept unrelated sources or cleared a supported citation")
+
+    }
+}
+
+private struct NoMatchModel: LLMResponding {
+    func answer(to request: LLMRequest) async throws -> LLMAnswer {
+        LLMAnswer(content: #"{"answer":"No relevant evidence","citations":[]}"#, citedCaptureIDs: [])
     }
 }
 

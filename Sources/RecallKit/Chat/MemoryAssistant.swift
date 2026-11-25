@@ -225,7 +225,7 @@ public final class MemoryAssistant: Sendable {
             throw LLMError.serviceError("记忆或约定已更新，请重新提问以使用最新内容。")
         }
         let formattedContent = ChatResponseFormatter().format(response.content)
-        let citations = (response.citedCaptureIDs.flatMap { id in retrieval.sourceIDs[id] ?? [id] } + retrieval.preferenceSourceIDs).memoryUnique()
+        let citations = response.citedCaptureIDs.flatMap { id in retrieval.sourceIDs[id] ?? [id] }.memoryUnique()
         let assistantMessage = ConversationMessage(role: .assistant, content: formattedContent, citations: citations)
         try Task.checkCancellation()
         try await store.addMessage(assistantMessage, inConversation: conversation.id)

@@ -111,7 +111,7 @@ public enum AskAgent {
             await onStep?("agent-partial:" + reason, 0)
             let result = AnswerGrounding.fallback(records: shown, reason: reason)
             return AskTranscript(content: result.content,
-                                 citations: (result.sourceIDs + profileIDs).memoryUnique(),
+                                 citations: result.sourceIDs,
                                  inspectedSourceIDs: (inspected + profileIDs).memoryUnique())
         }
 
@@ -149,7 +149,7 @@ public enum AskAgent {
                 let checked = try await AnswerGrounding.verify(draft: cleaned.content, question: question,
                     sourceIDs: verifiable(cleaned.citations, shown: shown, fallback: inspected), state: scoped, responder: responder, materials: shown.isEmpty ? nil : shown)
                 if let reason = checked.reason { await onStep?("grounding:" + reason, 0) }
-                return AskTranscript(content: checked.content, citations: (checked.sourceIDs + profileIDs).memoryUnique(), inspectedSourceIDs: (inspected + profileIDs).memoryUnique())
+                return AskTranscript(content: checked.content, citations: checked.sourceIDs, inspectedSourceIDs: (inspected + profileIDs).memoryUnique())
             case let .calls(status, calls):
                 if usedCharacters >= limits.maxResultCharacters { forceAnswer = true; break }
                 let note = status?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -185,7 +185,7 @@ public enum AskAgent {
         let checked = try await AnswerGrounding.verify(draft: cleaned.content, question: question,
             sourceIDs: verifiable(cleaned.citations, shown: shown, fallback: inspected), state: scoped, responder: responder, materials: shown)
         if let reason = checked.reason { await onStep?("grounding:" + reason, 0) }
-        return AskTranscript(content: checked.content, citations: (checked.sourceIDs + profileIDs).memoryUnique(), inspectedSourceIDs: (inspected + profileIDs).memoryUnique())
+        return AskTranscript(content: checked.content, citations: checked.sourceIDs, inspectedSourceIDs: (inspected + profileIDs).memoryUnique())
     }
 
     /// A review can cite hundreds of sources, but only the shown ones have text to check against. Checking the
