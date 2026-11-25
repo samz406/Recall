@@ -51,6 +51,18 @@ public struct TopicRegistry: Codable, Equatable, Sendable {
         }
     }
 
+    /// 项目下的主题（不含项目本身）。
+    public func children(of projectID: UUID) -> [Topic] {
+        topics.filter { $0.parentID == projectID && !$0.isProject }
+    }
+
+    /// 删除项目：子主题回到顶层，不连带删除。
+    public mutating func deleteProject(id: UUID) {
+        guard let project = topic(id: id), project.isProject else { return }
+        for i in topics.indices where topics[i].parentID == id { topics[i].parentID = nil }
+        remove(id: id)
+    }
+
     public func topic(forLegacyID legacyID: String) -> Topic? {
         guard let id = legacyAliases[legacyID] else { return nil }
         return topic(id: id)
@@ -130,11 +142,9 @@ public struct TopicRegistry: Codable, Equatable, Sendable {
     public mutating func setParent(_ parentID: UUID?, of id: UUID) -> Bool {
         guard let index = topics.firstIndex(where: { $0.id == id }) else { return false }
         guard let parentID else { topics[index].parentID = nil; return true }
-        guard parentID != id, topics.contains(where: { $0.id == parentID }) else { return false }
-        // 只允许两级：父必须是项目，且父不能再有父。
-        guard let parentIndex = topics.firstIndex(where: { $0.id == parentID }),
-              topics[parentIndex].isProject == false || topics[parentIndex].parentID == nil else { return false }
-        if topics[parentIndex].parentID == id { return false }
+        guard parentID != id, let parentIndex = topics.firstIndex(where: { $0.id == parentID }) else { return false }
+        // 只允许两级：父必须是项目，且项目自己不能再有父。
+        guard topics[parentIndex].isProject, topics[parentIndex].parentID == nil else { return false }
         topics[index].parentID = parentID
         return true
     }

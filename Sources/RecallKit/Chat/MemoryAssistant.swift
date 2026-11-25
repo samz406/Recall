@@ -278,7 +278,7 @@ public final class MemoryAssistant: Sendable {
             return nil
         }
         await onEvidenceReady?(outcome.citations.count)
-        await store.recordAnswerCitations(outcome.citations)
+        await store.recordAnswerCitations(outcome.citations, inConversation: conversationID, topicID: scope.topicID)
         let latestState = await store.snapshot()
         guard latestState.privacy.cloudUseEnabled == originalState.privacy.cloudUseEnabled,
               latestState.privacy.excludedBundleIdentifiers == originalState.privacy.excludedBundleIdentifiers,

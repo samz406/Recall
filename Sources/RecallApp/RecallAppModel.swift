@@ -806,6 +806,24 @@ final class RecallAppModel: ObservableObject {
     }
 
     @discardableResult
+    /// 新建项目并可同时把当前主题移入。
+    func createProject(named name: String, moving file: MatterFile?) async {
+        do {
+            guard let project = try await store.createProject(title: name) else { return }
+            if let file { try await store.setTopicParent(topicID: file.id, parentID: "topic:" + project.id.uuidString) }
+            state = await store.snapshot()
+            rebuildMatterFiles()
+        } catch { recordError(error, source: "Memory", message: "新建项目失败") }
+    }
+
+    func assignProject(_ projectID: String?, to file: MatterFile) async {
+        do {
+            try await store.setTopicParent(topicID: file.id, parentID: projectID)
+            state = await store.snapshot()
+            rebuildMatterFiles()
+        } catch { recordError(error, source: "Memory", message: "设置所属项目失败") }
+    }
+
     /// 删除主题只清理登记表、小结与完成标记；原始记录与截图保留。
     func deleteTopic(_ file: MatterFile) async {
         do {

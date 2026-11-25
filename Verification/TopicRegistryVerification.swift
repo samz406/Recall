@@ -16,7 +16,8 @@ enum TopicRegistryVerification {
         try await savedReviewRegistersTopic()
         try lifecycleFollowsEvidenceAndUserMark()
         try await deletingTopicKeepsRecords()
-        print("PASS: 7 topic registry scenarios (alias mapping, renamed topic stays one, stable identity, idempotent migration, review sync, lifecycle, deletion keeps records)")
+        try await projectGrouping()
+        print("PASS: 8 topic registry scenarios (alias mapping, renamed topic stays one, stable identity, idempotent migration, review sync, lifecycle, deletion keeps records, project grouping)")
     }
 
     private static func aliasesMapToCanonicalKey() throws {
@@ -160,6 +161,41 @@ enum TopicRegistryVerification {
         try expect(after.topicRegistry.legacyAliases.isEmpty, "删除后不应残留旧 ID 映射")
         try expect(!after.matterCorrections.contains { $0.topicID == fileID }, "删除后不应残留完成标记")
         try expect(after.captures.contains { $0.id == source.id }, "删除主题不应删除原始记录")
+    }
+
+    /// 项目只是两级分组：只能挂到项目上，删除项目时子主题回到顶层。
+    private static func projectGrouping() async throws {
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-project-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let store = try verificationStore(storage: storage)
+        let source = CaptureRecord(eventTemplate: .manualMoment, createdAt: .now, sourceAppName: "合成验证",
+            sourceBundleIdentifier: "example.project", contentHash: UUID().uuidString, ocrText: "合成：项目夹具", textOrigin: .userInput)
+        try await store.addCapture(source)
+        try await store.upsertDailySummary(summary(day: .now, topic: "发版流水线", source: source, title: "项目夹具条目"))
+        guard let project = try await store.createProject(title: "Recall 发布") else { throw Failure(message: "应创建项目") }
+        var registry = await store.snapshot().topicRegistry
+        guard let topic = registry.topics.first(where: { !$0.isProject }) else { throw Failure(message: "应已有主题") }
+
+        // 不能挂到普通主题上（只允许两级）。
+        try expect(!registry.setParent(topic.id, of: topic.id), "不允许自指")
+        try expect(!registry.setParent(registry.topics.first?.id, of: topic.id) || registry.topics.first?.isProject == true, "普通主题不能作为父级")
+        try expect(registry.setParent(project.id, of: topic.id), "应能挂到项目下")
+
+        try await store.setTopicParent(topicID: "topic:" + topic.id.uuidString, parentID: "topic:" + project.id.uuidString)
+        registry = await store.snapshot().topicRegistry
+        try expect(registry.topic(id: topic.id)?.parentID == project.id, "所属项目没有写入")
+        let grouped = TopicListPresentation.groupedByProject(
+            [MatterFile(id: "topic:" + topic.id.uuidString, title: topic.title,
+                        events: [MatterEvent(id: UUID(), title: topic.title, detail: "d", recordedAt: .now,
+                                             status: .progressed, evidenceIDs: [source.id], nextAction: nil)])],
+            registry: registry)
+        try expect(grouped.count == 1 && grouped.first?.project?.id == project.id, "应按项目分组")
+
+        try await store.deleteProject(id: "topic:" + project.id.uuidString)
+        registry = await store.snapshot().topicRegistry
+        try expect(registry.topic(id: project.id) == nil, "项目应被删除")
+        try expect(registry.topic(id: topic.id)?.parentID == nil, "删除项目后子主题应回到顶层")
+        try expect(registry.topic(id: topic.id) != nil, "删除项目不应删除主题")
     }
 
     private static func summary(day: Date, topic: String, source: CaptureRecord, title: String) -> DailySummary {

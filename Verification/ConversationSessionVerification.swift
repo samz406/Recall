@@ -31,6 +31,17 @@ enum ConversationSessionVerification {
         try await store.activateSession(topicID: "topic:alpha")
         let afterDelete = await store.snapshot().messages
         try expect(afterDelete.isEmpty, "删除主题会话后不应恢复旧消息")
-        print("PASS: conversation sessions stay isolated per scope and are deleted with the topic")
+
+        // 在途回答不能写进切换后的会话：用旧会话身份写入必须被丢弃。
+        let stale = await store.conversationSnapshot().id
+        try await store.activateSession(topicID: nil)
+        let current = await store.conversationSnapshot().id
+        await store.recordAnswerCitations([UUID()], inConversation: stale, topicID: nil)
+        let afterStale = await store.lastCitedSourceIDs()
+        try expect(afterStale.isEmpty, "切走后的回答写回了新会话")
+        await store.recordAnswerCitations([UUID()], inConversation: current, topicID: nil)
+        let afterCurrent = await store.lastCitedSourceIDs()
+        try expect(afterCurrent.count == 1, "当前会话的回答引用没有写回")
+        print("PASS: conversation sessions stay isolated per scope, drop stale writes and are deleted with the topic")
     }
 }

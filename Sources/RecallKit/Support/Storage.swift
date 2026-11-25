@@ -858,6 +858,47 @@ public actor FileMemoryStore {
         do { try persistReviewState() } catch { state = before; throw error }
     }
 
+    /// 新建项目（只是分组容器，没有自己的事件）。
+    @discardableResult
+    public func createProject(title: String) throws -> Topic? {
+        let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        let before = state
+        var registry = state.topicRegistry
+        let project = Topic(title: name, isProject: true)
+        registry.upsert(project)
+        state.topicRegistry = registry
+        do { try persist() } catch { state = before; throw error }
+        return project
+    }
+
+    /// 设置主题所属项目；parentID 传 nil 表示移出项目。
+    public func setTopicParent(topicID: String, parentID: String?) throws {
+        let canonical = state.topicRegistry.canonicalID(topicID)
+        guard let id = UUID(uuidString: canonical.hasPrefix("topic:") ? String(canonical.dropFirst("topic:".count)) : canonical) else { return }
+        let parentUUID = parentID.flatMap { parent -> UUID? in
+            let value = state.topicRegistry.canonicalID(parent)
+            return UUID(uuidString: value.hasPrefix("topic:") ? String(value.dropFirst("topic:".count)) : value)
+        }
+        let before = state
+        var registry = state.topicRegistry
+        guard registry.setParent(parentUUID, of: id) else { throw WeeklyReviewError.changedSources }
+        state.topicRegistry = registry
+        do { try persist() } catch { state = before; throw error }
+    }
+
+    /// 删除项目：子主题回到顶层，不删除主题本身。
+    public func deleteProject(id: String) throws {
+        let value = state.topicRegistry.canonicalID(id)
+        guard let uuid = UUID(uuidString: value.hasPrefix("topic:") ? String(value.dropFirst("topic:".count)) : value),
+              state.topicRegistry.topic(id: uuid) != nil else { return }
+        let before = state
+        var registry = state.topicRegistry
+        registry.deleteProject(id: uuid)
+        state.topicRegistry = registry
+        do { try persist() } catch { state = before; throw error }
+    }
+
     public func undoTopicGroup(_ id: String) throws {
         guard let group = state.topicGroups.first(where: { $0.id == id }) else { return }
         let before = state
@@ -1576,9 +1617,12 @@ public actor FileMemoryStore {
         conversationArchive.scopes[conversationArchive.activeScope]?.lastCitedSourceIDs ?? []
     }
 
-    func recordAnswerCitations(_ ids: [UUID]) {
-        guard conversationArchive.scopes[conversationArchive.activeScope] != nil else { return }
-        conversationArchive.scopes[conversationArchive.activeScope]?.lastCitedSourceIDs = ids
+    /// 只写回答案所属的会话：发起后被切走或清空的答案不再改任何会话。
+    public func recordAnswerCitations(_ ids: [UUID], inConversation expectedID: UUID, topicID: String?) {
+        let scope = topicID.map(ConversationArchive.topicScope) ?? ConversationArchive.globalScope
+        guard expectedID == conversationID, scope == conversationArchive.activeScope,
+              conversationArchive.scopes[scope] != nil else { return }
+        conversationArchive.scopes[scope]?.lastCitedSourceIDs = ids
     }
 
     public func addMessage(_ message: ConversationMessage, inConversation expectedID: UUID? = nil) throws {

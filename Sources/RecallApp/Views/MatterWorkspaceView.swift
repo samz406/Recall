@@ -10,6 +10,8 @@ struct MatterWorkspaceView: View {
     @State private var filter = 0
     @State private var showDone = false
     @State private var pendingDelete: MatterFile?
+    @State private var pendingProjectFor: MatterFile?
+    @State private var newProjectName = ""
     @State private var limit = 20
     @State private var selectedID: String?
     @State private var adding = false
@@ -113,6 +115,17 @@ struct MatterWorkspaceView: View {
             if let id = selectedID { TopicDetailView(topicID: id, continueChat: { value in selectedID = nil; continueChat(value) }).environmentObject(model) }
         }
         .sheet(isPresented: $adding) { ManualMatterSheet(title: addingTitle) { await model.saveManualMatter($0) } }
+        .alert(RecallLocalization.both("新建项目", "New project"),
+               isPresented: Binding(get: { pendingProjectFor != nil }, set: { if !$0 { pendingProjectFor = nil } })) {
+            TextField(RecallLocalization.both("项目名称", "Project name"), text: $newProjectName)
+            Button(RecallLocalization.both("取消", "Cancel"), role: .cancel) { pendingProjectFor = nil }
+            Button(RecallLocalization.both("创建", "Create")) {
+                let file = pendingProjectFor
+                let name = newProjectName
+                pendingProjectFor = nil
+                Task { await model.createProject(named: name, moving: file) }
+            }
+        }
         .confirmationDialog(RecallLocalization.both("删除这个主题？", "Delete this topic?"),
                             isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
                             presenting: pendingDelete) { file in
@@ -168,6 +181,17 @@ struct MatterWorkspaceView: View {
                     .disabled(model.completingMatterIDs.contains(file.id))
             } else if model.state.matterCorrections.contains(where: { $0.isTopicCompletion && $0.topicID == file.id }) {
                 Button(RecallLocalization.both("撤销完成标记", "Undo completion")) { model.undoTopicCompletion(file.id) }
+            }
+            Menu(RecallLocalization.both("所属项目", "Project")) {
+                ForEach(model.state.topicRegistry.topics.filter(\.isProject)) { project in
+                    Button(project.title) { Task { await model.assignProject("topic:" + project.id.uuidString, to: file) } }
+                }
+                if file.latest.date.timeIntervalSinceNow < 0, !model.state.topicRegistry.topics.filter(\.isProject).isEmpty {
+                    Divider()
+                    Button(RecallLocalization.both("移出项目", "Remove from project")) { Task { await model.assignProject(nil, to: file) } }
+                }
+                Divider()
+                Button(RecallLocalization.both("新建项目…", "New project…")) { newProjectName = ""; pendingProjectFor = file }
             }
             Divider()
             Button(RecallLocalization.both("删除主题…", "Delete topic…"), role: .destructive) { pendingDelete = file }

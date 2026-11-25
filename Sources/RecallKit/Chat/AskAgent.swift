@@ -94,7 +94,8 @@ public enum AskAgent {
         }
         // 追问优先复用上一轮回答引用的来源，避免重新检索跑偏。
         if !forceAnswer, !previousSourceIDs.isEmpty, isFollowUp(question) {
-            let byID = Dictionary(uniqueKeysWithValues: state.captures.map { ($0.id, $0) })
+            // 只在本次作用域内取上一轮来源，避免把别的主题的记录带进来。
+            let byID = Dictionary(uniqueKeysWithValues: scoped.captures.map { ($0.id, $0) })
             let carried = previousSourceIDs.compactMap { byID[$0] }.map { record -> CaptureRecord in
                 var copy = record
                 copy.ocrText = String(PrivacyEngine().redact(record.correctedText ?? record.ocrText).prefix(600))

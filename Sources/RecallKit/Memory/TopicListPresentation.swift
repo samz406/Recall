@@ -16,6 +16,26 @@ public enum TopicListPresentation {
         return (active, done)
     }
 
+    /// 按项目分组：项目 → 主题。没有父项目或项目已不存在的主题归入 `project == nil` 组，排在最后。
+    public static func groupedByProject(_ files: [MatterFile], registry: TopicRegistry) -> [(project: Topic?, files: [MatterFile])] {
+        guard !registry.topics.isEmpty else { return [(nil, files)] }
+        var buckets: [UUID: [MatterFile]] = [:]
+        var loose: [MatterFile] = []
+        for file in files {
+            let topic = registry.topic(forName: file.title)
+            if let parent = topic?.parentID, let project = registry.topic(id: parent), project.isProject {
+                buckets[project.id, default: []].append(file)
+            } else {
+                loose.append(file)
+            }
+        }
+        let projects = registry.topics
+            .filter { $0.isProject && buckets[$0.id] != nil }
+            .sorted { ($0.lastEventAt ?? .distantPast) > ($1.lastEventAt ?? .distantPast) }
+            .map { (project: Optional($0), files: buckets[$0.id] ?? []) }
+        return projects + (loose.isEmpty ? [] : [(project: nil, files: loose)])
+    }
+
     public static func relativeTime(_ date: Date, now: Date = .now, calendar: Calendar = .current) -> String {
         let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day ?? 0
         switch days {
