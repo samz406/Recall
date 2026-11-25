@@ -12,7 +12,29 @@ enum AskPerformanceVerification {
     static func run() async throws {
         try await messagesDoNotBumpCaptureRevision()
         try await finalRequestDropsDuplicatedToolText()
-        print("PASS: 2 ask performance scenarios (capture revision, duplicated tool text)")
+        try await messagesLiveInSidecar()
+        print("PASS: 3 ask performance scenarios (capture revision, duplicated tool text, message sidecar)")
+    }
+
+    /// 每条消息原本都会编码整份存档（含全部 OCR）。消息改存 sidecar 后，
+    /// 主存档不再包含消息，重新打开也能读回。
+    private static func messagesLiveInSidecar() async throws {
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-ask-sidecar-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        do {
+            let store = try verificationStore(storage: storage)
+            try await store.addCapture(CaptureRecord(eventTemplate: .manualMoment, createdAt: .now, sourceAppName: "合成验证",
+                sourceBundleIdentifier: "example.ask-sidecar", contentHash: UUID().uuidString, ocrText: "ATLAS-CAPTURE-TEXT", textOrigin: .userInput))
+            try await store.addMessage(ConversationMessage(role: .user, content: "SIDECAR-SYNTHETIC-1"))
+        }
+        let main = try String(contentsOf: storage.stateURL, encoding: .utf8)
+        try expect(!main.contains("SIDECAR-SYNTHETIC-1"), "消息不应再写入主存档")
+        try expect(main.contains("ATLAS-CAPTURE-TEXT"), "主存档仍应包含截图文本")
+        try expect(FileManager.default.fileExists(atPath: storage.conversationURL.path), "应生成会话 sidecar 文件")
+
+        let reopened = try verificationStore(storage: storage)
+        let messages = await reopened.snapshot().messages
+        try expect(messages.contains { $0.content == "SIDECAR-SYNTHETIC-1" }, "重新打开后消息应还在")
     }
 
     /// 逐来源原文已经随 shown 发给回答模型，最终请求不再重复携带同样的工具结果；

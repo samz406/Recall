@@ -17,6 +17,7 @@ public struct RecallStorage: Sendable {
     public let stateURL: URL
     public let intelligenceDatabaseURL: URL
     public let reviewSchedulesURL: URL
+    public let conversationURL: URL
 
     public init(fileManager: FileManager = .default) throws {
         guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
@@ -28,6 +29,7 @@ public struct RecallStorage: Sendable {
         stateURL = rootURL.appendingPathComponent("recall-state.json")
         intelligenceDatabaseURL = rootURL.appendingPathComponent("recall-intelligence.sqlite")
         reviewSchedulesURL = rootURL.appendingPathComponent("review-schedules.json")
+        conversationURL = rootURL.appendingPathComponent("conversation.json")
         try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: rootURL.path)
         try fileManager.createDirectory(at: screenshotsURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -41,6 +43,7 @@ public struct RecallStorage: Sendable {
         stateURL = rootURL.appendingPathComponent("recall-state.json")
         intelligenceDatabaseURL = rootURL.appendingPathComponent("recall-intelligence.sqlite")
         reviewSchedulesURL = rootURL.appendingPathComponent("review-schedules.json")
+        conversationURL = rootURL.appendingPathComponent("conversation.json")
         try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: rootURL.path)
         try fileManager.createDirectory(at: screenshotsURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -362,6 +365,13 @@ public actor FileMemoryStore {
             initialDigest = ArchiveReliability.digest(data)
             var restoredState = try ArchiveReliability.decode(data)
             Self.overlayNewerReviewSchedules(&restoredState, storage: storage, decoder: decoder)
+            // 会话消息以 sidecar 为准。旧存档里仍带消息时先写 sidecar，
+            // 下一次写盘就不再把它们放进主存档。
+            if let sidecar = ConversationStore.read(from: storage.conversationURL, decoder: decoder) {
+                restoredState.messages = sidecar
+            } else if !restoredState.messages.isEmpty {
+                try? ConversationStore.write(restoredState.messages, to: storage.conversationURL, encoder: encoder)
+            }
             if !restoredState.llmConfiguration.apiKey.isEmpty {
                 var config = restoredState.llmConfiguration
                 // A pre-ID archive must find the same Keychain item after an interrupted migration.
@@ -482,12 +492,15 @@ public actor FileMemoryStore {
         state.conversationSummary = nil
         state.conversationSummaryCoveredMessageCount = 0
         conversationID = UUID()
-        // Messages and their compression aren't indexed in SQLite. One atomic state write
-        // is sufficient, and avoids reporting failure after an unrelated index update.
-        do { try writeState() }
-        catch {
+        // 会话清空要同时落盘 sidecar 与主存档（后者含记忆与摘要的变更）；
+        // 失败时把两边都还原。
+        do {
+            try persistConversation()
+            try writeState()
+        } catch {
             state = previous
             conversationID = previousID
+            try? persistConversation()
             throw error
         }
         return result
@@ -1397,6 +1410,14 @@ public actor FileMemoryStore {
 
     private func removeCaptureState(id: UUID) -> CaptureRecord? { state.removeCaptureState(id: id) }
 
+    /// 会话消息单独写盘；不再重启整份存档的编码。
+    /// 凭据迁移未完成时整份存档只读，这里同样要拦住，否则消息会在只读状态下落盘。
+    private func persistConversation() throws {
+        try Task.checkCancellation()
+        guard pendingLegacyCredential == nil else { throw CredentialError.unavailable }
+        try ConversationStore.write(state.messages, to: storage.conversationURL, encoder: encoder)
+    }
+
     public func addMessage(_ message: ConversationMessage, inConversation expectedID: UUID? = nil) throws {
         if expectedID != nil { try Task.checkCancellation() }
         if let expectedID, expectedID != conversationID { throw CancellationError() }
@@ -1408,13 +1429,13 @@ public actor FileMemoryStore {
             })
         }
         state.messages.append(message)
-        do { try persistReviewState(invalidateAnalysis: false) } catch { state = before; throw error }
+        do { try persistConversation() } catch { state = before; throw error }
     }
 
     public func rateMessage(id: UUID, helpful: Bool?) throws {
         guard let index = state.messages.firstIndex(where: { $0.id == id && $0.role == .assistant }) else { return }
         let previous = state
-        do { state.messages[index].helpful = helpful; try persistReviewState(invalidateAnalysis: false) }
+        do { state.messages[index].helpful = helpful; try persistConversation() }
         catch { state = previous; throw error }
     }
 
@@ -1591,8 +1612,14 @@ public actor FileMemoryStore {
     }
 
     @discardableResult
+    private static func withoutMessages(_ state: RecallState) -> RecallState {
+        var copy = state
+        copy.messages = []
+        return copy
+    }
+
     private static func write(_ state: RecallState, encoder: JSONEncoder, to url: URL, expectedDigest: String? = nil, requireMissing: Bool = false) throws -> String {
-        let data = try encoder.encode(state)
+        let data = try encoder.encode(Self.withoutMessages(state))
         _ = try ArchiveReliability.write(data, storage: RecallStorage(rootURL: url.deletingLastPathComponent()), expectedDigest: expectedDigest, requireMissing: requireMissing)
         return ArchiveReliability.digest(data)
     }
@@ -1630,7 +1657,8 @@ public actor FileMemoryStore {
             state.reconcilePersonaProfile()
             refreshCaptureRevision()
             let started = Date.now
-            let data = try encoder.encode(state)
+            // 消息在 conversation.json 里，主存档不带，避免每条消息重写整份 OCR。
+            let data = try encoder.encode(Self.withoutMessages(state))
             let encodeMs = Int(Date.now.timeIntervalSince(started) * 1000)
             let writing = Date.now
             backupPending = try !ArchiveReliability.write(data, storage: storage, expectedDigest: lastDiskDigest)
