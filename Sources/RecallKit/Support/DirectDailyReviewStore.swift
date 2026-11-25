@@ -122,6 +122,8 @@ extension FileMemoryStore {
             state.pendingDailyReviewMaintenance.append(saved.id)
             state.pendingPersonaRefresh.removeAll { !liveSummaries.contains($0) }
             state.pendingPersonaRefresh.append(saved.id)
+            // 新一天的主题进入登记表，下一次回顾才有已有主题可选。
+            syncTopicRegistry(for: saved)
             let reminders = DailyReviewReminderEngine.reconcile(&state)
             do { try persistReviewState(indexChanged: true) } catch { state = previous; throw error }
             let metrics = await meter.finish(start: start, saveMilliseconds: DailyReviewMeter.milliseconds(since: saveStart))

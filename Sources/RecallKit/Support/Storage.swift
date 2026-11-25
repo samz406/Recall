@@ -1000,7 +1000,24 @@ public actor FileMemoryStore {
         state.dailySummaries.removeAll { Calendar.current.isDate($0.day, inSameDayAs: summary.day) }
         state.dailySummaries.append(summary)
         state.dailySummaries.sort { $0.day > $1.day }
+        syncTopicRegistry(for: summary)
         try persist()
+    }
+
+    /// 每日回顾写入后补齐登记表：新主题登记、已有主题刷新最近活动时间。
+    /// 只记录名字与时间，不含原文。
+    func syncTopicRegistry(for summary: DailySummary) {
+        var registry = state.topicRegistry
+        for item in summary.items {
+            guard let knowledge = item.knowledge, knowledge.kind == .matter, knowledge.ownedByUser,
+                  let name = knowledge.topic?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { continue }
+            var topic: Topic
+            if let id = knowledge.topicID, let existing = registry.topic(id: id) { topic = existing }
+            else { topic = registry.resolveOrCreate(name: name, at: summary.day) }
+            if (topic.lastEventAt ?? .distantPast) < summary.day { topic.lastEventAt = summary.day }
+            registry.upsert(topic)
+        }
+        state.topicRegistry = registry
     }
 
     public func applyIntelligence(_ consolidation: IntelligenceConsolidation, for day: Date) throws {
@@ -1019,6 +1036,7 @@ public actor FileMemoryStore {
         state.dailySummaries.removeAll { Calendar.current.isDate($0.day, inSameDayAs: summary.day) }
         state.dailySummaries.append(summary)
         state.dailySummaries.sort { $0.day > $1.day }
+        syncTopicRegistry(for: summary)
         applyIntelligenceState(consolidation, for: summary.day)
         do { try Task.checkCancellation(); try persist() } catch { state = before; throw error }
     }

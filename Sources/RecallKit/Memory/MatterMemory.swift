@@ -206,12 +206,16 @@ public struct MatterMemoryEngine: Sendable {
         func fileID(_ key: String, title: String) -> String {
             state.topicRegistry.topic(forName: title).map { "topic:" + $0.id.uuidString } ?? "topic:" + key
         }
-        var buckets: [String: (title: String, events: [MatterEvent])] = [:]
+        var buckets: [String: (title: String, events: [MatterEvent], latest: Date)] = [:]
         func add(_ file: MatterFile, fromReview: Bool) {
             let key = bucketKey(file.title)
             guard !key.isEmpty else { return }
-            var bucket = buckets[key] ?? (file.title, [])
-            if fromReview { bucket.title = file.title }
+            var bucket = buckets[key] ?? (file.title, [], .distantPast)
+            // 显示名取最新一天的说法，不受遍历顺序影响。
+            if fromReview, bucket.latest <= file.latest.date {
+                bucket.title = file.title
+                bucket.latest = file.latest.date
+            }
             for event in file.events {
                 let day = calendar.startOfDay(for: event.date)
                 if !fromReview && !manual(event) && structured.contains(day) { continue }

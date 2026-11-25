@@ -12,6 +12,7 @@ public extension ModelReviewResult {
                 let quotes = facts.filter { item.factIDs.contains($0.id) }.flatMap(\.quotes)
                 knowledge = DailyItemKnowledge(topic: item.topic, kind: kind, status: item.status ?? "unknown",
                     ownedByUser: item.ownedByUser ?? false, quotes: Array(Set(quotes)).sorted(), category: item.category)
+                knowledge?.topicID = item.topicID
                 knowledge?.reminderID = item.reminderID
                 let itemSources = Set(sourceIDs(for: item))
                 knowledge?.sourceVersions = Dictionary(uniqueKeysWithValues: sourceVersions.filter { itemSources.contains($0.key) }

@@ -13,7 +13,8 @@ enum TopicRegistryVerification {
         try await renamedTopicStaysOneTopic()
         try identitySurvivesRenameAndMerge()
         try await migrationIsIdempotent()
-        print("PASS: 4 topic registry scenarios (alias mapping, renamed topic stays one, stable identity, idempotent migration)")
+        try await savedReviewRegistersTopic()
+        print("PASS: 5 topic registry scenarios (alias mapping, renamed topic stays one, stable identity, idempotent migration, review sync)")
     }
 
     private static func aliasesMapToCanonicalKey() throws {
@@ -77,21 +78,45 @@ enum TopicRegistryVerification {
         try expect(legacy.legacyAliases.isEmpty, "删除主题应清理指向它的旧 ID 映射")
     }
 
-    /// 同一存档迁移两次得到同一组 UUID，旧主题 ID 仍能映射。
+    /// 启动迁移：旧存档（没有登记表）在打开时补齐，重复打开得到同一组 UUID。
     private static func migrationIsIdempotent() async throws {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-topic-migrate-" + UUID().uuidString))
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
-        let store = try verificationStore(storage: storage)
         let source = CaptureRecord(eventTemplate: .manualMoment, createdAt: .now, sourceAppName: "合成验证",
             sourceBundleIdentifier: "example.topic-migrate", contentHash: UUID().uuidString, ocrText: "合成：迁移夹具", textOrigin: .userInput)
-        try await store.addCapture(source)
-        try await store.upsertDailySummary(summary(day: .now, topic: "迁移主题", source: source, title: "迁移夹具条目"))
-        let state = await store.snapshot()
-        let once = TopicRegistry.migrated(from: state)
-        let twice = TopicRegistry.migrated(from: state)
-        try expect(once.topics.map(\.id) == twice.topics.map(\.id), "迁移不是幂等的")
-        try expect(once.topics.first?.title == "迁移主题", "迁移应保留主题名")
-        try expect(once.legacyAliases.keys.contains("topic:" + DailyKnowledgeEngine.topicKey("迁移主题")), "应记录旧主题 ID 映射")
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(RecallState(captures: [source],
+            dailySummaries: [summary(day: .now, topic: "迁移主题", source: source, title: "迁移夹具条目")])).write(to: storage.stateURL)
+        let first = try verificationStore(storage: storage)
+        let once = await first.snapshot().topicRegistry
+        try expect(once.topics.count == 1 && once.topics.first?.title == "迁移主题", "启动时没有迁移旧主题")
+        try expect(once.legacyAliases["topic:" + DailyKnowledgeEngine.topicKey("迁移主题")] == once.topics.first?.id, "应记录旧主题 ID 映射")
+        let second = try verificationStore(storage: storage)
+        let twice = await second.snapshot().topicRegistry
+        try expect(twice.topics.map(\.id) == once.topics.map(\.id), "迁移不是幂等的")
+    }
+
+    /// 每日回顾保存后，主题进入登记表；同名第二天只刷新最近活动时间，不新建。
+    private static func savedReviewRegistersTopic() async throws {
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-topic-sync-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let store = try verificationStore(storage: storage)
+        let day1 = Calendar.current.date(byAdding: .day, value: -1, to: .now)!
+        let day2 = Date.now
+        let first = CaptureRecord(eventTemplate: .manualMoment, createdAt: day1, sourceAppName: "合成验证",
+            sourceBundleIdentifier: "example.topic-sync", contentHash: UUID().uuidString, ocrText: "合成：发版第一步", textOrigin: .userInput)
+        let second = CaptureRecord(eventTemplate: .manualMoment, createdAt: day2, sourceAppName: "合成验证",
+            sourceBundleIdentifier: "example.topic-sync", contentHash: UUID().uuidString, ocrText: "合成：发版第二步", textOrigin: .userInput)
+        try await store.addCapture(first)
+        try await store.addCapture(second)
+        try await store.upsertDailySummary(summary(day: day1, topic: "发版流水线", source: first, title: "开始搭流水线"))
+        let afterFirst = await store.snapshot().topicRegistry
+        try expect(afterFirst.topics.count == 1 && afterFirst.topics.first?.title == "发版流水线", "保存回顾后主题应进入登记表")
+        let registeredID = afterFirst.topics.first?.id
+        try await store.upsertDailySummary(summary(day: day2, topic: "发版流水线", source: second, title: "流水线跑通"))
+        let afterSecond = await store.snapshot().topicRegistry
+        try expect(afterSecond.topics.count == 1 && afterSecond.topics.first?.id == registeredID, "同名第二天不应新建主题")
+        try expect(afterSecond.topics.first?.lastEventAt.map { Calendar.current.isDate($0, inSameDayAs: day2) } == true, "最近活动时间没有刷新")
     }
 
     private static func summary(day: Date, topic: String, source: CaptureRecord, title: String) -> DailySummary {

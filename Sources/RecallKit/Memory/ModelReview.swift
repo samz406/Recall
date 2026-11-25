@@ -58,6 +58,8 @@ public struct ModelReviewItem: Codable, Hashable, Sendable {
     public var factIDs: [String]
     /// Present only for the direct daily review; other review kinds leave these nil.
     public var topic: String? = nil
+    /// 归入的已有主题（登记表 ID）。模型只能选择已给出的主题，不能新建 ID。
+    public var topicID: UUID? = nil
     public var kind: String? = nil
     public var status: String? = nil
     public var ownedByUser: Bool? = nil

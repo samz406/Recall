@@ -452,6 +452,8 @@ public struct DailyItemKnowledge: Codable, Hashable, Sendable {
     public var condition: String? = nil
     /// 事项所属主题，跨天用同一名字；资料类可为空。
     public var topic: String?
+    /// 登记表里的稳定主题 ID；模型归入已有主题时写入。
+    public var topicID: UUID? = nil
     public var kind: DailyItemKind
     public var status: String
     /// 模型认为这是用户本人（而非资料、对方或助手）的事项。

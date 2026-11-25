@@ -65,6 +65,8 @@ struct DailyReviewDraft: Codable, Sendable {
         var evidence: [Evidence]
         /// Stable, specific name of the matter this belongs to; reused across days. Optional so older drafts decode.
         var topic: String? = nil
+        /// 归入已有主题时原样返回它的 id；新事项留空。
+        var topicID: UUID? = nil
         /// matter / preference / agreement / person / reference
         var kind: String? = nil
         /// work / personal / learning, or null when unclear
@@ -106,8 +108,9 @@ struct DailyReviewInput: Sendable {
     var configurationVersion: String
     var reminderContext: String = "[]"
     var previousProgress: [DailySummaryItem] = []
-    /// 最近 30 天的主题显示名（已脱敏、只含名字），供模型复用已有叫法。
-    var knownTopics: [String] = []
+    /// 已有主题（只含 id 与名称，不含原文），供模型归入已有主题。
+    struct KnownTopic: Sendable, Equatable { var id: UUID; var title: String }
+    var knownTopics: [KnownTopic] = []
 
     static func make(in state: RecallState, period: ReviewPeriod, previous: DailySummary? = nil) throws -> Self {
         try Task.checkCancellation()
@@ -214,7 +217,7 @@ struct DailyReviewInput: Sendable {
             feedbackRevision: SummaryFeedbackLearning.revision(in: state), configurationVersion: configurationVersion(state.llmConfiguration),
             reminderContext: DailyReviewReminderEngine.context(in: state, before: period.end),
             previousProgress: previousProgress(in: previous, state: state, recordIDs: recordIDs, sourceVersions: versions),
-            knownTopics: DailyKnowledgeEngine().recentTopicNames(in: state, now: period.end))
+            knownTopics: DailyKnowledgeEngine().recentTopics(in: state, now: period.end))
     }
 
     /// Select earlier progress for local recovery. History never enters the model request.
@@ -322,11 +325,18 @@ public struct DirectDailyReviewEngine: Sendable {
         若当天原文是在继续或完成其中同一项行动，给该条目 reminderID=对应 id；必须逐项核对动作、具体对象、项目/对话以及原承诺，不可仅因标题类似或同属一个主题而关联。progress/status=completed 只有在本人明确说明该具体行动已经完成时才关联；助手代办完成、对方完成、部分完成、有条件或不能确认是哪一项时 reminderID=null。actions 中再次出现同一未完成承诺可复用 id。新行动 reminderID=null，不猜造 id。不要把已有待办本身重复写成今天的成果。
         """
     }
-    /// 只传主题名，不传任何原文；模型据此沿用已有叫法，减少同一件事被拆成多个主题。
-    private func knownTopicsSection(_ names: [String]) -> String {
-        let safe = names.map { PrivacyEngine().redact($0) }.filter { !$0.isEmpty }
+    /// 只传主题 id 与名称，不传任何原文；模型据此归入已有主题，减少同一件事被拆成多个。
+    private func knownTopicsSection(_ topics: [DailyReviewInput.KnownTopic]) -> String {
+        let safe = topics.map { DailyReviewInput.KnownTopic(id: $0.id, title: PrivacyEngine().redact($0.title)) }
+            .filter { !$0.title.isEmpty }
         guard !safe.isEmpty else { return "" }
-        return "已有主题（仅名称，不是当天的进展证据）：\(safe.joined(separator: "、"))。当天事项属于其中某个时，topic 必须原样使用该名称，不要改写；确实是新的事情再起名字，并尽量把同类小事并进已有主题，不要一件小事一个新主题。"
+        let rows = safe.map { "{\"id\":\"\($0.id.uuidString)\",\"title\":\(jsonString($0.title))}" }.joined(separator: ",")
+        return "已有主题（JSON，仅 id 与名称，不是当天的进展证据）：[\(rows)]。当天事项属于其中某个时，在该项写 \"topicID\":\"<上面的 id>\"，topic 写你认为合适的当前名称（改了名会记为别名）；确实是新的事情再省略 topicID 并起新名字，并把同类小事并进已有主题。"
+    }
+
+    private func jsonString(_ value: String) -> String {
+        let data = (try? JSONEncoder().encode(value)) ?? Data()
+        return String(decoding: data, as: UTF8.self)
     }
 
     private func fitted(_ document: DailyReviewDocument, available: Int) throws -> [DailyReviewDocument] {
@@ -675,6 +685,10 @@ public struct DirectDailyReviewEngine: Sendable {
                 topic: Self.cleanTopic(item.topic), kind: Self.cleanKind(item.kind, owned: own),
                 status: item.status.rawValue, ownedByUser: own, category: Self.cleanCategory(item.category))
             value.reminderID = item.reminderID
+            // 归入已有主题时以登记表的名字为准，避免同一主题出现两种写法。
+            let known = item.topicID.flatMap { id in input.knownTopics.first { $0.id == id } }
+            value.topicID = known?.id
+            if let known { value.topic = known.title }
             items[item] = value
         }
         return ModelReviewResult(overview: draft.overview, items: draft.items.compactMap { items[$0] },

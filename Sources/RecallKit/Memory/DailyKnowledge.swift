@@ -144,7 +144,10 @@ public struct DailyKnowledgeEngine: Sendable {
         for entry in entries(in: state, alreadyCorrected: alreadyCorrected) where entry.knowledge.kind == .matter && entry.knowledge.ownedByUser {
             guard let topic = entry.knowledge.topic, !Self.topicKey(topic).isEmpty else { continue }
             // 登记表启用后主题 ID 不再由名字决定；名字只作为显示与匹配依据。
-            let key = state.topicRegistry.topic(forName: topic).map { "topic:" + $0.id.uuidString }
+            // 条目自带 topicID 时以它为准，避免改名后接到别的主题上。
+            let key = entry.knowledge.topicID.flatMap { state.topicRegistry.topic(id: $0) }
+                .map { "topic:" + $0.id.uuidString }
+                ?? state.topicRegistry.topic(forName: topic).map { "topic:" + $0.id.uuidString }
                 ?? "topic:" + Self.canonicalKey(topic, aliases: state.topicAliases)
             let earliest = entry.sources.compactMap { recordedAt[$0] }.min()
             var event = MatterEvent(id: Self.eventID(entry, key: key), title: topic,
@@ -228,6 +231,17 @@ public struct DailyKnowledgeEngine: Sendable {
                                  limit: Int = 40, calendar: Calendar = .current) -> [String] {
         let cutoff = calendar.date(byAdding: .day, value: -days, to: calendar.startOfDay(for: now)) ?? now
         return matterFiles(in: state).filter { $0.latest.date >= cutoff }.prefix(limit).map(\.title)
+    }
+
+    /// 登记表里最近活跃的主题（只含 id 与名称）。没有登记表时为空，提示词自然退化为不带主题。
+    func recentTopics(in state: RecallState, now: Date = .now, days: Int = 30,
+                      limit: Int = 40) -> [DailyReviewInput.KnownTopic] {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Calendar.current.startOfDay(for: now)) ?? now
+        return state.topicRegistry.topics
+            .filter { !$0.isProject && ($0.lastEventAt ?? .distantPast) >= cutoff }
+            .sorted { ($0.lastEventAt ?? .distantPast) > ($1.lastEventAt ?? .distantPast) }
+            .prefix(limit)
+            .map { DailyReviewInput.KnownTopic(id: $0.id, title: $0.title) }
     }
 
     /// Topics whose name the question mentions. Matching uses the topic's identifying words, not the whole question,
