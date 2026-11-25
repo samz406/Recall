@@ -76,6 +76,8 @@ extension RecallLayoutPreviews {
         daily.ledger = [DailyMatterLedgerEntry(topic: "Atlas 自动小结验证", kind: .matter, status: "inProgress", section: "progress", title: "Atlas 初步方案核对", detail: "已完成初步方案核对，仍需验证边界。", ownedByUser: true,
             quotes: [DailyLedgerQuote(text: source.ocrText, sourceIDs: [source.id], speaker: "user")], evidenceIDs: [source.id], occurredAt: date)]
         var state = RecallState(captures: [source], dailySummaries: [daily])
+        // Start the preview with the same stable topic IDs as its reopened store.
+        state.topicRegistry = TopicRegistry.migrated(from: state)
         state.privacy.cloudUseEnabled = true
         let probe = TopicSummaryProbe()
         let model = try RecallAppModel(previewState: state, topicReviewResponder: probe)
