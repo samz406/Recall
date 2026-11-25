@@ -15,7 +15,27 @@ enum AskPerformanceVerification {
         try await messagesLiveInSidecar()
         try await plainFactsSkipModelAudit()
         try await completionClaimsAreStillAudited()
+        try await failedPlanningAnswersFromReadMaterial()
         print("PASS: 5 ask performance scenarios (capture revision, duplicated tool text, message sidecar, local precheck, audit retained for outcomes)")
+    }
+
+    /// Agent 中途失败但已经读过材料时，直接用它回答，不重跑整条回退流水线。
+    private static func failedPlanningAnswersFromReadMaterial() async throws {
+        let (storage, store, capture) = try await AskAgentVerification.fixture("AtlasScopeToken was saved")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let script = ScriptedAskModel { request in
+            if request.purpose == .chatPlanning, !request.question.contains("已读取的工具结果") {
+                return LLMAnswer(content: json(["calls": [["tool": "read_records", "args": ["ids": [capture.id.uuidString]]]]]), citedCaptureIDs: [])
+            }
+            if request.purpose == .chatPlanning { return LLMAnswer(content: "不是 JSON", citedCaptureIDs: []) }
+            return LLMAnswer(content: "不应走到完整回退流水线", citedCaptureIDs: [])
+        }
+        var steps: [String] = []
+        let answer = try await MemoryAssistant(store: store).ask("AtlasScopeToken", model: script, onStep: { name, _ in steps.append(name) })
+        try expect(steps.contains { $0.hasPrefix("agent-partial") }, "没有记录部分回答")
+        try expect(answer.content.contains("AtlasScopeToken"), "没有用已读材料回答")
+        let purposes = await script.recorded().map(\.purpose)
+        try expect(!purposes.contains(.chat), "失败后仍重跑了完整的回答流水线")
     }
 
     /// 方案 B：没有完成/上线/日期/数字断言的普通事实，由本地预检放行，不再调用模型核对。

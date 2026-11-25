@@ -8,11 +8,14 @@ public struct AskLimits: Sendable {
     public var maxRounds: Int
     public var maxCallsPerRound: Int
     public var maxResultCharacters: Int
+    /// 整次提问的时间预算：超时后不再规划，用已读材料直接回答。
+    public var timeBudget: Duration
     public static let standard = AskLimits()
-    public init(maxRounds: Int = 2, maxCallsPerRound: Int = 6, maxResultCharacters: Int = 24_000) {
+    public init(maxRounds: Int = 2, maxCallsPerRound: Int = 6, maxResultCharacters: Int = 24_000, timeBudget: Duration = .seconds(45)) {
         self.maxRounds = maxRounds
         self.maxCallsPerRound = maxCallsPerRound
         self.maxResultCharacters = maxResultCharacters
+        self.timeBudget = timeBudget
     }
 }
 
@@ -78,6 +81,7 @@ public enum AskAgent {
         // 先做一次本地检索：把候选摘录带给规划，多数问题一轮就能出答案。
         // 候选只是提示，不算证据：模型要引用它，仍会走一次正式读取。
         // 只有问题里确实有关键词时才预取，寒暄和含糊问题不带任何原文。
+        let deadline = ContinuousClock().now.advanced(by: limits.timeBudget)
         var candidates: [CaptureRecord] = []
         if !forceAnswer, !QuestionTerms.topicTerms(question).isEmpty {
             candidates = tools.preliminary(question: question, limit: 6).prefix(6).map { candidate in
@@ -88,7 +92,23 @@ public enum AskAgent {
             }
         }
 
+        // Agent 中途失败时，用已经读到的材料直接回答，不重跑整条回退流水线。
+        func degrade(_ reason: String) async throws -> AskTranscript {
+            await onStep?("agent-fallback:" + reason, 0)
+            guard !shown.isEmpty else { throw AskAgentError.fallback }
+            await onStep?("agent-partial:" + reason, 0)
+            let result = AnswerGrounding.fallback(records: shown, reason: reason)
+            return AskTranscript(content: result.content,
+                                 citations: (result.sourceIDs + profileIDs).memoryUnique(),
+                                 inspectedSourceIDs: (inspected + profileIDs).memoryUnique())
+        }
+
         for round in 1...limits.maxRounds where !forceAnswer {
+            if ContinuousClock().now >= deadline {
+                await onStep?("budget:deadline", 0)
+                forceAnswer = true
+                break
+            }
             let started = ContinuousClock().now
             let request = LLMRequest(
                 question: planningQuestion(question, history: conversation, catalog: catalog, transcript: transcript, round: round, hasCandidates: !candidates.isEmpty),
@@ -100,9 +120,10 @@ public enum AskAgent {
             let response: LLMAnswer
             do { response = try await responder.answerCancellably(to: request) }
             catch is CancellationError { throw CancellationError() }
-            catch { await onStep?("agent-fallback:plan-call", 0); throw AskAgentError.fallback }
+            catch is CancellationError { throw CancellationError() }
+            catch { return try await degrade("plan-call") }
             await onStep?("planning", milliseconds(since: started))
-            guard let decision = parse(response.content) else { await onStep?("agent-fallback:plan-unparsable", 0); throw AskAgentError.fallback }
+            guard let decision = parse(response.content) else { return try await degrade("plan-unparsable") }
             switch decision {
             case let .reply(text):
                 guard directReplyIsSafe(text) else { throw AskAgentError.fallback }
@@ -145,7 +166,8 @@ public enum AskAgent {
         do {
             response = try await responder.answerStream(to: request) { _ in }
         } catch is CancellationError { throw CancellationError() }
-        catch { await onStep?("agent-fallback:answer-call", 0); throw AskAgentError.fallback }
+        catch is CancellationError { throw CancellationError() }
+        catch { return try await degrade("answer-call") }
         await onStep?("answer", milliseconds(since: started))
         let cleaned = sanitize(response.content, citations: [], ordered: shown.map(\.id), allowed: allowed, aliases: aliases)
         let checked = try await AnswerGrounding.verify(draft: cleaned.content, question: question,
