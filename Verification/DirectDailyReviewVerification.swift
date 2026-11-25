@@ -66,6 +66,7 @@ enum DirectDailyReviewVerification {
         try await knownCompletionCannotBecomeAction()
         try await targetedRepairs()
         try await ledgerProgressReachesTheReview()
+        try await knownTopicsReachTheNextReview()
         try await incompleteRegenerationUsesSameDayEvidence()
         try await previousProgressRespectsCurrentEvidence()
         try await ledgerSurvivesProviderCapacityFallback()
@@ -225,6 +226,23 @@ enum DirectDailyReviewVerification {
             && output.summary.modelCoverage?.isPartial == false && output.summary.content.contains("部署后的验证尚未进行"),
             "整理进展时丢失验证限制、重复条目，或把事项清单的引用当成未覆盖")
     }
+    /// 同一天重做回顾时，上一次得到的主题名要进入提示词；只传名字，不传原文。
+    private static func knownTopicsReachTheNextReview() async throws {
+        let fixture = try await completenessFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.storage.rootURL) }
+        let day = fixture.records[0].createdAt
+        _ = try await fixture.store.generateDirectDailyReview(day: day, period: fixture.period, responder: CompletenessModel(.ledger))
+        let state = await fixture.store.snapshot()
+        let names = DailyKnowledgeEngine().recentTopicNames(in: state, now: fixture.period.end)
+        try expect(names.contains("Nova 导出"), "最近主题名没有包含刚生成的主题")
+
+        let rerun = CompletenessModel(.ledger)
+        _ = try await fixture.store.generateDirectDailyReview(day: day, period: fixture.period, responder: rerun)
+        let calls = await rerun.log()
+        try expect(calls.contains { $0.question.contains("Nova 导出") }, "重做回顾时没有把已有主题名传给模型")
+        try expect(calls.allSatisfy { !$0.question.contains(fixture.records[0].ocrText) }, "已有主题段落带上了原文")
+    }
+
     private static func incompleteRegenerationUsesSameDayEvidence() async throws {
         let fixture = try await completenessFixture()
         defer { try? FileManager.default.removeItem(at: fixture.storage.rootURL) }

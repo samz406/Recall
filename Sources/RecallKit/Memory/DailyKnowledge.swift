@@ -209,6 +209,14 @@ public struct DailyKnowledgeEngine: Sendable {
         }.sorted { $0.updatedAt > $1.updatedAt }
     }
 
+    /// 最近活跃的主题显示名，按最近一次出现排序。只含名字，不含原文，
+    /// 用于让每日回顾复用已有叫法，而不是为同一件事再起一个名字。
+    public func recentTopicNames(in state: RecallState, now: Date = .now, days: Int = 30,
+                                 limit: Int = 40, calendar: Calendar = .current) -> [String] {
+        let cutoff = calendar.date(byAdding: .day, value: -days, to: calendar.startOfDay(for: now)) ?? now
+        return matterFiles(in: state).filter { $0.latest.date >= cutoff }.prefix(limit).map(\.title)
+    }
+
     /// Topics whose name the question mentions. Matching uses the topic's identifying words, not the whole question,
     /// so "后台理解流程" reaches the topic "Recall 后台理解流程" and a bare word like "进展" reaches nothing.
     public func topics(matching question: String, in state: RecallState, limit: Int = 3, alreadyCorrected: Bool = false) -> [MatterFile] {
