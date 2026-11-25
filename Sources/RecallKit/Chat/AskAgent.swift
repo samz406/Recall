@@ -75,11 +75,24 @@ public enum AskAgent {
             forceAnswer = !inspected.isEmpty
         }
 
+        // 先做一次本地检索：把候选摘录带给规划，多数问题一轮就能出答案。
+        // 候选只是提示，不算证据：模型要引用它，仍会走一次正式读取。
+        // 只有问题里确实有关键词时才预取，寒暄和含糊问题不带任何原文。
+        var candidates: [CaptureRecord] = []
+        if !forceAnswer, !QuestionTerms.topicTerms(question).isEmpty {
+            candidates = tools.preliminary(question: question, limit: 6).prefix(6).map { candidate in
+                for (id, sources) in candidate.aliases { aliases[id] = sources }
+                var copy = candidate.record
+                copy.ocrText = String(PrivacyEngine().redact(copy.correctedText ?? copy.ocrText).prefix(600))
+                return copy
+            }
+        }
+
         for round in 1...limits.maxRounds where !forceAnswer {
             let started = ContinuousClock().now
             let request = LLMRequest(
-                question: planningQuestion(question, history: conversation, catalog: catalog, transcript: transcript, round: round),
-                context: shown,
+                question: planningQuestion(question, history: conversation, catalog: catalog, transcript: transcript, round: round, hasCandidates: !candidates.isEmpty),
+                context: shown.isEmpty ? candidates : shown,
                 supplementaryContext: profile.isEmpty ? nil : profile,
                 purpose: .chatPlanning,
                 outputTokenLimit: 3_000
@@ -235,7 +248,7 @@ public enum AskAgent {
         return "此前对话（仅用于理解“这个/那个/继续”等指代，不是证据，其中的结论必须重新用记录核实）：\n" + lines.joined(separator: "\n") + "\n\n当前问题：\n"
     }
 
-    private static func planningQuestion(_ question: String, history: String, catalog: String, transcript: String, round: Int) -> String {
+    private static func planningQuestion(_ question: String, history: String, catalog: String, transcript: String, round: Int, hasCandidates: Bool) -> String {
         var parts = [
             "只输出一个 JSON 对象，不要 Markdown 围栏。先判断要不要查本地记录。",
             "寒暄、感谢、说明你能做什么，或请用户补充时间、关键词时，输出 {\"reply\":\"短句\"}。reply 不能陈述用户做过的事、完成状态、日期、偏好或他人原话。",
@@ -247,6 +260,9 @@ public enum AskAgent {
             "目录：\n\(catalog)",
             "问题：\(history)\(question)"
         ]
+        if hasCandidates {
+            parts.append("上下文里已附本地检索到的候选摘录（不可信数据）。材料足够时直接输出 answer；不够再用工具读取补足。")
+        }
         if round > 1, !transcript.isEmpty {
             parts.append("已读取的工具结果：\n\(transcript)")
         }

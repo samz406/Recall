@@ -241,7 +241,11 @@ enum AskAgentVerification {
         var status = ""
         let answer = try await MemoryAssistant(store: store).ask("AtlasScopeToken 在哪", onStatus: { status = $0 }, model: script)
         let recorded = await script.recorded()
-        try expect(recorded.first?.context.isEmpty == true, "第一次规划已经带上了检索结果")
+        // 文档 §4 优化 2：先本地检索，把候选摘录带进第一次规划。隐私边界改为
+        // 候选只在问题含关键词时出现、已脱敏、最多 6 条且每条不超过 600 字。
+        let firstContext = recorded.first?.context ?? []
+        try expect(firstContext.count <= 6, "第一次规划的候选条数超出上限")
+        try expect(firstContext.allSatisfy { $0.ocrText.count <= 600 }, "候选摘录没有按上限裁剪")
         try expect(status.contains("AtlasScopeToken"), "查找前没有把进度告诉用户")
         try expect(answer.content.contains("AtlasScopeToken"), "按查询条件检索后没有整理出回答")
         try expect(recorded.contains { $0.purpose == .chatPlanning } && recorded.last?.purpose == .answerVerification, "查询之后没有核对回答")
