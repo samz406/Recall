@@ -11,7 +11,29 @@ enum AskPerformanceVerification {
 
     static func run() async throws {
         try await messagesDoNotBumpCaptureRevision()
-        print("PASS: 1 ask performance scenario (capture revision)")
+        try await finalRequestDropsDuplicatedToolText()
+        print("PASS: 2 ask performance scenarios (capture revision, duplicated tool text)")
+    }
+
+    /// 逐来源原文已经随 shown 发给回答模型，最终请求不再重复携带同样的工具结果；
+    /// 不提供逐来源原文的工具（如 list_days）仍要保留。
+    private static func finalRequestDropsDuplicatedToolText() async throws {
+        let (storage, store, capture) = try await AskAgentVerification.fixture("AtlasScopeToken was saved")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let script = ScriptedAskModel { request in
+            if request.purpose == .chatPlanning {
+                let tool = request.question.contains("已读取的工具结果") ? "read_records" : "list_days"
+                let args: [String: Any] = tool == "read_records" ? ["ids": [capture.id.uuidString]] : ["from": "2026-01-01", "to": "2026-01-01"]
+                return LLMAnswer(content: json(["calls": [["tool": tool, "args": args]]]), citedCaptureIDs: [])
+            }
+            return LLMAnswer(content: "按已读材料回答", citedCaptureIDs: [])
+        }
+        _ = try await MemoryAssistant(store: store).ask("AtlasScopeToken", model: script, limits: AskLimits(maxRounds: 2))
+        let chat = await script.recorded().first { $0.purpose == .chat }
+        let supplement = chat?.supplementaryContext ?? ""
+        try expect(chat != nil, "应走到最终回答请求")
+        try expect(!supplement.contains("[read_records]"), "最终回答请求不应重复携带已作为逐来源原文提供的工具结果")
+        try expect(supplement.contains("[list_days]"), "没有逐来源原文的工具结果仍要保留")
     }
 
     /// 聊天消息会让整份存档重写，但不是截图内容变化；隐私复核不该因此走慢路径。

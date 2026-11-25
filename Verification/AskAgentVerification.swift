@@ -278,7 +278,7 @@ enum AskAgentVerification {
         try expect(answerRequest?.context.first?.ocrText.contains("AtlasScopeToken") == true, "回顾来源没有带上自己的原文")
     }
 
-    private static func fixture(_ text: String) async throws -> (RecallStorage, FileMemoryStore, CaptureRecord) {
+    static func fixture(_ text: String) async throws -> (RecallStorage, FileMemoryStore, CaptureRecord) {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-ask-agent-" + UUID().uuidString))
         let store = try verificationStore(storage: storage)
         let capture = CaptureRecord(eventTemplate: .manualMoment, createdAt: .now, sourceAppName: "合成验证", sourceBundleIdentifier: "example.ask-agent",
@@ -293,12 +293,12 @@ enum AskAgentVerification {
 
 }
 
-private func json(_ object: [String: Any]) -> String {
+func json(_ object: [String: Any]) -> String {
     let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
     return String(decoding: data, as: UTF8.self)
 }
 
-private actor ScriptedAskModel: LLMResponding {
+actor ScriptedAskModel: LLMResponding {
     private let handler: @Sendable (LLMRequest) async throws -> LLMAnswer
     private var stored: [LLMRequest] = []
     init(_ handler: @escaping @Sendable (LLMRequest) async throws -> LLMAnswer) { self.handler = handler }
