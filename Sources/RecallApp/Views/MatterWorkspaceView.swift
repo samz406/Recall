@@ -9,6 +9,7 @@ struct MatterWorkspaceView: View {
     @State private var search = ""
     @State private var filter = 0
     @State private var showDone = false
+    @State private var pendingDelete: MatterFile?
     @State private var limit = 20
     @State private var selectedID: String?
     @State private var adding = false
@@ -73,7 +74,7 @@ struct MatterWorkspaceView: View {
                             }.recallSurface()
                         }
                         if filter == 0 && search.isEmpty {
-                            let groups = TopicListPresentation.group(files)
+                            let groups = TopicListPresentation.group(files, registry: model.state.topicRegistry)
                             ForEach(Array(groups.active.prefix(limit))) { file in card(file) }
                             if !groups.done.isEmpty {
                                 DisclosureGroup(isExpanded: $showDone) {
@@ -112,6 +113,16 @@ struct MatterWorkspaceView: View {
             if let id = selectedID { TopicDetailView(topicID: id, continueChat: { value in selectedID = nil; continueChat(value) }).environmentObject(model) }
         }
         .sheet(isPresented: $adding) { ManualMatterSheet(title: addingTitle) { await model.saveManualMatter($0) } }
+        .confirmationDialog(RecallLocalization.both("删除这个主题？", "Delete this topic?"),
+                            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+                            presenting: pendingDelete) { file in
+            Button(RecallLocalization.both("删除主题（保留原始记录）", "Delete topic (keep records)"), role: .destructive) {
+                pendingDelete = nil
+                Task { await model.deleteTopic(file) }
+            }
+        } message: { _ in
+            Text(RecallLocalization.both("只移除主题、小结与完成标记，原始记录和截图不会删除。", "Only the topic, its summary and completion mark are removed. Records and screenshots are kept."))
+        }
         .sheet(isPresented: $merging) { TopicMergeSheet().environmentObject(model) }
         .sheet(isPresented: $references) { MemoryReferenceBrowser().environmentObject(model) }
         .sheet(isPresented: $corrections) { MatterCorrectionHistorySheet().environmentObject(model) }
@@ -158,6 +169,8 @@ struct MatterWorkspaceView: View {
             } else if model.state.matterCorrections.contains(where: { $0.isTopicCompletion && $0.topicID == file.id }) {
                 Button(RecallLocalization.both("撤销完成标记", "Undo completion")) { model.undoTopicCompletion(file.id) }
             }
+            Divider()
+            Button(RecallLocalization.both("删除主题…", "Delete topic…"), role: .destructive) { pendingDelete = file }
         }
     }
     private func openRequested() {

@@ -139,6 +139,16 @@ public struct TopicRegistry: Codable, Equatable, Sendable {
         return true
     }
 
+    /// 状态推断：用户手动标记优先；最近事件已完成算完成；14 天没有动静算搁置；
+    /// 之后出现新事件会自动回到进行中，因为每次投影都重新推断。
+    public static func lifecycle(for file: MatterFile, topic: Topic?, now: Date = .now,
+                                 calendar: Calendar = .current) -> Topic.Lifecycle {
+        if let manual = topic?.manualLifecycle { return manual }
+        if file.latest.status == .completed { return .done }
+        if file.needsStatusUpdate(at: now, calendar: calendar) { return .dormant }
+        return .active
+    }
+
     /// 从现有每日回顾迁移。同一存档多次迁移得到同一组 UUID。
     public static func migrated(from state: RecallState, now: Date = .now) -> TopicRegistry {
         var registry = TopicRegistry()

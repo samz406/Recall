@@ -806,6 +806,16 @@ final class RecallAppModel: ObservableObject {
     }
 
     @discardableResult
+    /// 删除主题只清理登记表、小结与完成标记；原始记录与截图保留。
+    func deleteTopic(_ file: MatterFile) async {
+        do {
+            try await store.deleteTopic(id: file.id)
+            state = await store.snapshot()
+            rebuildMatterFiles()
+            noticeMessage = RecallLocalization.both("已删除主题，原始记录仍然保留。", "Topic deleted. Original records are kept.")
+        } catch { recordError(error, source: "Memory", message: "删除主题失败") }
+    }
+
     func completeMatter(_ file: MatterFile) async -> Bool {
         guard let current = matterFiles.first(where: { $0.id == file.id }), current.latest.status.isOpenMatter,
               completingMatterIDs.insert(file.id).inserted else { return false }

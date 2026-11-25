@@ -14,7 +14,9 @@ enum TopicRegistryVerification {
         try identitySurvivesRenameAndMerge()
         try await migrationIsIdempotent()
         try await savedReviewRegistersTopic()
-        print("PASS: 5 topic registry scenarios (alias mapping, renamed topic stays one, stable identity, idempotent migration, review sync)")
+        try lifecycleFollowsEvidenceAndUserMark()
+        try await deletingTopicKeepsRecords()
+        print("PASS: 7 topic registry scenarios (alias mapping, renamed topic stays one, stable identity, idempotent migration, review sync, lifecycle, deletion keeps records)")
     }
 
     private static func aliasesMapToCanonicalKey() throws {
@@ -117,6 +119,47 @@ enum TopicRegistryVerification {
         let afterSecond = await store.snapshot().topicRegistry
         try expect(afterSecond.topics.count == 1 && afterSecond.topics.first?.id == registeredID, "同名第二天不应新建主题")
         try expect(afterSecond.topics.first?.lastEventAt.map { Calendar.current.isDate($0, inSameDayAs: day2) } == true, "最近活动时间没有刷新")
+    }
+
+    /// 状态推断：完成事件算完成；14 天没有动静算搁置；用户手动标记优先。
+    private static func lifecycleFollowsEvidenceAndUserMark() throws {
+        let calendar = Calendar(identifier: .gregorian)
+        let now = calendar.date(from: DateComponents(year: 2026, month: 11, day: 25, hour: 12))!
+        func file(daysAgo: Int, status: WorkEpisodeStatus) -> MatterFile {
+            let day = calendar.date(byAdding: .day, value: -daysAgo, to: now)!
+            let event = MatterEvent(id: UUID(), title: "t", detail: "d", recordedAt: day, eventAt: day,
+                                    status: status, evidenceIDs: [UUID()], nextAction: nil)
+            return MatterFile(id: "topic:x", title: "x", events: [event])
+        }
+        try expect(TopicRegistry.lifecycle(for: file(daysAgo: 2, status: .progressed), topic: nil, now: now, calendar: calendar) == .active, "近期未完成应为进行中")
+        try expect(TopicRegistry.lifecycle(for: file(daysAgo: 30, status: .progressed), topic: nil, now: now, calendar: calendar) == .dormant, "超过 14 天没有动静应为搁置")
+        try expect(TopicRegistry.lifecycle(for: file(daysAgo: 2, status: .completed), topic: nil, now: now, calendar: calendar) == .done, "最近事件完成应为已完成")
+        var topic = Topic(title: "x")
+        topic.manualLifecycle = .done
+        try expect(TopicRegistry.lifecycle(for: file(daysAgo: 1, status: .progressed), topic: topic, now: now, calendar: calendar) == .done, "用户手动标记应优先")
+        topic.manualLifecycle = nil
+        try expect(TopicRegistry.lifecycle(for: file(daysAgo: 1, status: .progressed), topic: topic, now: now, calendar: calendar) == .active, "清除手动标记后应回到推断")
+    }
+
+    /// 删除主题清理登记表、小结与完成标记，但不动原始记录。
+    private static func deletingTopicKeepsRecords() async throws {
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-topic-delete-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let store = try verificationStore(storage: storage)
+        let source = CaptureRecord(eventTemplate: .manualMoment, createdAt: .now, sourceAppName: "合成验证",
+            sourceBundleIdentifier: "example.topic-delete", contentHash: UUID().uuidString, ocrText: "合成：删除夹具", textOrigin: .userInput)
+        try await store.addCapture(source)
+        try await store.upsertDailySummary(summary(day: .now, topic: "待删主题", source: source, title: "待删条目"))
+        let before = await store.snapshot()
+        guard let topic = before.topicRegistry.topics.first else { throw Failure(message: "应已登记主题") }
+        let fileID = "topic:" + topic.id.uuidString
+        try await store.saveMatterCorrection(MatterCorrection(evidenceIDs: [source.id], kind: .completed, text: "待删主题", topicID: fileID))
+        try await store.deleteTopic(id: fileID)
+        let after = await store.snapshot()
+        try expect(after.topicRegistry.topics.isEmpty, "删除后登记表不应残留该主题")
+        try expect(after.topicRegistry.legacyAliases.isEmpty, "删除后不应残留旧 ID 映射")
+        try expect(!after.matterCorrections.contains { $0.topicID == fileID }, "删除后不应残留完成标记")
+        try expect(after.captures.contains { $0.id == source.id }, "删除主题不应删除原始记录")
     }
 
     private static func summary(day: Date, topic: String, source: CaptureRecord, title: String) -> DailySummary {

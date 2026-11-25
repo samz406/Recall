@@ -547,6 +547,14 @@ public actor FileMemoryStore {
             // remain historical evidence; deleting them would force a fresh model analysis.
             state.matterCorrections.append(correction)
             state.topicReviews.removeAll { $0.id == correction.topicID }
+            // 用户标记完成同时写入登记表，改名后也不会丢。
+            if let topicID = correction.topicID, !state.topicRegistry.topics.isEmpty,
+               let uuid = UUID(uuidString: String(topicID.dropFirst("topic:".count))),
+               let topic = state.topicRegistry.topic(id: uuid) {
+                var registry = state.topicRegistry
+                var copy = topic; copy.manualLifecycle = .done; registry.upsert(copy)
+                state.topicRegistry = registry
+            }
             state.conversationSummary = nil
             state.conversationSummaryCoveredMessageCount = state.messages.count
             try persistReviewState()
@@ -581,6 +589,13 @@ public actor FileMemoryStore {
         if let correction = state.matterCorrections.first(where: { $0.id == id && $0.isTopicCompletion }) {
             state.matterCorrections.removeAll { $0.id == id }
             state.topicReviews.removeAll { $0.id == correction.topicID }
+            if let topicID = correction.topicID,
+               let uuid = UUID(uuidString: String(topicID.dropFirst("topic:".count))),
+               let topic = state.topicRegistry.topic(id: uuid) {
+                var registry = state.topicRegistry
+                var copy = topic; copy.manualLifecycle = nil; registry.upsert(copy)
+                state.topicRegistry = registry
+            }
             state.conversationSummary = nil
             state.conversationSummaryCoveredMessageCount = state.messages.count
             try persistReviewState()
@@ -813,14 +828,38 @@ public actor FileMemoryStore {
         do { try persist() } catch { state = before; throw error }
     }
 
+    /// 删除主题：登记表条目、别名、主题小结、完成标记、合并组成员一并清除；
+    /// 原始记录与截图不删除，仍可在时间线回看。
+    public func deleteTopic(id: String) throws {
+        guard !state.topicRegistry.topics.isEmpty || state.topicReviews.contains(where: { $0.id == id }) else { return }
+        let before = state
+        let canonical = state.topicRegistry.canonicalID(id)
+        let uuid = canonical.hasPrefix("topic:") ? UUID(uuidString: String(canonical.dropFirst("topic:".count))) : nil
+        if let uuid, state.topicRegistry.topic(id: uuid) != nil {
+            var registry = state.topicRegistry
+            registry.remove(id: uuid)
+            state.topicRegistry = registry
+        }
+        // 闭包里读 state 会和 removeAll 的写冲突，先把登记表取出来。
+        let registry = state.topicRegistry
+        state.topicReviews.removeAll { registry.canonicalID($0.id) == canonical }
+        state.matterCorrections.removeAll { registry.canonicalID($0.topicID ?? "") == canonical }
+        for index in state.topicGroups.indices {
+            state.topicGroups[index].memberIDs.removeAll { registry.canonicalID($0) == canonical }
+        }
+        state.topicGroups.removeAll { $0.memberIDs.count < 2 }
+        state.conversationSummary = nil
+        state.conversationSummaryCoveredMessageCount = state.messages.count
+        do { try persistReviewState() } catch { state = before; throw error }
+    }
+
     public func undoTopicGroup(_ id: String) throws {
         guard let group = state.topicGroups.first(where: { $0.id == id }) else { return }
         let before = state
         state.topicGroups.removeAll { $0.id == id }
         let keys = Set(group.memberIDs.map { $0.hasPrefix("topic:") ? String($0.dropFirst("topic:".count)) : $0 })
-        for (old, canonical) in state.topicAliases where keys.contains(old) && keys.contains(canonical) {
-            state.topicAliases.removeValue(forKey: old)
-        }
+        let staleAliases = state.topicAliases.filter { keys.contains($0.key) && keys.contains($0.value) }.map(\.key)
+        for key in staleAliases { state.topicAliases.removeValue(forKey: key) }
         invalidateGroupedReports(Set(group.memberIDs + [id]))
         do { try persist() } catch { state = before; throw error }
     }
