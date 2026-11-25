@@ -6,18 +6,27 @@ import UniformTypeIdentifiers
 
 struct DailySummariesView: View {
     var embedded = false
+    /// Set by the review workspace so the daily/weekly switch shares this row.
+    var periodBinding: Binding<Bool>? = nil
     @EnvironmentObject private var model: RecallAppModel
     @State private var selectedID: UUID?
     @State private var selectedDate = Calendar.current.date(byAdding: .day, value: -1, to: .now) ?? .now
     @State private var showsCalendar = false
     @State private var managing: DailySummary?
+    @State private var isConfirmingRegeneration = false
     @State private var visibleCount = 30
     private var summaries: [DailySummary] { model.state.dailySummaries.sorted { $0.day > $1.day } }
     private var selected: DailySummary? { summaries.first { $0.id == selectedID } }
 
     var body: some View {
         VStack(spacing: 0) {
-            if embedded { HStack { Spacer(); dailyActions }.padding(.horizontal, 24).padding(.vertical, 12) }
+            if embedded {
+                HStack(spacing: 16) {
+                    if let periodBinding { ReviewPeriodPicker(isPeriod: periodBinding) }
+                    Spacer()
+                    dailyActions
+                }.padding(.horizontal, 24).padding(.vertical, 10)
+            }
             else { RecallPageHeader(title: "每日回顾", subtitle: "回看一天里值得记住的事") { dailyActions } }
 
             if model.isLoadingSavedState {
@@ -40,7 +49,7 @@ struct DailySummariesView: View {
                                     Button(RecallLocalization.text("生成回顾")) { model.generateDailyReview(on: selectedDate) }.buttonStyle(.borderedProminent).disabled(model.isGeneratingDailySummary)
                                 }.frame(maxWidth: .infinity, minHeight: 360).recallSurface()
                             }
-                        }.frame(maxWidth: 880, alignment: .leading)
+                        }.frame(maxWidth: 720, alignment: .leading)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 24)
                     }.clipped().id(selectedID)
                 }.padding(.horizontal, 24).padding(.bottom, 16)
@@ -51,6 +60,12 @@ struct DailySummariesView: View {
                 if selectedID == nil || !ids.contains(selectedID!) { openSelection() }
             }
             .onChange(of: model.navigationRevision) { _, _ in if case .daily(let id) = model.destination { select(id) } }
+            .confirmationDialog(RecallLocalization.both("重新生成这一天的回顾？", "Regenerate this day's review?"), isPresented: $isConfirmingRegeneration, titleVisibility: .visible) {
+                Button(RecallLocalization.text("重新生成")) { model.generateDailyReview(on: selectedDate) }
+                Button(RecallLocalization.text("取消"), role: .cancel) {}
+            } message: {
+                Text(RecallLocalization.both("当前版本会保留在这份回顾的「历史版本」中，之后仍可查看。", "The current version stays under Version history, so you can still read it later."))
+            }
             .sheet(item: $managing) { DailySummaryManagementSheet(summary: $0).environmentObject(model) }
     }
     private var dailyActions: some View {
@@ -65,16 +80,26 @@ struct DailySummariesView: View {
                             showsCalendar = false
                         }
                     }
-                    Button(RecallLocalization.text(selected == nil ? "生成回顾" : "重新生成")) { model.generateDailyReview(on: selectedDate) }
-                        .buttonStyle(.borderedProminent).disabled(model.isLoadingSavedState || model.isGeneratingDailySummary)
+                    // Regenerating replaces what the page currently shows, so it is a
+                    // secondary action that asks first. Generating from scratch is not.
+                    if selected == nil {
+                        Button(RecallLocalization.text("生成回顾")) { model.generateDailyReview(on: selectedDate) }
+                            .buttonStyle(.borderedProminent).disabled(model.isLoadingSavedState || model.isGeneratingDailySummary)
+                    } else {
+                        Button(RecallLocalization.text("重新生成")) { isConfirmingRegeneration = true }
+                            .buttonStyle(.bordered).disabled(model.isLoadingSavedState || model.isGeneratingDailySummary)
+                    }
                 }
     }
     private var dateList: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
-                Text(RecallLocalization.both("已保存 \(summaries.count) 天", "\(summaries.count) days saved")).font(.caption).foregroundStyle(RecallPalette.secondary).padding(.bottom, 4)
+                Text(RecallLocalization.both("已保存 \(summaries.count) 天", "\(summaries.count) days saved"))
+                    .font(RecallTypography.annotation)
+                    .foregroundStyle(RecallPalette.secondary.opacity(0.85))
+                    .padding(.bottom, 4)
                 ForEach(Array(summaries.prefix(visibleCount))) { summary in
-                    RecallListChoice(title: summary.day.formatted(.dateTime.month().day().weekday()), detail: keywords(summary), selected: selectedID == summary.id) { select(summary.id) }
+                    RecallListChoice(title: summary.day.formatted(.dateTime.month().day().weekday()), detail: keywords(summary), selected: selectedID == summary.id, plain: true) { select(summary.id) }
                 }
                 if summaries.count > visibleCount { Button(RecallLocalization.text("更早的回顾")) { visibleCount += 30 }.padding(.vertical, 8) }
             }
@@ -164,17 +189,20 @@ private struct DailySummaryCard: View {
                     Label(RecallLocalization.text("纠正回顾"), systemImage: "square.and.pencil")
                 }.help(RecallLocalization.text("说明遗漏或不准确的地方，对这整篇回顾进行纠正"))
                 Menu {
-                    Button(RecallLocalization.text("重新生成")) { model.generateDailyReview(on: summary.day) }.disabled(model.isGeneratingDailySummary)
+                    // Regeneration lives in the page action row only; two entry
+                    // points for the same replaceable action invited mis-clicks.
                     Button(RecallLocalization.text("管理这份回顾"), action: onManage)
                 } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("更多回顾操作")
             }
             if isExpanded {
                 Divider()
                 if let overview = summary.modelOverview, !overview.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 10) {
                         Text(RecallLocalization.text("当天概览")).font(.caption).foregroundStyle(RecallPalette.secondary)
+                        // This is body copy under a section label. At 17pt medium it
+                        // outranked the section headings below it.
                         Text(DailySummaryContentFormatter.removingMarkdownEmphasisMarkers(from: DailySummaryContentFormatter.removingCitationMarkers(from: overview)))
-                            .font(.system(size: 17, weight: .medium)).lineSpacing(6)
+                            .font(RecallTypography.body).lineSpacing(7)
                             .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                     }.padding(.vertical, 8).padding(.bottom, 8)
                 }

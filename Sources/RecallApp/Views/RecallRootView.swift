@@ -34,24 +34,32 @@ struct RecallRootView: View {
             .background(RecallPalette.background)
             .toolbar {
                 activityToolbar
-                ToolbarItem(placement: .automatic) {
-                    HStack(spacing: 12) {
-                        if let back = returnSection {
-                            Button { section = back; returnSection = nil } label: { Label(RecallLocalization.text("返回"), systemImage: "arrow.left") }
-                        }
-                        Menu {
-                            if let target = model.lastExternalTarget, let rule = model.state.rules.first(where: { $0.template == .manualMoment && $0.isEnabled }) {
-                                Button(RecallLocalization.both("记录：", "Record: ") + target.appName) { model.record(rule: rule, targetOverride: target) }.disabled(model.isRecording || model.state.privacy.screenCapturePaused)
-                            }
-                            Button(RecallLocalization.both("写一条记录", "Write a record")) { model.showsTextEntry = true }
-                            Button(RecallLocalization.both("保存剪贴板文字", "Save clipboard text")) { model.saveClipboard() }
-                            Button(RecallLocalization.both("导入文件…", "Import files…")) { importFilesPanel() }
-                            Button(RecallLocalization.both("会议记录", "Meeting moments")) { model.showsMeetingPanel = true }
-                        } label: { Label(RecallLocalization.text("记录此刻"), systemImage: "plus.square") }
-                        Button { model.showsGlobalSearch = true } label: { Label(RecallLocalization.text("搜索记忆"), systemImage: "magnifyingglass") }.keyboardShortcut("f", modifiers: [.command, .shift]).labelStyle(.titleAndIcon)
-                        Button { model.showsTaskHistory.toggle() } label: { Label(RecallLocalization.text("处理任务"), systemImage: model.tasks.contains(where: \.isRunning) ? "clock.badge" : "clock") }
-                            .labelStyle(.titleAndIcon).help(RecallLocalization.text("查看处理进度和结果")).popover(isPresented: $model.showsTaskHistory) { RecallTaskHistory().environmentObject(model) }
+                // Separate toolbar items so macOS can move what does not fit into
+                // the system overflow menu. A single HStack was clipped at the edge.
+                if let back = returnSection {
+                    ToolbarItem(id: "recall-return", placement: .automatic) {
+                        Button { section = back; returnSection = nil } label: { Label(RecallLocalization.text("返回"), systemImage: "arrow.left") }
                     }
+                }
+                ToolbarItem(id: "recall-record", placement: .automatic) {
+                    Menu {
+                        if let target = model.lastExternalTarget, let rule = model.state.rules.first(where: { $0.template == .manualMoment && $0.isEnabled }) {
+                            Button(RecallLocalization.both("记录：", "Record: ") + target.appName) { model.record(rule: rule, targetOverride: target) }.disabled(model.isRecording || model.state.privacy.screenCapturePaused)
+                        }
+                        Button(RecallLocalization.both("写一条记录", "Write a record")) { model.showsTextEntry = true }
+                        Button(RecallLocalization.both("保存剪贴板文字", "Save clipboard text")) { model.saveClipboard() }
+                        Button(RecallLocalization.both("导入文件…", "Import files…")) { importFilesPanel() }
+                        Button(RecallLocalization.both("会议记录", "Meeting moments")) { model.showsMeetingPanel = true }
+                    } label: { Label(RecallLocalization.text("记录此刻"), systemImage: "plus.square") }
+                }
+                ToolbarItem(id: "recall-search", placement: .automatic) {
+                    Button { model.showsGlobalSearch = true } label: { Label(RecallLocalization.text("搜索记忆"), systemImage: "magnifyingglass") }
+                        .keyboardShortcut("f", modifiers: [.command, .shift])
+                        .labelStyle(.titleAndIcon)
+                }
+                ToolbarItem(id: "recall-tasks", placement: .automatic) {
+                    Button { model.showsTaskHistory.toggle() } label: { Label(RecallLocalization.text("处理任务"), systemImage: model.tasks.contains(where: \.isRunning) ? "clock.badge" : "clock") }
+                        .labelStyle(.titleAndIcon).help(RecallLocalization.text("查看处理进度和结果")).popover(isPresented: $model.showsTaskHistory) { RecallTaskHistory().environmentObject(model) }
                 }
             }
         }

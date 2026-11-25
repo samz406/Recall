@@ -1,11 +1,15 @@
 import SwiftUI
 import RecallKit
 
+/// Four display steps plus two supporting sizes. Use these instead of ad-hoc
+/// `.system(size:)` literals so page, section and body text stay in scale.
 enum RecallTypography {
     static let page = Font.system(size: 24, weight: .semibold)
+    static let section = Font.system(size: 20, weight: .semibold)
     static let title = Font.system(size: 17, weight: .semibold)
     static let body = Font.system(size: 15)
     static let caption = Font.system(size: 13)
+    static let annotation = Font.system(size: 12)
 }
 
 struct RecallFilterChip: View {
@@ -38,6 +42,9 @@ struct RecallListChoice: View {
     let detail: String
     let selected: Bool
     var warning: String? = nil
+    /// `plain` drops the border and summary line on unselected rows, so a long
+    /// list reads as text instead of a wall of boxes. Selection stays visible.
+    var plain = false
     let action: () -> Void
     var body: some View {
         Button(action: action) {
@@ -46,11 +53,14 @@ struct RecallListChoice: View {
                     Text(RecallLocalization.text(title)).font(.system(size: 14, weight: .semibold)).lineLimit(2)
                     if let warning { RecallStatusBadge(title: warning, warning: true) }
                 }
-                Text(RecallLocalization.text(detail)).font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(2)
+                Text(RecallLocalization.text(detail))
+                    .font(plain ? RecallTypography.annotation : .caption)
+                    .foregroundStyle(RecallPalette.secondary.opacity(plain ? 0.85 : 1))
+                    .lineLimit(plain ? 1 : 2)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(13)
                 .foregroundStyle(RecallPalette.text)
-                .background(selected ? RecallPalette.selected.opacity(0.7) : RecallPalette.surface, in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(selected ? RecallPalette.accent : RecallPalette.border, lineWidth: 1))
+                .background(selected ? RecallPalette.selected.opacity(0.7) : (plain ? Color.clear : RecallPalette.surface), in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(selected ? RecallPalette.accent : (plain ? Color.clear : RecallPalette.border), lineWidth: 1))
                 .contentShape(RoundedRectangle(cornerRadius: 12))
         }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
     }

@@ -11,23 +11,21 @@ struct ReviewWorkspaceView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if showsHeader {
-                RecallPageHeader(title: "回顾", subtitle: "回看一天、一周或一个月里值得记住的变化") {
-                    if period {
-                        Button(RecallLocalization.both("写一份回顾", "Create a review")) { composing = true }.buttonStyle(.borderedProminent)
-                    }
-                }
+                RecallPageHeader(title: "回顾", subtitle: "回看一天、一周或一个月里值得记住的变化") { EmptyView() }
             }
-            HStack(spacing: 24) {
-                choice(RecallLocalization.both("按天", "Daily"), value: false)
-                choice(RecallLocalization.both("按周", "Weekly"), value: true)
-                Spacer()
-                if period && !showsHeader {
-                    Button(RecallLocalization.both("写一份回顾", "Create a review")) { composing = true }.buttonStyle(.borderedProminent)
-                }
-            }.padding(.horizontal, 24).padding(.vertical, 14)
-            Divider()
-            if period { WeeklyReviewView(showsComposer: $composing).environmentObject(model).padding(24) }
-            else { DailySummariesView(embedded: true).environmentObject(model) }
+            if period {
+                // Daily mode renders this picker inside its own action row so the
+                // two controls share one line instead of stacking.
+                HStack(spacing: 16) {
+                    ReviewPeriodPicker(isPeriod: $period)
+                    Spacer()
+                    Button(RecallLocalization.both("写一份回顾", "Create a review")) { composing = true }.buttonStyle(.bordered)
+                }.padding(.horizontal, 24).padding(.vertical, 10)
+                Divider()
+                WeeklyReviewView(showsComposer: $composing).environmentObject(model).padding(24)
+            } else {
+                DailySummariesView(embedded: true, periodBinding: $period).environmentObject(model)
+            }
         }
         .onAppear { period = initialPeriod || model.weeklyReportToOpen != nil || model.reviewTopicToOpen != nil }
         .onChange(of: model.weeklyReportToOpen) { _, id in if id != nil { period = true } }
@@ -38,10 +36,20 @@ struct ReviewWorkspaceView: View {
         }
         .onChange(of: model.dailyToOpen) { _, id in if id != nil { period = false } }
     }
-    private func choice(_ title: String, value: Bool) -> some View {
-        Button { period = value } label: {
-            Text(title).font(.headline).foregroundStyle(period == value ? RecallPalette.accent : RecallPalette.secondary)
-                .padding(.vertical, 9).overlay(alignment: .bottom) { if period == value { Rectangle().fill(RecallPalette.accent).frame(height: 2) } }
-        }.buttonStyle(.plain).accessibilityAddTraits(period == value ? .isSelected : [])
+}
+
+/// Daily / weekly switch. A segmented control is quieter than underlined text
+/// tabs and fits on the same line as the date picker.
+struct ReviewPeriodPicker: View {
+    @Binding var isPeriod: Bool
+    var body: some View {
+        Picker("", selection: $isPeriod) {
+            Text(RecallLocalization.both("按天", "Daily")).tag(false)
+            Text(RecallLocalization.both("按周", "Weekly")).tag(true)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 148)
+        .accessibilityLabel(RecallLocalization.both("回顾范围", "Review range"))
     }
 }

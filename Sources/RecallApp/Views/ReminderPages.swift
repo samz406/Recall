@@ -35,13 +35,7 @@ struct RemindersView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            reminderHeader
-            HStack(spacing: 24) {
-                reminderTabButton("待处理", count: scheduled.count, tab: 0)
-                reminderTabButton("待确认", count: proposed.count, tab: 1)
-                reminderTabButton("历史", count: lists.historyRows, tab: 2)
-                Spacer()
-            }.padding(.horizontal, 24)
+            reminderTabBar
             Divider()
             if model.reminderNotificationsAllowed == false && !scheduled.isEmpty {
                 HStack(spacing: 10) {
@@ -92,8 +86,8 @@ struct RemindersView: View {
 
             }
             .frame(maxWidth: 1_100)
-            .padding(.horizontal, 40)
-            .padding(.vertical, 30)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 24)
             .frame(maxWidth: .infinity)
         }
             .task(id: highlightedReminderID) {
@@ -170,19 +164,48 @@ struct RemindersView: View {
             if location.tab == 0 { scheduledPage = location.page }
         }
     }
-    private var reminderHeader: some View {
-        RecallPageHeader(title: "提醒", subtitle: "把需要跟进的事，放到合适的时间") {
-            HStack(spacing: 12) {
-                Button(RecallLocalization.text(isDiscovering ? "正在发现…" : "发现待办")) { model.proposeReminders() }.disabled(isDiscovering)
-                    .help(RecallLocalization.text("手动深查允许参与的原始记录；每日回顾中的明确行动会自动进入待确认"))
-                Menu {
-                    Toggle(RecallLocalization.text("从每日回顾更新提醒"), isOn: Binding(get: { model.state.reminderLearningProfile.reviewDiscoveryEnabled != false }, set: { value in model.setReviewReminderDiscovery(value) }))
-                    Text(RecallLocalization.text("复用已生成的回顾，不增加模型调用；安排时间后才通知。"))
-                } label: { Image(systemName: "slider.horizontal.3").accessibilityLabel("待办发现设置") }
-                .menuStyle(.borderlessButton).fixedSize()
-                Button { isCreatingReminder = true } label: { Label(RecallLocalization.text("新建提醒"), systemImage: "plus") }.buttonStyle(.borderedProminent)
-            }
+    private var reminderTabBar: some View {
+        HStack(spacing: 22) {
+            reminderTabButton("待处理", count: scheduled.count, tab: 0)
+            reminderTabButton("待确认", count: proposed.count, tab: 1)
+            Spacer(minLength: 12)
+            historyEntry
+            Divider().frame(height: 18)
+            headerActions
         }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 4)
+    }
+
+    /// History is a long, low-frequency archive, so it reads as a quiet secondary
+    /// entry instead of a third primary tab competing with Pending / To confirm.
+    private var historyEntry: some View {
+        Button { reminderTab = 2 } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "clock.arrow.circlepath")
+                Text(RecallLocalization.text("历史") + " \(lists.historyRows)")
+            }
+            .font(.system(size: 13, weight: reminderTab == 2 ? .semibold : .regular))
+            .foregroundStyle(reminderTab == 2 ? RecallPalette.accent : RecallPalette.secondary)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(reminderTab == 2 ? RecallPalette.selected : Color.clear, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(reminderTab == 2 ? .isSelected : [])
+    }
+
+    private var headerActions: some View {
+        HStack(spacing: 10) {
+            Button(RecallLocalization.text(isDiscovering ? "正在发现…" : "发现待办")) { model.proposeReminders() }.disabled(isDiscovering)
+                .help(RecallLocalization.text("手动深查允许参与的原始记录；每日回顾中的明确行动会自动进入待确认"))
+            Menu {
+                Toggle(RecallLocalization.text("从每日回顾更新提醒"), isOn: Binding(get: { model.state.reminderLearningProfile.reviewDiscoveryEnabled != false }, set: { value in model.setReviewReminderDiscovery(value) }))
+                Text(RecallLocalization.text("复用已生成的回顾，不增加模型调用；安排时间后才通知。"))
+            } label: { Image(systemName: "slider.horizontal.3").accessibilityLabel("待办发现设置") }
+            .menuStyle(.borderlessButton).fixedSize()
+            Button { isCreatingReminder = true } label: { Label(RecallLocalization.text("新建提醒"), systemImage: "plus") }.buttonStyle(.borderedProminent)
+        }
+        .controlSize(.regular)
     }
 
     private var reminderDiscoveryFeedback: some View {
@@ -216,13 +239,19 @@ struct RemindersView: View {
                         }
                     }
                     let rows = paged(scheduled, page: scheduledPage)
+                    // With one time group the section title already says it; a second
+                    // "以后" header underneath would just be another layer of labels.
+                    let showsGroupHeaders = Set(rows.map { timeGroup($0, now: now) }).count > 1
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, reminder in
-                        if index == 0 || timeGroup(rows[index - 1], now: now) != timeGroup(reminder, now: now) {
+                        if showsGroupHeaders, index == 0 || timeGroup(rows[index - 1], now: now) != timeGroup(reminder, now: now) {
                             Text(RecallLocalization.text(timeGroup(reminder, now: now))).font(.headline).foregroundStyle(RecallPalette.secondary).padding(.top, 8)
                         }
                         reminderCard(reminder, deliveryState: model.reminderDeliveryStates[reminder.id], now: now)
                     }
                     ReminderPagination(page: $scheduledPage, itemCount: scheduled.count, pageSize: pageSize)
+                    if scheduled.count < 3 {
+                        shortListHint
+                    }
                 }
                 }
             }
@@ -253,6 +282,21 @@ struct RemindersView: View {
             }
 
         }
+    }
+
+    /// A one-item list leaves a lot of empty canvas; give it a light next step
+    /// instead of a blank page.
+    private var shortListHint: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sparkle.magnifyingglass")
+            Text(RecallLocalization.both("每日回顾里的明确行动会自动出现在这里。", "Clear actions from daily reviews show up here automatically."))
+            Button(RecallLocalization.text("发现待办")) { model.proposeReminders() }
+                .buttonStyle(.link)
+                .disabled(isDiscovering)
+        }
+        .font(.caption)
+        .foregroundStyle(RecallPalette.secondary)
+        .padding(.top, 6)
     }
 
     private func timeGroup(_ reminder: ReminderCandidate, now: Date) -> String {
@@ -638,43 +682,16 @@ private struct ReminderCandidateCard: View {
                 .foregroundStyle(statusColor)
                 .frame(width: 36, height: 36)
                 .background(statusColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
-            VStack(alignment: .leading, spacing: 6) {
-                Text(reminder.title).font(.headline)
+            VStack(alignment: .leading, spacing: 7) {
+                Text(reminder.title).font(.system(size: 16, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
                 if !reminder.detail.isEmpty {
                     Text(reminder.detail)
-                        .font(.subheadline)
+                        .font(RecallTypography.body)
                         .foregroundStyle(RecallPalette.secondary)
-                        .lineLimit(3)
+                        .lineLimit(2)
                 }
-                HStack(spacing: 10) {
-                    if !reminder.sourceCaptureIDs.isEmpty {
-                        Button(action: viewSources) {
-                            Label("\(reminder.sourceCaptureIDs.count) 条来源", systemImage: "link")
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(RecallPalette.accent)
-                    }
-                    if reminder.status == .planned, let day = reminder.plannedForDay { Text(day.label) }
-                    if let snoozed = reminder.snoozedUntil, reminder.status == .snoozed {
-                        Label(RecallLocalization.both("稍后至 \(snoozed.formatted(date: .abbreviated, time: .shortened))", "Snoozed until \(snoozed.formatted(date: .abbreviated, time: .shortened))"), systemImage: "clock.badge")
-                    } else if let dueAt = reminder.dueAt {
-                        Label(
-                            reminder.status == .proposed ? "建议：\(dueAt.formatted(date: .abbreviated, time: .shortened))" : dueAt.formatted(date: .abbreviated, time: .shortened),
-                            systemImage: "calendar"
-                        )
-                    } else if reminder.status == .proposed {
-                        Label(RecallLocalization.text("创建前选择时间"), systemImage: "calendar.badge.clock")
-                    }
-                    if reminder.status == .proposed {
-                        Text(reminder.analysis?.basis ?? "请核对行动与时间")
-                    }
-                    if reminder.recurrence != .none {
-                        Label(reminder.recurrence.title, systemImage: "repeat")
-                    }
-                    Text(reminder.origin.title)
-                }
-                .font(.caption)
-                .foregroundStyle(RecallPalette.secondary)
+                metaRow
                 if isActive, deliveryState == .notFound, !isOverdue, model.reminderNotificationsAllowed != false {
                     ReminderDeliveryBadge(state: deliveryState)
                 } else if reminder.status == .completed {
@@ -683,62 +700,117 @@ private struct ReminderCandidateCard: View {
                         .foregroundStyle(RecallPalette.secondary)
                 }
             }
-            Spacer()
-            if reminder.status == .planned {
-                VStack(alignment: .trailing, spacing: 8) {
-                    Text(RecallLocalization.text("今天要办"))
-                    Button(RecallLocalization.text("标记完成"), action: complete).buttonStyle(.borderedProminent)
-                    Button(RecallLocalization.text("提醒我…"), action: schedule)
-                    Button(RecallLocalization.both("移出今天", "Remove from today"), role: .destructive, action: dismiss)
-                }.font(.caption)
-            } else if isActive {
-                VStack(alignment: .trailing, spacing: 8) {
-                    Text(isOverdue ? "已过期" : (reminder.status == .snoozed ? "已稍后" : "已安排"))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(isOverdue ? RecallPalette.danger : RecallPalette.accent)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 6)
-                        .background((isOverdue ? RecallPalette.danger : RecallPalette.accent).opacity(0.10), in: Capsule())
-                    Button(RecallLocalization.text("标记完成"), action: complete)
-                        .buttonStyle(.borderedProminent)
-                        .font(.caption)
-                    HStack(spacing: 8) {
-                        Menu(RecallLocalization.text("稍后")) {
-                            ForEach(ReminderSnoozeOption.allCases.filter { $0.isAvailable(now: now) }) { option in
-                                Button(option.title(preferredHour: preferredHour)) { snooze(option.date(preferredHour: preferredHour, now: .now)) }
-                            }
-                            Divider()
-                            Button(RecallLocalization.both("选择时间…", "Choose a time…"), action: schedule)
-                        }
-                        .menuStyle(.borderlessButton)
-                        Button(RecallLocalization.text("修改"), action: schedule)
-                            .buttonStyle(.borderless)
-                    }
-                    .font(.caption)
-                    Button(RecallLocalization.text("取消"), role: .destructive, action: dismiss).buttonStyle(.borderless).font(.caption)
-                }
-            } else if reminder.status == .proposed {
-                VStack(alignment: .trailing, spacing: 8) {
-                    Button(RecallLocalization.text("加入今天")) { model.addActionToToday(reminder.id) }.buttonStyle(.borderedProminent)
-                    Button(RecallLocalization.text("提醒我…"), action: schedule).buttonStyle(.borderless)
-                    Button(RecallLocalization.text("忽略"), role: .destructive, action: dismiss)
-                        .buttonStyle(.borderless)
-                        .font(.caption)
-                }
-            } else if reminder.status == .completed || reminder.status == .cancelled {
-                VStack(alignment: .trailing, spacing: 8) {
-                    Text(reminder.status == .completed ? "已完成" : "已取消")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(RecallPalette.secondary)
-                    Button(RecallLocalization.text("从列表移除"), action: remove)
-                        .buttonStyle(.borderless)
-                        .font(.caption)
-                }
-            }
+            Spacer(minLength: 12)
+            actionArea
         }
         .padding(18)
         .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(RecallPalette.border, lineWidth: 1))
+    }
+
+    /// Status is card metadata, not an action, so it sits with the other labels
+    /// instead of occupying the right-hand button column.
+    private var statusText: (title: String, warning: Bool)? {
+        switch reminder.status {
+        case .planned: return (RecallLocalization.text("今天要办"), false)
+        case .scheduled: return (isOverdue ? "已过期" : "已安排", isOverdue)
+        case .snoozed: return ("已稍后", false)
+        case .proposed, .completed, .dismissed, .cancelled: return nil
+        }
+    }
+
+    /// When the reminder fires is the core fact on this card, so the time reads
+    /// at body weight rather than blending into the caption row.
+    private var dueText: String? {
+        if reminder.status == .planned, let day = reminder.plannedForDay { return day.label }
+        if reminder.status == .snoozed, let snoozed = reminder.snoozedUntil {
+            return RecallLocalization.both("稍后至 \(snoozed.formatted(date: .abbreviated, time: .shortened))", "Snoozed until \(snoozed.formatted(date: .abbreviated, time: .shortened))")
+        }
+        if let dueAt = reminder.dueAt {
+            return reminder.status == .proposed
+                ? "建议：\(dueAt.formatted(date: .abbreviated, time: .shortened))"
+                : dueAt.formatted(date: .abbreviated, time: .shortened)
+        }
+        if reminder.status == .proposed { return RecallLocalization.text("创建前选择时间") }
+        return nil
+    }
+
+    private var metaRow: some View {
+        HStack(spacing: 10) {
+            if let status = statusText {
+                RecallStatusBadge(title: status.title, warning: status.warning)
+            }
+            if let due = dueText {
+                Label(due, systemImage: "calendar")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(RecallPalette.text)
+            }
+            if !reminder.sourceCaptureIDs.isEmpty {
+                Button(action: viewSources) {
+                    Label("\(reminder.sourceCaptureIDs.count) 条来源", systemImage: "link")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(RecallPalette.accent)
+            }
+            if reminder.status == .proposed {
+                Text(reminder.analysis?.basis ?? "请核对行动与时间")
+            }
+            if reminder.recurrence != .none {
+                Label(reminder.recurrence.title, systemImage: "repeat")
+            }
+            Text(reminder.origin.title)
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .background(RecallPalette.border.opacity(0.35), in: Capsule())
+        }
+        .font(.caption)
+        .foregroundStyle(RecallPalette.secondary)
+        .lineLimit(1)
+    }
+
+    /// One primary action, one frequent secondary, and everything else behind
+    /// the overflow menu so destructive choices never sit beside the main button.
+    @ViewBuilder
+    private var actionArea: some View {
+        switch reminder.status {
+        case .planned:
+            HStack(spacing: 8) {
+                Button(RecallLocalization.text("标记完成"), action: complete).buttonStyle(.borderedProminent)
+                Button(RecallLocalization.text("提醒我…"), action: schedule)
+                overflowMenu(removeTitle: RecallLocalization.both("移出今天", "Remove from today"))
+            }
+        case .scheduled, .snoozed:
+            HStack(spacing: 8) {
+                Button(RecallLocalization.text("标记完成"), action: complete).buttonStyle(.borderedProminent)
+                Menu(RecallLocalization.text("稍后")) {
+                    ForEach(ReminderSnoozeOption.allCases.filter { $0.isAvailable(now: now) }) { option in
+                        Button(option.title(preferredHour: preferredHour)) { snooze(option.date(preferredHour: preferredHour, now: .now)) }
+                    }
+                    Divider()
+                    Button(RecallLocalization.both("选择时间…", "Choose a time…"), action: schedule)
+                }
+                .fixedSize()
+                overflowMenu(removeTitle: RecallLocalization.text("取消提醒"))
+            }
+        case .proposed:
+            HStack(spacing: 8) {
+                Button(RecallLocalization.text("加入今天")) { model.addActionToToday(reminder.id) }.buttonStyle(.borderedProminent)
+                Button(RecallLocalization.text("提醒我…"), action: schedule)
+                overflowMenu(removeTitle: RecallLocalization.text("忽略"))
+            }
+        case .completed, .cancelled, .dismissed:
+            Button(RecallLocalization.text("从列表移除"), action: remove)
+                .buttonStyle(.borderless)
+        }
+    }
+
+    private func overflowMenu(removeTitle: String) -> some View {
+        Menu {
+            Button(RecallLocalization.text("修改时间"), action: schedule)
+            Divider()
+            Button(removeTitle, role: .destructive, action: dismiss)
+        } label: { Image(systemName: "ellipsis").frame(width: 16) }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .accessibilityLabel(RecallLocalization.text("更多提醒操作"))
     }
 }
 

@@ -29,8 +29,14 @@ struct DailyReviewContentView: View {
                     VStack(alignment: .leading, spacing: 18) {
                         sectionHeading(section)
                         let expanded = expandedSections.contains(section)
-                        VStack(alignment: .leading, spacing: 22) {
-                            ForEach(expanded ? sectionRows : Array(sectionRows.prefix(Self.visiblePerSection))) { item in itemRow(item) }
+                        let visible = expanded ? sectionRows : Array(sectionRows.prefix(Self.visiblePerSection))
+                        VStack(alignment: .leading, spacing: 18) {
+                            // A hairline between items gives the eye a stopping point;
+                            // spacing alone made long items run together.
+                            ForEach(Array(visible.enumerated()), id: \.element.id) { index, item in
+                                if index > 0 { Divider().opacity(0.55) }
+                                itemRow(item)
+                            }
                             if sectionRows.count > Self.visiblePerSection {
                                 Button(expanded ? RecallLocalization.both("收起", "Show less")
                                                 : RecallLocalization.both("再看 \(sectionRows.count - Self.visiblePerSection) 条", "Show \(sectionRows.count - Self.visiblePerSection) more")) {
@@ -80,12 +86,14 @@ struct DailyReviewContentView: View {
     private func itemRow(_ item: DailySummaryItem) -> some View {
         let action = DailyReviewPresentation.action(for: item, in: summary)
         return VStack(alignment: .leading, spacing: 8) {
+            // The status chip is pinned to the trailing edge so a long title wraps
+            // underneath it instead of pushing it onto its own broken line.
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) { itemTitle(item.title); itemStatus(item); Spacer(minLength: 8); correctionMenu(item) }
+                HStack(alignment: .firstTextBaseline, spacing: 10) { itemTitle(item.title); Spacer(minLength: 8); itemStatus(item); correctionMenu(item) }
                 VStack(alignment: .leading, spacing: 6) { HStack { itemTitle(item.title); Spacer(minLength: 8); correctionMenu(item) }; itemStatus(item) }
             }
             if !item.detail.isEmpty {
-                Text(item.detail).font(RecallTypography.body).lineSpacing(5)
+                Text(ReviewTextHighlight.attributed(item.detail)).font(RecallTypography.body).lineSpacing(5)
                     .foregroundStyle(RecallPalette.text.opacity(0.85))
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             }
@@ -161,6 +169,34 @@ struct TopicMergeSheet: View {
                 }.buttonStyle(.borderedProminent).disabled(saving || selected.count < 2 || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }.padding(24).frame(width: 640, height: 560).interactiveDismissDisabled(saving)
+    }
+}
+
+/// Marks code-like tokens (snake_case names, ALL-CAPS markers, hex ids) inside
+/// review prose so they are scannable. It only changes rendering; the stored
+/// text and the copied text keep their original form.
+@MainActor
+enum ReviewTextHighlight {
+    private static let regex = try? NSRegularExpression(
+        pattern: #"\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b|\b[A-Z]{2,}\b|\b[0-9a-f]{7,40}\b"#
+    )
+
+    static func attributed(_ text: String) -> AttributedString {
+        guard let regex, !text.isEmpty else { return AttributedString(text) }
+        var result = AttributedString()
+        var cursor = text.startIndex
+        let full = NSRange(location: 0, length: (text as NSString).length)
+        for match in regex.matches(in: text, range: full) {
+            guard let range = Range(match.range, in: text), range.lowerBound >= cursor else { continue }
+            result.append(AttributedString(String(text[cursor..<range.lowerBound])))
+            var token = AttributedString(String(text[range]))
+            token.font = .system(size: 14, weight: .medium, design: .monospaced)
+            token.backgroundColor = RecallPalette.border.opacity(0.45)
+            result.append(token)
+            cursor = range.upperBound
+        }
+        result.append(AttributedString(String(text[cursor..<text.endIndex])))
+        return result
     }
 }
 
