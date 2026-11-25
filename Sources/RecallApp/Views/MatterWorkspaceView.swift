@@ -8,6 +8,7 @@ struct MatterWorkspaceView: View {
     @AppStorage("recall.memory.tab") private var tab: MatterWorkspaceTab = .topics
     @State private var search = ""
     @State private var filter = 0
+    @State private var showDone = false
     @State private var limit = 20
     @State private var selectedID: String?
     @State private var adding = false
@@ -53,12 +54,11 @@ struct MatterWorkspaceView: View {
                     } else {
                         if !model.matterFiles.isEmpty {
                             HStack(spacing: 8) {
-                                RecallFilterChip(title: RecallLocalization.both("最近更新", "Recent"), selected: filter == 0) { filter = 0 }
-                                Menu(RecallLocalization.both("筛选", "Filter")) {
-                                    Button(RecallLocalization.text("全部")) { filter = 0 }
-                                    Button(RecallLocalization.text("进行中")) { filter = 1 }
-                                    Button(RecallLocalization.text("已完成")) { filter = 2 }
-                                }.fixedSize()
+                                Picker("", selection: $filter) {
+                                    Text(RecallLocalization.text("全部")).tag(0)
+                                    Text(RecallLocalization.text("进行中")).tag(1)
+                                    Text(RecallLocalization.text("已完成")).tag(2)
+                                }.pickerStyle(.segmented).labelsHidden().fixedSize()
                                 Spacer()
                                 TextField(RecallLocalization.text("搜索主题或内容"), text: $search).textFieldStyle(.roundedBorder).frame(maxWidth: 260)
                             }
@@ -72,7 +72,22 @@ struct MatterWorkspaceView: View {
                                 else { Button(RecallLocalization.text("清空搜索")) { search = ""; filter = 0 } }
                             }.recallSurface()
                         }
-                        ForEach(Array(files.prefix(limit))) { file in card(file) }
+                        if filter == 0 && search.isEmpty {
+                            let groups = TopicListPresentation.group(files)
+                            ForEach(Array(groups.active.prefix(limit))) { file in card(file) }
+                            if !groups.done.isEmpty {
+                                DisclosureGroup(isExpanded: $showDone) {
+                                    LazyVStack(alignment: .leading, spacing: 10) {
+                                        ForEach(Array(groups.done.prefix(limit))) { file in card(file) }
+                                    }.padding(.top, 8)
+                                } label: {
+                                    Text(RecallLocalization.both("已完成与搁置（\(groups.done.count)）", "Done and dormant (\(groups.done.count))"))
+                                        .font(.subheadline).foregroundStyle(RecallPalette.secondary)
+                                }
+                            }
+                        } else {
+                            ForEach(Array(files.prefix(limit))) { file in card(file) }
+                        }
                         if files.count > limit { Button(RecallLocalization.text("再显示 20 条")) { limit += 20 } }
                         if model.state.experienceHintsEnabled, let hint = model.experienceHint {
                             VStack(alignment: .leading, spacing: 10) {
@@ -108,33 +123,42 @@ struct MatterWorkspaceView: View {
         }.buttonStyle(.plain).accessibilityAddTraits(tab == value ? .isSelected : [])
     }
     private func card(_ file: MatterFile) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Button { selectedID = file.id } label: {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text(file.title).font(.headline)
-                        Spacer()
-                        Text(RecallLocalization.text(file.latest.status.manualMatterLabel)).font(.caption).foregroundStyle(RecallPalette.secondary)
-                    }
-                    Text(TopicReading(file: file, review: model.state.topicReviews.first { $0.id == file.id }).overview)
-                        .font(RecallTypography.body).foregroundStyle(RecallPalette.secondary).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
-                }.contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityIdentifier("open-topic-" + file.id)
-            HStack(spacing: 12) {
-                Text(file.latest.date.formatted(date: .abbreviated, time: .omitted) + RecallLocalization.both(" · \(file.evidenceIDs.count) 条来源", " · \(file.evidenceIDs.count) sources")).font(.caption).foregroundStyle(RecallPalette.secondary)
-                Spacer()
-                if model.completingMatterIDs.contains(file.id) { Text(RecallLocalization.both("保存中…", "Saving…")).font(.caption) }
-                Button(RecallLocalization.both("继续问", "Ask about this")) { continueChat(file.id) }.buttonStyle(.bordered)
-                Menu {
-                    Button(RecallLocalization.both("补充进展", "Add progress")) { addingTitle = file.title; adding = true }
-                    if file.latest.status.isOpenMatter {
-                        Button(RecallLocalization.both("标记完成", "Mark complete")) { Task { await model.completeMatter(file) } }.disabled(model.completingMatterIDs.contains(file.id))
-                    } else if model.state.matterCorrections.contains(where: { $0.isTopicCompletion && $0.topicID == file.id }) {
-                        Button(RecallLocalization.both("撤销完成标记", "Undo completion")) { model.undoTopicCompletion(file.id) }
-                    }
-                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
+        let reading = TopicReading(file: file, review: model.state.topicReviews.first { $0.id == file.id })
+        return Button { selectedID = file.id } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(file.latest.status.isOpenMatter ? RecallPalette.accent : RecallPalette.secondary.opacity(0.45))
+                        .frame(width: 8, height: 8)
+                        .accessibilityLabel(RecallLocalization.text(file.latest.status.manualMatterLabel))
+                    Text(file.title).font(.headline).lineLimit(1)
+                    Spacer(minLength: 8)
+                    if model.completingMatterIDs.contains(file.id) { Text(RecallLocalization.both("保存中…", "Saving…")).font(.caption).foregroundStyle(RecallPalette.secondary) }
+                    Text(TopicListPresentation.relativeTime(file.latest.date)).font(.caption).foregroundStyle(RecallPalette.secondary)
+                }
+                Text(reading.headline)
+                    .font(RecallTypography.body).foregroundStyle(RecallPalette.secondary)
+                    .lineLimit(2).multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 16)
             }
-        }.recallSurface()
+            .padding(.vertical, 10).padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.035)))
+        .accessibilityIdentifier("open-topic-" + file.id)
+        .contextMenu {
+            Button(RecallLocalization.both("继续问", "Ask about this")) { continueChat(file.id) }
+            Button(RecallLocalization.both("补充进展", "Add progress")) { addingTitle = file.title; adding = true }
+            if file.latest.status.isOpenMatter {
+                Button(RecallLocalization.both("标记完成", "Mark complete")) { Task { await model.completeMatter(file) } }
+                    .disabled(model.completingMatterIDs.contains(file.id))
+            } else if model.state.matterCorrections.contains(where: { $0.isTopicCompletion && $0.topicID == file.id }) {
+                Button(RecallLocalization.both("撤销完成标记", "Undo completion")) { model.undoTopicCompletion(file.id) }
+            }
+        }
     }
     private func openRequested() {
         if case .knowledge = model.destination { tab = .knowledge }
