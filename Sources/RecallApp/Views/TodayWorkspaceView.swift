@@ -20,7 +20,7 @@ struct TodayWorkspaceView: View {
             }.padding(.horizontal, 24).padding(.bottom, 14)
             Divider()
             switch TodayTab(rawValue: tab) ?? .overview {
-            case .overview: ScrollView { TodayOverview(openTab: { tab = $0.rawValue }).padding(24) }
+            case .overview: ScrollView { TodayOverview().padding(24) }
             case .reviews: ReviewWorkspaceView(showsHeader: false)
             case .reminders: RemindersView()
             }
@@ -52,31 +52,23 @@ struct TodayWorkspaceView: View {
 
 private struct TodayOverview: View {
     @EnvironmentObject private var model: RecallAppModel
-    let openTab: (TodayWorkspaceView.TodayTab) -> Void
     @State private var showsAllCommitments = false
+    @State private var hoveredItemID: String?
     var body: some View {
         let resume = LocalBriefing.resume(in: model.state, matters: model.matterFiles)
         let commitments = LocalBriefing.commitments(in: model.state)
+        let commitmentCount = commitments.count
         VStack(alignment: .leading, spacing: 18) {
             if model.shouldAskAboutPersona { personaQuestion }
             if !model.state.attentionInbox.isEmpty { inbox }
-            section(t("接着干", "Pick up where you stopped"), detail: t("来自已保存的记录、进行中的主题和今天的提醒。", "From saved records, open topics and today's reminders.")) {
+            section(t("接着干", "Pick up where you stopped"), detail: resumeSummary(resume, commitmentCount: commitmentCount)) {
                 if resume.isEmpty {
                     Text(t("还没有可以接续的内容。记录一个工作节点后，明天这里会告诉你停在哪。", "Nothing to pick up yet. Record a moment and tomorrow this shows where you stopped."))
                         .foregroundStyle(RecallPalette.secondary)
                 } else {
-                    ForEach(resume) { item in
-                        Button { model.destination = item.destination } label: {
-                            HStack(alignment: .top, spacing: 12) {
-                                Image(systemName: icon(item.kind)).foregroundStyle(RecallPalette.accent).frame(width: 18)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(item.title).font(.subheadline.weight(.medium)).lineLimit(2).multilineTextAlignment(.leading)
-                                    Text(item.detail).font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(2).multilineTextAlignment(.leading)
-                                }
-                                Spacer(minLength: 0)
-                                Image(systemName: "chevron.right").font(.caption).foregroundStyle(RecallPalette.secondary)
-                            }.contentShape(Rectangle())
-                        }.buttonStyle(.plain)
+                    ForEach(Array(resume.enumerated()), id: \.element.id) { index, item in
+                        if index > 0 { Divider().opacity(0.55) }
+                        resumeRow(item)
                     }
                 }
             }
@@ -94,11 +86,52 @@ private struct TodayOverview: View {
                 }
             }
             if !model.state.privacy.cloudUseEnabled || !model.state.llmConfiguration.hasCredential { OfflineDayCard() }
-            HStack {
-                Button(t("打开每日回顾", "Open daily reviews")) { openTab(.reviews) }
-                Button(t("查看提醒", "Open reminders")) { openTab(.reminders) }
-                Spacer()
+        }
+        // A single reading column instead of lines that stretch to the window edge.
+        .frame(maxWidth: 760, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The old footnote explained where the data came from. A count tells the
+    /// reader whether anything here needs attention.
+    private func resumeSummary(_ resume: [LocalBriefing.ResumeItem], commitmentCount: Int) -> String {
+        guard !resume.isEmpty else {
+            return t("来自已保存的记录、进行中的主题和今天的提醒。", "From saved records, open topics and today's reminders.")
+        }
+        var parts = [t("\(resume.count) 项可以继续", "\(resume.count) to continue")]
+        if commitmentCount > 0 { parts.append(t("\(commitmentCount) 项往来承诺", "\(commitmentCount) commitments")) }
+        return parts.joined(separator: " · ")
+    }
+
+    private func resumeRow(_ item: LocalBriefing.ResumeItem) -> some View {
+        Button { model.destination = item.destination } label: {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: icon(item.kind))
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(RecallPalette.accent)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.title).font(.system(size: 15, weight: .semibold))
+                        .lineLimit(2).multilineTextAlignment(.leading)
+                    if !item.detail.isEmpty {
+                        Text(item.detail).font(.system(size: 13))
+                            .foregroundStyle(RecallPalette.secondary)
+                            .lineLimit(1).multilineTextAlignment(.leading)
+                    }
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(RecallPalette.secondary.opacity(0.7))
             }
+            .padding(.vertical, 7)
+            .background(hoveredItemID == item.id ? RecallPalette.selected : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            if hovering { hoveredItemID = item.id }
+            else if hoveredItemID == item.id { hoveredItemID = nil }
         }
     }
     private var personaQuestion: some View {

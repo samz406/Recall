@@ -87,15 +87,22 @@ public enum LocalBriefing {
         let records = usable(state)
         var items: [ResumeItem] = []
         if let previous = records.filter({ $0.createdAt < today }).max(by: { $0.createdAt < $1.createdAt }) {
-            let title = previous.userNote ?? previous.windowTitle ?? previous.summary ?? RecallLocalization.both("上一条记录", "Last record")
+            // The summary says what happened; a window title is often just the app name
+            // ("WeChat"), which told the reader nothing about where they stopped.
+            let title = previous.userNote ?? previous.summary ?? previous.windowTitle ?? RecallLocalization.both("上一条记录", "Last record")
             items.append(ResumeItem(id: "last-" + previous.id.uuidString, kind: .lastRecord, title: String(title.prefix(90)),
-                detail: (previous.sourceAppName ?? "") + " · " + previous.createdAt.formatted(date: .abbreviated, time: .shortened),
+                detail: (previous.sourceAppName ?? "") + " · " + Self.relativeStamp(previous.createdAt),
                 destination: .record(previous.id), date: previous.createdAt))
         }
         let horizon = calendar.date(byAdding: .day, value: -7, to: today) ?? today
         for file in matters where file.latest.status.isOpenMatter && file.latest.date >= horizon && !file.needsStatusUpdate(at: now, calendar: calendar) {
+            // "Open" only means the last event was not marked done. Without a stated next
+            // step the topic is an activity log, not something to pick up again — unless
+            // its last event is explicitly pending or blocked.
+            let actionable = file.latest.status == .pending || file.latest.status == .blocked || file.resumeNextAction != nil
+            guard actionable else { continue }
             items.append(ResumeItem(id: "topic-" + file.id, kind: .openTopic, title: file.title,
-                detail: file.resumeNextAction ?? file.resumeText, destination: .topic(file.id), date: file.latest.date))
+                detail: file.resumeNextAction ?? Self.statusDetail(file.latest.status), destination: .topic(file.id), date: file.latest.date))
         }
         for reminder in state.reminders where reminder.status.isAction {
             guard let due = ReminderTimeline.effectiveDueAt(reminder) ?? reminder.plannedForDay?.date,
@@ -110,6 +117,26 @@ public enum LocalBriefing {
         }
         let rank: [ResumeItem.Kind: Int] = [.dueReminder: 0, .lastRecord: 1, .openTopic: 2, .waitingOnOthers: 3]
         return Array(items.sorted { rank[$0.kind]! == rank[$1.kind]! ? $0.date > $1.date : rank[$0.kind]! < rank[$1.kind]! }.prefix(5))
+    }
+
+    /// "昨天 19:20" reads better on a resume card than a full calendar date.
+    private static func relativeStamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = RecallLocalization.locale
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        formatter.doesRelativeDateFormatting = true
+        return formatter.string(from: date)
+    }
+
+    private static func statusDetail(_ status: WorkEpisodeStatus) -> String {
+        switch status {
+        case .pending: RecallLocalization.both("明确待办", "Open action")
+        case .blocked: RecallLocalization.both("遇到阻碍", "Blocked")
+        case .progressed: RecallLocalization.both("正在推进", "In progress")
+        case .completed: RecallLocalization.both("记录为已完成", "Completed")
+        case .explored: RecallLocalization.both("相关记录", "Related record")
+        }
     }
 
     // MARK: Commitments between the user and others
