@@ -1,7 +1,6 @@
 import Foundation
 
-@MainActor
-public final class MemoryAssistant {
+public final class MemoryAssistant: Sendable {
     private let store: FileMemoryStore
     private let searchEngine: MemorySearchEngine
     private let privacyEngine: PrivacyEngine
@@ -87,7 +86,7 @@ public final class MemoryAssistant {
         let analysisStarted = clock.now
         let textIndex = await store.captureTextIndex()
         let fullState = await store.preparedForChat()
-        onStep?("analysis", Self.milliseconds(from: analysisStarted, clock: clock))
+        await onStep?("analysis", Self.milliseconds(from: analysisStarted, clock: clock))
         var state = scope.applying(to: fullState)
         state.messages.removeAll { $0.id == userMessage.id }
         if let answer = try await cloudAgentAnswer(
@@ -104,80 +103,18 @@ public final class MemoryAssistant {
         } else { retrievalText = resolvedQuestion }
         let timeRange = timeRangeResolver.resolve(retrievalText)
         let intent = MemoryQuestionIntent(question: question)
-        let participating = state.captures.filter { capture in
-            let participates = state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
-            return participates && !state.privacy.excludedBundleIdentifiers.contains(capture.sourceBundleIdentifier ?? "")
+        // 检索与排序是纯值计算，放到后台执行器，避免大存档时卡住界面。
+        let retrievalState = state
+        let work: @Sendable () async -> RetrieveOutcome = { [self] in
+            await retrieve(question: question, retrievalText: retrievalText, timeRange: timeRange, intent: intent,
+                           state: retrievalState, originalState: originalState, conversationID: conversation.id, textIndex: textIndex)
         }
-        let recordsAllowedInChat = participating.filter { capture in
-            guard let timeRange else { return true }
-            return capture.createdAt >= timeRange.startDate && capture.createdAt <= timeRange.endDate
-        }
-        let allowedIDs = Set(participating.map(\.id))
-        let summaryEvidence = state.dailySummaries.filter {
-            ($0.sourceCaptureIDs.isEmpty && state.matterCorrections.isEmpty) || (!$0.sourceCaptureIDs.isEmpty && Set($0.sourceCaptureIDs).isSubset(of: allowedIDs))
-        }.map(makeSearchableEvidence)
-        let episodeEvidence = state.episodes.filter { !$0.evidenceIDs.isEmpty && Set($0.evidenceIDs).isSubset(of: allowedIDs) }.map(makeSearchableEvidence)
-        let durableMemoryEvidence = state.userMemories
-            .filter { memory in
-                state.memoryKnowledgeSettings.referencesEnabled && !memory.evidenceIDs.isEmpty && Set(memory.evidenceIDs).isSubset(of: allowedIDs) && (memory.status == .confirmed || (memory.status == .proposed && memory.confidence >= 0.75))
-            }
-            .map(makeSearchableEvidence)
-        let searchableEvidence = recordsAllowedInChat + summaryEvidence + episodeEvidence + (timeRange == nil ? durableMemoryEvidence : [])
-        // 多日概览靠日期覆盖，不靠“总结本周”这类词去扫每张截图的全文。
-        let query = MemorySearchQuery(
-            text: timeRange != nil && intent == .overview ? "" : retrievalText,
-            startDate: timeRange?.startDate,
-            endDate: timeRange?.endDate
-        )
-        // 多日问题必须先看到范围内的全部候选，再做按天覆盖；若提前截断，
-        // 高频的今天记录仍会把较早日期挤出候选集。范围外的截图已经在上面排除。
-        let searchLimit = timeRange == nil ? 64 : max(searchableEvidence.count, 1)
-        // 截图文字在保存时已经写入词条索引。有索引时只取出命中的记录，不再逐条读全文。
-        let results: [MemorySearchResult]
-        let indexedIDs: [UUID]
-        if let textIndex, !query.text.isEmpty {
-            let derived = summaryEvidence + episodeEvidence + (timeRange == nil ? durableMemoryEvidence : [])
-            let derivedResults = searchEngine.search(query, in: derived, limit: searchLimit)
-            let terms = QuestionTerms.topicTerms(query.text)
-            let matchLimit = timeRange == nil ? 80 : 400
-            let ids = textIndex.ids(matching: terms, start: timeRange?.startDate, end: timeRange?.endDate, limit: matchLimit)
-            let allowedByID = Dictionary(uniqueKeysWithValues: recordsAllowedInChat.map { ($0.id, $0) })
-            let candidates = ids.compactMap { allowedByID[$0] }
-            let captureResults = searchEngine.search(query, in: candidates, limit: searchLimit)
-            var best: [UUID: MemorySearchResult] = [:]
-            for result in derivedResults + captureResults {
-                if best[result.capture.id]?.score ?? -1 < result.score { best[result.capture.id] = result }
-            }
-            results = best.values.sorted { lhs, rhs in
-                lhs.score == rhs.score ? lhs.capture.createdAt > rhs.capture.createdAt : lhs.score > rhs.score
-            }.prefix(searchLimit).map { $0 }
-            indexedIDs = []
-        } else {
-            results = searchEngine.search(query, in: searchableEvidence, limit: searchLimit)
-            indexedIDs = timeRange == nil ? await store.indexedCaptureIDs(matching: retrievalText, limit: 8) : []
-        }
-        let indexed = indexedIDs.compactMap { id in recordsAllowedInChat.first(where: { $0.id == id }) }
-        var seen: Set<UUID> = []
-        let relevantResults = timeRange != nil && intent != .overview
-            ? results.filter { !$0.matchedTerms.isEmpty }
-            : results
-        let ranked = (indexed + relevantResults.map(\.capture)).filter { seen.insert($0.id).inserted }
-        let retrieved = if let timeRange {
-            selectTemporalEvidence(
-                from: ranked,
-                limit: min(max(timeRange.requestedDayCount * 2, 8), contextManager.maxEvidenceRecords)
-            )
-        } else {
-            MemoryEvidenceSelector().select(ranked, question: retrievalText, limit: 12)
-        }
-        let annotated = retrieved.map { annotateForChat($0, originals: originalState) }
-        let textMatchIDs: (([String], Date?, Date?) -> [UUID])? = textIndex.map { index in
-            { terms, start, end in index.ids(matching: terms, start: start, end: end, limit: 40) }
-        }
-        var retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: annotated,
-            conversationID: conversation.id, limit: contextManager.maxEvidenceRecords, trustLedger: true, alreadyCorrected: true, textMatchIDs: textMatchIDs)
-        onStep?("retrieval", Self.milliseconds(from: retrievalStarted, clock: clock))
-        onEvidenceReady?(retrieval.evidence.count)
+        let retrievalOutcome = await Task.detached(priority: .userInitiated, operation: work).value
+        await onStep?("retrieval", Self.milliseconds(from: retrievalStarted, clock: clock))
+        await onEvidenceReady?(retrievalOutcome.plan.evidence.count)
+        var retrieval = retrievalOutcome.plan
+        let annotated = retrievalOutcome.annotated
+        let textMatchIDs = retrievalOutcome.textMatchIDs
         if retrieval.needsSemanticLookup, state.privacy.cloudUseEnabled,
            state.llmConfiguration.provider != .localOnly, state.llmConfiguration.hasCredential {
             do {
@@ -186,10 +123,10 @@ public final class MemoryAssistant {
                 if !ids.isEmpty {
                     retrieval = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: annotated,
                         conversationID: conversation.id, limit: contextManager.maxEvidenceRecords, resolvedEntityIDs: ids, trustLedger: true, alreadyCorrected: true, textMatchIDs: textMatchIDs)
-                    onEvidenceReady?(retrieval.evidence.count)
+                    await onEvidenceReady?(retrieval.evidence.count)
                 }
             } catch is CancellationError { throw CancellationError() }
-            catch { onRetrievalWarning?() }
+            catch { await onRetrievalWarning?() }
         }
         let selectedEvidence = retrieval.evidence
         let plan = contextManager.plan(
@@ -252,7 +189,7 @@ public final class MemoryAssistant {
             let base = if let model { model } else { try await store.modelResponder() }
             let responder = LiveMemoryResponder(base: base, store: store, original: originalState, originalCaptureRevision: originalCaptureRevision)
             let cloudAnswer = try await responder.answerCancellably(to: cloudRequest)
-            onStep?("model", Self.milliseconds(from: modelStarted, clock: clock))
+            await onStep?("model", Self.milliseconds(from: modelStarted, clock: clock))
             // 已传入证据时，不能接受模型仍声称“记忆为空”的幻觉式回答。
             // 此时保留本地可追溯摘要，确保用户至少得到真实的时间线内容。
             let ids = plan.evidence.flatMap { retrieval.sourceIDs[$0.id] ?? [$0.id] }
@@ -335,10 +272,10 @@ public final class MemoryAssistant {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            onRetrievalWarning?()
+            await onRetrievalWarning?()
             return nil
         }
-        onEvidenceReady?(outcome.citations.count)
+        await onEvidenceReady?(outcome.citations.count)
         let latestState = await store.snapshot()
         guard latestState.privacy.cloudUseEnabled == originalState.privacy.cloudUseEnabled,
               latestState.privacy.excludedBundleIdentifiers == originalState.privacy.excludedBundleIdentifiers,
@@ -530,5 +467,97 @@ enum ConversationalReply {
         default:
             return nil
         }
+    }
+}
+
+/// 问一问的本地检索：筛选可参与问答的记录、按时间范围与词条索引取候选、按天或按相关性挑选。
+/// 只读值计算，不含界面状态，可以在任意执行器上运行。
+private struct RetrieveOutcome: Sendable {
+    var plan: MemoryRetrievalPlan
+    var annotated: [CaptureRecord]
+    var textMatchIDs: (@Sendable ([String], Date?, Date?) -> [UUID])?
+}
+
+extension MemoryAssistant {
+    private func retrieve(question: String, retrievalText: String, timeRange: ResolvedMemoryTimeRange?,
+                          intent: MemoryQuestionIntent, state: RecallState, originalState: RecallState,
+                          conversationID: UUID, textIndex: CaptureTextIndex?) async -> RetrieveOutcome {
+        let participating = state.captures.filter { capture in
+            let participates = state.rules.first(where: { $0.template == capture.eventTemplate })?.participatesInChat ?? true
+            return participates && !state.privacy.excludedBundleIdentifiers.contains(capture.sourceBundleIdentifier ?? "")
+        }
+        let recordsAllowedInChat = participating.filter { capture in
+            guard let timeRange else { return true }
+            return capture.createdAt >= timeRange.startDate && capture.createdAt <= timeRange.endDate
+        }
+        let allowedIDs = Set(participating.map(\.id))
+        let summaryEvidence = state.dailySummaries.filter {
+            ($0.sourceCaptureIDs.isEmpty && state.matterCorrections.isEmpty) || (!$0.sourceCaptureIDs.isEmpty && Set($0.sourceCaptureIDs).isSubset(of: allowedIDs))
+        }.map(makeSearchableEvidence)
+        let episodeEvidence = state.episodes.filter { !$0.evidenceIDs.isEmpty && Set($0.evidenceIDs).isSubset(of: allowedIDs) }.map(makeSearchableEvidence)
+        let durableMemoryEvidence = state.userMemories
+            .filter { memory in
+                state.memoryKnowledgeSettings.referencesEnabled && !memory.evidenceIDs.isEmpty && Set(memory.evidenceIDs).isSubset(of: allowedIDs) && (memory.status == .confirmed || (memory.status == .proposed && memory.confidence >= 0.75))
+            }
+            .map(makeSearchableEvidence)
+        let searchableEvidence = recordsAllowedInChat + summaryEvidence + episodeEvidence + (timeRange == nil ? durableMemoryEvidence : [])
+        // 多日概览靠日期覆盖，不靠“总结本周”这类词去扫每张截图的全文。
+        let query = MemorySearchQuery(
+            text: timeRange != nil && intent == .overview ? "" : retrievalText,
+            startDate: timeRange?.startDate,
+            endDate: timeRange?.endDate
+        )
+        // 多日问题必须先看到范围内的全部候选，再做按天覆盖；若提前截断，
+        // 高频的今天记录仍会把较早日期挤出候选集。范围外的截图已经在上面排除。
+        let searchLimit = timeRange == nil ? 64 : max(searchableEvidence.count, 1)
+        // 截图文字在保存时已经写入词条索引。有索引时只取出命中的记录，不再逐条读全文。
+        let results: [MemorySearchResult]
+        let indexedIDs: [UUID]
+        if let textIndex, !query.text.isEmpty {
+            let derived = summaryEvidence + episodeEvidence + (timeRange == nil ? durableMemoryEvidence : [])
+            let derivedResults = searchEngine.search(query, in: derived, limit: searchLimit)
+            let terms = QuestionTerms.topicTerms(query.text)
+            let matchLimit = timeRange == nil ? 80 : 400
+            let ids = textIndex.ids(matching: terms, start: timeRange?.startDate, end: timeRange?.endDate, limit: matchLimit)
+            let allowedByID = Dictionary(uniqueKeysWithValues: recordsAllowedInChat.map { ($0.id, $0) })
+            let candidates = ids.compactMap { allowedByID[$0] }
+            let captureResults = searchEngine.search(query, in: candidates, limit: searchLimit)
+            var best: [UUID: MemorySearchResult] = [:]
+            for result in derivedResults + captureResults {
+                if best[result.capture.id]?.score ?? -1 < result.score { best[result.capture.id] = result }
+            }
+            results = best.values.sorted { lhs, rhs in
+                lhs.score == rhs.score ? lhs.capture.createdAt > rhs.capture.createdAt : lhs.score > rhs.score
+            }.prefix(searchLimit).map { $0 }
+            indexedIDs = []
+        } else {
+            results = searchEngine.search(query, in: searchableEvidence, limit: searchLimit)
+            indexedIDs = timeRange == nil ? await store.indexedCaptureIDs(matching: retrievalText, limit: 8) : []
+        }
+        let indexed = indexedIDs.compactMap { id in recordsAllowedInChat.first(where: { $0.id == id }) }
+        var seen: Set<UUID> = []
+        let relevantResults = timeRange != nil && intent != .overview
+            ? results.filter { !$0.matchedTerms.isEmpty }
+            : results
+        let ranked = (indexed + relevantResults.map(\.capture)).filter { seen.insert($0.id).inserted }
+        let retrieved = if let timeRange {
+            selectTemporalEvidence(
+                from: ranked,
+                limit: min(max(timeRange.requestedDayCount * 2, 8), contextManager.maxEvidenceRecords)
+            )
+        } else {
+            MemoryEvidenceSelector().select(ranked, question: retrievalText, limit: 12)
+        }
+        let annotated = retrieved.map { annotateForChat($0, originals: originalState) }
+        let textMatchIDs: (@Sendable ([String], Date?, Date?) -> [UUID])?
+        if let textIndex {
+            textMatchIDs = { terms, start, end in textIndex.ids(matching: terms, start: start, end: end, limit: 40) }
+        } else {
+            textMatchIDs = nil
+        }
+        let plan = MemoryRetrievalEngine().plan(question: retrievalText, state: state, fallback: annotated,
+            conversationID: conversationID, limit: contextManager.maxEvidenceRecords, trustLedger: true, alreadyCorrected: true, textMatchIDs: textMatchIDs)
+
+        return RetrieveOutcome(plan: plan, annotated: annotated, textMatchIDs: textMatchIDs)
     }
 }
