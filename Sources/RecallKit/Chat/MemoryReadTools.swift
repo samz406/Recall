@@ -154,7 +154,10 @@ struct MemoryReadTools: Sendable {
         var perDay: [[UUID]] = []
         var aliases: [UUID: [UUID]] = [:]
         var materials: [UUID: String] = [:]
-        var day = window.start
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: window.start),
+                                           to: calendar.startOfDay(for: window.end.addingTimeInterval(-0.001))).day ?? 0
+        let recordsPerDay = max(2, min(9, 24 / (days + 1)))
+        var day = calendar.startOfDay(for: window.start)
         while day < window.end {
             guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
             let label = Self.dayString(day, calendar: calendar)
@@ -164,7 +167,7 @@ struct MemoryReadTools: Sendable {
                 perDay.append(sourcesByImportance(review))
                 materials.merge(quoteMaterials(review)) { first, _ in first }
             } else if let dayRecords = byDay[day]?.sorted(by: { $0.createdAt > $1.createdAt }), !dayRecords.isEmpty {
-                let picked = dayRecords.prefix(3)
+                let picked = overviewRecords(dayRecords, limit: recordsPerDay)
                 lines.append("\(label) 没有每日回顾，共 \(dayRecords.count) 条记录，节选：\n" + picked.map { record in
                     "id: \(record.id.uuidString) | \(record.sourceAppName ?? "记录")\n" + clip(record.correctedText ?? record.ocrText, 300)
                 }.joined(separator: "\n"))
@@ -178,6 +181,24 @@ struct MemoryReadTools: Sendable {
         let sources = Self.interleaved(perDay)
         guard !sources.isEmpty else { return pack("这一段没有记录。", sources: []) }
         return pack(lines.joined(separator: "\n\n"), sources: sources, aliases: aliases, materials: materials)
+    }
+
+    private func overviewRecords(_ records: [CaptureRecord], limit: Int) -> [CaptureRecord] {
+        var seen: Set<String> = []
+        let distinct = records.filter {
+            let text = ($0.correctedText ?? $0.ocrText).trimmingCharacters(in: .whitespacesAndNewlines)
+            return !text.isEmpty && seen.insert(text).inserted
+        }
+        var buckets: [String: [UUID]] = [:]
+        var order: [String] = []
+        for record in distinct {
+            let hour = calendar.component(.hour, from: record.createdAt) / 4
+            let key = "\(hour)|\(record.sourceAppName ?? "")|\(record.windowTitle ?? "")"
+            if buckets[key] == nil { order.append(key) }
+            buckets[key, default: []].append(record.id)
+        }
+        let byID = Dictionary(uniqueKeysWithValues: distinct.map { ($0.id, $0) })
+        return Self.interleaved(order.compactMap { buckets[$0] }).prefix(limit).compactMap { byID[$0] }
     }
 
     /// Short local preview of the saved reviews in a span, shown while the model writes the summary.

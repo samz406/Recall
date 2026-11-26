@@ -25,7 +25,9 @@ enum AskAgentVerification {
         try await statusPrecedesLookup()
         try await weekOverviewSkipsPlanning()
         try await reviewEvidenceKeepsOwnText()
-        print("PASS: 15 ask-agent scenarios (stream, direct answer, tools, refusal, budget, fallback, deletion, cancellation, greeting, reply, status)")
+        try await yesterdayIgnoresPriorAnswerAndToday()
+        try await commitmentsRequireUserEvidence()
+        print("PASS: 17 ask-agent scenarios (stream, direct answer, tools, refusal, budget, fallback, deletion, cancellation, greeting, reply, status)")
     }
 
     private static func streamLines() throws {
@@ -281,6 +283,52 @@ enum AskAgentVerification {
         let supplementary = answerRequest?.supplementaryContext ?? ""
         try expect(!supplementary.contains(capture.id.uuidString) || supplementary.contains("每日回顾"), "回顾结果没有按天组织")
         try expect(answerRequest?.context.first?.ocrText.contains("AtlasScopeToken") == true, "回顾来源没有带上自己的原文")
+    }
+
+    private static func yesterdayIgnoresPriorAnswerAndToday() async throws {
+        let (storage, store, today) = try await fixture("TODAYSCOPE-ONLY")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let midnight = Calendar.current.startOfDay(for: today.createdAt)
+        let yesterday = CaptureRecord(eventTemplate: .manualMoment, createdAt: midnight.addingTimeInterval(-3_600),
+            sourceAppName: "Yesterday", contentHash: "yesterday-test",
+            ocrText: "[聊天·自己] 已核对合成项目的分页边界", textOrigin: .userInput)
+        try await store.addCapture(yesterday)
+        try await store.addMessage(ConversationMessage(role: .user, content: "我答应了谁什么事？"))
+        try await store.addMessage(ConversationMessage(role: .assistant, content: "PRIOR-TURN-ONLY", citations: [today.id]))
+        let script = ScriptedAskModel { _ in LLMAnswer(content: "记录显示已核对合成项目的分页边界 [1]", citedCaptureIDs: []) }
+        let answer = try await MemoryAssistant(store: store).ask("昨天我做了哪些事情", model: script)
+        let requests = await script.recorded()
+        try expect(requests.first?.purpose == .chat && !requests.contains { $0.purpose == .chatPlanning }, "昨天概览没有直接读取当天记录")
+        try expect(requests.allSatisfy {
+            !$0.question.contains("PRIOR-TURN-ONLY") &&
+                !($0.supplementaryContext ?? "").contains("TODAYSCOPE-ONLY") &&
+                $0.context.allSatisfy { $0.id == yesterday.id }
+        }, "昨天概览发送了今天或上一轮的内容")
+        try expect(answer.citations == [yesterday.id] && answer.content.contains("分页边界"), "昨天概览没有引用昨天的事项")
+        let missing = ScriptedAskModel { _ in LLMAnswer(content: "INVALID-EVIDENCE", citedCaptureIDs: []) }
+        let none = try await MemoryAssistant(store: store).ask("前天我做了哪些事情", model: missing)
+        let emptyRequests = await missing.recorded()
+        try expect(none.citations.isEmpty && emptyRequests.isEmpty, "空白日期调用模型猜测")
+    }
+
+    private static func commitmentsRequireUserEvidence() async throws {
+        let (storage, store, _) = try await fixture("[聊天·自己] 合成接口文档已交付前端。")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let other = CaptureRecord(eventTemplate: .manualMoment, contentHash: "other-promise",
+            ocrText: "[聊天·对方] 我承诺给你发合成凭证。\n[聊天·角色未知] 我答应给你发合成报告。", textOrigin: .screenOCR)
+        try await store.addCapture(other)
+        let script = ScriptedAskModel { _ in LLMAnswer(content: "INVALID-EVIDENCE", citedCaptureIDs: []) }
+        let question = "我答应了谁什么事？"
+        let none = try await MemoryAssistant(store: store).ask(question, model: script)
+        try expect(none.citations.isEmpty && none.content.contains("承诺"), "交付记录或对方发言被误认为本人承诺")
+
+        let promise = CaptureRecord(eventTemplate: .manualMoment, contentHash: "my-promise",
+            ocrText: "[聊天·自己] 如果验收通过，我承诺周五前把合成清单交给林同学。", textOrigin: .screenOCR)
+        try await store.addCapture(promise)
+        let answer = try await MemoryAssistant(store: store).ask(question, model: script)
+        let requests = await script.recorded()
+        try expect(answer.citations == [promise.id] && answer.content.contains("林同学") && answer.content.contains("周五前")
+                    && answer.content.contains("如果验收通过") && requests.isEmpty, "承诺遗漏原文条件、对象、期限或引用")
     }
 
     static func fixture(_ text: String) async throws -> (RecallStorage, FileMemoryStore, CaptureRecord) {
