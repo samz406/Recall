@@ -26,7 +26,7 @@ enum CommitmentAnswer {
         let byID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
         var versions: [UUID: String] = [:]
         let explicit = try? NSRegularExpression(
-            pattern: #"^(?:(?:如果|只要|等).{1,40}[，,]\s*)?(?:我(?:答应|承诺|保证)(?!过|了|不|你不是).{2,}|I\s+(?:promise|can commit)\b.+)"#,
+            pattern: #"^(?:(?:如果|只要|等).{1,40}[，,]\s*)?(?:我(?:答应|承诺|保证)(?!过|不|你不是).{2,}|I\s+(?:promise|can commit)\b.+)"#,
             options: .caseInsensitive)
         var seen: Set<String> = []
         var citations: [UUID] = []

@@ -126,7 +126,7 @@ public struct AnswerGrounding: Sendable {
             return Result(content: trimmed, sourceIDs: sourceIDs, rejectedCount: 0, reason: "local-precheck")
         }
         let instruction = """
-        核对回答草稿，仅保留原文确实支持的结论；不补充草稿未提出的新事实。
+        核对回答草稿，只保留同时回答当前问题、且得到原文支持的结论；不补充草稿未提出的新事实。对指定日期的概览，删去对其他日期和此前问题的评论。
         每项必须有 sourceID 和至少 8 字符的逐字 quote。引用必须取自给出的正文，不能引用 sourceID、记录时间或问题本身。
         逐项检查人名、责任主体、是否完成/上线、发生日期和条件；测试通过不等于上线，对方/未知/资料不等于本人行动。
         不支持的结论只移除该项，其余保留。推断用 kind=inference，不能当作确定事实。
@@ -151,7 +151,7 @@ public struct AnswerGrounding: Sendable {
                 if result.rejectedCount == 0 { result.content += "\n\n" + RecallLocalization.both("部分结论依据不足，已省略。", "Some claims lacked support and were omitted.") }
                 result.rejectedCount += malformed
             }
-            if records.count < candidates.count { result.content += "\n\n" + RecallLocalization.both("本次仅核对了部分记录，未覆盖的内容不作结论。", "Only part of the retrieved material was checked; no conclusions are made about the rest.") }
+            if records.count < candidates.count && result.reason == nil { result.reason = "audit-partial-input" }
             return result
         } catch is CancellationError { throw CancellationError() }
         catch { return fallback(records: candidates, reason: "audit-call") }

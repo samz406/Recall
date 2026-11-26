@@ -28,9 +28,8 @@ struct AskTranscript: Sendable {
 /// Evidence that a later check may use: the sources shown to the answer model, in order, with their own text.
 private let shownLimit = 24
 
-/// Tools whose output is already carried per source in `shown`. The final answer request leaves
-/// these blocks out of the supplement; a tool without per-source text (list_days, get_memories,
-/// list_reminders, get_topic) is kept because its content exists nowhere else.
+/// Exclude duplicated source excerpts from the supplement. The overview stays because it also
+/// carries saved review structure and marks days with no records.
 private let sourceTools: Set<String> = ["get_daily_reviews", "search_records", "read_records"]
 
 /// The model chooses which local reads to make. Planning uses JSON text, and the final answer streams.
@@ -64,8 +63,8 @@ public enum AskAgent {
         var usedCharacters = 0
         var transcript = ""
         var finalTranscript = ""
-        let catalog = tools.catalog(now: now)
-        let conversation = isFollowUp(question) ? historyBlock(history) : ""
+        let carriesHistory = isFollowUp(question) && !history.isEmpty
+        let conversation = carriesHistory ? historyBlock(history) : ""
         var forceAnswer = false
 
         // "总结本周进展" and similar: the span and the tool are already known, so read locally and skip planning.
@@ -95,9 +94,9 @@ public enum AskAgent {
             }
         }
         // 追问优先复用上一轮回答引用的来源，避免重新检索跑偏。
-        if !forceAnswer, !previousSourceIDs.isEmpty, isFollowUp(question) {
+        if !forceAnswer, carriesHistory, !previousSourceIDs.isEmpty {
             // 只在本次作用域内取上一轮来源，避免把别的主题的记录带进来。
-            let byID = Dictionary(uniqueKeysWithValues: scoped.captures.map { ($0.id, $0) })
+            let byID = Dictionary(uniqueKeysWithValues: tools.allowedCaptures().map { ($0.id, $0) })
             let carried = previousSourceIDs.compactMap { byID[$0] }.map { record -> CaptureRecord in
                 var copy = record
                 copy.ocrText = String(PrivacyEngine().redact(record.correctedText ?? record.ocrText).prefix(600))
@@ -125,7 +124,7 @@ public enum AskAgent {
             }
             let started = ContinuousClock().now
             let request = LLMRequest(
-                question: planningQuestion(question, history: conversation, catalog: catalog, transcript: transcript, round: round, hasCandidates: !candidates.isEmpty, includeCatalog: round == 1),
+                question: planningQuestion(question, history: conversation, catalog: round == 1 ? tools.catalog(now: now) : "", transcript: transcript, round: round, hasCandidates: !candidates.isEmpty, includeCatalog: round == 1),
                 context: shown.isEmpty ? candidates : shown,
                 supplementaryContext: profile.isEmpty ? nil : profile,
                 purpose: .chatPlanning,

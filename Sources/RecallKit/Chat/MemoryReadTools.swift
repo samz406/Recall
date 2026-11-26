@@ -377,7 +377,7 @@ struct MemoryReadTools: Sendable {
         return pack(lines.joined(separator: "\n\n"), sources: rows.flatMap(\.sourceCaptureIDs))
     }
 
-    private func allowedCaptures() -> [CaptureRecord] {
+    func allowedCaptures() -> [CaptureRecord] {
         EvidenceAccess.records(state).filter { record in
             let participates = state.rules.first { $0.template == record.eventTemplate }?.participatesInChat ?? true
             guard participates else { return false }
