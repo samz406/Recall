@@ -491,12 +491,12 @@ public enum MemoryQuestionIntent: String, Sendable {
         else if ["怎么解决", "如何解决", "解决办法", "上次怎么", "经验"].contains(where: question.contains) { self = .solution }
         else if ["完成了吗", "做完", "后来", "进展", "现在怎样"].contains(where: question.contains) { self = .status }
         else if ["变化", "相比", "不同"].contains(where: question.contains) { self = .change }
-        else if ["做了哪些", "做了什么", "有哪些事情", "干了什么", "回顾", "总结"].contains(where: question.contains) { self = .overview }
+        else if ["做了哪些", "做了什么", "有哪些事情", "干了什么", "干了哪些", "回顾", "总结"].contains(where: question.contains) { self = .overview }
         else { self = .recall }
     }
     public var guidance: String {
         switch self {
-        case .overview: "按具体事情归并，覆盖查询日期；区分完成、推进、浏览。缺少记录的日期明确说明。"
+        case .overview: "按事项列出该时段内有证据的活动，每项一句并附来源。把同一事项的多条记录合并。区分完成、推进和浏览。只看到界面、分支或资料时，放到「浏览线索」，不要描述为本人完成的工作。缺少记录时简短说明。"
         case .solution: "优先给出过去有结果支持的方法、适用条件与来源；不要把提议当成验证成功。"
         case .decision: "寻找当时的选项、取舍与最终决定；未记录的理由不要推测。"
         case .status: "按先后证据说明状态变化；没有后续证据就说尚未获知，不能推断已完成或停滞。"

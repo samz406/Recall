@@ -14,6 +14,20 @@ public struct MemoryQueryScope: Hashable, Sendable {
         self.topicEvidenceIDs = topicID == nil ? nil : topicEvidenceIDs
     }
     public var isRestricted: Bool { start != nil || end != nil || topicID != nil || recentDays != nil }
+    /// Intersect the requested dates with the selected UI scope before any retrieval tool sees the archive.
+    func applying(to original: RecallState, questionRange: ResolvedMemoryTimeRange?) -> RecallState {
+        let selected = applying(to: original)
+        guard let range = questionRange else { return selected }
+        func contains(_ date: Date) -> Bool { date >= range.startDate && date < range.endDate }
+        var dated = Self(start: range.startDate, end: range.endDate).applying(to: selected)
+        dated.dailySummaries.removeAll { !contains($0.day) }
+        // Legacy local reviews are independently dated and never eligible for cloud read tools.
+        dated.dailySummaries += selected.dailySummaries.filter { $0.sourceCaptureIDs.isEmpty && contains($0.day) }
+        let ids = Set(dated.captures.map(\.id))
+        dated.reminders.removeAll { $0.sourceCaptureIDs.isEmpty ? !contains($0.createdAt) : !Set($0.sourceCaptureIDs).isSubset(of: ids) }
+        return dated
+    }
+
     public func applying(to original: RecallState) -> RecallState {
         if let days = recentDays {
             let now = Date.now

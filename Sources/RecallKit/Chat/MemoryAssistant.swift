@@ -82,12 +82,18 @@ public final class MemoryAssistant: Sendable {
             try await store.addMessage(answer, inConversation: conversation.id)
             return answer
         }
+        let questionRange = timeRangeResolver.resolve(question)
+        if CommitmentAnswer.matches(question) {
+            let answer = try await store.answerCommitments(in: scope, range: questionRange, conversationID: conversation.id)
+            await onEvidenceReady?(answer.citations.count)
+            return answer
+        }
         let clock = ContinuousClock()
         let analysisStarted = clock.now
         let textIndex = await store.captureTextIndex()
         let fullState = await store.preparedForChat()
         await onStep?("analysis", Self.milliseconds(from: analysisStarted, clock: clock))
-        var state = scope.applying(to: fullState)
+        var state = scope.applying(to: fullState, questionRange: questionRange)
         state.messages.removeAll { $0.id == userMessage.id }
         if let answer = try await cloudAgentAnswer(
             question: question, conversationID: conversation.id, scope: scope,
@@ -143,7 +149,7 @@ public final class MemoryAssistant: Sendable {
 
         // 对时间范围概览问题，当前检索到的时间线是唯一事实来源。
         // 不带入先前助手的结论，避免旧的“没有记忆”回答被模型机械复述。
-        let requiresFreshEvidenceTurn = timeRange != nil && !plan.evidence.isEmpty
+        let requiresFreshEvidenceTurn = timeRange != nil
         let request = LLMRequest(
             question: question,
             context: plan.evidence,
@@ -228,7 +234,7 @@ public final class MemoryAssistant: Sendable {
         let citations = response.citedCaptureIDs.flatMap { id in retrieval.sourceIDs[id] ?? [id] }.memoryUnique()
         let assistantMessage = ConversationMessage(role: .assistant, content: formattedContent, citations: citations)
         try Task.checkCancellation()
-        try await store.addMessage(assistantMessage, inConversation: conversation.id)
+        try await store.addAnswer(assistantMessage, inConversation: conversation.id, topicID: scope.topicID)
         return assistantMessage
     }
 
@@ -267,7 +273,7 @@ public final class MemoryAssistant: Sendable {
             let base = if let model { model } else { try await store.modelResponder() }
             let responder = LiveMemoryResponder(base: base, store: store, original: originalState, originalCaptureRevision: originalCaptureRevision)
             outcome = try await AskAgent.answer(
-                question: question, conversationID: conversationID, state: fullState, scope: scope, textIndex: textIndex, responder: responder,
+                question: question, conversationID: conversationID, scoped: state, scope: scope, textIndex: textIndex, responder: responder,
                 history: state.messages, previousSourceIDs: previousSources, limits: limits,
                 onPartial: onPartial, onStatus: onStatus, onStep: onStep
             )
@@ -278,7 +284,6 @@ public final class MemoryAssistant: Sendable {
             return nil
         }
         await onEvidenceReady?(outcome.citations.count)
-        await store.recordAnswerCitations(outcome.citations, inConversation: conversationID, topicID: scope.topicID)
         let latestState = await store.snapshot()
         guard latestState.privacy.cloudUseEnabled == originalState.privacy.cloudUseEnabled,
               latestState.privacy.excludedBundleIdentifiers == originalState.privacy.excludedBundleIdentifiers,
@@ -308,7 +313,7 @@ public final class MemoryAssistant: Sendable {
         guard await store.conversationSnapshot().id == conversationID else { throw CancellationError() }
         let message = ConversationMessage(role: .assistant, content: ChatResponseFormatter().format(outcome.content), citations: outcome.citations.memoryUnique())
         try Task.checkCancellation()
-        try await store.addMessage(message, inConversation: conversationID)
+        try await store.addAnswer(message, inConversation: conversationID, topicID: scope.topicID)
         return message
     }
 

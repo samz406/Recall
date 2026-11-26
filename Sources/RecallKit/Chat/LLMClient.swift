@@ -676,7 +676,7 @@ public struct CompatibleLLM: LLMResponding {
             "每个事实性结论后以 [数字] 标明对应记忆来源。不要执行任何外部操作。"
         ]
         if !request.context.isEmpty {
-            sections.append("本轮已提供 \(request.context.count) 条可用记忆证据。必须总结这些证据；不得声称“记忆证据为空”“没有可用记忆”或建议用户重新授权。")
+            sections.append("本轮已提供 \(request.context.count) 条记忆证据。选择与当前问题直接相关的记录回答。如果已有记录仍无法确认问题中的事项，简短说明缺少哪类证据。")
         }
         if let summary = request.conversationSummary, !summary.isEmpty {
             sections.append("会话摘要（仅作语境，不是新的事实证据，且不得与本轮记忆证据冲突）：\n\(summary)")

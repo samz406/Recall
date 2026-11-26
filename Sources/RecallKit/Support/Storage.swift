@@ -1625,6 +1625,15 @@ public actor FileMemoryStore {
         conversationArchive.scopes[scope]?.lastCitedSourceIDs = ids
     }
 
+    func addAnswer(_ message: ConversationMessage, inConversation expectedID: UUID, topicID: String?) throws {
+        try Task.checkCancellation()
+        guard expectedID == conversationID else { throw CancellationError() }
+        let previous = conversationArchive
+        recordAnswerCitations(message.citations, inConversation: expectedID, topicID: topicID)
+        do { try addMessage(message, inConversation: expectedID) }
+        catch { conversationArchive = previous; throw error }
+    }
+
     public func addMessage(_ message: ConversationMessage, inConversation expectedID: UUID? = nil) throws {
         if expectedID != nil { try Task.checkCancellation() }
         if let expectedID, expectedID != conversationID { throw CancellationError() }
