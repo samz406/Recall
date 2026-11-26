@@ -174,13 +174,41 @@ enum KanoImprovementsVerification {
         try expect(day.actionLeads.contains { $0.title.contains("预算") }, "离线回顾缺少规则待办线索")
         try expect(state.reminders.isEmpty, "离线回顾自行创建了提醒")
 
+        // No review for yesterday: the card asks to generate it instead of showing a raw record or window name.
         let resume = LocalBriefing.resume(in: state, matters: [])
-        try expect(resume.first?.kind == .lastRecord && resume.first?.title == "发布流程文档", "接着干没有指向上一个活跃日最后一条记录")
+        try expect(resume.count == 1 && resume[0].kind == .missingReview && calendar.isDate(resume[0].date, inSameDayAs: yesterday)
+            && !resume.contains { $0.title == "发布流程文档" }, "没有回顾时，接着干仍展示原始记录")
 
-        state.matterCorrections = [MatterCorrection(evidenceIDs: [state.captures[2].id], kind: .notMine)]
-        try expect(LocalBriefing.resume(in: state, matters: []).first?.title != nil
-            && !LocalBriefing.offlineDay(yesterday, in: state).groups.flatMap(\.sourceIDs).contains(state.captures[2].id), "被更正为非本人的记录仍出现在简报")
+        // With a review: only the user's own open items, worded by the review, newest mention of a topic deciding.
+        let earlier = calendar.date(byAdding: .day, value: -1, to: yesterday)!
+        func item(_ title: String, _ detail: String, status: String, owned: Bool = true, topic: String, kind: DailyItemKind = .matter) -> DailySummaryItem {
+            DailySummaryItem(section: .progress, title: title, detail: detail, evidenceIDs: [state.captures[0].id],
+                knowledge: DailyItemKnowledge(topic: topic, kind: kind, status: status, ownedByUser: owned, quotes: []))
+        }
+        state.dailySummaries = [
+            DailySummary(day: earlier, content: "", sourceCaptureIDs: [state.captures[0].id], todos: [], generationKind: .cloud, items: [
+                item("生产部署被叫停", "等 MFA 变更评审。", status: "blocked", topic: "生产部署"),
+                item("研究股市走势", "提了一个问题。", status: "pending", topic: "股市研究")
+            ]),
+            DailySummary(day: yesterday, content: "", sourceCaptureIDs: [state.captures[0].id], todos: [], generationKind: .cloud, items: [
+                item("一键发版已部署生产", "功能开关仍关闭。", status: "completed", topic: "生产部署"),
+                item("ReAct 改造方案已写好但代码未改", "方案拆成三个 PR。之后再推进。", status: "pending", topic: "ReAct 改造"),
+                item("消消乐改造特殊糖果", "按反馈调整。", status: "inProgress", owned: false, topic: "消消乐", kind: .reference)
+            ])
+        ]
+        let open = LocalBriefing.resume(in: state, matters: [])
+        let titles = open.map(\.title)
+        try expect(titles.first == "ReAct 改造方案已写好但代码未改" && open.first?.detail == "待处理 · 方案拆成三个 PR", "接着干没有使用回顾事项的标题和详情")
+        try expect(!titles.contains("生产部署被叫停"), "后来已完成的主题仍显示为受阻")
+        try expect(titles.contains("研究股市走势") && !titles.contains("消消乐改造特殊糖果") && !titles.contains("一键发版已部署生产"),
+                   "接着干混入了资料类、他人或已完成的事项")
+        try expect(!open.contains { $0.kind == .missingReview }, "已有回顾仍提示生成")
+
+        state.matterCorrections = [MatterCorrection(evidenceIDs: [state.captures[0].id], kind: .notMine)]
+        try expect(LocalBriefing.resume(in: state, matters: []).allSatisfy { $0.kind != .openMatter }, "来源被更正为非本人后，事项仍出现在接着干")
+        try expect(!LocalBriefing.offlineDay(yesterday, in: state).groups.flatMap(\.sourceIDs).contains(state.captures[0].id), "被更正为非本人的记录仍出现在简报")
         state.matterCorrections = []
+        state.dailySummaries = []
 
         let related = LocalBriefing.related(title: "发布流程文档 - Browser", bundleIdentifier: "test.Browser", in: state)
         try expect(!related.isEmpty && related.allSatisfy { $0.windowTitle == "发布流程文档" }, "我上次怎么做的未找到同主题记录")

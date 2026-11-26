@@ -629,7 +629,7 @@ public struct CompatibleLLM: LLMResponding {
         if request.purpose != .chat {
             let role: String
             switch request.purpose {
-            case .answerVerification: role = "逐项核验回答草稿与原始证据"
+            case .answerVerification: role = "逐句核对回答草稿是否被已整理的事项支持"
             case .dailySummary: role = "整理指定日期的每日回顾"
             case .reviewSynthesis: role = "综合指定范围的结构化记忆，生成正式回顾"
             case .reviewAudit: role = "独立核验回顾与原始结构化事实"
@@ -685,7 +685,9 @@ public struct CompatibleLLM: LLMResponding {
             sections.append("补充摘要语境（由用户此前保存的总结构成，仅用于识别跨日期的待办趋势与提出建议；不得将其中未明确的信息写成新的事实，也不得替代本轮记忆证据）：\n\(supplementary)")
         }
         let evidence = request.context.enumerated().map { index, record in
-            let timestamp = record.createdAt.formatted(date: .abbreviated, time: .shortened)
+            // Interpreted items carry a day, not a capture moment.
+            let interpreted = record.sourceBundleIdentifier == "im.recall.interpreted"
+            let timestamp = record.createdAt.formatted(date: .abbreviated, time: interpreted ? .omitted : .shortened)
             return "来源 [\(index + 1)]（\(timestamp)，\(record.sourceAppName ?? "未知应用")）：\n\(record.ocrText)"
         }.joined(separator: "\n\n")
         sections.append("可用记忆证据：\n\(evidence.isEmpty ? "无" : evidence)")

@@ -153,7 +153,7 @@ final class RecallAppModel: ObservableObject {
     private var recentlyDeletedRetryAfter: Date?
     private var isPurgingRecentlyDeleted = false
     @Published private(set) var isGeneratingDailySummary = false
-    private var generatingDailyReviewDay: Date?
+    private(set) var generatingDailyReviewDay: Date?
     @Published private(set) var isRefreshingPersonaProfile = false
     private var personaProfileTask: Task<Void, Never>?
     private var personaProfileTimer: Timer?

@@ -71,41 +71,23 @@ public enum LocalBriefing {
     // MARK: Resume card
 
     public struct ResumeItem: Identifiable, Sendable, Equatable {
-        public enum Kind: Sendable, Equatable { case lastRecord, openTopic, dueReminder, waitingOnOthers }
+        public enum Kind: Sendable, Equatable { case openMatter, missingReview, dueReminder, waitingOnOthers }
         public var id: String
         public var kind: Kind
         public var title: String
         public var detail: String
         public var destination: MemorySearchDestination
+        /// For `missingReview`, the day to generate.
         public var date: Date
     }
 
-    /// "Pick up where you stopped": the last thing recorded on the previous active day, open topics,
-    /// reminders due today, and things others still owe the user. At most five items.
+    /// "Pick up where you stopped": reminders due today, the user's own unfinished matters from recent daily
+    /// reviews, and things others still owe the user. Every line is text a review or reminder already wrote;
+    /// raw records, window names and bare status words are never shown. When the last active day has records
+    /// but no review, one line asks to generate it.
     public static func resume(in state: RecallState, matters: [MatterFile], now: Date = .now, calendar: Calendar = .current) -> [ResumeItem] {
         let today = calendar.startOfDay(for: now)
-        let records = usable(state)
         var items: [ResumeItem] = []
-        if let previous = records.filter({ $0.createdAt < today }).max(by: { $0.createdAt < $1.createdAt }) {
-            let title = Self.resumeTitle(
-                userNote: previous.userNote,
-                summary: previous.summary,
-                windowTitle: previous.windowTitle
-            )
-            items.append(ResumeItem(id: "last-" + previous.id.uuidString, kind: .lastRecord, title: title,
-                detail: (previous.sourceAppName ?? "") + " · " + Self.relativeStamp(previous.createdAt),
-                destination: .record(previous.id), date: previous.createdAt))
-        }
-        let horizon = calendar.date(byAdding: .day, value: -7, to: today) ?? today
-        for file in matters where file.latest.status.isOpenMatter && file.latest.date >= horizon && !file.needsStatusUpdate(at: now, calendar: calendar) {
-            // "Open" only means the last event was not marked done. Without a stated next
-            // step the topic is an activity log, not something to pick up again — unless
-            // its last event is explicitly pending or blocked.
-            let actionable = file.latest.status == .pending || file.latest.status == .blocked || file.resumeNextAction != nil
-            guard actionable else { continue }
-            items.append(ResumeItem(id: "topic-" + file.id, kind: .openTopic, title: file.title,
-                detail: file.resumeNextAction ?? Self.statusDetail(file.latest.status), destination: .topic(file.id), date: file.latest.date))
-        }
         for reminder in state.reminders where reminder.status.isAction {
             guard let due = ReminderTimeline.effectiveDueAt(reminder) ?? reminder.plannedForDay?.date,
                   due < (calendar.date(byAdding: .day, value: 1, to: today) ?? now) else { continue }
@@ -113,31 +95,94 @@ public enum LocalBriefing {
                 detail: due < now ? RecallLocalization.both("已到期", "Due") : due.formatted(date: .omitted, time: .shortened),
                 destination: .reminder(reminder.id), date: due))
         }
+        if let missing = missingReviewDay(in: state, today: today, calendar: calendar) {
+            items.append(ResumeItem(id: "missing-review", kind: .missingReview,
+                title: RecallLocalization.both("\(dayLabel(missing, today: today, calendar: calendar))还没有回顾", "No review for \(dayLabel(missing, today: today, calendar: calendar)) yet"),
+                detail: RecallLocalization.both("生成后，这里会列出那天没做完的事", "Generate it to see what was left open"),
+                destination: .daily(UUID()), date: missing))
+        }
+        items += openMatters(in: state, matters: matters, today: today, calendar: calendar).prefix(5)
         for owed in commitments(in: state, now: now).filter({ $0.direction == .owedToMe }).prefix(2) {
             items.append(ResumeItem(id: "owed-" + owed.id, kind: .waitingOnOthers, title: owed.title,
                 detail: RecallLocalization.both("等待对方：", "Waiting on: ") + owed.counterpart, destination: .record(owed.sourceID), date: owed.date))
         }
-        let rank: [ResumeItem.Kind: Int] = [.dueReminder: 0, .lastRecord: 1, .openTopic: 2, .waitingOnOthers: 3]
-        return Array(items.sorted { rank[$0.kind]! == rank[$1.kind]! ? $0.date > $1.date : rank[$0.kind]! < rank[$1.kind]! }.prefix(5))
+        return items
     }
 
-    /// A resume row needs a title, and a chat reply is not one. Prefer text that
-    /// reads like a subject: a note the user wrote, then a short summary, then the
-    /// window name, and only then a trimmed prefix of a long summary.
-    static func resumeTitle(userNote: String?, summary: String?, windowTitle: String?) -> String {
-        let note = userNote?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !note.isEmpty { return note }
-        let summaryText = summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if isTitleLike(summaryText) { return summaryText }
-        let window = windowTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !window.isEmpty { return window }
-        if !summaryText.isEmpty { return truncatedAtClause(summaryText, limit: 40) }
-        return RecallLocalization.both("上一条记录", "Last record")
+    /// The user's own matters that the most recent mention in the last 7 days of reviews leaves open.
+    /// A later review that marks the same topic done, or the user marking the topic complete, closes it.
+    static func openMatters(in state: RecallState, matters: [MatterFile], today: Date, calendar: Calendar) -> [ResumeItem] {
+        let horizon = calendar.date(byAdding: .day, value: -7, to: today) ?? today
+        struct Mention { var key: String; var title: String; var detail: String; var status: String; var owned: Bool; var open: Bool; var day: Date; var review: UUID; var topic: String? }
+        var mentions: [Mention] = []
+        let usableIDs = Set(usable(state).map(\.id))
+        for review in state.dailySummaries where review.day >= horizon && review.day < today && !review.sourceCaptureIDs.isEmpty {
+            func add(title: String, detail: String, status: String, owned: Bool, kind: DailyItemKind?, topic: String?, topicID: UUID?, evidence: [UUID]) {
+                // Sources deleted or corrected away take their items with them.
+                guard !evidence.isEmpty, Set(evidence).isSubset(of: usableIDs) else { return }
+                let isMatter = kind == nil || kind == .matter || kind == .agreement
+                let key = topicID?.uuidString ?? topic?.lowercased() ?? title
+                mentions.append(Mention(key: key, title: title, detail: detail, status: status, owned: owned && isMatter,
+                                        open: ["pending", "blocked", "inProgress"].contains(status), day: review.day, review: review.id, topic: topic))
+            }
+            for item in review.items {
+                add(title: item.title, detail: item.detail, status: item.knowledge?.status ?? "unknown", owned: item.knowledge?.ownedByUser ?? false,
+                    kind: item.knowledge?.kind, topic: item.knowledge?.topic, topicID: item.knowledge?.topicID, evidence: item.evidenceIDs)
+            }
+            for entry in review.ledger {
+                add(title: entry.title, detail: entry.detail, status: entry.status, owned: entry.ownedByUser,
+                    kind: entry.kind, topic: entry.topic, topicID: nil, evidence: entry.evidenceIDs)
+            }
+        }
+        // The newest mention of a topic decides whether it is still open.
+        var latest: [String: Mention] = [:]
+        for mention in mentions.sorted(by: { $0.day < $1.day }) {
+            if let kept = latest[mention.key], kept.day == mention.day, kept.open, !mention.open { continue }
+            latest[mention.key] = mention
+        }
+        let closedTopics = Set(matters.filter { $0.latest.status == .completed }.map { $0.title.lowercased() })
+        let rank = ["blocked": 0, "pending": 1, "inProgress": 2]
+        return latest.values
+            .filter { $0.open && $0.owned && !closedTopics.contains(($0.topic ?? "").lowercased()) }
+            .sorted { $0.day != $1.day ? $0.day > $1.day : (rank[$0.status] ?? 3) < (rank[$1.status] ?? 3) }
+            .map { mention in
+                let topic = matters.first { $0.title.caseInsensitiveCompare(mention.topic ?? "") == .orderedSame }
+                let status = statusLabel(mention.status)
+                let first = firstClause(mention.detail)
+                return ResumeItem(id: "matter-" + mention.review.uuidString + mention.title, kind: .openMatter, title: mention.title,
+                    detail: first.isEmpty ? status : status + " · " + first,
+                    destination: topic.map { .topic($0.id) } ?? .daily(mention.review), date: mention.day)
+            }
     }
 
-    private static func isTitleLike(_ text: String) -> Bool {
-        guard !text.isEmpty, text.count <= 24 else { return false }
-        return !text.contains { "，。；！？、,.;!?".contains($0) }
+    /// The most recent day before today with records, when it has no review. Only the last 3 days count.
+    static func missingReviewDay(in state: RecallState, today: Date, calendar: Calendar) -> Date? {
+        guard let last = usable(state).filter({ $0.createdAt < today }).max(by: { $0.createdAt < $1.createdAt }) else { return nil }
+        let day = calendar.startOfDay(for: last.createdAt)
+        guard day >= (calendar.date(byAdding: .day, value: -3, to: today) ?? today), state.dailyReview(on: day, calendar: calendar) == nil else { return nil }
+        return day
+    }
+
+    private static func statusLabel(_ status: String) -> String {
+        switch status {
+        case "blocked": RecallLocalization.both("受阻", "Blocked")
+        case "pending": RecallLocalization.both("待处理", "To do")
+        default: RecallLocalization.both("进行中", "In progress")
+        }
+    }
+
+    private static func dayLabel(_ day: Date, today: Date, calendar: Calendar) -> String {
+        let offset = calendar.dateComponents([.day], from: day, to: today).day ?? 0
+        if offset == 1 { return RecallLocalization.both("昨天", "yesterday") }
+        if offset == 2 { return RecallLocalization.both("前天", "the day before yesterday") }
+        return day.formatted(.dateTime.month().day())
+    }
+
+    /// The first sentence of a review detail, cut on a clause boundary.
+    static func firstClause(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sentence = trimmed.split(whereSeparator: { "。；;\n".contains($0) }).first.map(String.init) ?? trimmed
+        return truncatedAtClause(sentence, limit: 48)
     }
 
     /// Cut on a clause boundary so a long summary never ends mid-phrase.
@@ -145,29 +190,9 @@ public enum LocalBriefing {
         guard text.count > limit else { return text }
         let head = String(text.prefix(limit))
         if let cutoff = head.lastIndex(where: { "，。；！？、,.;!? ".contains($0) }), cutoff > head.startIndex {
-            return String(head[head.startIndex..<cutoff])
+            return String(head[head.startIndex..<cutoff]) + "…"
         }
         return String(text.prefix(limit - 1)) + "…"
-    }
-
-    /// "昨天 19:20" reads better on a resume card than a full calendar date.
-    private static func relativeStamp(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = RecallLocalization.locale
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        formatter.doesRelativeDateFormatting = true
-        return formatter.string(from: date)
-    }
-
-    private static func statusDetail(_ status: WorkEpisodeStatus) -> String {
-        switch status {
-        case .pending: RecallLocalization.both("明确待办", "Open action")
-        case .blocked: RecallLocalization.both("遇到阻碍", "Blocked")
-        case .progressed: RecallLocalization.both("正在推进", "In progress")
-        case .completed: RecallLocalization.both("记录为已完成", "Completed")
-        case .explored: RecallLocalization.both("相关记录", "Related record")
-        }
     }
 
     // MARK: Commitments between the user and others

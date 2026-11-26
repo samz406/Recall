@@ -54,7 +54,7 @@ enum AskPerformanceVerification {
         try expect(answer.content.contains("目录结构"), "回答被改写或丢失")
     }
 
-    /// 涉及“已上线”这类结论时仍要核对，不能被本地预检放行。
+    /// 涉及“已上线”这类结论时必须核对，不能原样放行。
     private static func completionClaimsAreStillAudited() async throws {
         let (storage, store, capture) = try await AskAgentVerification.fixture("测试通过，等审批后再上线。")
         defer { try? FileManager.default.removeItem(at: storage.rootURL) }
@@ -67,8 +67,9 @@ enum AskPerformanceVerification {
         }
         let answer = try await MemoryAssistant(store: store).ask("上线了吗", model: script)
         let purposes = await script.recorded().map(\.purpose)
-        try expect(purposes.contains(.answerVerification), "完成类断言没有进入核对")
-        try expect(!answer.content.contains("已上线") || answer.content.contains("审批"), "不被支持的完成断言原样返回")
+        // “等审批后再上线”不支持“已上线”：本地核对直接删掉这句，不需要再调用模型。
+        try expect(!purposes.contains(.answerVerification), "本地已能判定的完成断言仍调用了模型核对")
+        try expect(!answer.content.contains("已上线") && answer.content.contains("审批"), "不被支持的完成断言原样返回，或兜底没有展示已整理的事项")
     }
 
     /// 每条消息原本都会编码整份存档（含全部 OCR）。消息改存 sidecar 后，

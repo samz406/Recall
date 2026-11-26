@@ -15,7 +15,7 @@ enum MemoryReliabilityVerification {
         try await cleanupSurvivesRestart()
         try await conflictingWritersDoNotLoseRecords()
         try await pinnedRetention()
-        try groundingMatrix()
+        try await groundingMatrix()
         try await verifiedAnswersAndPrivacy()
         print("PASS: 7 memory reliability suites (damage recovery, deletion retry, writer conflict, retention, hostile claims, audit fallback and privacy revocation)")
     }
@@ -117,45 +117,40 @@ enum MemoryReliabilityVerification {
         _ = try await reopened.prune()
         try expect(await reopened.snapshot().captures.isEmpty, "Unpinning did not restore the original expiry policy")
     }
-    static func groundingMatrix() throws {
+    /// The check removes unsupported sentences and keeps everything else as written.
+    static func groundingMatrix() async throws {
         let source = record("[聊天·自己] Atlas 测试通过，尚未上线，等审批后发布。")
-        let proof = AnswerGrounding.Quote(sourceID: source.id, quote: source.ocrText)
-        let bad = [
-            AnswerGrounding.Claim(statement: "Atlas 已上线", actor: "user", status: "completed", evidence: [proof]),
-            .init(statement: "Atlas 将在 2028 年上线", evidence: [proof]),
-            .init(statement: "Atlas 将在周五上线", evidence: [proof]),
-            .init(statement: "Atlas 已发布", evidence: [.init(sourceID: source.id, quote: "Atlas 已发布")]),
-            .init(statement: "Atlas 测试通过", evidence: [.init(sourceID: source.id, quote: "。")]),
-            .init(statement: "伪造来源", evidence: [.init(sourceID: UUID(), quote: source.ocrText)])
-        ]
-        for claim in bad {
-            let result = AnswerGrounding.validate([claim], records: [source])
-            try expect(result.rejectedCount > 0 && !result.content.hasPrefix(claim.statement), "Unsupported claim passed the local gate")
+        let item = AnswerGrounding.testEntry(text: "Atlas 测试通过，等审批后发布（进行中）", sourceIDs: [source.id])
+        let silent = SilentAudit()
+        let bad = ["Atlas 已上线。[1]", "Atlas 将在 2028 年上线。[1]", "Atlas 将在周五上线。[1]", "Atlas 已完成。[1]", "伪造来源。[7]"]
+        for sentence in bad {
+            let result = try await AnswerGrounding.verify(draft: "Atlas 测试通过。[1]\n" + sentence, question: "Atlas", entries: [item], responder: silent)
+            try expect(result.removedCount == 1 && result.content.contains("Atlas 测试通过") && !result.content.contains(sentence.dropLast(3)), "Unsupported sentence passed the local gate: \(sentence)")
         }
-        var other = source; other.id = UUID(); other.ocrText = "[聊天·对方] 我会在周五提交 Atlas 报告。"; other.textOrigin = .screenOCR
-        let ownership = AnswerGrounding.Claim(statement: "你会在周五提交 Atlas 报告", actor: "user", status: "pending", evidence: [.init(sourceID: other.id, quote: other.ocrText)])
-        try expect(AnswerGrounding.validate([ownership], records: [other]).rejectedCount == 1, "Other speaker became the user's commitment")
-        let good = AnswerGrounding.Claim(statement: "Atlas 测试通过，尚未上线", actor: "user", evidence: [proof])
-        let partial = AnswerGrounding.validate([good] + bad, records: [source])
-        try expect(partial.content.contains(good.statement) && partial.rejectedCount == bad.count && partial.sourceIDs == [source.id], "One invalid claim discarded supported claims")
+        let layout = "Atlas 有一项进展。[1]\n\n- Atlas 测试通过 [1]\n- Atlas 已上线 [1]"
+        let kept = try await AnswerGrounding.verify(draft: layout, question: "Atlas", entries: [item], responder: silent)
+        try expect(kept.content == "Atlas 有一项进展。[1]\n\n- Atlas 测试通过 [1]" && kept.sourceIDs == [source.id], "Removing one line rewrote the rest of the answer")
+        let none = try await AnswerGrounding.verify(draft: "Atlas 已上线。[1]", question: "Atlas", entries: [item], responder: silent)
+        try expect(none.content.contains("Atlas 测试通过") && none.content.contains("[1]") && !none.content.contains("已上线"), "Fallback did not show the interpreted item")
+        try expect(!none.content.contains("[聊天·自己]"), "Fallback showed raw screen text")
     }
     static func verifiedAnswersAndPrivacy() async throws {
         let storage = try storage(); defer { try? FileManager.default.removeItem(at: storage.rootURL) }
         let store = try verificationStore(storage: storage)
-        let source = record("[聊天·自己] Atlas 测试通过，尚未上线。")
+        let source = record("[聊天·自己] Atlas 测试通过 3 项，尚未上线。")
         try await store.addCapture(source)
         try await store.updatePrivacy(PrivacySettings(cloudUseEnabled: true))
         try await store.updateLLMConfiguration(LLMConfiguration(provider: .openAICompatible, baseURLString: "https://example.test/v1", model: "synthetic", apiKey: "synthetic"))
         let model = ReliabilityModel(source: source)
         var visibleDraft = false
         let answer = try await MemoryAssistant(store: store).ask("Atlas 是否上线", model: model, onPartial: { _ in visibleDraft = true })
-        try expect(!answer.content.contains("Atlas 已上线") && answer.content.contains("尚未上线") && !visibleDraft, "Unverified completion was displayed")
+        try expect(!answer.content.contains("试用") && answer.content.contains("尚未上线") && answer.citations == [source.id] && !visibleDraft, "Unsupported sentence was displayed")
         let mixed = ReliabilityModel(source: source, mixedAudit: true)
         let repaired = try await MemoryAssistant(store: store).ask("Atlas 是否上线", model: mixed)
-        try expect(repaired.content.contains("测试通过，尚未上线") && repaired.content.contains("已省略"), "One malformed audit row discarded valid claims")
+        try expect(repaired.content.contains("测试通过 3 项，尚未上线") && !repaired.content.contains("试用"), "An out-of-range audit index discarded valid sentences")
         let offline = ReliabilityModel(source: source, auditFailure: true)
         let offlineAnswer = try await MemoryAssistant(store: store).ask("Atlas 是否上线", model: offline)
-        try expect(offlineAnswer.content.contains("原文"), "Offline verification discarded retrievable evidence")
+        try expect(offlineAnswer.content.contains("尚未上线") && !offlineAnswer.content.contains("[聊天·自己]"), "Offline verification discarded locally checked sentences")
         let delayed = ReliabilityModel(source: source, auditDelay: true)
         let beforeCancel = await store.snapshot().messages.filter { $0.role == .assistant }.count
         let task = Task { try await MemoryAssistant(store: store).ask("Atlas 是否上线", model: delayed) }
@@ -166,7 +161,7 @@ enum MemoryReliabilityVerification {
         try expect(await store.snapshot().messages.filter { $0.role == .assistant }.count == beforeCancel, "Cancelled verification persisted an answer")
         let badAudit = ReliabilityModel(source: source, invalidAudit: true)
         let fallback = try await MemoryAssistant(store: store).ask("Atlas 是否上线", model: badAudit)
-        try expect(fallback.content.contains("原文") && fallback.content.contains("尚未上线"), "Invalid audit did not fall back to source excerpts")
+        try expect(fallback.content.contains("尚未上线") && !fallback.content.contains("[聊天·自己]"), "Invalid audit dropped locally checked sentences or showed raw text")
         let revoke = ReliabilityModel(source: source, revoke: store)
         do { _ = try await MemoryAssistant(store: store).ask("Atlas 是否上线", model: revoke); throw Failure(errorDescription: "Revoked privacy did not stop later calls") }
         catch is LLMError {}
@@ -197,7 +192,7 @@ enum MemoryReliabilityVerification {
 
 private struct NoMatchModel: LLMResponding {
     func answer(to request: LLMRequest) async throws -> LLMAnswer {
-        LLMAnswer(content: #"{"answer":"No relevant evidence","citations":[]}"#, citedCaptureIDs: [])
+        LLMAnswer(content: #"{"answer":"No relevant evidence"}"#, citedCaptureIDs: [])
     }
 }
 
@@ -216,17 +211,15 @@ private actor ReliabilityModel: LLMResponding {
             if auditFailure { throw URLError(.notConnectedToInternet) }
             if auditDelay { try await Task.sleep(for: .seconds(30)) }
             if invalidAudit { return LLMAnswer(content: "not-json", citedCaptureIDs: []) }
-            let claim = AnswerGrounding.Claim(statement: "Atlas 测试通过，尚未上线", actor: "user", evidence: [.init(sourceID: source.id, quote: source.ocrText)])
-            let data = try JSONEncoder().encode(["claims": [claim]])
-            if mixedAudit {
-                var object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-                object["claims"] = (object["claims"] as! [Any]) + [["statement": "malformed", "evidence": [["sourceID": "not-a-uuid"]]]]
-                let mixed = try JSONSerialization.data(withJSONObject: object)
-                return LLMAnswer(content: String(decoding: mixed, as: UTF8.self), citedCaptureIDs: [])
-            }
-            return LLMAnswer(content: String(decoding: data, as: UTF8.self), citedCaptureIDs: [])
+            // Mixed: one valid index and one that names no sentence of this draft.
+            return LLMAnswer(content: mixedAudit ? #"{"unsupported":[1, 99]}"# : #"{"unsupported":[1]}"#, citedCaptureIDs: [])
         }
         if let revoke { try await revoke.updatePrivacy(PrivacySettings(cloudUseEnabled: false)) }
-        return LLMAnswer(content: "{\"answer\":\"Atlas 已上线\",\"citations\":[\"\(source.id.uuidString)\"]}", citedCaptureIDs: [source.id])
+        // Both sentences pass the local gate (the number is in the material); only the model check can remove sentence 1.
+        return LLMAnswer(content: #"{"answer":"Atlas 测试通过 3 项，尚未上线。[1] Atlas 有 3 位用户试用。[1]"}"#, citedCaptureIDs: [source.id])
     }
+}
+
+private struct SilentAudit: LLMResponding {
+    func answer(to request: LLMRequest) async throws -> LLMAnswer { LLMAnswer(content: #"{"unsupported":[]}"#, citedCaptureIDs: []) }
 }
