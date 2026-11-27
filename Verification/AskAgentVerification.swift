@@ -27,7 +27,9 @@ enum AskAgentVerification {
         try await reviewEvidenceKeepsOwnText()
         try await yesterdayIgnoresPriorAnswerAndToday()
         try await commitmentsRequireUserEvidence()
-        print("PASS: 17 ask-agent scenarios (stream, direct answer, tools, refusal, budget, fallback, deletion, cancellation, greeting, reply, status)")
+        try await screenTextNeverReachesTheAnswer()
+        try await dayWithoutReviewAsksToGenerate()
+        print("PASS: 19 ask-agent scenarios (stream, direct answer, tools, refusal, budget, fallback, deletion, cancellation, greeting, reply, status)")
     }
 
     private static func streamLines() throws {
@@ -331,6 +333,46 @@ enum AskAgentVerification {
                     && answer.content.contains("如果验收通过") && requests.isEmpty, "承诺遗漏原文条件、对象、期限或引用")
     }
 
+    /// 屏幕 OCR 只用来定位：回答模型、核对和兜底都只看到每日回顾的事项，回答引用回到事项的来源记录。
+    private static func screenTextNeverReachesTheAnswer() async throws {
+        let (storage, store, _) = try await fixture("placeholder")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let day = Calendar.current.date(byAdding: .day, value: -2, to: Calendar.current.startOfDay(for: .now))!.addingTimeInterval(3_600)
+        let shot = CaptureRecord(eventTemplate: .enterKeyTrigger, createdAt: day, sourceAppName: "终端", contentHash: "ocr-shot",
+            ocrText: "RAWOCR-NOISE 编辑 查看 窗口 口 biz-x-srv dev_1 #216 merged", textOrigin: .screenOCR)
+        let admin = CaptureRecord(eventTemplate: .enterKeyTrigger, createdAt: day.addingTimeInterval(60), sourceAppName: "浏览器", contentHash: "ocr-admin",
+            ocrText: "RAWOCR-ADMIN sessions feedback 运营后台", textOrigin: .screenOCR)
+        try await store.addCapture(shot)
+        try await store.addCapture(admin)
+        let release = DailySummaryItem(section: .progress, title: "一键发版合并并部署生产，功能开关仍关闭", detail: "#216 已合并",
+            evidenceIDs: [shot.id], knowledge: DailyItemKnowledge(topic: "一键发版", kind: .matter, status: "inProgress", ownedByUser: true, quotes: ["#216 merged"]))
+        let review = DailySummary(day: day, content: "", sourceCaptureIDs: [shot.id, admin.id], todos: [], generationKind: .cloud, items: [release])
+        try await store.upsertDailySummary(review)
+        let script = ScriptedAskModel { request in
+            LLMAnswer(content: "前天主要推进了一键发版。[1]\n\n- #216 已合并，功能开关仍关闭 [1]", citedCaptureIDs: [])
+        }
+        let answer = try await MemoryAssistant(store: store).ask("前天我做了什么", model: script)
+        let sent = await script.recorded().map { $0.question + ($0.supplementaryContext ?? "") + $0.context.map(\.ocrText).joined() }.joined()
+        try expect(!sent.contains("RAWOCR"), "屏幕原文被发给了模型")
+        try expect(sent.contains("一键发版合并并部署生产"), "每日回顾事项没有作为材料")
+        try expect(answer.content.contains("#216 已合并") && answer.content.contains("- ") && answer.citations == [shot.id], "回答被改写，或引用没有回到事项的来源记录")
+        try expect(!answer.content.contains("RAWOCR") && !answer.content.contains("已省略"), "回答混入了原文或套话")
+    }
+
+    /// 没有每日回顾、也没有已整理内容的日期：不调用模型，提示先生成回顾。
+    private static func dayWithoutReviewAsksToGenerate() async throws {
+        let (storage, store, _) = try await fixture("placeholder")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let day = Calendar.current.date(byAdding: .day, value: -1, to: Calendar.current.startOfDay(for: .now))!.addingTimeInterval(3_600)
+        try await store.addCapture(CaptureRecord(eventTemplate: .enterKeyTrigger, createdAt: day, sourceAppName: "终端", contentHash: "ocr-only",
+            ocrText: "RAWOCR-ONLY 编辑 查看 窗口", textOrigin: .screenOCR))
+        let script = ScriptedAskModel { _ in LLMAnswer(content: "INVALID", citedCaptureIDs: []) }
+        let answer = try await MemoryAssistant(store: store).ask("昨天我做了什么", model: script)
+        let requests = await script.recorded()
+        try expect(requests.isEmpty, "只有原始截图的日期仍调用了模型")
+        try expect(answer.content.contains("还没有每日回顾") && !answer.content.contains("RAWOCR") && answer.citations.isEmpty, "没有提示先生成回顾，或展示了原文")
+    }
+
     static func fixture(_ text: String) async throws -> (RecallStorage, FileMemoryStore, CaptureRecord) {
         let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-ask-agent-" + UUID().uuidString))
         let store = try verificationStore(storage: storage)
@@ -357,11 +399,8 @@ actor ScriptedAskModel: LLMResponding {
     init(_ handler: @escaping @Sendable (LLMRequest) async throws -> LLMAnswer) { self.handler = handler }
     func answer(to request: LLMRequest) async throws -> LLMAnswer {
         stored.append(request)
-        if request.purpose == .answerVerification, let source = request.context.first {
-            let quote = source.ocrText.components(separatedBy: "\n").dropFirst().joined(separator: "\n")
-            let claim = AnswerGrounding.Claim(statement: quote, evidence: [.init(sourceID: source.id, quote: quote)])
-            let data = try JSONEncoder().encode(["claims": [claim]])
-            return LLMAnswer(content: String(decoding: data, as: UTF8.self), citedCaptureIDs: [])
+        if request.purpose == .answerVerification {
+            return LLMAnswer(content: #"{"unsupported":[]}"#, citedCaptureIDs: [])
         }
         return try await handler(request)
     }

@@ -134,7 +134,7 @@ private struct TodayOverview: View {
     /// reader whether anything here needs attention.
     private func resumeSummary(_ resume: [LocalBriefing.ResumeItem], commitmentCount: Int) -> String {
         guard !resume.isEmpty else {
-            return t("来自已保存的记录、进行中的主题和今天的提醒。", "From saved records, open topics and today's reminders.")
+            return t("来自每日回顾里没做完的事和今天的提醒。", "From unfinished items in daily reviews and today's reminders.")
         }
         var parts = [t("\(resume.count) 项可以继续", "\(resume.count) to continue")]
         if commitmentCount > 0 { parts.append(t("\(commitmentCount) 项往来承诺", "\(commitmentCount) commitments")) }
@@ -142,7 +142,10 @@ private struct TodayOverview: View {
     }
 
     private func resumeRow(_ item: LocalBriefing.ResumeItem) -> some View {
-        Button { model.destination = item.destination } label: {
+        Button {
+            // The missing-review line has nothing to open yet; it starts that day's review.
+            if item.kind == .missingReview { model.generateDailyReview(on: item.date) } else { model.destination = item.destination }
+        } label: {
             HStack(alignment: .center, spacing: 12) {
                 Image(systemName: icon(item.kind))
                     .font(.system(size: 14, weight: .medium))
@@ -151,7 +154,9 @@ private struct TodayOverview: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title).font(.system(size: 15, weight: .semibold))
                         .lineLimit(2).multilineTextAlignment(.leading)
-                    if !item.detail.isEmpty {
+                    if item.kind == .missingReview, model.generatingDailyReviewDay == item.date {
+                        Text(t("正在生成回顾…", "Generating the review…")).font(.system(size: 13)).foregroundStyle(RecallPalette.secondary)
+                    } else if !item.detail.isEmpty {
                         Text(item.detail).font(.system(size: 13))
                             .foregroundStyle(RecallPalette.secondary)
                             .lineLimit(1).multilineTextAlignment(.leading)
@@ -222,7 +227,7 @@ private struct TodayOverview: View {
         }.frame(maxWidth: .infinity, alignment: .topLeading)
     }
     private func icon(_ kind: LocalBriefing.ResumeItem.Kind) -> String {
-        switch kind { case .lastRecord: "clock.arrow.circlepath"; case .openTopic: "square.stack.3d.up"; case .dueReminder: "bell"; case .waitingOnOthers: "hourglass" }
+        switch kind { case .openMatter: "square.stack.3d.up"; case .missingReview: "doc.badge.plus"; case .dueReminder: "bell"; case .waitingOnOthers: "hourglass" }
     }
     private func section<Content: View>(_ title: String, detail: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12) {

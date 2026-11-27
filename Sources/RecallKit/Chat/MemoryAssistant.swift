@@ -163,7 +163,12 @@ public final class MemoryAssistant: Sendable {
         case .localOnly:
             response = try await ExtractiveMemoryResponder().answer(to: request)
         case .openAICompatible, .anthropicCompatible:
-            if plan.evidence.isEmpty { response = LLMAnswer(content: AnswerGrounding.noEvidence, citedCaptureIDs: []); break }
+            // Same rule as the agent: only interpreted items go to the model, never raw screen text.
+            let recordIDs = plan.evidence.flatMap { retrieval.sourceIDs[$0.id] ?? [$0.id] }.memoryUnique()
+            let entries = Array(InterpretedEvidence(state: state).entries(forRecords: recordIDs, reviews: state.dailySummaries).entries.prefix(30))
+            // A missing credential is reported even when there is nothing to send.
+            let base = if let model { model } else { try await store.modelResponder() }
+            if entries.isEmpty { response = LLMAnswer(content: AnswerGrounding.noEvidence, citedCaptureIDs: []); break }
             let beforeCloud = await store.snapshot()
             guard state.privacy.cloudUseEnabled, beforeCloud.privacy.cloudUseEnabled else {
                 throw LLMError.serviceError("请先在隐私设置中明确开启云端模型使用。")
@@ -177,7 +182,6 @@ public final class MemoryAssistant: Sendable {
                 throw LLMError.serviceError("记忆或隐私设置已更新，请重新提问。")
             }
             guard beforeCloud.llmConfiguration == state.llmConfiguration else { throw CredentialError.unavailable }
-            let safeContext = privacyEngine.cloudContext(from: request.context, settings: state.privacy)
             let safeSummary = request.conversationSummary.map(privacyEngine.redact)
             let safeRecentMessages = request.recentMessages.map { message in
                 var copy = message
@@ -185,21 +189,17 @@ public final class MemoryAssistant: Sendable {
                 return copy
             }
             let cloudRequest = LLMRequest(
-                question: question,
-                context: safeContext,
+                question: question + "\n\n" + AskAgent.answerRules,
+                context: entries.map(\.record),
                 conversationSummary: safeSummary,
                 supplementaryContext: request.supplementaryContext.map(privacyEngine.redact),
                 recentMessages: safeRecentMessages
             )
             let modelStarted = clock.now
-            let base = if let model { model } else { try await store.modelResponder() }
             let responder = LiveMemoryResponder(base: base, store: store, original: originalState, originalCaptureRevision: originalCaptureRevision)
             let cloudAnswer = try await responder.answerCancellably(to: cloudRequest)
             await onStep?("model", Self.milliseconds(from: modelStarted, clock: clock))
-            // 已传入证据时，不能接受模型仍声称“记忆为空”的幻觉式回答。
-            // 此时保留本地可追溯摘要，确保用户至少得到真实的时间线内容。
-            let ids = plan.evidence.flatMap { retrieval.sourceIDs[$0.id] ?? [$0.id] }
-            let checked = try await AnswerGrounding.verify(draft: cloudAnswer.content, question: question, sourceIDs: ids, state: state, responder: responder, materials: request.context)
+            let checked = try await AnswerGrounding.verify(draft: cloudAnswer.content, question: question, entries: entries, responder: responder)
             response = LLMAnswer(content: checked.content, citedCaptureIDs: checked.sourceIDs)
         }
 
@@ -311,7 +311,8 @@ public final class MemoryAssistant: Sendable {
             throw LLMError.serviceError("记忆或约定已更新，请重新提问以使用最新内容。")
         }
         guard await store.conversationSnapshot().id == conversationID else { throw CancellationError() }
-        let message = ConversationMessage(role: .assistant, content: ChatResponseFormatter().format(outcome.content), citations: outcome.citations.memoryUnique())
+        var message = ConversationMessage(role: .assistant, content: ChatResponseFormatter().format(outcome.content), citations: outcome.citations.memoryUnique())
+        if !outcome.missingReviewDays.isEmpty { message.missingReviewDays = outcome.missingReviewDays.sorted() }
         try Task.checkCancellation()
         try await store.addAnswer(message, inConversation: conversationID, topicID: scope.topicID)
         return message

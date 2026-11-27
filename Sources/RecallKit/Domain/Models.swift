@@ -273,6 +273,8 @@ public struct ConversationMessage: Identifiable, Codable, Hashable, Sendable {
     public var citations: [UUID]
     public var sourceVersions: [String: String]? = nil
     public var helpful: Bool? = nil
+    /// Days the answer could not cover because they have records but no daily review. The UI offers to generate them.
+    public var missingReviewDays: [Date]? = nil
 
     public init(id: UUID = UUID(), role: ChatRole, content: String, createdAt: Date = .now, citations: [UUID] = []) {
         self.id = id

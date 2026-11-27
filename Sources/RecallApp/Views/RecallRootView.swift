@@ -1360,6 +1360,14 @@ private struct RecallMessageCard: View {
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     MarkdownParagraphText(markdown: ChatResponseFormatter().format(message.content))
+                    if let days = message.missingReviewDays?.filter({ model.state.dailyReview(on: $0) == nil }), !days.isEmpty {
+                        Button(RecallLocalization.both(days.count == 1 ? "生成这天的回顾" : "生成这 \(days.count) 天的回顾",
+                                                       days.count == 1 ? "Generate this day's review" : "Generate \(days.count) daily reviews")) {
+                            model.backfillDailyReviews(days)
+                        }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(model.isGeneratingDailySummary)
+                    }
                     ChatAnswerSources(workspace: model.chatSources, citations: message.citations)
                     HStack(spacing: 14) {
                         Button(RecallLocalization.text("复制")) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.content, forType: .string) }
