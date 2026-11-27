@@ -61,12 +61,14 @@ final class RecallAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
         DispatchQueue.main.async { Self.activateMainWindow() }
     }
 
+    /// While Recall is the frontmost app, macOS ignores the System Settings alert style
+    /// and shows only what this method requests. `.list` keeps it in Notification Center
+    /// when a banner is easy to miss.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification,
-        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
-    ) {
-        completionHandler([.banner, .sound])
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .list, .sound]
     }
 
     nonisolated func userNotificationCenter(

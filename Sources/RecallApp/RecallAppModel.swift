@@ -130,6 +130,8 @@ final class RecallAppModel: ObservableObject {
     @Published private(set) var enterKeyMonitorStatus: GlobalEnterKeyRecorderStatus = .disabled
     @Published private(set) var diagnosticEntries: [RecallDiagnosticEntry]
     @Published private(set) var reminderDeliveryStates: [UUID: ReminderDeliveryState] = [:]
+    /// One catch-up popup per reminder occurrence for this launch. Cleared notifications must not repeat every refresh.
+    private var deliveredOverdueKeys: Set<String> = []
     /// Nil until checked or when this host cannot use notifications. Never prompts.
     @Published private(set) var reminderNotificationsAllowed: Bool?
     /// Notification actions that arrived before the saved archive finished loading.
@@ -954,10 +956,33 @@ final class RecallAppModel: ObservableObject {
             if missing > 0, missing != reminderDeliveryStates.values.filter({ $0 == .notFound }).count {
                 recordDiagnostic(.warning, source: "Reminders", message: "已安排提醒未出现在系统通知队列", metadata: ["count": "\(missing)"])
             }
+            await deliverMissedReminders(scheduled, states: &nextStates)
             reminderDeliveryStates = nextStates
         } catch {
             reminderDeliveryStates = [:]
             recordDiagnostic(.warning, source: "Reminders", message: "无法核验系统通知队列", metadata: ["error": String(describing: type(of: error))])
+        }
+    }
+
+    /// Past one-off times are omitted from the system queue, so a missed request never pops.
+    /// Repeating reminders keep their own trigger. Only the last 36 hours are caught up, so an old
+    /// overdue item does not pop again on every launch.
+    private func deliverMissedReminders(_ scheduled: [ReminderCandidate], states: inout [UUID: ReminderDeliveryState]) async {
+        guard reminderNotificationsAllowed == true else { return }
+        let now = Date.now
+        for reminder in scheduled where ReminderTimeline.requests(for: reminder, now: now).isEmpty && ReminderTimeline.isOverdue(reminder, now: now) {
+            guard states[reminder.id] != .delivered, states[reminder.id] != .pending else { continue }
+            guard let due = ReminderTimeline.effectiveDueAt(reminder), now.timeIntervalSince(due) < 36 * 60 * 60 else { continue }
+            let key = "\(reminder.id.uuidString)|\(due.timeIntervalSince1970)"
+            guard deliveredOverdueKeys.insert(key).inserted else { continue }
+            do {
+                try await reminderCreationScheduler.deliverOverdue(reminder)
+                states[reminder.id] = .pending
+                recordDiagnostic(.info, source: "Reminders", message: "已补发错过时间的提醒", metadata: ["id": reminder.id.uuidString])
+            } catch {
+                deliveredOverdueKeys.remove(key)
+                recordDiagnostic(.warning, source: "Reminders", message: "补发错过的提醒失败", metadata: ["error": String(describing: type(of: error))])
+            }
         }
     }
 
@@ -1766,7 +1791,7 @@ final class RecallAppModel: ObservableObject {
             do {
                 let count = try await store.addAllProposedToToday()
                 await refresh()
-                noticeMessage = count > 0 ? "已将 \(count) 项加入今天。" : "待确认事项已变化，请刷新后重试。"
+                noticeMessage = count > 0 ? "已将 \(count) 项加入今天。未设提醒时间，不会弹出系统通知。" : "待确认事项已变化，请刷新后重试。"
             } catch {
                 noticeMessage = "未能加入今天，请重试。"
                 recordError(error, source: "Reminders", message: "批量加入今天失败")

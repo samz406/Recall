@@ -712,7 +712,8 @@ public final class LocalNotificationScheduler {
         let settings = await center.notificationSettings()
         switch settings.authorizationStatus {
         case .authorized, .provisional:
-            return true
+            if settings.alertSetting == .enabled { return true }
+            throw ReminderNotificationError.alertStyleDisabled
         case .denied:
             return false
         case .notDetermined:
@@ -728,32 +729,16 @@ public final class LocalNotificationScheduler {
 
     public func schedule(_ reminder: ReminderCandidate) async throws {
         let center = try notificationCenter()
-        let settings = await center.notificationSettings()
-        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
-            throw ReminderNotificationError.authorizationRequired
-        }
+        try await requireVisibleAlerts(on: center)
         guard reminder.dueAt != nil else { throw ReminderNotificationError.missingDueDate }
-        let content = UNMutableNotificationContent()
-        content.title = reminder.title
-        let detailLines = reminder.detail.components(separatedBy: .newlines).filter { !$0.isEmpty }
-        content.body = detailLines.last ?? "现在适合处理这件事。"
-        content.sound = .default
-        content.categoryIdentifier = Self.categoryIdentifier
-        content.userInfo = ["reminderID": reminder.id.uuidString]
+        let content = notificationContent(for: reminder)
         let requests = ReminderTimeline.requests(for: reminder)
         guard !requests.isEmpty else { throw ReminderNotificationError.missingDueDate }
         // Replace every request this reminder may own, so a shape change (snooze, short month) leaves nothing stale.
         center.removePendingNotificationRequests(withIdentifiers: ReminderTimeline.identifiers(for: reminder.id))
         do {
             for item in requests {
-                let trigger: UNCalendarNotificationTrigger
-                switch item.trigger {
-                case .once(let date):
-                    trigger = UNCalendarNotificationTrigger(dateMatching: Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date), repeats: false)
-                case .repeating(let components):
-                    trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
-                }
-                try await center.add(UNNotificationRequest(identifier: item.identifier, content: content, trigger: trigger))
+                try await center.add(UNNotificationRequest(identifier: item.identifier, content: content, trigger: calendarTrigger(item.trigger)))
             }
         } catch {
             center.removePendingNotificationRequests(withIdentifiers: ReminderTimeline.identifiers(for: reminder.id))
@@ -766,12 +751,30 @@ public final class LocalNotificationScheduler {
         }
     }
 
+    /// A one-off whose time already passed is no longer a calendar request. Deliver it once
+    /// so a missed queue entry still reaches the user who already asked to be reminded.
+    public func deliverOverdue(_ reminder: ReminderCandidate) async throws {
+        let center = try notificationCenter()
+        try await requireVisibleAlerts(on: center)
+        let identifier = reminder.id.uuidString + "#overdue"
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
+        do {
+            try await center.add(UNNotificationRequest(
+                identifier: identifier,
+                content: notificationContent(for: reminder),
+                trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+            ))
+        } catch {
+            throw notificationError(from: error)
+        }
+    }
+
     /// Current authorization without prompting. Nil when the host cannot use notifications.
     public func authorizationGranted() async -> Bool? {
         guard let center = try? notificationCenter() else { return nil }
-        let status = await center.notificationSettings().authorizationStatus
-        switch status {
-        case .authorized, .provisional: return true
+        let settings = await center.notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional: return settings.alertSetting == .enabled
         case .notDetermined: return nil
         default: return false
         }
@@ -803,10 +806,7 @@ public final class LocalNotificationScheduler {
 
     public func scheduleDailyReview(hour: Int = 18, minute: Int = 0) async throws {
         let center = try notificationCenter()
-        let settings = await center.notificationSettings()
-        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
-            throw ReminderNotificationError.authorizationRequired
-        }
+        try await requireVisibleAlerts(on: center)
         let content = UNMutableNotificationContent()
         content.title = "Recall 每日回顾"
         content.body = "查看今天已显式记录的工作节点与待确认事项。"
@@ -814,6 +814,7 @@ public final class LocalNotificationScheduler {
         var components = DateComponents()
         components.hour = hour
         components.minute = minute
+        components.timeZone = .autoupdatingCurrent
         let request = UNNotificationRequest(
             identifier: "im.recall.app.daily-review",
             content: content,
@@ -828,10 +829,7 @@ public final class LocalNotificationScheduler {
 
     public func deliverDailyBriefing(_ summary: DailySummary) async throws {
         let center = try notificationCenter()
-        let settings = await center.notificationSettings()
-        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
-            throw ReminderNotificationError.authorizationRequired
-        }
+        try await requireVisibleAlerts(on: center)
         let content = UNMutableNotificationContent()
         content.title = "Recall 已生成个人简报"
         content.body = summary.modelOverview ?? summary.briefing?.headline ?? "每日回顾已生成，可以打开查看。"
@@ -853,10 +851,7 @@ public final class LocalNotificationScheduler {
 
     public func deliverWeeklyReview(_ report: WeeklyReport) async throws {
         let center = try notificationCenter()
-        let settings = await center.notificationSettings()
-        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
-            throw ReminderNotificationError.authorizationRequired
-        }
+        try await requireVisibleAlerts(on: center)
         let content = UNMutableNotificationContent()
         content.title = "你的\(report.template.name)已整理好"
         content.body = "回看这段时间的变化与经历。"
@@ -873,10 +868,7 @@ public final class LocalNotificationScheduler {
     /// A plain informational notice (meeting brief). Requires existing permission; never asks for it.
     public func deliverNotice(title: String, body: String, identifier: String) async throws {
         let center = try notificationCenter()
-        let settings = await center.notificationSettings()
-        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
-            throw ReminderNotificationError.authorizationRequired
-        }
+        try await requireVisibleAlerts(on: center)
         let content = UNMutableNotificationContent()
         content.title = title; content.body = body; content.sound = .default
         center.removePendingNotificationRequests(withIdentifiers: [identifier])
@@ -913,6 +905,41 @@ public final class LocalNotificationScheduler {
             && !(mainBundle.bundleIdentifier?.isEmpty ?? true)
     }
 
+    private func requireVisibleAlerts(on center: UNUserNotificationCenter) async throws {
+        let settings = await center.notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional:
+            guard settings.alertSetting == .enabled else { throw ReminderNotificationError.alertStyleDisabled }
+        default:
+            throw ReminderNotificationError.authorizationRequired
+        }
+    }
+
+    private func notificationContent(for reminder: ReminderCandidate) -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = reminder.title
+        let detailLines = reminder.detail.components(separatedBy: .newlines).filter { !$0.isEmpty }
+        content.body = detailLines.last ?? "现在适合处理这件事。"
+        content.sound = .default
+        content.categoryIdentifier = Self.categoryIdentifier
+        content.userInfo = ["reminderID": reminder.id.uuidString]
+        return content
+    }
+
+    /// Keep the trigger on the Mac's current wall clock, including after a time-zone change.
+    private func calendarTrigger(_ trigger: ReminderTimeline.Request.Trigger) -> UNCalendarNotificationTrigger {
+        switch trigger {
+        case .once(let date):
+            var components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+            components.timeZone = .autoupdatingCurrent
+            return UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+        case .repeating(let components):
+            var components = components
+            if components.timeZone == nil { components.timeZone = .autoupdatingCurrent }
+            return UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
+        }
+    }
+
     private func notificationCenter() throws -> UNUserNotificationCenter {
         guard isNotificationHostAvailable else {
             throw ReminderNotificationError.hostApplicationRequired
@@ -940,6 +967,7 @@ public enum ReminderDeliveryState: String, Sendable, Hashable {
 
 public enum ReminderNotificationError: LocalizedError {
     case authorizationRequired
+    case alertStyleDisabled
     case missingDueDate
     case hostApplicationRequired
     case notificationNotPermitted
@@ -948,6 +976,7 @@ public enum ReminderNotificationError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .authorizationRequired: "请先允许应用发送提醒通知。"
+        case .alertStyleDisabled: "系统已允许通知，但提醒样式是「无」，所以不会弹出。请在系统设置 → 通知 → Recall 中把样式改为「横幅」或「提醒」。"
         case .missingDueDate: "请为提醒选择一个时间。"
         case .hostApplicationRequired: "提醒通知需要从 Recall.app 启动；当前调试可执行文件无法安全请求系统通知。"
         case .notificationNotPermitted: "macOS 拒绝了此提醒请求。请退出并重新通过 Recall.app 启动，然后在系统设置 → 通知 → Recall 中允许通知。"

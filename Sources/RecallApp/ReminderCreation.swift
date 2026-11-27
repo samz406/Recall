@@ -9,10 +9,13 @@ import RecallKit
     /// Current permission without prompting; nil when unknown or unavailable on this host.
     func notificationsAllowed() async -> Bool?
     func deliveryStates(for reminders: [ReminderCandidate]) async throws -> [UUID: ReminderDeliveryState]
+    /// Posts the reminder immediately. Used when its due time has passed and the system queue no longer has it.
+    func deliverOverdue(_ reminder: ReminderCandidate) async throws
 }
 extension ReminderCreationScheduling {
     func notificationsAllowed() async -> Bool? { nil }
     func deliveryStates(for reminders: [ReminderCandidate]) async throws -> [UUID: ReminderDeliveryState] { [:] }
+    func deliverOverdue(_ reminder: ReminderCandidate) async throws {}
 }
 extension LocalNotificationScheduler: ReminderCreationScheduling {
     func notificationsAllowed() async -> Bool? { await authorizationGranted() }

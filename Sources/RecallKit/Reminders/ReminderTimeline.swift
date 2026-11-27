@@ -90,7 +90,7 @@ public enum ReminderTimeline {
         public var trigger: Trigger
     }
     public static func identifiers(for id: UUID) -> [String] {
-        [id.uuidString, id.uuidString + "#snooze"] + (0..<monthlyLookahead).map { id.uuidString + "#m\($0)" }
+        [id.uuidString, id.uuidString + "#snooze", id.uuidString + "#overdue"] + (0..<monthlyLookahead).map { id.uuidString + "#m\($0)" }
     }
     public static func reminderID(fromRequest identifier: String) -> UUID? {
         UUID(uuidString: String(identifier.prefix(36)))

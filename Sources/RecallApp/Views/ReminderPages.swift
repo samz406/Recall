@@ -40,7 +40,7 @@ struct RemindersView: View {
             if model.reminderNotificationsAllowed == false && !scheduled.isEmpty {
                 HStack(spacing: 10) {
                     Image(systemName: "bell.slash")
-                    Text(RecallLocalization.both("通知权限未开启，已安排的提醒不会推送。", "Notifications are off, so scheduled reminders won't alert you."))
+                    Text(RecallLocalization.both("通知未打开，或提醒样式是「无」，到点不会弹出。", "Notifications are off, or the alert style is None, so reminders won't pop up."))
                         .font(.callout)
                     Spacer(minLength: 8)
                     Button(RecallLocalization.both("去系统设置", "Open System Settings")) { model.openNotificationSettings() }
@@ -692,7 +692,12 @@ private struct ReminderCandidateCard: View {
                         .lineLimit(2)
                 }
                 metaRow
-                if isActive, deliveryState == .notFound, !isOverdue, model.reminderNotificationsAllowed != false {
+                if reminder.status == .planned {
+                    Text(RecallLocalization.both("未设提醒时间，不会弹出系统通知。", "No reminder time, so this won't pop up."))
+                        .font(.caption)
+                        .foregroundStyle(RecallPalette.secondary)
+                }
+                if isActive, deliveryState == .notFound, model.reminderNotificationsAllowed != false {
                     ReminderDeliveryBadge(state: deliveryState)
                 } else if reminder.status == .completed {
                     Label(reminder.origin == .discovered ? "已完成" : "已由你标记完成", systemImage: "checkmark.circle")

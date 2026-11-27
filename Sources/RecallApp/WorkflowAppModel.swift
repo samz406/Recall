@@ -45,7 +45,7 @@ extension RecallAppModel {
             do {
                 if try await store.addToToday(id: id) {
                     state = await store.snapshot(); addedTodayUndo = state.reminders.first { $0.id == id }
-                    noticeMessage = RecallLocalization.text("已加入今天")
+                    noticeMessage = RecallLocalization.both("已加入今天。未设提醒时间，不会弹出系统通知。", "Added to today. No reminder time, so it won't pop up.")
                 }
             } catch { noticeMessage = error.localizedDescription }
         }
