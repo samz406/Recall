@@ -5,6 +5,8 @@ public struct TopicReading: Sendable {
     public let overview: String
     /// 一句话摘要：最新主题小结的首句，否则最近一件具体事情的标题。
     public let headline: String
+    /// 未生成跨日 AI 小结时，为首段最新单条事件补齐日期标题（如“记录于 2026年11月26日”），与下方历史节点保持一致。
+    public let latestDateTitle: String?
     public let records: [MatterEvent]
     public let points: [TopicReviewPoint]
     public let hasUpdatedSummary: Bool
@@ -43,6 +45,7 @@ public struct TopicReading: Sendable {
             }
         }
         hasUpdatedSummary = current
+        latestDateTitle = current ? nil : (RecallLocalization.both("记录于 ", "Recorded ") + file.latest.date.formatted(date: .abbreviated, time: .omitted))
     }
 }
 

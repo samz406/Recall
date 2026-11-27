@@ -168,8 +168,17 @@ final class RecallAppModel: ObservableObject {
     private var isDailyReviewBackfillPaused: Bool { dailyReviewBackfillPausedUntil.map { Date.now < $0 } ?? false }
     private var pendingDailySummaries: [(day: Date, reason: DailySummaryReason)] = []
     /// A period review the user asked for once the listed daily reviews exist.
-    struct PendingPeriodReview { let period: ReviewPeriod; let template: ReviewTemplate; let scope: ReviewScope; let days: Set<Date> }
+    struct PendingPeriodReview {
+        let period: ReviewPeriod
+        let template: ReviewTemplate
+        let scope: ReviewScope
+        let days: Set<Date>
+        var replacing: UUID? = nil
+        var schedule: ReviewSchedule? = nil
+    }
     @Published private(set) var pendingPeriodReview: PendingPeriodReview?
+    /// Tracks scheduled triggers that already attempted daily-review backfill so a failed day does not loop forever.
+    private var attemptedScheduleBackfillTriggers: [UUID: Date] = [:]
     private let diagnosticLog: RecallDiagnosticLogStore
     private var reminderActionObserver: NSObjectProtocol?
     private var appActiveObserver: NSObjectProtocol?
@@ -702,8 +711,8 @@ final class RecallAppModel: ObservableObject {
     }
 
     private func runDueWeeklySchedule() {
-        guard !isGeneratingWeeklyReview,
-              let work = WeeklyReviewWork.next(in: state, at: .now, modelAvailable: dailySummaryResponder() != nil) else { return }
+        guard !isGeneratingWeeklyReview, !isGeneratingDailySummary, pendingPeriodReview == nil,
+              let work = WeeklyReviewWork.next(in: state, at: .now, modelAvailable: dailyReviewResponderOverride != nil || dailySummaryResponder() != nil) else { return }
         switch work {
         case .generate(let schedule, let trigger):
             // Coalesce missed runs using the scheduled cutoff, never app reopen time.
@@ -716,9 +725,25 @@ final class RecallAppModel: ObservableObject {
                 return
             }
             let period = schedule.period(at: trigger)
+            let gaps = PeriodReviewFromDaily.gaps(in: state, period: period, now: max(trigger, .now))
+            let canRunCloudBackfill = schedule.useModel && state.privacy.cloudUseEnabled
+                && (dailyReviewResponderOverride != nil || dailySummaryResponder() != nil)
+                && !isDailyReviewBackfillPaused
+            if !gaps.allMissingDays.isEmpty, canRunCloudBackfill, attemptedScheduleBackfillTriggers[schedule.id] != trigger {
+                attemptedScheduleBackfillTriggers[schedule.id] = trigger
+                backfillThenGenerateWeeklyReview(
+                    days: gaps.allMissingDays,
+                    period: period,
+                    template: schedule.template,
+                    scope: schedule.scope,
+                    replacing: report?.id,
+                    schedule: schedule,
+                    announcesNotice: false
+                )
+                return
+            }
             // Weekly reviews are built from daily reviews; wait for them rather than failing and backing off.
-            let gaps = PeriodReviewFromDaily.gaps(in: state, period: period)
-            if gaps.reviewedDayCount == 0, gaps.hasMissingRecords {
+            if gaps.reviewedDayCount == 0, gaps.hasActionableGaps {
                 weeklyReviewMessage = "到点了，但这段时间的每日回顾还没生成；生成后会自动补做这份周期回顾。"
                 return
             }
@@ -807,7 +832,6 @@ final class RecallAppModel: ObservableObject {
         return nil
     }
 
-    @discardableResult
     /// 新建项目并可同时把当前主题移入。
     func createProject(named name: String, moving file: MatterFile?) async {
         do {
@@ -1888,17 +1912,44 @@ final class RecallAppModel: ObservableObject {
             task.kind == "每日回顾" && task.reviewDay.map { Calendar.current.isDate($0, inSameDayAs: day) } == true
         }
     }
-    /// Generates structured daily reviews for days that have records but no review yet. Oldest day first.
-    /// Fills missing daily reviews first, then generates the period review automatically.
-    func backfillThenGenerateWeeklyReview(days: [Date], period: ReviewPeriod, template: ReviewTemplate, scope: ReviewScope) {
+    /// Generates or refreshes structured daily reviews (including today when newer captures arrived), then generates the period review automatically.
+    func backfillThenGenerateWeeklyReview(
+        days: [Date],
+        period: ReviewPeriod,
+        template: ReviewTemplate,
+        scope: ReviewScope,
+        replacing: UUID? = nil,
+        schedule: ReviewSchedule? = nil,
+        announcesNotice: Bool = true
+    ) {
         let calendar = Calendar.current
-        let missing = Set(days.map { calendar.startOfDay(for: $0) }).filter { $0 <= Date.now && state.dailyReview(on: $0) == nil }
-        guard !missing.isEmpty else { generateWeeklyReview(period: period, template: template, scope: scope); return }
-        guard state.privacy.cloudUseEnabled else { noticeMessage = "请先允许发送脱敏文本，再补生成这些天的每日回顾。"; return }
-        pendingPeriodReview = PendingPeriodReview(period: period, template: template, scope: scope, days: missing)
-        weeklyReviewMessage = RecallLocalization.both("正在补生成 \(missing.count) 天的每日回顾，完成后自动生成这份回顾。",
-            "Generating \(missing.count) missing daily reviews; the period review will follow automatically.")
-        backfillDailyReviews(Array(missing))
+        let now = Date.now
+        let today = calendar.startOfDay(for: now)
+        let normalized = Set(days.map { calendar.startOfDay(for: $0) }).filter { $0 <= now }
+        let periodGaps = PeriodReviewFromDaily.gaps(in: state, period: period, now: max(period.end, now))
+        let missingDays = normalized.filter { state.dailyReview(on: $0, calendar: calendar) == nil }
+        let refreshDays = normalized.filter { $0 == today && state.dailyReview(on: $0, calendar: calendar) != nil && periodGaps.todayStale }
+        let actionable = missingDays.union(refreshDays)
+        guard !actionable.isEmpty else {
+            generateWeeklyReview(period: period, template: template, scope: scope, replacing: replacing, schedule: schedule)
+            return
+        }
+        guard state.privacy.cloudUseEnabled else {
+            if announcesNotice { noticeMessage = "请先允许发送脱敏文本，再补生成这些天的每日回顾。" }
+            return
+        }
+        pendingPeriodReview = PendingPeriodReview(period: period, template: template, scope: scope, days: actionable, replacing: replacing, schedule: schedule)
+        weeklyReviewMessage = actionable == [today] && !refreshDays.isEmpty
+            ? RecallLocalization.both("正在将今天的新记录更新到今日回顾，完成后自动生成这份回顾。", "Updating today's daily review with the latest records; the period review will follow automatically.")
+            : RecallLocalization.both("正在补生成 \(actionable.count) 天的每日回顾，完成后自动生成这份回顾。", "Generating \(actionable.count) missing daily reviews; the period review will follow automatically.")
+        if schedule == nil { pauseAutomaticDailyReviews() }
+        if announcesNotice {
+            noticeMessage = !refreshDays.isEmpty && missingDays.isEmpty
+                ? "将先更新今天的每日回顾。"
+                : "将依次补生成 \(actionable.count) 天的每日回顾。"
+        }
+        if !missingDays.isEmpty { enqueueDailyReviews(Array(missingDays), reason: .generate) }
+        if !refreshDays.isEmpty { enqueueDailyReviews(Array(refreshDays), reason: .regenerate) }
     }
     func cancelPendingPeriodReview() {
         pendingPeriodReview = nil; weeklyReviewMessage = nil
@@ -1912,10 +1963,14 @@ final class RecallAppModel: ObservableObject {
         pendingPeriodReview = nil
         let failed = pending.days.filter { state.dailyReview(on: $0) == nil }
         if !failed.isEmpty {
+            if PeriodReviewFromDaily.gaps(in: state, period: pending.period).reviewedDayCount == 0, pending.schedule != nil {
+                weeklyReviewMessage = "到点了，但这段时间的每日回顾未能完成；稍后生成每日回顾后再自动补做。"
+                return
+            }
             weeklyReviewMessage = RecallLocalization.both("有 \(failed.count) 天的每日回顾未能生成，已用现有的每日回顾继续生成。",
                 "\(failed.count) daily reviews could not be generated; continuing with the existing ones.")
         }
-        generateWeeklyReview(period: pending.period, template: pending.template, scope: pending.scope)
+        generateWeeklyReview(period: pending.period, template: pending.template, scope: pending.scope, replacing: pending.replacing, schedule: pending.schedule)
     }
     func backfillDailyReviews(_ days: [Date]) {
         let calendar = Calendar.current
@@ -2074,7 +2129,7 @@ final class RecallAppModel: ObservableObject {
                 let reminderNotice = outcome.reminders.added > 0 ? "，新增 \(outcome.reminders.added) 项待确认" : ""
                 finishTask(taskID, state: partial ? .partial : .succeeded,
                     message: "回顾已保存" + reminderNotice, destination: .daily(summary.id), detail: outcome.metrics.detail)
-                if reason == .generate || reason == .regenerate { dailyToOpen = summary.id }
+                if (reason == .generate || reason == .regenerate), pendingPeriodReview == nil { dailyToOpen = summary.id }
                 // Do not run whole-archive maintenance in the user's completion path.
                 // Pending local derived work is drained on the existing maintenance cycle.
                 refreshPersonaProfileIfNeeded()

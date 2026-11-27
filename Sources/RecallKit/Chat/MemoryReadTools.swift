@@ -77,19 +77,41 @@ struct MemoryReadTools: Sendable {
     }
 
     /// Local search before the first plan. Candidates are interpreted entries, never raw screen text.
-    func preliminary(question: String, limit: Int = 8) -> [InterpretedEvidence.Entry] {
+    func preliminary(question: String, limit: Int = 6) -> [InterpretedEvidence.Entry] {
         let allowed = allowedCaptures()
+        let reviews = allowedReviews()
+        let range = MemoryTimeRangeResolver().resolve(question, calendar: calendar)
+        let bounds = range.map { DayWindow(start: $0.startDate, end: $0.endDate) }
+        var entries = structuredMatches(query: question, reviews: reviews, allowedIDs: Set(allowed.map(\.id)), bounds: bounds)
         let byID = Dictionary(uniqueKeysWithValues: allowed.map { ($0.id, $0) })
+        let terms = QuestionTerms.topicTerms(question)
         var ids: [UUID] = []
-        if let textIndex { ids = textIndex.ids(matching: QuestionTerms.topicTerms(question), limit: limit * 3).filter { byID[$0] != nil } }
-        if ids.isEmpty { ids = MemorySearchEngine().search(MemorySearchQuery(text: question), in: allowed, limit: limit * 3).map(\.capture.id) }
-        var entries = interpreted.entries(forRecords: ids, reviews: allowedReviews()).entries
-        if entries.count < 4, let range = MemoryTimeRangeResolver().resolve(question, calendar: calendar) {
-            for review in allowedReviews().filter({ $0.day >= range.startDate && $0.day <= range.endDate }) {
-                for entry in interpreted.entries(of: review, budget: 2_000) where !entries.contains(where: { $0.id == entry.id }) { entries.append(entry) }
+        if let textIndex, !terms.isEmpty {
+            ids = textIndex.ids(matching: terms, start: bounds?.start, end: bounds?.end, limit: limit * 4).filter { byID[$0] != nil }
+        }
+        if ids.isEmpty {
+            ids = MemorySearchEngine().search(MemorySearchQuery(text: question, startDate: bounds?.start, endDate: bounds?.end), in: allowed, limit: limit * 4).map(\.capture.id)
+        }
+        for entry in interpreted.entries(forRecords: ids, reviews: reviews).entries where !entries.contains(where: { $0.id == entry.id }) {
+            entries.append(entry)
+        }
+        if entries.count < min(4, limit), let range {
+            let rangedReviews = reviews
+                .filter { $0.day >= calendar.startOfDay(for: range.startDate) && $0.day <= range.endDate }
+                .sorted { $0.day > $1.day }
+            let blocks = rangedReviews.map { interpreted.entries(of: $0, budget: 2_000) }
+            let allByID = Dictionary(blocks.joined().map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            for id in Self.interleaved(blocks.map { $0.map(\.id) }) {
+                if let entry = allByID[id], !entries.contains(where: { $0.id == entry.id }) {
+                    entries.append(entry)
+                }
             }
         }
-        return Array(entries.prefix(limit))
+        return Array(entries.prefix(limit)).map { item in
+            var copy = item
+            if copy.text.count > 600 { copy.text = String(copy.text.prefix(599)) + "…" }
+            return copy
+        }
     }
 
     func call(name: String, args: [String: Any]) -> MemoryToolResult {
@@ -115,12 +137,12 @@ struct MemoryReadTools: Sendable {
         let records = allowedCaptures().filter { $0.createdAt >= window.start && $0.createdAt < window.end }
         let byDay = Dictionary(grouping: records) { calendar.startOfDay(for: $0.createdAt) }
         var reviewByDay: [Date: DailySummary] = [:]
-        for review in allowedReviews() where review.day >= window.start && review.day < window.end {
+        for review in allowedReviews() where calendar.startOfDay(for: review.day) >= calendar.startOfDay(for: window.start) && calendar.startOfDay(for: review.day) < window.end {
             reviewByDay[calendar.startOfDay(for: review.day)] = reviewByDay[calendar.startOfDay(for: review.day)] ?? review
         }
         let days = (calendar.dateComponents([.day], from: calendar.startOfDay(for: window.start),
                                             to: calendar.startOfDay(for: window.end.addingTimeInterval(-0.001))).day ?? 0) + 1
-        let budget = max(1_200, 20_000 / max(days, 1))
+        let budget = max(1_800, 22_000 / max(days, 1))
         var blocks: [[InterpretedEvidence.Entry]] = []
         var missing: [Date] = []
         var lines: [String] = []
@@ -177,7 +199,7 @@ struct MemoryReadTools: Sendable {
         return note(lines.isEmpty ? "这一段没有记录。" : lines.joined(separator: "\n"))
     }
 
-    /// Search matches records by their text, then answers with the review items or interpretations that cover them.
+    /// Searches structured review items/topics directly first, then matches records by text and maps them to interpretations.
     private func search(_ args: [String: Any]) -> MemoryToolResult {
         guard let query = text(args, "query"), !query.isEmpty, query.count <= 300 else { return reject("需要 300 字以内的查询词。") }
         let bounds: DayWindow?
@@ -193,19 +215,74 @@ struct MemoryReadTools: Sendable {
                 $0.sourceBundleIdentifier?.caseInsensitiveCompare(app) == .orderedSame || $0.sourceAppName?.localizedCaseInsensitiveContains(app) == true
             }
         }
+        let reviews = allowedReviews()
+        let reviewDays = Set(reviews.map { calendar.startOfDay(for: $0.day) })
+        let directEntries = app == nil
+            ? structuredMatches(query: query, reviews: reviews, allowedIDs: Set(records.map(\.id)), bounds: bounds)
+            : []
         let byID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
         var matches: [CaptureRecord] = []
-        if let textIndex {
-            matches = textIndex.ids(matching: QuestionTerms.topicTerms(query), start: bounds?.start, end: bounds?.end, limit: 40).compactMap { byID[$0] }
+        let terms = QuestionTerms.topicTerms(query)
+        if let textIndex, !terms.isEmpty {
+            matches = textIndex.ids(matching: terms, start: bounds?.start, end: bounds?.end, limit: 60).compactMap { byID[$0] }
         }
         if matches.isEmpty {
-            matches = records.filter { $0.searchableText.localizedCaseInsensitiveContains(query) }.sorted { $0.createdAt > $1.createdAt }
+            matches = records.filter { record in
+                if record.searchableText.localizedCaseInsensitiveContains(query) { return true }
+                return !terms.isEmpty && terms.contains { record.searchableText.localizedCaseInsensitiveContains($0) }
+            }.sorted { $0.createdAt > $1.createdAt }
         }
-        let found = interpreted.entries(forRecords: matches.prefix(40).map(\.id), reviews: allowedReviews())
-        let entries = Array(found.entries.prefix(20))
-        let missing = Array(Set(found.uncovered.map { calendar.startOfDay(for: $0.createdAt) })).sorted()
+        let found = interpreted.entries(forRecords: matches.prefix(60).map(\.id), reviews: reviews)
+        var combined = directEntries
+        for entry in found.entries where !combined.contains(where: { $0.id == entry.id }) { combined.append(entry) }
+        let entries = Array(combined.prefix(24))
+        // Days that already have a saved DailySummary are never "missing a review" just because an auxiliary screenshot wasn't cited.
+        let missing = Array(Set(found.uncovered.map { calendar.startOfDay(for: $0.createdAt) }).subtracting(reviewDays)).sorted()
         guard !entries.isEmpty || !missing.isEmpty else { return note("没有匹配的记录。") }
         return pack(entries.isEmpty ? "匹配的记录都还没有整理。" : "", entries: entries, missingReviewDays: missing)
+    }
+
+    /// Direct search over already-organized review items, ledger entries, and active topic claims.
+    private func structuredMatches(query: String, reviews: [DailySummary], allowedIDs: Set<UUID>, bounds: DayWindow?) -> [InterpretedEvidence.Entry] {
+        let terms = QuestionTerms.topicTerms(query)
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let checkTerms = terms.isEmpty ? (needle.isEmpty ? [] : [needle]) : terms
+        guard !checkTerms.isEmpty else { return [] }
+
+        func score(_ text: String) -> Int {
+            var total = 0
+            if needle.count >= 2, text.localizedCaseInsensitiveContains(needle) { total += 10 }
+            for term in checkTerms where text.localizedCaseInsensitiveContains(term) {
+                total += term.count >= 3 ? 5 : 2
+            }
+            return total
+        }
+
+        var scored: [(entry: InterpretedEvidence.Entry, score: Int)] = []
+        var seen: Set<UUID> = []
+        let filteredReviews = reviews.filter { review in
+            guard let bounds else { return true }
+            let day = calendar.startOfDay(for: review.day)
+            return day >= calendar.startOfDay(for: bounds.start) && day < bounds.end
+        }
+        for review in filteredReviews {
+            for item in interpreted.entries(of: review, budget: .max) where Set(item.sourceIDs).isSubset(of: allowedIDs) {
+                let s = score(item.text)
+                if s > 0, seen.insert(item.id).inserted { scored.append((item, s)) }
+            }
+        }
+        for claim in state.memoryKnowledge.claims where claim.usable() && !claim.sourceIDs.isEmpty && Set(claim.sourceIDs).isSubset(of: allowedIDs)
+            && (claim.kind == .event || claim.kind == .action || claim.kind == .experience) {
+            if let bounds, (claim.date < bounds.start || claim.date >= bounds.end) { continue }
+            let s = score(claim.title + " " + claim.content)
+            if s > 0 {
+                let mapped = entry(claim, label: "主题")
+                if seen.insert(mapped.id).inserted { scored.append((mapped, s)) }
+            }
+        }
+        return scored.sorted { lhs, rhs in
+            lhs.score == rhs.score ? lhs.entry.day > rhs.entry.day : lhs.score > rhs.score
+        }.map(\.entry)
     }
 
     /// Reads records or review items by id. A record is shown as the review items that cite it or its own interpretation.
@@ -214,6 +291,7 @@ struct MemoryReadTools: Sendable {
         guard !rawIDs.isEmpty else { return reject("需要记录 id。") }
         let allowed = Set(allowedCaptures().map(\.id))
         let reviews = allowedReviews()
+        let reviewDays = Set(reviews.map { calendar.startOfDay(for: $0.day) })
         let reviewEntries = reviews.flatMap { interpreted.entries(of: $0, budget: .max) }
         var lines: [String] = []
         var recordIDs: [UUID] = []
@@ -227,7 +305,7 @@ struct MemoryReadTools: Sendable {
         if rawIDs.count > 8 { lines.append("已忽略超出 8 条的 id。") }
         let found = interpreted.entries(forRecords: recordIDs, reviews: reviews)
         for entry in found.entries where !entries.contains(where: { $0.id == entry.id }) { entries.append(entry) }
-        let missing = Array(Set(found.uncovered.map { calendar.startOfDay(for: $0.createdAt) })).sorted()
+        let missing = Array(Set(found.uncovered.map { calendar.startOfDay(for: $0.createdAt) }).subtracting(reviewDays)).sorted()
         return pack(lines.joined(separator: "\n"), entries: entries, missingReviewDays: missing, rejected: entries.isEmpty && missing.isEmpty)
     }
 
@@ -242,8 +320,12 @@ struct MemoryReadTools: Sendable {
                 && (claim.kind == .event || claim.kind == .action)
                 && (claim.title.localizedCaseInsensitiveContains(name) || entityIDs.contains(claim.subjectID))
         }.sorted { $0.date < $1.date }
-        guard !claims.isEmpty else { return note("没有找到这个主题的有依据条目。") }
-        return pack("", entries: claims.suffix(30).map { entry($0, label: "主题") })
+        let reviewMatches = structuredMatches(query: name, reviews: allowedReviews(), allowedIDs: allowedIDs, bounds: nil)
+        let claimEntries = claims.suffix(30).map { entry($0, label: "主题") }
+        var combined = reviewMatches
+        for item in claimEntries where !combined.contains(where: { $0.id == item.id }) { combined.append(item) }
+        guard !combined.isEmpty else { return note("没有找到这个主题的有依据条目。") }
+        return pack("", entries: Array(combined.prefix(30)))
     }
 
     private func memories() -> MemoryToolResult {
@@ -306,7 +388,7 @@ struct MemoryReadTools: Sendable {
 
     private func allowedReviews() -> [DailySummary] {
         let ids = Set(allowedCaptures().map(\.id))
-        return state.dailySummaries.filter { !$0.sourceCaptureIDs.isEmpty && Set($0.sourceCaptureIDs).isSubset(of: ids) }
+        return state.dailySummaries.compactMap { $0.scoping(to: ids) }
     }
 
     private func sourcesAllowed(_ ids: [UUID], allowedIDs: Set<UUID>) -> Bool {

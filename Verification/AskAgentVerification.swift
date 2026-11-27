@@ -29,7 +29,11 @@ enum AskAgentVerification {
         try await commitmentsRequireUserEvidence()
         try await screenTextNeverReachesTheAnswer()
         try await dayWithoutReviewAsksToGenerate()
-        print("PASS: 19 ask-agent scenarios (stream, direct answer, tools, refusal, budget, fallback, deletion, cancellation, greeting, reply, status)")
+        try await recentSpanTopicAndCategorySynthesis()
+        try await topicScopeKeepsDailyReviewItems()
+        try await plannerFormattingAndGroundingResilience()
+        try await middaySummaryRefreshesTodayAutomatically()
+        print("PASS: 23 ask-agent scenarios (stream, direct answer, tools, refusal, budget, fallback, deletion, cancellation, greeting, reply, status, synthesis, topic scope, grounding, midday refresh)")
     }
 
     private static func streamLines() throws {
@@ -371,6 +375,197 @@ enum AskAgentVerification {
         let requests = await script.recorded()
         try expect(requests.isEmpty, "只有原始截图的日期仍调用了模型")
         try expect(answer.content.contains("还没有每日回顾") && !answer.content.contains("RAWOCR") && answer.citations.isEmpty, "没有提示先生成回顾，或展示了原文")
+    }
+
+    private static func recentSpanTopicAndCategorySynthesis() async throws {
+        let q1 = "你梳理下atlas 最近一周有什么进展"
+        try expect(QuestionTerms.topicTerms(q1).contains("atlas") && QuestionTerms.termLookup(QuestionTerms.topicTerms(q1)).words.contains("atlas"), "中英文紧邻时丢失了英文主题词")
+        let q2 = "最近一周我学了哪些管理知识"
+        let q2Lookup = QuestionTerms.termLookup(QuestionTerms.topicTerms(q2))
+        try expect(!q2Lookup.groups.joined().contains("一周") && !q2Lookup.groups.joined().contains("些管"), "时间词和疑问词残片混入了词条检索组：\(q2Lookup)")
+
+        let (storage, store, placeholder) = try await fixture("placeholder")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        _ = try await store.deleteCapture(id: placeholder.id)
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: .now)
+        let d4 = cal.date(byAdding: .day, value: -4, to: today)!.addingTimeInterval(3_600)
+        let d2 = cal.date(byAdding: .day, value: -2, to: today)!.addingTimeInterval(3_600)
+        let d1 = cal.date(byAdding: .day, value: -1, to: today)!.addingTimeInterval(3_600)
+
+        let capFlomo = CaptureRecord(eventTemplate: .enterKeyTrigger, createdAt: d4, sourceAppName: "合成笔记A", contentHash: "c-flomo",
+            ocrText: "RAWOCR-FLOMO 小团队激励机制：能力成长与责任扩大", textOrigin: .screenOCR)
+        let capWiz = CaptureRecord(eventTemplate: .enterKeyTrigger, createdAt: d4.addingTimeInterval(60), sourceAppName: "合成笔记B", contentHash: "c-wiz",
+            ocrText: "RAWOCR-WIZ 端到端组织变革研究：分工与能力网络", textOrigin: .screenOCR)
+        let capAtlasRef = CaptureRecord(eventTemplate: .enterKeyTrigger, createdAt: d2, sourceAppName: "合成终端", contentHash: "c-atlas-ref",
+            ocrText: "RAWOCR-ATLAS2 Atlas 记忆侧栏修复已合入", textOrigin: .screenOCR)
+        let capAtlasMain = CaptureRecord(eventTemplate: .enterKeyTrigger, createdAt: d1, sourceAppName: "合成编辑器", contentHash: "c-atlas-main",
+            ocrText: "RAWOCR-ATLAS1 Atlas 问答修复已进入主分支", textOrigin: .screenOCR)
+        let capAtlasUncovered = CaptureRecord(eventTemplate: .enterKeyTrigger, createdAt: d1.addingTimeInterval(30), sourceAppName: "合成编辑器", contentHash: "c-atlas-menu",
+            ocrText: "RAWOCR-MENU Atlas 菜单栏界面", textOrigin: .screenOCR)
+        for c in [capFlomo, capWiz, capAtlasRef, capAtlasMain, capAtlasUncovered] { try await store.addCapture(c) }
+
+        var rev4 = DailySummary(day: d4, content: "", sourceCaptureIDs: [capFlomo.id, capWiz.id], todos: [], generationKind: .cloud, items: [
+            DailySummaryItem(section: .progress, title: "整理小团队激励与管理决策框架", detail: "区分决定与决策并形成四个激励支点", evidenceIDs: [capFlomo.id],
+                knowledge: DailyItemKnowledge(topic: "小团队激励与管理决策", kind: .matter, status: "completed", ownedByUser: true, quotes: ["小团队激励机制"]))
+        ])
+        rev4.ledger = [
+            DailyMatterLedgerEntry(topic: "端到端组织变革", kind: .reference, status: "completed", section: "insights",
+                title: "保存并研读端到端组织变革研究", detail: "涉及分工终结与能力网络演进", ownedByUser: true, quotes: [], evidenceIDs: [capWiz.id], occurredAt: nil)
+        ]
+        var rev2 = DailySummary(day: d2, content: "", sourceCaptureIDs: [capAtlasRef.id], todos: [], generationKind: .cloud, items: [])
+        rev2.ledger = [
+            DailyMatterLedgerEntry(topic: "Atlas侧栏修复", kind: .reference, status: "completed", section: "progress",
+                title: "Atlas记忆侧栏修复已合入本地构建", detail: "修复菜单挤压并通过构建验证", ownedByUser: true, quotes: [], evidenceIDs: [capAtlasRef.id], occurredAt: nil)
+        ]
+        let rev1 = DailySummary(day: d1, content: "", sourceCaptureIDs: [capAtlasMain.id, capAtlasUncovered.id], todos: [], generationKind: .cloud, items: [
+            DailySummaryItem(section: .progress, title: "Atlas问答修复已进入主分支", detail: "完成本地构建与验证", evidenceIDs: [capAtlasMain.id],
+                knowledge: DailyItemKnowledge(topic: "Atlas问答优化", kind: .matter, status: "inProgress", ownedByUser: true, quotes: ["Atlas 问答修复"]))
+        ])
+        for r in [rev4, rev2, rev1] { try await store.upsertDailySummary(r) }
+
+        let atlasModel = ScriptedAskModel { request in
+            let i1 = (request.context.firstIndex { $0.ocrText.contains("Atlas问答修复") } ?? 0) + 1
+            let i2 = (request.context.firstIndex { $0.ocrText.contains("Atlas记忆侧栏") } ?? 0) + 1
+            return LLMAnswer(content: "Atlas 最近一周推进了两项修复。\n\n- 问答修复进入主分支（进行中） [\(i1)]\n- 记忆侧栏修复已合入本地构建 [\(i2)]", citedCaptureIDs: [])
+        }
+        let a1 = try await MemoryAssistant(store: store).ask(q1, model: atlasModel)
+        let atlasSent = await atlasModel.recorded().flatMap(\.context).map(\.ocrText).joined(separator: "\n")
+        try expect(atlasSent.contains("Atlas问答修复已进入主分支") && atlasSent.contains("Atlas记忆侧栏修复已合入本地构建"), "最近一周主题梳理漏掉了回顾或参考账本条目：\(atlasSent)")
+        try expect(!atlasSent.contains("RAWOCR"), "屏幕原始 OCR 被发给了回答模型")
+        try expect(Set(a1.citations) == Set([capAtlasMain.id, capAtlasRef.id]), "引用未完整对应到两条 Atlas 来源：\(a1.citations)")
+        try expect((a1.missingReviewDays ?? []).isEmpty, "已有每日回顾的日期被误报为缺少回顾：\(String(describing: a1.missingReviewDays))")
+
+        let mgmtModel = ScriptedAskModel { request in
+            let m1 = (request.context.firstIndex { $0.ocrText.contains("小团队激励") } ?? 0) + 1
+            let m2 = (request.context.firstIndex { $0.ocrText.contains("组织变革") } ?? 0) + 1
+            return LLMAnswer(content: "最近一周记录了两项管理与组织相关内容。\n\n1. 整理了小团队激励与管理决策框架 [\(m1)]\n2. 研读了端到端组织变革与能力网络研究 [\(m2)]", citedCaptureIDs: [])
+        }
+        let a2 = try await MemoryAssistant(store: store).ask(q2, model: mgmtModel)
+        let mgmtSent = await mgmtModel.recorded().flatMap(\.context).map(\.ocrText).joined(separator: "\n")
+        try expect(mgmtSent.contains("整理小团队激励与管理决策框架") && mgmtSent.contains("保存并研读端到端组织变革研究"), "最近一周管理知识提问漏掉了管理框架或组织变革笔记：\(mgmtSent)")
+        try expect(Set(a2.citations) == Set([capFlomo.id, capWiz.id]) && !a2.content.contains("没有找到可用的记录"), "管理知识提问未能整合多条来源：\(a2.content)")
+    }
+
+    private static func topicScopeKeepsDailyReviewItems() async throws {
+        let (storage, store, placeholder) = try await fixture("placeholder")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        _ = try await store.deleteCapture(id: placeholder.id)
+        let d1 = Calendar.current.date(byAdding: .day, value: -1, to: Calendar.current.startOfDay(for: .now))!.addingTimeInterval(3_600)
+        let topicCap = CaptureRecord(eventTemplate: .enterKeyTrigger, createdAt: d1, sourceAppName: "合成终端", sourceBundleIdentifier: "example.allowed",
+            contentHash: "topic-cap", ocrText: "RAWOCR-TOPIC Nova 分页校验通过", textOrigin: .screenOCR)
+        let otherCap = CaptureRecord(eventTemplate: .enterKeyTrigger, createdAt: d1.addingTimeInterval(60), sourceAppName: "合成私密", sourceBundleIdentifier: "example.excluded",
+            contentHash: "other-cap", ocrText: "RAWOCR-SECRET 私密无关事项", textOrigin: .screenOCR)
+        try await store.addCapture(topicCap)
+        try await store.addCapture(otherCap)
+        var privacy = await store.snapshot().privacy
+        privacy.excludedBundleIdentifiers.insert("example.excluded")
+        try await store.updatePrivacy(privacy)
+        let review = DailySummary(day: d1, content: "", sourceCaptureIDs: [topicCap.id, otherCap.id], todos: [], generationKind: .cloud, items: [
+            DailySummaryItem(section: .progress, title: "Nova分页校验已在本地通过", detail: "分页边界用例通过", evidenceIDs: [topicCap.id],
+                knowledge: DailyItemKnowledge(topic: "Nova分页", kind: .matter, status: "inProgress", ownedByUser: true, quotes: ["Nova 分页校验"])),
+            DailySummaryItem(section: .progress, title: "EXCLUDED-ITEM-LEAK", detail: "私密条目", evidenceIDs: [otherCap.id],
+                knowledge: DailyItemKnowledge(topic: "私密", kind: .matter, status: "inProgress", ownedByUser: true, quotes: ["私密"]))
+        ])
+        try await store.upsertDailySummary(review)
+        let script = ScriptedAskModel { request in
+            if request.purpose == .chatPlanning {
+                return LLMAnswer(content: #"{"answer":"Nova分页校验已在本地通过 [1]"}"#, citedCaptureIDs: [])
+            }
+            return LLMAnswer(content: "Nova分页校验已在本地通过 [1]", citedCaptureIDs: [])
+        }
+        let scope = MemoryQueryScope(topicID: "topic-nova", topicEvidenceIDs: [topicCap.id])
+        let answer = try await MemoryAssistant(store: store).ask("Nova 进展怎样", scope: scope, model: script)
+        let sent = await script.recorded().flatMap(\.context).map(\.ocrText).joined(separator: "\n")
+        try expect(!sent.contains("EXCLUDED-ITEM-LEAK") && !sent.contains("RAWOCR"), "被排除应用的条目或原始 OCR 泄露进了模型上下文")
+        try expect(answer.citations == [topicCap.id] && answer.content.contains("Nova分页校验"), "按主题筛选或同日存在排除应用时误丢了该主题的每日回顾事项：\(answer.content)")
+    }
+
+    private static func plannerFormattingAndGroundingResilience() async throws {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let sunday = cal.date(from: DateComponents(year: 2026, month: 11, day: 22, hour: 10))! // Sunday
+        let (storage, store, placeholder) = try await fixture("placeholder")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        _ = try await store.deleteCapture(id: placeholder.id)
+        let cap = CaptureRecord(eventTemplate: .manualMoment, createdAt: sunday, sourceAppName: "合成笔记", contentHash: "sun-cap",
+            ocrText: "整理并记录小团队激励与管理决策框架", textOrigin: .userInput)
+        try await store.addCapture(cap)
+        let script = ScriptedAskModel { request in
+            if request.purpose == .chatPlanning {
+                return LLMAnswer(content: "<think>先核对{候选}材料</think>\n{\"answer\":\"研究资料沉淀\n1. 11月22日整理并记录了小团队激励与管理决策框架。[1]\"}", citedCaptureIDs: [])
+            }
+            return LLMAnswer(content: "不应走到回退", citedCaptureIDs: [])
+        }
+        let answer = try await MemoryAssistant(store: store).ask("激励与管理决策", model: script)
+        try expect(answer.citations == [cap.id] && answer.content.contains("11月22日整理并记录了") && !answer.content.contains("没能整理成完整回答"),
+            "含 <think>、原始换行、编号列表与记录日期的回答被误判失败：\(answer.content)")
+        let blocks = ChatResponseFormatter().attributedParagraphs("研究资料沉淀\n- 已在知笔记保存阅读材料。[1]\n- 涉及三个变化方向。[1]")
+        let plain = blocks.map { String($0.characters) }.joined(separator: "\n\n")
+        try expect(!plain.contains("研究资料沉淀已在知笔记") && plain.contains("\n"), "Markdown 段落渲染把小标题与列表粘连成了一行：\(plain)")
+    }
+
+    private static func middaySummaryRefreshesTodayAutomatically() async throws {
+        let cal = Calendar.current
+        let now = Date.now
+        let todayStart = cal.startOfDay(for: now)
+        guard now.timeIntervalSince(todayStart) > 5 else { return }
+        let (storage, store, placeholder) = try await fixture("placeholder")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        _ = try await store.deleteCapture(id: placeholder.id)
+
+        let yesterday = todayStart.addingTimeInterval(-3_600)
+        let yCap = CaptureRecord(eventTemplate: .enterKeyTrigger, createdAt: yesterday, sourceAppName: "合成终端", contentHash: "y-cap",
+            ocrText: "RAWOCR-YESTERDAY 昨日完成数据库索引核对", textOrigin: .screenOCR)
+        let morningTime = todayStart.addingTimeInterval(max(1, (now.timeIntervalSince(todayStart) * 0.2)))
+        let afternoonTime = todayStart.addingTimeInterval(max(2, (now.timeIntervalSince(todayStart) * 0.6)))
+        let morningCap = CaptureRecord(eventTemplate: .enterKeyTrigger, createdAt: morningTime, sourceAppName: "合成编辑器", contentHash: "m-cap",
+            ocrText: "[聊天·自己] 上午完成网关配置初稿。", textOrigin: .screenOCR)
+        let afternoonCap = CaptureRecord(eventTemplate: .enterKeyTrigger, createdAt: afternoonTime, sourceAppName: "合成终端", contentHash: "a-cap",
+            ocrText: "[聊天·自己] 下午两点完成网关切换压测。", textOrigin: .screenOCR)
+        for c in [yCap, morningCap, afternoonCap] { try await store.addCapture(c) }
+
+        let ySummary = DailySummary(day: yesterday, content: "", sourceCaptureIDs: [yCap.id], todos: [], generationKind: .cloud, items: [
+            DailySummaryItem(section: .progress, title: "完成数据库索引核对", detail: "昨日完成索引核对", evidenceIDs: [yCap.id],
+                knowledge: DailyItemKnowledge(topic: "数据库索引", kind: .matter, status: "completed", ownedByUser: true, quotes: ["数据库索引核对"]))
+        ])
+        let mSummary = DailySummary(day: todayStart, content: "", sourceCaptureIDs: [morningCap.id], todos: [], generationKind: .cloud, items: [
+            DailySummaryItem(section: .progress, title: "上午完成网关配置初稿", detail: "网关配置初稿已保存", evidenceIDs: [morningCap.id],
+                knowledge: DailyItemKnowledge(topic: "网关切换", kind: .matter, status: "inProgress", ownedByUser: true, quotes: ["上午完成网关配置初稿。"]))
+        ])
+        try await store.upsertDailySummary(ySummary)
+        try await store.upsertDailySummary(mSummary)
+
+        let model = ScriptedAskModel { request in
+            if request.purpose == .reviewSynthesis {
+                let items: [[String: Any]] = [
+                    ["section": "progress", "title": "网关配置与下午切换压测已完成", "detail": "上午完成网关配置初稿，下午两点完成网关切换压测。",
+                     "owner": "user", "status": "completed", "explicitCommitment": false, "condition": NSNull(),
+                     "evidence": [["id": "d1", "quote": "[聊天·自己] 上午完成网关配置初稿。"], ["id": "d2", "quote": "[聊天·自己] 下午两点完成网关切换压测。"]]]
+                ]
+                let draft = json(["overview": "今天完成网关配置与压测。", "items": items,
+                                  "coverage": [["id": "d1", "disposition": "used"], ["id": "d2", "disposition": "used"]]])
+                return LLMAnswer(content: draft, citedCaptureIDs: [])
+            }
+            let i1 = (request.context.firstIndex { $0.ocrText.contains("数据库索引核对") } ?? 0) + 1
+            let i2 = (request.context.firstIndex { $0.ocrText.contains("下午切换压测") } ?? 0) + 1
+            return LLMAnswer(content: "本周推进了两项工作。\n\n- 完成数据库索引核对 [\(i1)]\n- 完成网关配置与下午切换压测 [\(i2)]", citedCaptureIDs: [])
+        }
+
+        var statuses: [String] = []
+        var steps: [String] = []
+        let firstAnswer = try await MemoryAssistant(store: store).ask("总结最近3天进展", onStatus: { statuses.append($0) }, model: model, onStep: { name, _ in steps.append(name) })
+        try expect(statuses.contains { $0.contains("正在整理今日最新记录") }, "下午提问未展示整理今日记录进度：\(statuses)")
+        try expect(steps.contains("today-review"), "下午提问未自动刷新今日回顾：\(steps)")
+        try expect(Set(firstAnswer.citations).isSuperset(of: [yCap.id, afternoonCap.id]), "总结近期进展漏掉了今天下午刚产生的记录：\(firstAnswer.citations)")
+        try expect((firstAnswer.missingReviewDays ?? []).isEmpty, "今日已自动整理却仍提示缺少回顾：\(String(describing: firstAnswer.missingReviewDays))")
+        let savedToday = await store.snapshot().dailyReview(on: todayStart)
+        try expect(savedToday?.sourceCaptureIDs.contains(afternoonCap.id) == true && !(savedToday?.versions ?? []).isEmpty, "自动刷新今日回顾后未保存新来源或未保留上午旧版本")
+
+        // Asking again with no new captures must NOT trigger another daily review synthesis call.
+        var secondSteps: [String] = []
+        _ = try await MemoryAssistant(store: store).ask("总结最近3天进展", model: model, onStep: { name, _ in secondSteps.append(name) })
+        try expect(!secondSteps.contains("today-review"), "今日无新增记录时重复触发了每日回顾生成：\(secondSteps)")
     }
 
     static func fixture(_ text: String) async throws -> (RecallStorage, FileMemoryStore, CaptureRecord) {

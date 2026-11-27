@@ -82,7 +82,7 @@ public struct AnswerGrounding: Sendable {
         if !unit.citations.isEmpty && cited.isEmpty { return false }
         let support = cited.isEmpty ? entries : cited
         let corpus = support.map(\.text).joined(separator: "\n") + " " + support.map { recordedDateText($0.day) }.joined(separator: " ")
-        let claim = unit.text.replacingOccurrences(of: #"\[\d+\]"#, with: "", options: .regularExpression)
+        let claim = stripStructuralPrefix(unit.text.replacingOccurrences(of: #"\[\d+\]"#, with: "", options: .regularExpression))
         guard numbers(claim).isSubset(of: numbers(corpus)), dateTerms(claim).isSubset(of: dateTerms(corpus)) else { return false }
         for outcome in outcomes where claim.range(of: outcome.claim, options: [.regularExpression, .caseInsensitive]) != nil {
             guard support.contains(where: { supportsOutcome(outcome.evidence, in: $0.text) }) else { return false }
@@ -105,9 +105,14 @@ public struct AnswerGrounding: Sendable {
 
     /// Worth a model check only when a sentence makes an outcome, number or date claim.
     static func isRisky(_ unit: Unit) -> Bool {
-        let claim = unit.text.replacingOccurrences(of: #"\[\d+\]"#, with: "", options: .regularExpression)
+        let claim = stripStructuralPrefix(unit.text.replacingOccurrences(of: #"\[\d+\]"#, with: "", options: .regularExpression))
         return !numbers(claim).isEmpty || !dateTerms(claim).isEmpty
             || outcomes.contains { claim.range(of: $0.claim, options: [.regularExpression, .caseInsensitive]) != nil }
+    }
+
+    /// Removes list numbering such as "1. ", "2、", "(1) " at the start of a sentence so structural markers are not treated as ungrounded data numbers.
+    private static func stripStructuralPrefix(_ text: String) -> String {
+        text.replacingOccurrences(of: #"^\s*(?:[-*•]\s*)?(?:\d+[.、)）]|[（(]\d+[)）])\s*"#, with: "", options: .regularExpression)
     }
 
     public static func verify(draft: String, question: String, entries: [InterpretedEvidence.Entry], responder: any LLMResponding) async throws -> Result {

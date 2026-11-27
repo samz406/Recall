@@ -300,5 +300,39 @@ extension RecallLayoutPreviews {
         guard model.state.weeklyReports.count == 2, groups.count == 1, groups[0].versions.count == 2 else {
             throw PeriodGenerationFailure(errorDescription: "同一时间段重新生成没有归为同一份回顾的新版本")
         }
+
+        // 4. Today already has a morning review, then afternoon records arrive: backfill refreshes today (preserving old version) before period synthesis.
+        let todayStart = calendar.startOfDay(for: .now)
+        let morningTime = min(Date.now.addingTimeInterval(-120), todayStart.addingTimeInterval(60))
+        let afternoonTime = Date.now.addingTimeInterval(-30)
+        if afternoonTime > todayStart {
+            var middayState = input
+            let morningCap = CaptureRecord(eventTemplate: .manualMoment, createdAt: morningTime, sourceAppName: "Synthetic Notes",
+                contentHash: UUID().uuidString, ocrText: "Atlas 上午已完成配置核对。", textOrigin: .userInput)
+            let afternoonCap = CaptureRecord(eventTemplate: .enterKeyTrigger, createdAt: afternoonTime, sourceAppName: "Synthetic Terminal",
+                contentHash: UUID().uuidString, ocrText: "[聊天·自己] Atlas 下午已完成网关切换验证。", textOrigin: .screenOCR)
+            middayState.captures.append(contentsOf: [morningCap, afternoonCap])
+            var morningSummary = DailySummary(day: todayStart, content: "上午回顾", sourceCaptureIDs: [morningCap.id], todos: [], generationKind: .cloud)
+            morningSummary.items = [DailySummaryItem(section: .progress, title: "Atlas 上午配置核对", detail: morningCap.ocrText, evidenceIDs: [morningCap.id],
+                knowledge: DailyItemKnowledge(topic: "Atlas", kind: .matter, status: "inProgress", ownedByUser: true, quotes: [morningCap.ocrText]))]
+            middayState.dailySummaries.append(morningSummary)
+            let middayPeriod = ReviewPeriod(start: calendar.date(byAdding: .day, value: -6, to: todayStart)!, end: Date.now)
+            let middayChain = ChainModel(emptyBody: false)
+            let middayModel = try RecallAppModel(previewState: middayState, dailyReviewResponder: middayChain)
+            defer { try? FileManager.default.removeItem(at: middayModel.storage.rootURL) }
+            middayModel.state = await middayModel.store.snapshot()
+            let middayGaps = PeriodReviewFromDaily.gaps(in: middayModel.state, period: middayPeriod)
+            guard middayGaps.todayStale, middayGaps.allMissingDays.contains(where: { calendar.isDate($0, inSameDayAs: todayStart) }) else {
+                throw PeriodGenerationFailure(errorDescription: "下午新增记录后未识别今天需要刷新每日回顾")
+            }
+            middayModel.backfillThenGenerateWeeklyReview(days: middayGaps.allMissingDays, period: middayPeriod, template: ReviewTemplate(kind: .personal), scope: ReviewScope())
+            try await wait(middayModel)
+            let refreshedToday = middayModel.state.dailyReview(on: todayStart)
+            guard refreshedToday?.sourceCaptureIDs.contains(afternoonCap.id) == true,
+                  !(refreshedToday?.versions ?? []).isEmpty,
+                  !middayModel.state.weeklyReports.isEmpty else {
+                throw PeriodGenerationFailure(errorDescription: "下午生成周期回顾时没有先增量刷新今日回顾并保留上午版本")
+            }
+        }
     }
 }

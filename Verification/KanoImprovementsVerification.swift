@@ -204,6 +204,29 @@ enum KanoImprovementsVerification {
                    "接着干混入了资料类、他人或已完成的事项")
         try expect(!open.contains { $0.kind == .missingReview }, "已有回顾仍提示生成")
 
+        // Same matter present in both `items` (with topicID) and `ledger` (without topicID) must not duplicate in 接着干,
+        // and a today review marking an earlier matter completed must close it immediately.
+        var regTopic = Topic(title: "ReAct 改造方案升级", createdAt: yesterday, lastEventAt: yesterday)
+        regTopic.aliases = ["ReAct 改造"]
+        state.topicRegistry.upsert(regTopic)
+        state.dailySummaries[1].items[1].knowledge?.topicID = regTopic.id
+        state.dailySummaries[1].ledger = [
+            DailyMatterLedgerEntry(topic: "ReAct 改造", kind: .matter, status: "pending", section: "progress",
+                title: "ReAct 改造方案已写好但代码未改", detail: "方案拆成三个 PR。之后再推进。", ownedByUser: true, quotes: [], evidenceIDs: [state.captures[0].id], occurredAt: yesterday)
+        ]
+        let renamedMatter = MatterFile(id: "topic:" + regTopic.id.uuidString, title: "ReAct 改造方案升级", events: [
+            MatterEvent(id: UUID(), title: "ReAct 改造方案升级", detail: "方案拆成三个 PR", recordedAt: yesterday, status: .pending, evidenceIDs: [state.captures[0].id])
+        ])
+        let deduped = LocalBriefing.resume(in: state, matters: [renamedMatter])
+        try expect(deduped.filter { $0.title == "ReAct 改造方案已写好但代码未改" }.count == 1, "同一事项在 items 与 ledger 同时存在时在接着干中重复展示")
+        try expect(deduped.first { $0.title == "ReAct 改造方案已写好但代码未改" }?.destination == .topic(renamedMatter.id), "改名/合并后的主题未能通过登记表别名关联到主题详情")
+
+        state.dailySummaries.append(DailySummary(day: today, content: "", sourceCaptureIDs: [state.captures[0].id], todos: [], generationKind: .cloud, items: [
+            item("股市研究已完成归档", "结论已整理。", status: "completed", topic: "股市研究")
+        ]))
+        let closedToday = LocalBriefing.resume(in: state, matters: [renamedMatter])
+        try expect(!closedToday.contains { $0.title == "研究股市走势" }, "今天每日回顾已标记完成的事项仍停留在接着干")
+
         state.matterCorrections = [MatterCorrection(evidenceIDs: [state.captures[0].id], kind: .notMine)]
         try expect(LocalBriefing.resume(in: state, matters: []).allSatisfy { $0.kind != .openMatter }, "来源被更正为非本人后，事项仍出现在接着干")
         try expect(!LocalBriefing.offlineDay(yesterday, in: state).groups.flatMap(\.sourceIDs).contains(state.captures[0].id), "被更正为非本人的记录仍出现在简报")

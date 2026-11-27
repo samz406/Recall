@@ -13,7 +13,6 @@ struct MatterWorkspaceView: View {
     @State private var pendingProjectFor: MatterFile?
     @State private var newProjectName = ""
     @State private var limit = 20
-    @State private var selectedID: String?
     @State private var adding = false
     @State private var addingTitle = ""
     @State private var addingMemory = false
@@ -97,7 +96,7 @@ struct MatterWorkspaceView: View {
                                 Text(RecallLocalization.both("以前的结果，也许能帮上忙", "A past result may help")).font(.headline)
                                 Text(hint.past.detail)
                                 HStack {
-                                    Button(RecallLocalization.both("查看当时主题", "Open past topic")) { selectedID = model.matterFiles.first { $0.events.contains { $0.id == hint.past.id } }?.id }
+                                    Button(RecallLocalization.both("查看当时主题", "Open past topic")) { model.topicToOpen = model.matterFiles.first { $0.events.contains { $0.id == hint.past.id } }?.id }
                                     Button(RecallLocalization.text("不再提示这一条")) { model.dismissExperience(hint) }
                                 }
                             }.recallSurface()
@@ -111,9 +110,6 @@ struct MatterWorkspaceView: View {
         .onChange(of: model.navigationRevision) { _, _ in openRequested() }
         .onChange(of: search) { _, _ in limit = 20 }
         .onChange(of: filter) { _, _ in limit = 20 }
-        .sheet(isPresented: Binding(get: { selectedID != nil }, set: { if !$0 { selectedID = nil } })) {
-            if let id = selectedID { TopicDetailView(topicID: id, continueChat: { value in selectedID = nil; continueChat(value) }).environmentObject(model) }
-        }
         .sheet(isPresented: $adding) { ManualMatterSheet(title: addingTitle) { await model.saveManualMatter($0) } }
         .alert(RecallLocalization.both("新建项目", "New project"),
                isPresented: Binding(get: { pendingProjectFor != nil }, set: { if !$0 { pendingProjectFor = nil } })) {
@@ -148,7 +144,7 @@ struct MatterWorkspaceView: View {
     }
     private func card(_ file: MatterFile) -> some View {
         let reading = TopicReading(file: file, review: model.state.topicReviews.first { $0.id == file.id })
-        return Button { selectedID = file.id } label: {
+        return Button { model.topicToOpen = file.id } label: {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Circle()
@@ -198,8 +194,7 @@ struct MatterWorkspaceView: View {
         }
     }
     private func openRequested() {
-        if case .knowledge = model.destination { tab = .knowledge }
-        if case .topic(let id) = model.destination { tab = .topics; selectedID = id }
+        if case .knowledge = model.destination { tab = .knowledge; model.destination = nil }
         if case .record = model.destination { tab = .timeline }
     }
 }
@@ -232,7 +227,14 @@ struct TopicDetailView: View {
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        Text(reading.overview).font(RecallTypography.body).textSelection(.enabled)
+                        if let latestDateTitle = reading.latestDateTitle {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(latestDateTitle).font(.headline)
+                                Text(reading.overview).foregroundStyle(RecallPalette.secondary).textSelection(.enabled)
+                            }
+                        } else {
+                            Text(reading.overview).font(RecallTypography.body).textSelection(.enabled)
+                        }
                         ForEach(Array(reading.points.enumerated()), id: \.offset) { _, point in
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(point.title).font(.headline)

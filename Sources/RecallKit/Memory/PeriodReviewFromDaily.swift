@@ -20,13 +20,19 @@ public struct PeriodReviewFromDaily: Sendable {
         public var headline: String
         /// Today is inside the period, has records and no daily review yet.
         public var todayMissing: Bool = false
+        /// Today already has an earlier daily review, and newer eligible records arrived afterwards.
+        public var todayStale: Bool = false
+        /// Count of today's eligible records inside the period not yet covered by today's daily review.
+        public var todayUncoveredCount: Int = 0
+        public var todayNeedsUpdate: Bool { todayMissing || todayStale }
         public var hasMissingRecords: Bool { !missingRecordedDays.isEmpty }
-        /// Everything that would need a daily review before a complete period review.
-        public var allMissingDays: [Date] { missingRecordedDays + (todayMissing ? [todayStart].compactMap { $0 } : []) }
+        public var hasActionableGaps: Bool { hasMissingRecords || todayNeedsUpdate }
+        /// Everything that would need a daily review (or refresh) before a complete period review.
+        public var allMissingDays: [Date] { missingRecordedDays + (todayNeedsUpdate ? [todayStart].compactMap { $0 } : []) }
         var todayStart: Date?
     }
 
-    /// Days in the period that have records but no structured daily review.
+    /// Days in the period that have records but no structured daily review, plus whether today's review lags behind newer captures.
     public static func gaps(in state: RecallState, period: ReviewPeriod, now: Date = .now) -> DayGaps {
         let calendar = period.calendar
         let start = calendar.startOfDay(for: period.start)
@@ -39,24 +45,39 @@ public struct PeriodReviewFromDaily: Sendable {
             guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
             day = next
         }
-        let reviewed = Set(DailyKnowledgeEngine().entries(in: state, includingHighlights: true).map { calendar.startOfDay(for: $0.summary.day) })
+        let structuredEntries = DailyKnowledgeEngine().entries(in: state, includingHighlights: true)
+        let reviewed = Set(structuredEntries.map { calendar.startOfDay(for: $0.summary.day) })
         let invalid = Set(state.matterCorrections.filter { $0.kind == .notMine || $0.kind == .inaccurate }.flatMap(\.evidenceIDs))
         var correctedDates: [UUID: Date] = [:]
         for correction in state.matterCorrections where !correction.isTopicCompletion && correction.kind == .eventDate {
             if let date = correction.eventAt { for id in correction.evidenceIDs { correctedDates[id] = date } }
         }
-        let recorded = Set(state.captures.compactMap { source -> Date? in
+        var recorded = Set<Date>()
+        var todayCaptureIDs = Set<UUID>()
+        for source in state.captures {
             let date = correctedDates[source.id] ?? source.createdAt
             guard period.contains(date), !invalid.contains(source.id), source.eventTemplate != .dailyReview,
                   source.memoryDirective == nil, source.isMemoryEvidenceArchive != true,
                   !source.searchableText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  !state.privacy.excludedBundleIdentifiers.contains(source.sourceBundleIdentifier ?? "") else { return nil }
-            return calendar.startOfDay(for: date)
-        })
+                  !state.privacy.excludedBundleIdentifiers.contains(source.sourceBundleIdentifier ?? "") else { continue }
+            let bucket = calendar.startOfDay(for: date)
+            recorded.insert(bucket)
+            if bucket == today { todayCaptureIDs.insert(source.id) }
+        }
         let reviewedCount = span.filter { reviewed.contains($0) }.count
         let missingAll = span.filter { recorded.contains($0) && !reviewed.contains($0) }
         let todayMissing = missingAll.contains(today)
         let missing = missingAll.filter { $0 != today }
+        var todayStale = false
+        var todayUncoveredCount = todayMissing ? todayCaptureIDs.count : 0
+        if span.contains(today), !todayMissing, !todayCaptureIDs.isEmpty,
+           let todaySummary = state.dailyReview(on: today, calendar: calendar) {
+            let uncovered = todayCaptureIDs.subtracting(Set(todaySummary.sourceCaptureIDs))
+            if !uncovered.isEmpty {
+                todayStale = true
+                todayUncoveredCount = uncovered.count
+            }
+        }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.timeZone = calendar.timeZone
@@ -66,9 +87,21 @@ public struct PeriodReviewFromDaily: Sendable {
         if !missing.isEmpty {
             headline += "；" + missing.map { formatter.string(from: $0) }.joined(separator: "、") + "未生成"
         }
-        if todayMissing { headline += "；今天的记录还在进行中" }
-        var result = DayGaps(reviewedDayCount: reviewedCount, spanDayCount: span.count, missingRecordedDays: missing, headline: headline, todayMissing: todayMissing)
-        result.todayStart = todayMissing ? today : nil
+        if todayMissing {
+            headline += "；今天的记录还在进行中"
+        } else if todayStale {
+            headline += "；今天还有 \(todayUncoveredCount) 条新记录未纳入回顾"
+        }
+        var result = DayGaps(
+            reviewedDayCount: reviewedCount,
+            spanDayCount: span.count,
+            missingRecordedDays: missing,
+            headline: headline,
+            todayMissing: todayMissing,
+            todayStale: todayStale,
+            todayUncoveredCount: todayUncoveredCount
+        )
+        result.todayStart = (todayMissing || todayStale) ? today : nil
         return result
     }
 

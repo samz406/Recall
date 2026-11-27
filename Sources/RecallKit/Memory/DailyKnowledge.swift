@@ -211,7 +211,6 @@ public struct DailyKnowledgeEngine: Sendable {
                         recordedAt: entry.summary.day, eventAt: nil, sourceApp: nil, sourceBundle: nil)
                 }
             }
-            let days = Set(entries.map { Calendar.current.startOfDay(for: $0.summary.day) })
             let identifier = MemoryKnowledgeEngine.id("daily:" + key)
             let quote = last.knowledge.quotes.first ?? (last.item.detail.isEmpty ? last.item.title : last.item.detail)
             var claim = MemoryClaim(id: identifier, key: identifier.uuidString, subjectID: "user",

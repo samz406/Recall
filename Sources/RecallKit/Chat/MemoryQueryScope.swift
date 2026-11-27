@@ -24,7 +24,18 @@ public struct MemoryQueryScope: Hashable, Sendable {
         // Legacy local reviews are independently dated and never eligible for cloud read tools.
         dated.dailySummaries += selected.dailySummaries.filter { $0.sourceCaptureIDs.isEmpty && contains($0.day) }
         let ids = Set(dated.captures.map(\.id))
+        // Ongoing multi-day claims created earlier can still be updated/cited by records in this window;
+        // `selected` has already enforced privacy and topic restrictions on the full source set.
+        dated.memoryKnowledge.claims = selected.memoryKnowledge.claims.compactMap { claim in
+            guard contains(claim.date) else { return nil }
+            let inWindow = claim.sourceIDs.filter(ids.contains)
+            guard !inWindow.isEmpty else { return nil }
+            var copy = claim
+            copy.evidence = claim.evidence.filter { ids.contains($0.captureID) }
+            return copy.evidence.isEmpty ? nil : copy
+        }
         dated.reminders.removeAll { $0.sourceCaptureIDs.isEmpty ? !contains($0.createdAt) : !Set($0.sourceCaptureIDs).isSubset(of: ids) }
+        if !isRestricted { dated.messages = selected.messages }
         return dated
     }
 
@@ -48,7 +59,7 @@ public struct MemoryQueryScope: Hashable, Sendable {
                 && (topicSources == nil || topicSources!.contains($0.id))
         }
         let ids = Set(state.captures.map(\.id))
-        state.dailySummaries.removeAll { $0.sourceCaptureIDs.isEmpty || !Set($0.sourceCaptureIDs).isSubset(of: ids) }
+        state.dailySummaries = original.dailySummaries.compactMap { $0.scoping(to: ids) }
         state.episodes.removeAll { !Set($0.evidenceIDs).isSubset(of: ids) }
         state.userMemories.removeAll { !Set($0.evidenceIDs).isSubset(of: ids) }
         state.memoryKnowledge.claims.removeAll { $0.sourceIDs.isEmpty || !Set($0.sourceIDs).isSubset(of: ids) }
@@ -59,5 +70,27 @@ public struct MemoryQueryScope: Hashable, Sendable {
         state.conversationSummary = nil
         state.messages = []
         return state
+    }
+}
+
+extension DailySummary {
+    /// Retains only structured items and ledger entries whose own evidence is completely within `allowedIDs`.
+    /// Prevents a single unrelated or excluded screenshot on the same day from wiping out every other item's review.
+    func scoping(to allowedIDs: Set<UUID>) -> DailySummary? {
+        guard !sourceCaptureIDs.isEmpty else { return nil }
+        if Set(sourceCaptureIDs).isSubset(of: allowedIDs) { return self }
+        let keptItems = items.filter { !$0.evidenceIDs.isEmpty && Set($0.evidenceIDs).isSubset(of: allowedIDs) }
+        let keptLedger = ledger.filter { !$0.evidenceIDs.isEmpty && Set($0.evidenceIDs).isSubset(of: allowedIDs) }
+        let keptTodos = todos.filter { !$0.sourceCaptureIDs.isEmpty && Set($0.sourceCaptureIDs).isSubset(of: allowedIDs) }
+        guard !keptItems.isEmpty || !keptLedger.isEmpty else { return nil }
+        var copy = self
+        copy.items = keptItems
+        copy.ledger = keptLedger
+        copy.todos = keptTodos
+        copy.content = DailySummaryItemParser.markdown(from: keptItems)
+        copy.briefing = nil
+        copy.versions = nil
+        copy.sourceCaptureIDs = (keptItems.flatMap(\.evidenceIDs) + keptLedger.flatMap(\.evidenceIDs) + keptTodos.flatMap(\.sourceCaptureIDs)).memoryUnique()
+        return copy
     }
 }

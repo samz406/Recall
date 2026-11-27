@@ -48,31 +48,41 @@ public struct InterpretedEvidence: Sendable {
         }
     }
 
-    /// The entries of one saved review: the highlighted items first, then the day's other matters and agreements.
-    /// Reference material in the ledger stays out; it is what the review already chose not to highlight.
-    /// `budget` bounds the characters so a long span still covers every day.
+    /// The entries of one saved review: highlighted items first, then the day's other matters/agreements,
+    /// followed by structured reference/reading notes from the review ledger so study materials and non-highlighted
+    /// records remain answerable without exposing raw OCR.
     func entries(of review: DailySummary, budget: Int) -> [Entry] {
         let day = calendar.startOfDay(for: review.day)
         var result: [Entry] = []
         var titles: Set<String> = []
         var used = 0
-        func add(id: UUID, title: String, detail: String, status: String?, sourceIDs: [UUID]) {
+        func add(id: UUID, topic: String?, title: String, detail: String, status: String?, kind: DailyItemKind?, sourceIDs: [UUID]) {
             let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty, !sourceIDs.isEmpty, titles.insert(title).inserted else { return }
-            var text = title
+            let cleanTopic = topic?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            var text = (!cleanTopic.isEmpty && !title.localizedCaseInsensitiveContains(cleanTopic))
+                ? "[\(cleanTopic)] \(title)"
+                : title
             let detail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
             if !detail.isEmpty, detail != title { text += "：" + detail }
             if let status { text += "（" + Self.statusLabel(status) + "）" }
             text = PrivacyEngine().redact(String(text.prefix(600)))
             guard used + text.count <= budget || result.isEmpty else { return }
             used += text.count
-            result.append(Entry(id: id, day: day, label: "每日回顾", text: text, sourceIDs: sourceIDs))
+            let label = kind == .reference ? "每日回顾·资料线索" : "每日回顾"
+            result.append(Entry(id: id, day: day, label: label, text: text, sourceIDs: sourceIDs))
         }
         for item in review.items {
-            add(id: item.id, title: item.title, detail: item.detail, status: item.knowledge?.status, sourceIDs: item.evidenceIDs)
+            add(id: item.id, topic: item.knowledge?.topic, title: item.title, detail: item.detail,
+                status: item.knowledge?.status, kind: item.knowledge?.kind, sourceIDs: item.evidenceIDs)
         }
         for entry in review.ledger where entry.kind == .matter || entry.kind == .agreement {
-            add(id: entry.id, title: entry.title, detail: entry.detail, status: entry.status, sourceIDs: entry.evidenceIDs)
+            add(id: entry.id, topic: entry.topic, title: entry.title, detail: entry.detail,
+                status: entry.status, kind: entry.kind, sourceIDs: entry.evidenceIDs)
+        }
+        for entry in review.ledger where entry.kind == .reference || entry.kind == .preference {
+            add(id: entry.id, topic: entry.topic, title: entry.title, detail: entry.detail,
+                status: entry.status, kind: entry.kind, sourceIDs: entry.evidenceIDs)
         }
         return result
     }
@@ -82,13 +92,15 @@ public struct InterpretedEvidence: Sendable {
         let day = calendar.startOfDay(for: record.createdAt)
         let label = record.sourceAppName ?? "记录"
         if let understood = record.understanding, isCurrent(understood) {
-            let facts = understood.facts.filter { $0.kind != .reference }.prefix(8).map { "- " + $0.statement }
+            let primary = understood.facts.filter { $0.kind != .reference }
+            let chosen = primary.isEmpty ? understood.facts : primary
+            let facts = chosen.prefix(8).map { "- " + $0.statement }
             if !facts.isEmpty {
-                return Entry(id: record.id, day: day, label: label, text: PrivacyEngine().redact(facts.joined(separator: "\n")), sourceIDs: [record.id])
+                return Entry(id: record.id, day: day, label: label, text: PrivacyEngine().redact(String(facts.joined(separator: "\n").prefix(600))), sourceIDs: [record.id])
             }
         }
         guard let text = Self.readableText(record)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
-        return Entry(id: record.id, day: day, label: label, text: PrivacyEngine().redact(String(text.prefix(1_200))), sourceIDs: [record.id])
+        return Entry(id: record.id, day: day, label: label, text: PrivacyEngine().redact(String(text.prefix(600))), sourceIDs: [record.id])
     }
 
     /// Records first map to review entries that cite them, then to their own interpretation.

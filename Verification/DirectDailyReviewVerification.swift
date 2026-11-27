@@ -70,6 +70,7 @@ enum DirectDailyReviewVerification {
         try await incompleteRegenerationUsesSameDayEvidence()
         try await previousProgressRespectsCurrentEvidence()
         try await ledgerSurvivesProviderCapacityFallback()
+        try await multiBatchSummaryQuotesAndOmittedProgressSurvive()
         try await boundedParallelBatchesAndFullTail()
         try await restartResumesBatches()
         try await capacityFallback()
@@ -319,6 +320,114 @@ enum DirectDailyReviewVerification {
         try expect(requests.count > 1 && requests.last?.context[0].ocrText.contains("Nova 导出") == false
             && recovered.summary.items.filter { $0.section == .progress }.map(\.evidenceIDs) == fixture.records.prefix(2).map { [$0.id] },
             "最后一轮材料省略了旧进展时，未能从分组前的原文恢复并保存进展")
+    }
+    private actor SummaryConsolidationModel: LLMResponding {
+        var requests: [LLMRequest] = []
+        func log() -> [LLMRequest] { requests }
+        func answer(to request: LLMRequest) async throws -> LLMAnswer {
+            requests.append(request)
+            let docs = try JSONSerialization.jsonObject(with: Data(request.context[0].ocrText.utf8)) as! [[String: Any]]
+            let isSummaryRound = docs.allSatisfy { ($0["basis"] as? String) == "summary" }
+            if !isSummaryRound {
+                var items: [[String: Any]] = []
+                for doc in docs {
+                    let id = doc["id"] as! String
+                    let text = doc["text"] as! String
+                    if text.contains("Atlas 夜间网关") {
+                        items.append(["section": "progress", "title": "完成环境凌晨 Atlas 网关异常归因",
+                            "detail": "确认凌晨异常主体为 Atlas 会话续期与下游超时，查询链路未见熔断。",
+                            "topic": "Atlas 夜间网关超时事件", "kind": "matter", "owner": "unknown", "status": "completed",
+                            "explicitCommitment": false, "condition": NSNull(),
+                            "evidence": [["id": id, "quote": "Atlas 夜间网关主体为会话续期超时"]]])
+                    }
+                    if text.contains("Build complete") {
+                        // Model normalizes fullwidth OCR punctuation `！ （42.10s）` to `! (42.10s)`
+                        items.append(["section": "progress", "title": "完成 Cedar 分支同步并通过构建",
+                            "detail": "主分支拉取后本地编译通过，验证耗时正常。",
+                            "topic": "Cedar 本地构建验证", "kind": "matter", "owner": "user", "status": "completed",
+                            "explicitCommitment": false, "condition": NSNull(),
+                            "evidence": [["id": id, "quote": "Build complete! (42.10s)"]]])
+                    }
+                    if text.contains("Nova 模板通知") {
+                        items.append(["section": "progress", "title": "Nova 模板通知修复已提交",
+                            "detail": "空字段整段裁剪并补充编码兜底，48 个合成用例通过。",
+                            "topic": "Nova 模板通知字段裁剪", "kind": "matter", "owner": "user", "status": "inProgress",
+                            "explicitCommitment": false, "condition": NSNull(),
+                            "evidence": [["id": id, "quote": "Nova 模板通知空字段整段裁剪"]]])
+                    }
+                    if text.contains("先补一份状态迁移脚本") {
+                        items.append(["section": "actions", "title": "编写 Birch 异常记录状态迁移脚本",
+                            "detail": "核实记录快照状态后编写异常批次迁移脚本。",
+                            "topic": "Birch 异常记录状态修复", "kind": "matter", "owner": "user", "status": "pending",
+                            "explicitCommitment": true, "condition": NSNull(),
+                            "evidence": [["id": id, "quote": "先补一份状态迁移脚本"]]])
+                    }
+                }
+                let coverage = docs.map { ["id": $0["id"]!, "disposition": "used"] as [String: Any] }
+                let draft: [String: Any] = ["overview": "", "items": items, "coverage": coverage]
+                return LLMAnswer(content: try ReviewRecoveryVerification.json(draft), citedCaptureIDs: [])
+            }
+            // Final consolidation over `basis == "summary"`:
+            // 1. Quotes `summary.text` prose instead of `quotes` for Atlas, AND overclaims `owner: "user"` on `unknown` proof;
+            // 2. Keeps the Birch `actions` item verbatim;
+            // 3. Completely omits `Cedar 本地构建验证` and `Nova 模板通知字段裁剪` from `items` and `ledger`!
+            let atlasDoc = docs.first { ($0["text"] as! String).contains("Atlas 网关异常归因") }!
+            let birchDoc = docs.first { ($0["text"] as! String).contains("状态迁移脚本") }!
+            let finalItems: [[String: Any]] = [
+                ["section": "progress", "title": "Atlas 夜间网关超时已完成归因",
+                 "detail": "确认凌晨异常为 Atlas 会话续期及下游超时，查询链路未发生熔断。",
+                 "topic": "Atlas 夜间网关超时事件", "kind": "matter", "owner": "user", "status": "completed",
+                 "explicitCommitment": false, "condition": NSNull(),
+                 "evidence": [["id": atlasDoc["id"]!, "quote": "确认凌晨异常主体为 Atlas 会话续期与下游超时"]]],
+                ["section": "actions", "title": "编写 Birch 异常记录状态迁移脚本",
+                 "detail": "核实记录快照状态后编写异常批次迁移脚本。",
+                 "topic": "Birch 异常记录状态修复", "kind": "matter", "owner": "user", "status": "pending",
+                 "explicitCommitment": true, "condition": NSNull(),
+                 "evidence": [["id": birchDoc["id"]!, "quote": "先补一份状态迁移脚本"]]]
+            ]
+            let coverage = docs.map { ["id": $0["id"]!, "disposition": "used"] as [String: Any] }
+            let draft: [String: Any] = [
+                "overview": "完成 Atlas 夜间网关排查、Cedar 构建验证与 Nova 模板修复。",
+                "items": finalItems,
+                "coverage": coverage
+            ]
+            return LLMAnswer(content: try ReviewRecoveryVerification.json(draft), citedCaptureIDs: [])
+        }
+    }
+    private static func multiBatchSummaryQuotesAndOmittedProgressSurvive() async throws {
+        try expect(DirectDailyReviewEngine.verbatimFragment(matching: "Build complete! (42.10s)", in: "日志输出：Build complete！ （42.10s）") == "Build complete！ （42.10s）",
+            "OCR 全角标点与空格差异没有还原成逐字原文片段")
+        try expect(DirectDailyReviewEngine.verbatimFragment(matching: "伪造句子", in: "日志输出：Build complete！ （42.10s）") == nil,
+            "不存在的句子被误还原为原文片段")
+
+        let fixture = try await ModelReviewVerification.fixture(count: 4, raw: true)
+        defer { try? FileManager.default.removeItem(at: fixture.storage.rootURL) }
+        let samples = [
+            "[聊天·角色未知] Atlas 夜间网关主体为会话续期超时，查询链路正常。",
+            "Build complete！ （42.10s）",
+            "[聊天·自己] Nova 模板通知空字段整段裁剪，48 个合成用例通过。",
+            "[聊天·自己] 先补一份状态迁移脚本"
+        ]
+        for (index, (record, sample)) in zip(fixture.records, samples).enumerated() {
+            let filler = String(repeating: "第\(index)组上下文记录材料。", count: 90) + "\n"
+            try await fixture.store.correctCaptureText(record.id, text: filler + sample)
+        }
+        let responder = SummaryConsolidationModel()
+        let outcome = try await fixture.store.generateDirectDailyReview(
+            day: fixture.records[0].createdAt,
+            period: fixture.period,
+            responder: responder,
+            limits: DailyReviewLimits(inputBytes: 11_000, concurrency: 2)
+        )
+        let calls = await responder.log()
+        let summaryCalls = calls.filter { $0.question.contains("分组小结（basis=summary）") }
+        let progressTopics = Set(outcome.summary.items.filter { $0.section == .progress }.compactMap { $0.knowledge?.topic })
+        try expect(summaryCalls.count == 1, "分组汇总因引文落在小结文本或归属降级而重复调用模型，或未附带 summary 引用说明")
+        try expect(progressTopics == ["Atlas 夜间网关超时事件", "Cedar 本地构建验证", "Nova 模板通知字段裁剪"],
+            "分组汇总丢失了前序批次已核实的不同主题进展: \(progressTopics)")
+        try expect(outcome.summary.todos.count == 1 && outcome.summary.modelOverview?.isEmpty == false
+            && outcome.summary.modelCoverage?.uncertainBlockCount == 0,
+            "分组汇总清空了概览、丢失待办，或把已核实分组误标成 uncertain")
     }
     static func largeFixture() async throws -> ModelReviewVerification.Fixture {
         let f = try await ModelReviewVerification.fixture(count: 4, raw: true)

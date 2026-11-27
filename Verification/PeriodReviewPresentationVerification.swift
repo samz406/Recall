@@ -74,6 +74,25 @@ enum PeriodReviewPresentationVerification {
         try expect(trimmed.start == twoDaysAgo && trimmed.end == today && trimmed.isValid, "只回顾到昨天的范围不正确")
         try expect(!PeriodReviewFromDaily.gaps(in: state, period: trimmed, now: now).todayMissing, "排除今天后仍提示今天缺失")
         try expect(PeriodReviewFromDaily.excludingToday(ReviewPeriod(start: today, end: now), now: now) == nil, "只含今天的范围被裁成空")
+
+        // Morning review exists, then an afternoon capture arrives: todayStale triggers refresh until covered.
+        let morningCap = state.captures[2]
+        var morningReview = DailySummary(day: today, content: "上午回顾", sourceCaptureIDs: [morningCap.id], todos: [], generationKind: .cloud)
+        morningReview.items = [DailySummaryItem(section: .progress, title: "上午事项", detail: morningCap.ocrText, evidenceIDs: [morningCap.id],
+            knowledge: DailyItemKnowledge(topic: "合成上午", kind: .matter, status: "inProgress", ownedByUser: true, quotes: [morningCap.ocrText]))]
+        state.dailySummaries.append(morningReview)
+        let upToDateGaps = PeriodReviewFromDaily.gaps(in: state, period: period, now: now)
+        try expect(!upToDateGaps.todayMissing && !upToDateGaps.todayStale && !upToDateGaps.allMissingDays.contains(today), "今日记录已全部纳入回顾时不应再提示补齐")
+
+        let afternoonNow = calendar.date(bySettingHour: 14, minute: 0, second: 0, of: now)!
+        let afternoonCap = CaptureRecord(eventTemplate: .manualMoment, createdAt: today.addingTimeInterval(13 * 3_600), contentHash: UUID().uuidString,
+                                         ocrText: "合成下午新增记录", textOrigin: .screenOCR)
+        state.captures.append(afternoonCap)
+        let afternoonPeriod = ReviewPeriod(start: twoDaysAgo, end: afternoonNow)
+        let staleGaps = PeriodReviewFromDaily.gaps(in: state, period: afternoonPeriod, now: afternoonNow)
+        try expect(!staleGaps.todayMissing && staleGaps.todayStale && staleGaps.todayUncoveredCount == 1, "今日下午新增未覆盖记录未被识别为 todayStale")
+        try expect(staleGaps.todayNeedsUpdate && staleGaps.hasActionableGaps && staleGaps.allMissingDays == [twoDaysAgo, today], "待补齐列表未包含需要增量刷新的今天")
+        try expect(staleGaps.headline.contains("1 条新记录未纳入回顾"), "标题未明确提示今天新增的未整理记录数：\(staleGaps.headline)")
     }
     static func dayLabel(_ date: Date) -> String {
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "zh_CN"); formatter.dateFormat = "M/d"

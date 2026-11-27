@@ -85,14 +85,41 @@ struct RecallRootView: View {
         .onChange(of: model.navigationRevision) { _, _ in
             let target = model.destination
             guard let target else { return }
-            returnSection = section; model.showsTaskHistory = false
+            model.showsTaskHistory = false
             switch target {
-            case .record: section = .matters
-            case .topic(let id): model.topicToOpen = id; section = .matters
-            case .daily(let id): model.dailyToOpen = id; section = .today
-            case .review(let id): model.weeklyReportToOpen = id; section = .today
-            case .reminder: section = .today
-            case .knowledge(let id): model.knowledgeToOpen = id; section = .matters
+            case .topic(let id):
+                // Open the topic sheet directly over the current page (e.g. Today → Overview)
+                // so closing the sheet leaves the user right where they clicked, without switching sections.
+                model.topicToOpen = id
+                model.destination = nil
+            case .record:
+                returnSection = section
+                section = .matters
+            case .daily(let id):
+                returnSection = section
+                model.dailyToOpen = id
+                section = .today
+            case .review(let id):
+                returnSection = section
+                model.weeklyReportToOpen = id
+                section = .today
+            case .reminder:
+                returnSection = section
+                section = .today
+            case .knowledge(let id):
+                returnSection = section
+                model.knowledgeToOpen = id
+                section = .matters
+            }
+        }
+        .sheet(isPresented: Binding(get: { model.topicToOpen != nil }, set: { if !$0 { model.topicToOpen = nil } })) {
+            if let id = model.topicToOpen {
+                TopicDetailView(topicID: id, continueChat: { value in
+                    returnSection = section
+                    model.topicToOpen = nil
+                    model.startTopicConversation(value)
+                    section = .chat
+                }).environmentObject(model)
             }
         }
         .sheet(item: $model.summaryFeedbackTarget) { SummaryFeedbackSheet(target: $0).environmentObject(model) }
@@ -1393,17 +1420,11 @@ private struct RecallMessageCard: View {
 private struct MarkdownParagraphText: View {
     let markdown: String
 
-    private var paragraphs: [String] {
-        markdown
-            .components(separatedBy: "\n\n")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
-
     var body: some View {
+        let blocks = ChatResponseFormatter().attributedParagraphs(markdown)
         VStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(paragraphs.enumerated()), id: \.offset) { item in
-                Text(markdownAttributedString(from: item.element))
+            ForEach(Array(blocks.enumerated()), id: \.offset) { item in
+                Text(item.element)
                     .font(.system(size: 15))
                     .textSelection(.enabled)
                     .lineSpacing(6)
@@ -1411,14 +1432,6 @@ private struct MarkdownParagraphText: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func markdownAttributedString(from source: String) -> AttributedString {
-        guard !source.isEmpty else { return AttributedString() }
-        if let parsed = try? AttributedString(markdown: source, options: .init(interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible)) {
-            return parsed
-        }
-        return AttributedString(source)
     }
 }
 

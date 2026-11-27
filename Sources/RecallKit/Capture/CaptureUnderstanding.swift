@@ -171,7 +171,7 @@ public enum CaptureUnderstandingEngine {
     public static func blocks(for capture: CaptureRecord, contextOnly: Bool = false) -> [UnderstandingBlock] {
         var result: [UnderstandingBlock] = []
         for (lineIndex, raw) in (capture.correctedText ?? capture.ocrText).components(separatedBy: .newlines).enumerated() {
-            var line = PrivacyEngine().redact(raw).trimmingCharacters(in: .whitespacesAndNewlines)
+            let line = PrivacyEngine().redact(raw).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty else { continue }
             let speaker: UnderstandingSpeaker
             if let message = capture.sourceMessages?.first(where: { $0.text == raw }) { speaker = message.speaker }

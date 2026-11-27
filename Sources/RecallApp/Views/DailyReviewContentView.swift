@@ -12,17 +12,33 @@ struct DailyReviewContentView: View {
     private var items: [DailySummaryItem] {
         DailyReviewPresentation.items(in: summary, state: model.state)
     }
+    private var completedActions: [DailySummaryItem] {
+        let live = Set(model.state.captures.filter { !model.state.privacy.excludedBundleIdentifiers.contains($0.sourceBundleIdentifier ?? "") }.map(\.id))
+        return summary.items.filter { item in
+            guard item.section == .actions, item.evidenceIDs.contains(where: live.contains) else { return false }
+            if item.knowledge?.status == "completed" { return true }
+            if let action = DailyReviewPresentation.action(for: item, in: summary) {
+                if action.status == .completed { return true }
+                if let reminder = DailyReviewPresentation.reminder(for: action, item: item, in: model.state), reminder.status == .completed { return true }
+            }
+            return false
+        }
+    }
     var body: some View {
         let rows = items
+        let completed = completedActions
         VStack(alignment: .leading, spacing: 30) {
             if let message = model.dailyReviewActionMessages[summary.id] {
                 Label(message, systemImage: "info.circle").font(.callout).foregroundStyle(RecallPalette.secondary)
+            }
+            if let notice = summary.modelCoverage?.notice {
+                Label(RecallLocalization.text(notice), systemImage: "info.circle").font(.callout).foregroundStyle(RecallPalette.secondary)
             }
             if summary.formatVersion != 2 {
                 Text(RecallLocalization.text("这份回顾使用较早的整理规则，可以重新生成；原版本会保留。"))
                     .font(.caption).foregroundStyle(RecallPalette.secondary)
             }
-            if rows.isEmpty { Text(RecallLocalization.text("这一天暂无可以可靠整理的内容，原始记录仍可在时间线查看。")) }
+            if rows.isEmpty && completed.isEmpty { Text(RecallLocalization.text("这一天暂无可以可靠整理的内容，原始记录仍可在时间线查看。")) }
             ForEach(DailySummarySection.displaySections) { section in
                 let sectionRows = rows.filter { $0.section == section }
                 if !sectionRows.isEmpty {
@@ -46,6 +62,26 @@ struct DailyReviewContentView: View {
                         }.padding(.leading, 28)
                     }
                 }
+            }
+            if !completed.isEmpty {
+                DisclosureGroup(RecallLocalization.both("已完成待办（\(completed.count)）", "Completed actions (\(completed.count))")) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(completed) { item in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                    itemTitle(item.title)
+                                    Spacer(minLength: 8)
+                                    RecallStatusBadge(title: RecallLocalization.text("已完成"), warning: false).fixedSize()
+                                }
+                                if !item.detail.isEmpty {
+                                    Text(ReviewTextHighlight.attributed(item.detail)).font(RecallTypography.body).lineSpacing(5)
+                                        .foregroundStyle(RecallPalette.secondary)
+                                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                                }
+                            }
+                        }
+                    }.padding(.top, 10)
+                }.font(.callout).foregroundStyle(RecallPalette.secondary)
             }
             if let versions = summary.versions, !versions.isEmpty {
                 DisclosureGroup("历史版本（\(versions.count)）") {

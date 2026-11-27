@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 public enum CredentialError: LocalizedError {
@@ -30,7 +31,11 @@ public struct KeychainCredentialStore: CredentialStore {
     }
     public func read(_ id: UUID) throws -> String? {
         var q = query(id); q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
-        if !interactionAllowed { q[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail }
+        if !interactionAllowed {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            q[kSecUseAuthenticationContext as String] = context
+        }
         var result: CFTypeRef?
         let status = SecItemCopyMatching(q as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }

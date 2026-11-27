@@ -89,6 +89,20 @@ public final class MemoryAssistant: Sendable {
             return answer
         }
         let clock = ContinuousClock()
+        await refreshTodayReviewIfNeeded(
+            question: question,
+            scope: scope,
+            questionRange: questionRange,
+            originalState: originalState,
+            model: model,
+            clock: clock,
+            onStatus: onStatus,
+            onStep: onStep
+        )
+        try Task.checkCancellation()
+        let refreshedConversation = await store.conversationSnapshotWithRevision()
+        let activeOriginalState = refreshedConversation.state
+        let activeCaptureRevision = refreshedConversation.captureRevision
         let analysisStarted = clock.now
         let textIndex = await store.captureTextIndex()
         let fullState = await store.preparedForChat()
@@ -97,7 +111,7 @@ public final class MemoryAssistant: Sendable {
         state.messages.removeAll { $0.id == userMessage.id }
         if let answer = try await cloudAgentAnswer(
             question: question, conversationID: conversation.id, scope: scope,
-            fullState: fullState, state: state, originalState: originalState, originalCaptureRevision: originalCaptureRevision, textIndex: textIndex,
+            fullState: fullState, state: state, originalState: activeOriginalState, originalCaptureRevision: activeCaptureRevision, textIndex: textIndex,
             model: model, limits: limits, onPartial: onPartial, onStatus: onStatus, onStep: onStep, onRetrievalWarning: onRetrievalWarning, onEvidenceReady: onEvidenceReady
         ) { return answer }
         let retrievalStarted = clock.now
@@ -165,7 +179,19 @@ public final class MemoryAssistant: Sendable {
         case .openAICompatible, .anthropicCompatible:
             // Same rule as the agent: only interpreted items go to the model, never raw screen text.
             let recordIDs = plan.evidence.flatMap { retrieval.sourceIDs[$0.id] ?? [$0.id] }.memoryUnique()
-            let entries = Array(InterpretedEvidence(state: state).entries(forRecords: recordIDs, reviews: state.dailySummaries).entries.prefix(30))
+            var entries = InterpretedEvidence(state: state).entries(forRecords: recordIDs, reviews: state.dailySummaries).entries
+            for item in plan.evidence where item.sourceBundleIdentifier == "im.recall.memory-claim" {
+                guard let sources = retrieval.sourceIDs[item.id], !sources.isEmpty,
+                      !entries.contains(where: { $0.id == item.id }) else { continue }
+                entries.append(InterpretedEvidence.Entry(
+                    id: item.id,
+                    day: Calendar.current.startOfDay(for: item.createdAt),
+                    label: item.sourceAppName ?? "主题",
+                    text: privacyEngine.redact(String(item.ocrText.prefix(600))),
+                    sourceIDs: sources
+                ))
+            }
+            entries = Array(entries.prefix(30))
             // A missing credential is reported even when there is nothing to send.
             let base = if let model { model } else { try await store.modelResponder() }
             if entries.isEmpty { response = LLMAnswer(content: AnswerGrounding.noEvidence, citedCaptureIDs: []); break }
@@ -321,6 +347,97 @@ public final class MemoryAssistant: Sendable {
     private static func milliseconds(from start: ContinuousClock.Instant, clock: ContinuousClock) -> Int {
         let parts = start.duration(to: clock.now).components
         return Int(truncatingIfNeeded: parts.seconds * 1_000 + parts.attoseconds / 1_000_000_000_000_000)
+    }
+
+    /// When a cloud question covers today and today has unorganized screen captures (either no review yet, or newer captures
+    /// after an earlier review today), refreshes today's structured daily review first so mid-day summaries never miss today.
+    /// Any model/validation failure degrades silently to existing reviews rather than blocking the chat turn.
+    private func refreshTodayReviewIfNeeded(
+        question: String,
+        scope: MemoryQueryScope,
+        questionRange: ResolvedMemoryTimeRange?,
+        originalState: RecallState,
+        model: (any LLMResponding)?,
+        clock: ContinuousClock,
+        onStatus: (@MainActor @Sendable (String) -> Void)?,
+        onStep: (@MainActor @Sendable (String, Int) -> Void)?
+    ) async {
+        let now = Date.now
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: now)
+        if let scopeEnd = scope.end, scopeEnd <= todayStart { return }
+        if let questionRange, questionRange.endDate <= todayStart { return }
+
+        let live = await store.snapshot()
+        guard live.privacy.cloudUseEnabled,
+              live.llmConfiguration.provider != .localOnly,
+              model != nil || live.llmConfiguration.hasCredential,
+              live.privacy.excludedBundleIdentifiers == originalState.privacy.excludedBundleIdentifiers,
+              live.llmConfiguration == originalState.llmConfiguration,
+              live.matterCorrections.map(\.id) == originalState.matterCorrections.map(\.id) else { return }
+
+        let windowStart = max(todayStart, max(scope.start ?? todayStart, questionRange?.startDate ?? todayStart))
+        let windowEnd = min(now, min(scope.end ?? now, questionRange?.endDate ?? now))
+        guard windowStart < windowEnd else { return }
+
+        let prepared = live.correctedForAnalysis()
+        let coveredIDs = Set(live.dailyReview(on: todayStart, calendar: calendar)?.sourceCaptureIDs ?? [])
+        let interpreter = InterpretedEvidence(state: prepared, calendar: calendar)
+        let topicSources: Set<UUID>? = scope.topicID.map { id in
+            Set(prepared.memoryKnowledge.claims.filter { $0.subjectID == id || ($0.scope == .project && $0.scopeID == id) }.flatMap(\.sourceIDs))
+                .union(scope.topicEvidenceIDs ?? [])
+                .union(prepared.topicGroups.filter { $0.id == id }.flatMap { group in
+                    prepared.memoryKnowledge.claims.filter { group.memberIDs.contains($0.subjectID) }.flatMap(\.sourceIDs)
+                })
+        }
+        let uncoveredToday = EvidenceAccess.records(prepared).filter { record in
+            let participates = prepared.rules.first { $0.template == record.eventTemplate }?.participatesInChat ?? true
+            guard participates,
+                  record.createdAt >= windowStart,
+                  record.createdAt < windowEnd,
+                  !record.searchableText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !coveredIDs.contains(record.id),
+                  topicSources == nil || topicSources!.contains(record.id) else { return false }
+            return interpreter.entry(for: record) == nil
+        }
+        guard !uncoveredToday.isEmpty else { return }
+
+        let explicitlyCoversToday = questionRange != nil || scope.start != nil || scope.recentDays != nil || scope.topicID != nil
+        if !explicitlyCoversToday {
+            let terms = QuestionTerms.topicTerms(question)
+            guard !terms.isEmpty else { return }
+            let matchedToday: Bool
+            if let textIndex = await store.captureTextIndex() {
+                let ids = Set(textIndex.ids(matching: terms, start: windowStart, end: windowEnd, limit: 20))
+                matchedToday = uncoveredToday.contains { ids.contains($0.id) }
+            } else {
+                matchedToday = uncoveredToday.contains { record in
+                    terms.contains { record.searchableText.localizedCaseInsensitiveContains($0) }
+                }
+            }
+            guard matchedToday else { return }
+        }
+
+        do {
+            try Task.checkCancellation()
+            let responder = if let model { model } else { try await store.modelResponder() }
+            await onStatus?(RecallLocalization.both("正在整理今日最新记录…", "Organizing today's latest records…"))
+            let started = clock.now
+            let period = ReviewPeriod(start: todayStart, end: windowEnd, timeZoneIdentifier: calendar.timeZone.identifier)
+            _ = try await store.generateDirectDailyReview(
+                day: todayStart,
+                period: period,
+                responder: responder,
+                policy: .replaceExisting,
+                expectedConfiguration: live.llmConfiguration,
+                expectedPrivacy: live.privacy
+            )
+            await onStep?("today-review", Self.milliseconds(from: started, clock: clock))
+        } catch {
+            if !ModelCallCancellation.isCancellation(error) {
+                await onStep?("today-review-fallback", 0)
+            }
+        }
     }
 
     /// Date and correction notes are for the model. Only the records that will actually be sent are copied.

@@ -394,7 +394,7 @@ public struct MatterMemoryEngine: Sendable {
 public extension RecallState {
     /// A completion applies to the evidence the user saw. New evidence can reopen the topic.
     /// 旧主题 ID（topic:key）归一为登记表里的稳定 ID；没有登记表时原样返回。
-    public func canonicalTopicID(_ id: String) -> String { topicRegistry.canonicalID(id) }
+    func canonicalTopicID(_ id: String) -> String { topicRegistry.canonicalID(id) }
 
     func applyingTopicCompletion(to file: MatterFile) -> MatterFile {
         guard matterCorrections.last(where: {

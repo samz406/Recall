@@ -275,16 +275,23 @@ struct WeeklyReviewView: View {
     @ViewBuilder private func coverageNotice(range: ReviewPeriod) -> some View {
         let full = PeriodReviewFromDaily.gaps(in: model.state, period: selectedPeriod, now: rangeNow)
         let gaps = PeriodReviewFromDaily.gaps(in: model.state, period: range, now: rangeNow)
-        if full.todayMissing || gaps.hasMissingRecords {
+        if full.todayNeedsUpdate || gaps.hasActionableGaps {
             VStack(alignment: .leading, spacing: 8) {
                 Label(gaps.headline, systemImage: "calendar.badge.exclamationmark").font(.callout)
-                if full.todayMissing {
-                    Toggle(RecallLocalization.both("今天的记录还在进行中，只回顾到昨天", "Today is still in progress; stop at yesterday"), isOn: $excludesToday)
+                if full.todayNeedsUpdate {
+                    Toggle(RecallLocalization.both(
+                        full.todayStale ? "今天有新记录尚未纳入回顾，只回顾到昨天" : "今天的记录还在进行中，只回顾到昨天",
+                        "Today is still in progress; stop at yesterday"
+                    ), isOn: $excludesToday)
                         .toggleStyle(.checkbox).font(.callout)
                 }
                 if !gaps.allMissingDays.isEmpty {
-                    Text(RecallLocalization.both("周期回顾基于每日回顾生成。可以先补生成缺失的天，完成后自动生成；也可以只用已有的 \(gaps.reviewedDayCount) 天。",
-                        "Period reviews are built from daily reviews. Fill the missing days first and the review follows automatically, or use the \(gaps.reviewedDayCount) existing days."))
+                    Text(RecallLocalization.both(
+                        gaps.missingRecordedDays.isEmpty && gaps.todayStale
+                            ? "周期回顾基于每日回顾生成。可以先将今天的新记录更新到今日回顾后自动生成，也可以直接用已有回顾。"
+                            : "周期回顾基于每日回顾生成。可以先补生成缺失的天，完成后自动生成；也可以只用已有的 \(gaps.reviewedDayCount) 天。",
+                        "Period reviews are built from daily reviews. Fill the missing days first and the review follows automatically, or use the \(gaps.reviewedDayCount) existing days."
+                    ))
                         .font(.caption).foregroundStyle(RecallPalette.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
@@ -292,27 +299,48 @@ struct WeeklyReviewView: View {
         }
     }
     private func generateButton(range: ReviewPeriod, eligibleTopicCount: Int) -> some View {
-        let missing = range.isValid ? PeriodReviewFromDaily.gaps(in: model.state, period: range, now: rangeNow).allMissingDays : []
-        let reviewed = range.isValid ? PeriodReviewFromDaily.gaps(in: model.state, period: range, now: rangeNow).reviewedDayCount : 0
+        let currentGaps = range.isValid ? PeriodReviewFromDaily.gaps(in: model.state, period: range, now: rangeNow) : nil
+        let missing = currentGaps?.allMissingDays ?? []
+        let reviewed = currentGaps?.reviewedDayCount ?? 0
+        let onlyTodayStale = (currentGaps?.missingRecordedDays.isEmpty == true) && (currentGaps?.todayStale == true)
         return HStack(spacing: 10) {
             if !missing.isEmpty && reviewed > 0 {
-                Button(RecallLocalization.both("只用已有的 \(reviewed) 天", "Use \(reviewed) existing days")) {
+                Button(RecallLocalization.both(
+                    onlyTodayStale ? "直接用已有回顾" : "只用已有的 \(reviewed) 天",
+                    onlyTodayStale ? "Use existing reviews" : "Use \(reviewed) existing days"
+                )) {
                     model.generateWeeklyReview(period: range, template: template, scope: scope)
                     showsComposer = false
                 }.controlSize(.large).fixedSize()
                     .disabled(model.isGeneratingWeeklyReview || model.isBuildingMatters || eligibleTopicCount == 0)
             }
-            primaryGenerateButton(range: range, eligibleTopicCount: eligibleTopicCount, missing: missing)
+            primaryGenerateButton(range: range, eligibleTopicCount: eligibleTopicCount, missing: missing, onlyTodayStale: onlyTodayStale)
         }
     }
-    private func primaryGenerateButton(range: ReviewPeriod, eligibleTopicCount: Int, missing: [Date]) -> some View {
+    private func primaryGenerateButton(range: ReviewPeriod, eligibleTopicCount: Int, missing: [Date], onlyTodayStale: Bool = false) -> some View {
         Button {
-            if missing.isEmpty { model.generateWeeklyReview(period: range, template: template, scope: scope) }
-            else { model.backfillThenGenerateWeeklyReview(days: missing, period: range, template: template, scope: scope) }
+            let now = Date.now
+            let effectiveRange: ReviewPeriod
+            if !excludesToday, range.end > range.calendar.startOfDay(for: now), range.end < now {
+                let candidate = ReviewPeriod(start: range.start, end: now, timeZoneIdentifier: range.timeZoneIdentifier)
+                effectiveRange = candidate.isValid ? candidate : range
+            } else {
+                effectiveRange = range
+            }
+            let liveMissing = effectiveRange.isValid ? PeriodReviewFromDaily.gaps(in: model.state, period: effectiveRange, now: now).allMissingDays : missing
+            if liveMissing.isEmpty { model.generateWeeklyReview(period: effectiveRange, template: template, scope: scope) }
+            else { model.backfillThenGenerateWeeklyReview(days: liveMissing, period: effectiveRange, template: template, scope: scope) }
             showsComposer = false
         } label: {
-            Label(missing.isEmpty ? RecallLocalization.text("生成回顾") : RecallLocalization.both("补生成 \(missing.count) 天后生成", "Fill \(missing.count) days, then generate"),
-                  systemImage: "sparkles")
+            let title: String
+            if missing.isEmpty {
+                title = RecallLocalization.text("生成回顾")
+            } else if onlyTodayStale {
+                title = RecallLocalization.both("更新今天后生成", "Update today, then generate")
+            } else {
+                title = RecallLocalization.both("补生成 \(missing.count) 天后生成", "Fill \(missing.count) days, then generate")
+            }
+            return Label(title, systemImage: "sparkles")
                 .font(.system(size: 15, weight: .semibold))
                 .padding(.horizontal, 8).frame(minHeight: 30)
         }
@@ -435,13 +463,17 @@ struct WeeklyReviewView: View {
             if let glance = LocalBriefing.glance(report.period, in: model.state) {
                 Label(glance.sentence, systemImage: "chart.bar").font(.callout).foregroundStyle(RecallPalette.text.opacity(0.85))
             }
-            let gaps = PeriodReviewFromDaily.gaps(in: model.state, period: report.period)
+            let refreshed = refreshedPeriod(for: report)
+            let gaps = PeriodReviewFromDaily.gaps(in: model.state, period: refreshed)
             Text(gaps.headline).font(.caption).foregroundStyle(RecallPalette.secondary)
-            if gaps.hasMissingRecords && !report.hasNoBody {
-                Button(RecallLocalization.both("补生成 \(gaps.missingRecordedDays.count) 天并重新生成", "Fill \(gaps.missingRecordedDays.count) days and regenerate")) {
-                    model.backfillThenGenerateWeeklyReview(days: gaps.missingRecordedDays, period: report.period, template: report.template, scope: report.scope)
+            if gaps.hasActionableGaps && !report.hasNoBody {
+                let buttonTitle = gaps.missingRecordedDays.isEmpty && gaps.todayNeedsUpdate
+                    ? RecallLocalization.both("补上今天并重新生成", "Include today and regenerate")
+                    : RecallLocalization.both("补生成 \(gaps.allMissingDays.count) 天并重新生成", "Fill \(gaps.allMissingDays.count) days and regenerate")
+                Button(buttonTitle) {
+                    model.backfillThenGenerateWeeklyReview(days: gaps.allMissingDays, period: refreshed, template: report.template, scope: report.scope)
                 }.buttonStyle(.bordered).controlSize(.small)
-                    .disabled(model.isGeneratingDailySummary || model.isGeneratingWeeklyReview || model.pendingPeriodReview != nil)
+                    .disabled(model.isGeneratingDailySummary || model.isGeneratingWeeklyReview || model.pendingPeriodReview != nil || !model.state.privacy.cloudUseEnabled)
             }
             if report.isReadable {
                 Text(report.hasNoBody
@@ -488,8 +520,20 @@ struct WeeklyReviewView: View {
             if model.deletingWeeklyReportIDs.contains(report.id) { ProgressView().controlSize(.small) }
         }.fixedSize()
     }
+    private func refreshedPeriod(for report: WeeklyReport, now: Date = .now) -> ReviewPeriod {
+        let todayStart = report.period.calendar.startOfDay(for: now)
+        guard report.period.end > todayStart, report.period.end < now else { return report.period }
+        let candidate = ReviewPeriod(start: report.period.start, end: now, timeZoneIdentifier: report.period.timeZoneIdentifier)
+        return candidate.isValid ? candidate : report.period
+    }
     private func regenerate(_ report: WeeklyReport) {
-        model.generateWeeklyReview(period: report.period, template: report.template, scope: report.scope, replacing: nil)
+        let targetPeriod = refreshedPeriod(for: report)
+        let gaps = PeriodReviewFromDaily.gaps(in: model.state, period: targetPeriod)
+        if !gaps.allMissingDays.isEmpty, model.state.privacy.cloudUseEnabled {
+            model.backfillThenGenerateWeeklyReview(days: gaps.allMissingDays, period: targetPeriod, template: report.template, scope: report.scope)
+        } else {
+            model.generateWeeklyReview(period: targetPeriod, template: report.template, scope: report.scope, replacing: nil)
+        }
     }
     private func reportSections(_ report: WeeklyReport) -> some View {
         let rows = report.readingRows

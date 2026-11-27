@@ -235,6 +235,11 @@ extension SQLiteIntelligenceIndex {
         for word in lookup.words {
             absorb(try posting(word, start: startValue, end: endValue))
         }
+        if matched.isEmpty && lookup.words.isEmpty {
+            for pair in QuestionTerms.fallbackPairs(terms) {
+                absorb(try posting(pair, start: startValue, end: endValue))
+            }
+        }
         return matched.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
             .prefix(max(limit, 1))
             .compactMap { UUID(uuidString: $0.key) }

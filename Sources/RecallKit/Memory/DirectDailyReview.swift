@@ -43,6 +43,8 @@ struct DailyReviewDocument: Sendable {
     var proofs: [DailyReviewProof]
     /// Speaker/actor/kind or status of an understood fact. Kept out of `text` so quotes still match source text.
     var meta: String? = nil
+    /// Retained locally for `basis == "summary"` so multi-batch synthesis cannot silently lose verified batch matters.
+    var summaryItem: DailyReviewDraft.Item? = nil
     var wire: Wire {
         Wire(id: id, basis: basis, text: text, firstSeen: firstSeen, lastSeen: lastSeen,
              quotes: basis == "raw" ? nil : proofs.map(\.text), meta: meta,
@@ -274,7 +276,8 @@ public struct DirectDailyReviewEngine: Sendable {
                     checkpoints: [], beforeCall: beforeCall, saveCheckpoint: saveCheckpoint, onProgress: onProgress,
                     onCacheHit: onCacheHit, responder: responder)
                 try Task.checkCancellation()
-                let (complete, sources) = try restoringPreviousProgress(in: final, documents: documents, input: input)
+                let consolidated = round > 0 ? try preservingSummaryProgress(in: final, summaries: documents) : final
+                let (complete, sources) = try restoringPreviousProgress(in: consolidated, documents: documents, input: input)
                 return result(complete, documents: sources, input: input, uncertain: uncertain)
             }
             await onProgress?(ReviewGenerationProgress(.generating, detail: "材料超出单次容量，分为 \(groups.count) 组整理；最多同时处理 \(limits.concurrency) 组。"))
@@ -379,7 +382,10 @@ public struct DirectDailyReviewEngine: Sendable {
             try Task.checkCancellation(); try await beforeCall()
             await onProgress?(ReviewGenerationProgress(.generating, detail: final ? "正在生成完整每日回顾；返回后直接做本地校验并保存。" : "正在整理超量材料，已完成的组会保存供重试复用。"))
             do {
-                let question = instructions + (final ? "\n生成最终回顾，items 最多7项重点。" : "\n整理本组重要结果、限制和未完成承诺，items 最多16项重点，其余写入 ledger。overview 为空。") + repair
+                let summaryRule = documents.contains(where: { $0.basis == "summary" })
+                    ? "\n当前材料含分组小结（basis=summary）：其 text 仅为前序摘要而非原文，evidence.quote 必须逐字取自该材料的 quotes 数组，不得从 text 截取；不同主题的已核实进展请至少保留在 items 或 ledger 一处。"
+                    : ""
+                let question = instructions + summaryRule + (final ? "\n生成最终回顾，items 最多7项重点。" : "\n整理本组重要结果、限制和未完成承诺，items 最多16项重点，其余写入 ledger。overview 为空。") + repair
                 let context = CaptureRecord(eventTemplate: .manualMoment, contentHash: "direct-daily", ocrText: body)
                 let answer = try await responder.answerCancellably(to: LLMRequest(question: question, context: [context],
                     purpose: .reviewSynthesis, outputTokenLimit: attempt == 0 ? 12_000 : 16_000))
@@ -411,9 +417,12 @@ public struct DirectDailyReviewEngine: Sendable {
                     let compact = reduced(left, documents: Array(documents[..<middle]), prefix: "l")
                         + reduced(right, documents: Array(documents[middle...]), prefix: "r")
                     guard !compact.isEmpty, try directReviewJSON(compact.map(\.wire)).utf8.count < body.utf8.count else { throw error }
-                    let combined = try await request(compact, input: input, final: final, round: round + 1,
+                    var combined = try await request(compact, input: input, final: final, round: round + 1,
                         instructions: instructions, checkpoints: checkpoints, beforeCall: beforeCall, saveCheckpoint: saveCheckpoint,
                         onProgress: onProgress, onCacheHit: onCacheHit, responder: responder)
+                    if final {
+                        combined = try preservingSummaryProgress(in: combined, summaries: compact)
+                    }
                     // Rebind reduced IDs to their original input documents for the caller.
                     let unresolved = Set((left.coverage + right.coverage).filter { $0.disposition == "uncertain" }.map(\.id))
                     var rebound = rebound(combined, compact: compact, originals: documents, uncertain: unresolved)
@@ -445,17 +454,40 @@ public struct DirectDailyReviewEngine: Sendable {
                            demoteOwnership: Bool) throws -> DailyReviewDraft {
         var result = draft
         let byID = Dictionary(uniqueKeysWithValues: documents.map { ($0.id, $0) })
-        func resolve(_ evidence: DailyReviewDraft.Evidence) -> DailyReviewDraft.Evidence? {
-            guard let doc = byID[evidence.id] else { return nil }
+        let summaryOnly = !documents.isEmpty && documents.allSatisfy { $0.basis == "summary" }
+        func resolve(_ evidence: DailyReviewDraft.Evidence) -> [DailyReviewDraft.Evidence] {
+            guard let doc = byID[evidence.id] else { return [] }
             let pieces = evidence.quote.components(separatedBy: .newlines)
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-            for piece in pieces.sorted(by: { $0.count > $1.count }) {
+                .sorted(by: { $0.count > $1.count })
+            for piece in pieces {
                 let quote = String(piece.prefix(180))
                 if quote.count >= 4, doc.proofs.contains(where: { $0.text.contains(quote) }) {
-                    return .init(id: evidence.id, quote: quote)
+                    return [.init(id: evidence.id, quote: quote)]
                 }
             }
-            return nil
+            for piece in pieces {
+                for proof in doc.proofs {
+                    if let verbatim = Self.verbatimFragment(matching: piece, in: proof.text) {
+                        return [.init(id: evidence.id, quote: verbatim)]
+                    }
+                }
+            }
+            // In multi-batch consolidation (`basis == "summary"`), each document is a pre-validated item
+            // whose `proofs` already hold verbatim source quotes. If the model cited that item's summary
+            // prose (`title：detail`) instead of `quotes`, rebind directly to its verified `proofs`.
+            if doc.basis == "summary" {
+                let narrative = doc.text.components(separatedBy: "；owner=").first ?? doc.text
+                for piece in pieces where piece.count >= 6 {
+                    if narrative.contains(piece) || Self.verbatimFragment(matching: piece, in: narrative, minNormalizedLength: 6) != nil {
+                        let backed = doc.proofs.map(\.text).filter { (4...180).contains($0.count) }
+                        if !backed.isEmpty {
+                            return Array(backed.prefix(3)).map { .init(id: evidence.id, quote: $0) }
+                        }
+                    }
+                }
+            }
+            return []
         }
         func cleaned(_ original: DailyReviewDraft.Item) -> DailyReviewDraft.Item? {
             var item = original
@@ -463,10 +495,11 @@ public struct DirectDailyReviewEngine: Sendable {
             item.detail = clean(item.detail)
             if item.condition?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true { item.condition = nil }
             var seen = Set<DailyReviewDraft.Evidence>()
-            item.evidence = Array(item.evidence.compactMap(resolve).filter { seen.insert($0).inserted }.prefix(8))
+            item.evidence = Array(item.evidence.flatMap(resolve).filter { seen.insert($0).inserted }.prefix(8))
             // Leave an unresolved highlight for the first validation pass so it gets a repair.
             if demoteOwnership, item.evidence.isEmpty { return nil }
-            if demoteOwnership, item.owner == .user, !Self.isOwnedByUser(.user, proofs: matched(item, documents: byID)) {
+            let allowDemote = demoteOwnership || (summaryOnly && item.section != "actions" && !item.evidence.isEmpty)
+            if allowDemote, item.owner == .user, !Self.isOwnedByUser(.user, proofs: matched(item, documents: byID)) {
                 if item.section == "actions" { return nil }
                 item.owner = .unknown
                 item.explicitCommitment = false
@@ -621,16 +654,113 @@ public struct DirectDailyReviewEngine: Sendable {
     private func reduced(_ draft: DailyReviewDraft, documents: [DailyReviewDocument], prefix: String) -> [DailyReviewDocument] {
         let byID = Dictionary(uniqueKeysWithValues: documents.map { ($0.id, $0) })
         return draft.allItems.enumerated().map { index, item in
+            let id = "\(prefix)i\(index)"
             // Only the documents this item cites; the whole batch's range would hide what happened first.
             let span = item.evidence.compactMap { byID[$0.id] }
+            let proofs = matched(item, documents: byID)
             let meta = ["section=\(item.section)", item.topic.map { "topic=\($0)" },
                         item.kind.map { "kind=\($0)" }, item.category.map { "category=\($0)" }].compactMap { $0 }.joined(separator: ",")
-            return DailyReviewDocument(id: "\(prefix)i\(index)", basis: "summary",
+            var seen = Set<DailyReviewDraft.Evidence>()
+            var carried = item
+            carried.evidence = Array(proofs.compactMap { proof in
+                (4...180).contains(proof.text.count) ? DailyReviewDraft.Evidence(id: id, quote: proof.text) : nil
+            }.filter { seen.insert($0).inserted }.prefix(8))
+            return DailyReviewDocument(id: id, basis: "summary",
                 text: "\(item.title)：\(item.detail)；owner=\(item.owner.rawValue),status=\(item.status.rawValue),explicitCommitment=\(item.explicitCommitment),condition=\(item.condition ?? "null"),reminderID=\(item.reminderID?.uuidString ?? "null")",
                 firstSeen: span.map(\.firstSeen).min() ?? documents.map(\.firstSeen).min() ?? .now,
                 lastSeen: span.map(\.lastSeen).max() ?? documents.map(\.lastSeen).max() ?? .now,
-                proofs: matched(item, documents: byID), meta: meta)
+                proofs: proofs, meta: meta, summaryItem: carried)
         }
+    }
+    /// Ensure validated progress from intermediate batches is not wiped out when the final synthesis omits a topic
+    /// or drops items during repair. Only topics/sources absent from the final draft are rescued into `ledger` and promoted.
+    private func preservingSummaryProgress(in draft: DailyReviewDraft, summaries: [DailyReviewDocument]) throws -> DailyReviewDraft {
+        let byID = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) })
+        let existing = draft.allItems.map { item in
+            (key: progressKey(item), title: DailyReviewPresentation.key(item.title), proofs: matched(item, documents: byID))
+        }
+        let candidates = summaries.enumerated()
+            .sorted { lhs, rhs in lhs.element.lastSeen == rhs.element.lastSeen ? lhs.offset > rhs.offset : lhs.element.lastSeen > rhs.element.lastSeen }
+            .map(\.element)
+        var rescuedKeys = Set<String>()
+        var rescued: [DailyReviewDraft.Item] = []
+        for doc in candidates {
+            guard let item = doc.summaryItem, isProgress(item, documents: byID),
+                  (try? validateItem(item, documents: byID)) != nil else { continue }
+            let key = progressKey(item)
+            let title = DailyReviewPresentation.key(item.title)
+            let itemSources = Set(doc.proofs.filter { !$0.isReference }.flatMap(\.sourceIDs))
+            let represented = existing.contains { current in
+                if (!key.isEmpty && current.key == key) || (!title.isEmpty && current.title == title) { return true }
+                return !itemSources.isEmpty && current.proofs.contains { proof in
+                    !proof.isReference && proof.sourceIDs.contains(where: itemSources.contains) && doc.proofs.contains { candidate in
+                        candidate.text.count >= 4 && (proof.text.contains(candidate.text) || (proof.text.count >= 8 && candidate.text.contains(proof.text)))
+                    }
+                }
+            }
+            guard !represented else { continue }
+            if !key.isEmpty && !rescuedKeys.insert(key).inserted { continue }
+            rescued.append(item)
+        }
+        guard !rescued.isEmpty else { return draft }
+        let order = Dictionary(uniqueKeysWithValues: summaries.enumerated().map { ($0.element.id, $0.offset) })
+        rescued.sort { (order[$0.evidence.first?.id ?? ""] ?? 0) < (order[$1.evidence.first?.id ?? ""] ?? 0) }
+        var result = draft
+        result.ledger = (draft.ledger ?? []) + rescued
+        try promoteProgress(in: &result, documents: byID)
+        let used = Set(result.allItems.flatMap { $0.evidence.map(\.id) })
+        let coverage = Dictionary(uniqueKeysWithValues: draft.coverage.map { ($0.id, $0.disposition) })
+        result.coverage = summaries.map { doc in
+            .init(id: doc.id, disposition: used.contains(doc.id) ? "used" : coverage[doc.id] ?? "uncertain")
+        }
+        result.localUncertainCount = result.coverage.filter { $0.disposition == "uncertain" }.count
+        try validate(result, documents: summaries, final: true)
+        return result
+    }
+    /// Recover a verbatim slice of `source` when the model normalized whitespace or fullwidth/halfwidth punctuation.
+    public static func verbatimFragment(matching query: String, in source: String, minNormalizedLength: Int = 4) -> String? {
+        func normalized(_ ch: Character) -> Character? {
+            if ch.isWhitespace { return nil }
+            if ch == "“" || ch == "”" { return "\"" }
+            if ch == "‘" || ch == "’" { return "'" }
+            if ch.unicodeScalars.count == 1, let scalar = ch.unicodeScalars.first,
+               (0xFF01...0xFF5E).contains(scalar.value), let ascii = UnicodeScalar(scalar.value - 0xFEE0) {
+                return Character(ascii)
+            }
+            return ch
+        }
+        var needle: [Character] = []
+        for ch in query {
+            if let mapped = normalized(ch) { needle.append(mapped) }
+            if needle.count >= 160 { break }
+        }
+        guard needle.count >= minNormalizedLength else { return nil }
+        var haystack: [(ch: Character, start: String.Index, end: String.Index)] = []
+        var index = source.startIndex
+        while index < source.endIndex {
+            let next = source.index(after: index)
+            if let mapped = normalized(source[index]) {
+                haystack.append((mapped, index, next))
+            }
+            index = next
+        }
+        guard haystack.count >= needle.count else { return nil }
+        let limit = haystack.count - needle.count
+        for start in 0...limit {
+            var matches = true
+            for offset in 0..<needle.count where haystack[start + offset].ch != needle[offset] {
+                matches = false
+                break
+            }
+            if matches {
+                let slice = String(source[haystack[start].start..<haystack[start + needle.count - 1].end])
+                let trimmed = String(slice.prefix(180))
+                if (4...180).contains(trimmed.count), source.contains(trimmed) {
+                    return trimmed
+                }
+            }
+        }
+        return nil
     }
     private func rebound(_ draft: DailyReviewDraft, compact: [DailyReviewDocument], originals: [DailyReviewDocument],
                          uncertain: Set<String> = []) -> DailyReviewDraft {

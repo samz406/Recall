@@ -93,11 +93,11 @@ enum MemoryExperienceVerification {
         let file = MatterMemoryEngine().files(in: state).first { $0.title == "Atlas 分页核对" }!
         var summary = TopicModelReview(topicID: file.id, result: result)
         summary.inputFingerprint = TopicReading.fingerprint(file)
-        try expect(TopicReading(file: file, review: summary).hasUpdatedSummary, "当前小结没有作为默认阅读内容")
+        try expect(TopicReading(file: file, review: summary).hasUpdatedSummary && TopicReading(file: file, review: summary).latestDateTitle == nil, "当前小结没有作为默认阅读内容，或多余展示了单条日期")
         var updated = file
         updated.events.append(MatterEvent(id: UUID(), title: file.title, detail: "新增边界需继续核对。", recordedAt: now, status: .pending, evidenceIDs: [source.id]))
         let reading = TopicReading(file: updated, review: summary)
-        try expect(!reading.hasUpdatedSummary && reading.overview == updated.latest.detail, "旧小结遮住了新的主题进展")
+        try expect(!reading.hasUpdatedSummary && reading.overview == updated.latest.detail && reading.latestDateTitle?.contains("记录于") == true, "旧小结遮住了新的主题进展，或回退单条事件时缺少日期标题")
         let requests = await model.log()
         try expect(requests.first?.question.contains(directive.content) == true, "工作周报没有实际读取长期写作约定")
         state.memoryKnowledgeSettings.referenceInChat = false

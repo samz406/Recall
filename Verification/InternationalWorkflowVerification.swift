@@ -248,10 +248,11 @@ enum InternationalWorkflowVerification {
                 if let end = buffer.firstIndex(of: 10) {
                     let line = String(decoding: buffer[..<end], as: UTF8.self); buffer.removeSubrange(...end); return line
                 }
-                let ready = DispatchSemaphore(value: 0); var chunk = Data()
-                DispatchQueue.global().async { chunk = output.fileHandleForReading.availableData; ready.signal() }
+                final class DataBox: @unchecked Sendable { var value = Data() }
+                let ready = DispatchSemaphore(value: 0), box = DataBox()
+                DispatchQueue.global().async { box.value = output.fileHandleForReading.availableData; ready.signal() }
                 guard ready.wait(timeout: .now() + max(0, deadline.timeIntervalSinceNow)) == .success else { return nil }
-                buffer.append(chunk)
+                buffer.append(box.value)
             }
             return nil
         }
