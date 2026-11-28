@@ -70,6 +70,54 @@ public enum LocalBriefing {
 
     // MARK: Resume card
 
+    public struct MissingReviewPrompt: Sendable, Equatable {
+        public var day: Date
+        public var recordCount: Int
+        public var dayLabel: String
+        public var title: String
+
+        public init(day: Date, recordCount: Int, dayLabel: String, title: String) {
+            self.day = day
+            self.recordCount = recordCount
+            self.dayLabel = dayLabel
+            self.title = title
+        }
+
+        public var asResumeItem: ResumeItem {
+            let hint = RecallLocalization.both("生成后，这里会列出那天没做完的事", "Generate it to see what was left open")
+            return ResumeItem(
+                id: "missing-review",
+                kind: .missingReview,
+                title: title,
+                detail: hint,
+                destination: .daily(UUID()),
+                date: day,
+                summaryText: hint,
+                fullDetail: hint,
+                priorityRank: 99
+            )
+        }
+    }
+
+    public struct TodayBrief: Sendable, Equatable {
+        public var actionItems: [ResumeItem]
+        public var totalOpenMatterCount: Int
+        public var waitingItems: [ResumeItem]
+        public var missingReview: MissingReviewPrompt?
+
+        public init(
+            actionItems: [ResumeItem],
+            totalOpenMatterCount: Int,
+            waitingItems: [ResumeItem],
+            missingReview: MissingReviewPrompt?
+        ) {
+            self.actionItems = actionItems
+            self.totalOpenMatterCount = totalOpenMatterCount
+            self.waitingItems = waitingItems
+            self.missingReview = missingReview
+        }
+    }
+
     public struct ResumeItem: Identifiable, Sendable, Equatable {
         public enum Kind: Sendable, Equatable { case openMatter, missingReview, dueReminder, waitingOnOthers }
         public var id: String
@@ -77,41 +125,224 @@ public enum LocalBriefing {
         public var title: String
         public var detail: String
         public var destination: MemorySearchDestination
-        /// For `missingReview`, the day to generate.
+        /// For `missingReview`, the day to generate; otherwise the item's date.
         public var date: Date
+        public var status: WorkEpisodeStatus?
+        public var summaryText: String
+        /// Full untruncated context for the top focus card.
+        public var fullDetail: String
+        /// Explicit next step left by the user or recorded as an open action, never fabricated.
+        public var nextAction: String?
+        /// True when the user explicitly left a next-step note ("给下次的自己留一句").
+        public var hasUserNextStep: Bool
+        public var topicID: String?
+        public var topicTitle: String?
+        public var reminderID: UUID?
+        public var evidenceIDs: [UUID]
+        /// Locally saved http/https URL on an evidence record (only present when `recordPageAddress` saved one).
+        public var savedPageURL: String?
+        /// Concrete reference code/hash in the saved text (e.g. `PR #42`) for quick copy when no URL exists.
+        public var referenceToken: String?
+        /// Action urgency tier: 0 = user next step, 1 = due reminder, 2 = blocked, 3 = pending, 4 = in progress.
+        public var priorityRank: Int
+
+        public init(
+            id: String,
+            kind: Kind,
+            title: String,
+            detail: String,
+            destination: MemorySearchDestination,
+            date: Date,
+            status: WorkEpisodeStatus? = nil,
+            summaryText: String? = nil,
+            fullDetail: String? = nil,
+            nextAction: String? = nil,
+            hasUserNextStep: Bool = false,
+            topicID: String? = nil,
+            topicTitle: String? = nil,
+            reminderID: UUID? = nil,
+            evidenceIDs: [UUID] = [],
+            savedPageURL: String? = nil,
+            referenceToken: String? = nil,
+            priorityRank: Int = 4
+        ) {
+            self.id = id
+            self.kind = kind
+            self.title = title
+            self.detail = detail
+            self.destination = destination
+            self.date = date
+            self.status = status
+            self.summaryText = summaryText ?? detail
+            self.fullDetail = fullDetail ?? summaryText ?? detail
+            self.nextAction = nextAction
+            self.hasUserNextStep = hasUserNextStep
+            self.topicID = topicID
+            self.topicTitle = topicTitle
+            self.reminderID = reminderID
+            self.evidenceIDs = evidenceIDs
+            self.savedPageURL = savedPageURL
+            self.referenceToken = referenceToken
+            self.priorityRank = priorityRank
+        }
     }
 
-    /// "Pick up where you stopped": reminders due today, the user's own unfinished matters from recent daily
-    /// reviews, and things others still owe the user. Every line is text a review or reminder already wrote;
-    /// raw records, window names and bare status words are never shown. When the last active day has records
-    /// but no review, one line asks to generate it.
-    public static func resume(in state: RecallState, matters: [MatterFile], now: Date = .now, calendar: Calendar = .current) -> [ResumeItem] {
+    /// Structured projection for "Today · Pick up where you stopped":
+    /// 1. Strict action priority ordering: user's explicit next step > overdue/due today reminders > blocked > pending > in progress.
+    /// 2. Separates "waiting on others / external result" into `waitingItems`.
+    /// 3. Sinks "missing daily review" to `missingReview` at the bottom as a maintenance prompt.
+    public static func todayBrief(
+        in state: RecallState,
+        matters: [MatterFile],
+        now: Date = .now,
+        calendar: Calendar = .current,
+        matterLimit: Int = 5
+    ) -> TodayBrief {
         let today = calendar.startOfDay(for: now)
-        var items: [ResumeItem] = []
+        let usableRecords = usable(state)
+        let usableByID = Dictionary(uniqueKeysWithValues: usableRecords.map { ($0.id, $0) })
+
+        var dueReminders: [ResumeItem] = []
         for reminder in state.reminders where reminder.status.isAction {
             guard let due = ReminderTimeline.effectiveDueAt(reminder) ?? reminder.plannedForDay?.date,
                   due < (calendar.date(byAdding: .day, value: 1, to: today) ?? now) else { continue }
-            items.append(ResumeItem(id: "reminder-" + reminder.id.uuidString, kind: .dueReminder, title: reminder.title,
-                detail: due < now ? RecallLocalization.both("已到期", "Due") : due.formatted(date: .omitted, time: .shortened),
-                destination: .reminder(reminder.id), date: due))
+            let isOverdue = due < now
+            let dueLabel = isOverdue ? RecallLocalization.both("已到期", "Overdue") : due.formatted(date: .omitted, time: .shortened)
+            let trimmedDetail = reminder.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            let shortSummary = trimmedDetail.isEmpty ? dueLabel : dueLabel + " · " + firstClause(trimmedDetail)
+            let full = trimmedDetail.isEmpty ? dueLabel : trimmedDetail
+            dueReminders.append(ResumeItem(
+                id: "reminder-" + reminder.id.uuidString,
+                kind: .dueReminder,
+                title: reminder.title,
+                detail: dueLabel,
+                destination: .reminder(reminder.id),
+                date: due,
+                summaryText: shortSummary,
+                fullDetail: full,
+                reminderID: reminder.id,
+                evidenceIDs: reminder.sourceCaptureIDs,
+                savedPageURL: firstSavedWebURL(in: reminder.sourceCaptureIDs, records: usableByID),
+                referenceToken: extractReferenceToken(from: reminder.title + " " + trimmedDetail),
+                priorityRank: 1
+            ))
         }
-        if let missing = missingReviewDay(in: state, today: today, calendar: calendar) {
-            items.append(ResumeItem(id: "missing-review", kind: .missingReview,
-                title: RecallLocalization.both("\(dayLabel(missing, today: today, calendar: calendar))还没有回顾", "No review for \(dayLabel(missing, today: today, calendar: calendar)) yet"),
-                detail: RecallLocalization.both("生成后，这里会列出那天没做完的事", "Generate it to see what was left open"),
-                destination: .daily(UUID()), date: missing))
+        dueReminders.sort { lhs, rhs in
+            let leftOverdue = lhs.date < now
+            let rightOverdue = rhs.date < now
+            if leftOverdue != rightOverdue { return leftOverdue && !rightOverdue }
+            return lhs.date < rhs.date
         }
-        items += openMatters(in: state, matters: matters, today: today, calendar: calendar).prefix(5)
-        for owed in commitments(in: state, now: now).filter({ $0.direction == .owedToMe }).prefix(2) {
-            items.append(ResumeItem(id: "owed-" + owed.id, kind: .waitingOnOthers, title: owed.title,
-                detail: RecallLocalization.both("等待对方：", "Waiting on: ") + owed.counterpart, destination: .record(owed.sourceID), date: owed.date))
+
+        let computed = computeMatters(in: state, matters: matters, usableRecords: usableRecords, usableByID: usableByID, today: today, calendar: calendar)
+        let limitedOpenMatters = Array(computed.open.prefix(max(0, matterLimit)))
+
+        var actionItems = dueReminders + limitedOpenMatters
+        actionItems.sort { lhs, rhs in
+            if lhs.priorityRank != rhs.priorityRank {
+                return lhs.priorityRank < rhs.priorityRank
+            }
+            if lhs.kind == .dueReminder, rhs.kind == .dueReminder {
+                let leftOverdue = lhs.date < now
+                let rightOverdue = rhs.date < now
+                if leftOverdue != rightOverdue { return leftOverdue && !rightOverdue }
+                return lhs.date < rhs.date
+            }
+            return lhs.date > rhs.date
         }
-        return items
+
+        var waitingItems = computed.waiting
+        var seenWaitingTitles = Set(waitingItems.map { DailyKnowledgeEngine.topicKey($0.title) })
+        for owed in commitments(in: state, now: now).filter({ $0.direction == .owedToMe }).prefix(4) {
+            guard seenWaitingTitles.insert(DailyKnowledgeEngine.topicKey(owed.title)).inserted else { continue }
+            let confirmedText = lastConfirmedDayLabel(owed.date, today: today, calendar: calendar)
+            let text = RecallLocalization.both("\(confirmedText)最后确认：等待 ", "Last confirmed \(confirmedText): waiting on ") + owed.counterpart
+            let summary = owed.counterpart + (owed.deadline.map { " · " + $0 } ?? "")
+            waitingItems.append(ResumeItem(
+                id: "owed-" + owed.id,
+                kind: .waitingOnOthers,
+                title: owed.title,
+                detail: text,
+                destination: .record(owed.sourceID),
+                date: owed.date,
+                summaryText: summary,
+                fullDetail: text + (owed.deadline.map { "（\($0)）" } ?? ""),
+                evidenceIDs: [owed.sourceID],
+                savedPageURL: firstSavedWebURL(in: [owed.sourceID], records: usableByID),
+                referenceToken: extractReferenceToken(from: owed.title),
+                priorityRank: 10
+            ))
+        }
+
+        let missingPrompt: MissingReviewPrompt? = missingReviewDay(in: state, today: today, calendar: calendar).map { missing in
+            let count = usableRecords.filter { calendar.isDate($0.createdAt, inSameDayAs: missing) }.count
+            let label = dayLabel(missing, today: today, calendar: calendar)
+            let title = count > 0
+                ? RecallLocalization.both("\(label)有 \(count) 条记录还没有生成回顾", "\(count) records from \(label) have no review yet")
+                : RecallLocalization.both("\(label)还没有回顾", "No review for \(label) yet")
+            return MissingReviewPrompt(day: missing, recordCount: count, dayLabel: label, title: title)
+        }
+
+        return TodayBrief(
+            actionItems: actionItems,
+            totalOpenMatterCount: computed.open.count,
+            waitingItems: waitingItems,
+            missingReview: missingPrompt
+        )
     }
 
-    /// The user's own matters that the most recent mention in the last 7 days of reviews (including today) leaves open.
-    /// A later review that marks the same topic done, or the user marking the topic complete, closes it.
+    /// "Pick up where you stopped": actionable reminders and open matters ordered by urgency first,
+    /// with any missing-review maintenance prompt placed after actionable items.
+    public static func resume(
+        in state: RecallState,
+        matters: [MatterFile],
+        now: Date = .now,
+        calendar: Calendar = .current,
+        matterLimit: Int = 5
+    ) -> [ResumeItem] {
+        let brief = todayBrief(in: state, matters: matters, now: now, calendar: calendar, matterLimit: matterLimit)
+        if let missing = brief.missingReview {
+            return brief.actionItems + [missing.asResumeItem]
+        }
+        return brief.actionItems
+    }
+
+    public static func openMatterCount(in state: RecallState, matters: [MatterFile], now: Date = .now, calendar: Calendar = .current) -> Int {
+        let usableRecords = usable(state)
+        let usableByID = Dictionary(uniqueKeysWithValues: usableRecords.map { ($0.id, $0) })
+        return computeMatters(
+            in: state,
+            matters: matters,
+            usableRecords: usableRecords,
+            usableByID: usableByID,
+            today: calendar.startOfDay(for: now),
+            calendar: calendar
+        ).open.count
+    }
+
+    /// The user's own matters that the most recent mention in the last 7 days of reviews or manual notes leaves open.
+    /// A later review or manual note that marks the same topic done, or the user marking the topic complete/dormant, closes it.
     static func openMatters(in state: RecallState, matters: [MatterFile], today: Date, calendar: Calendar) -> [ResumeItem] {
+        let usableRecords = usable(state)
+        let usableByID = Dictionary(uniqueKeysWithValues: usableRecords.map { ($0.id, $0) })
+        return computeMatters(
+            in: state,
+            matters: matters,
+            usableRecords: usableRecords,
+            usableByID: usableByID,
+            today: today,
+            calendar: calendar
+        ).open
+    }
+
+    private static func computeMatters(
+        in state: RecallState,
+        matters: [MatterFile],
+        usableRecords: [CaptureRecord],
+        usableByID: [UUID: CaptureRecord],
+        today: Date,
+        calendar: Calendar
+    ) -> (open: [ResumeItem], waiting: [ResumeItem]) {
         let horizon = calendar.date(byAdding: .day, value: -7, to: today) ?? today
         struct Mention {
             var key: String
@@ -120,13 +351,19 @@ public enum LocalBriefing {
             var status: String
             var owned: Bool
             var open: Bool
+            var waiting: Bool
             var day: Date
-            var review: UUID
+            var recordedAt: Date
+            var review: UUID?
             var topic: String?
+            var evidence: [UUID]
             var isHighlight: Bool
+            var isManualNote: Bool
+            var explicitNextAction: String?
+            var userLeftNextStep: Bool
         }
         var mentions: [Mention] = []
-        let usableIDs = Set(usable(state).map(\.id))
+        let usableIDs = Set(usableRecords.map(\.id))
         let registry = state.topicRegistry
 
         func canonicalKey(topicID: UUID?, topicName: String?, fallbackTitle: String) -> String {
@@ -137,7 +374,8 @@ public enum LocalBriefing {
                 if let registered = registry.topic(forName: name) {
                     return "topic:" + registered.id.uuidString
                 }
-                return "topic:" + DailyKnowledgeEngine.topicKey(name)
+                let aliased = DailyKnowledgeEngine.canonicalKey(name, aliases: state.topicAliases)
+                return "topic:" + aliased
             }
             if let id = topicID {
                 return "topic:" + id.uuidString
@@ -147,39 +385,150 @@ public enum LocalBriefing {
 
         for review in state.dailySummaries where calendar.startOfDay(for: review.day) >= horizon && calendar.startOfDay(for: review.day) <= today && !review.sourceCaptureIDs.isEmpty {
             let reviewDay = calendar.startOfDay(for: review.day)
-            func add(title: String, detail: String, status: String, owned: Bool, kind: DailyItemKind?, topic: String?, topicID: UUID?, evidence: [UUID], isHighlight: Bool) {
+            func add(
+                title: String,
+                detail: String,
+                status: String,
+                owned: Bool,
+                kind: DailyItemKind?,
+                section: DailySummarySection?,
+                topic: String?,
+                topicID: UUID?,
+                evidence: [UUID],
+                isHighlight: Bool
+            ) {
                 // Sources deleted or corrected away take their items with them.
                 guard !evidence.isEmpty, Set(evidence).isSubset(of: usableIDs) else { return }
+                // Filter out pure observations/insights that lack user follow-up ownership.
+                if section?.canonical == .insights { return }
                 let isMatter = kind == nil || kind == .matter || kind == .agreement
                 let key = canonicalKey(topicID: topicID, topicName: topic, fallbackTitle: title)
+                let isOpen = ["pending", "blocked", "inProgress", "progressed"].contains(status)
+                let isWaiting = status == "waiting"
+                let explicitNext: String? = if section?.canonical == .actions && isOpen {
+                    title.trimmingCharacters(in: .whitespacesAndNewlines)
+                } else {
+                    ManualMatterNote.extractedNextAction(from: detail)
+                }
+                let earliestCaptureAt = evidence.compactMap { usableByID[$0]?.createdAt }.max() ?? review.createdAt
                 mentions.append(Mention(
                     key: key,
                     title: title,
                     detail: detail,
                     status: status,
                     owned: owned && isMatter,
-                    open: ["pending", "blocked", "inProgress"].contains(status),
+                    open: isOpen,
+                    waiting: isWaiting,
                     day: reviewDay,
+                    recordedAt: earliestCaptureAt,
                     review: review.id,
                     topic: topic,
-                    isHighlight: isHighlight
+                    evidence: evidence,
+                    isHighlight: isHighlight,
+                    isManualNote: false,
+                    explicitNextAction: explicitNext,
+                    userLeftNextStep: false
                 ))
             }
             for item in review.items {
-                add(title: item.title, detail: item.detail, status: item.knowledge?.status ?? "unknown", owned: item.knowledge?.ownedByUser ?? false,
-                    kind: item.knowledge?.kind, topic: item.knowledge?.topic, topicID: item.knowledge?.topicID, evidence: item.evidenceIDs, isHighlight: true)
+                add(
+                    title: item.title,
+                    detail: item.detail,
+                    status: item.knowledge?.status ?? "unknown",
+                    owned: item.knowledge?.ownedByUser ?? false,
+                    kind: item.knowledge?.kind,
+                    section: item.section,
+                    topic: item.knowledge?.topic,
+                    topicID: item.knowledge?.topicID,
+                    evidence: item.evidenceIDs,
+                    isHighlight: true
+                )
             }
             for entry in review.ledger {
-                add(title: entry.title, detail: entry.detail, status: entry.status, owned: entry.ownedByUser,
-                    kind: entry.kind, topic: entry.topic, topicID: nil, evidence: entry.evidenceIDs, isHighlight: false)
+                add(
+                    title: entry.title,
+                    detail: entry.detail,
+                    status: entry.status,
+                    owned: entry.ownedByUser,
+                    kind: entry.kind,
+                    section: DailySummarySection(rawValue: entry.section),
+                    topic: entry.topic,
+                    topicID: nil,
+                    evidence: entry.evidenceIDs,
+                    isHighlight: false
+                )
             }
         }
-        // The newest mention of a topic decides whether it is still open; on the same day, highlighted items win over duplicate ledger rows.
+
+        // User-authored ManualMatterNotes ("记下进展" / "给下次的自己留一句") take effect immediately without
+        // needing a model-generated Daily Review first, while raw unreviewed screen OCR stays excluded.
+        // Notes already cited by a saved DailySummary are represented by that review to avoid duplicate topic keys.
+        let reviewedCaptureIDs = Set(state.dailySummaries.flatMap(\.sourceCaptureIDs))
+        let nonTopicCorrections = state.matterCorrections.filter { !$0.isTopicCompletion }
+        for record in usableRecords where record.textOrigin == .userInput {
+            guard let note = record.manualMatter, note.isValid else { continue }
+            if reviewedCaptureIDs.contains(record.id), note.resolvedNextAction == nil { continue }
+            let recordCorrections = nonTopicCorrections.filter { $0.evidenceIDs.contains(record.id) }
+            let eventDate = recordCorrections.last(where: { $0.kind == .eventDate })?.eventAt ?? note.eventAt
+            let eventDay = calendar.startOfDay(for: eventDate)
+            guard eventDay >= horizon && eventDay <= today else { continue }
+            let renamedTitle = recordCorrections.last(where: { $0.kind == .separate && !$0.text.isEmpty })?.text ?? note.title
+            let isMarkedDone = recordCorrections.contains { $0.kind == .completed } || note.status == .completed
+            let statusString: String = if isMarkedDone {
+                "completed"
+            } else {
+                switch note.status {
+                case .blocked: "blocked"
+                case .pending: "pending"
+                case .progressed: "progressed"
+                case .completed: "completed"
+                case .explored: "explored"
+                }
+            }
+            let isOpen = ["pending", "blocked", "progressed"].contains(statusString)
+            let userNext = isOpen ? note.resolvedNextAction : nil
+            let key = canonicalKey(topicID: nil, topicName: renamedTitle, fallbackTitle: renamedTitle)
+            let headline = userNext ?? firstClause(note.detail)
+            mentions.append(Mention(
+                key: key,
+                title: headline.isEmpty ? renamedTitle : headline,
+                detail: note.detail,
+                status: statusString,
+                owned: true,
+                open: isOpen,
+                waiting: false,
+                day: eventDay,
+                recordedAt: record.createdAt,
+                review: nil,
+                topic: renamedTitle,
+                evidence: [record.id],
+                isHighlight: true,
+                isManualNote: true,
+                explicitNextAction: userNext,
+                userLeftNextStep: userNext != nil
+            ))
+        }
+
+        // The newest mention of a topic decides whether it is still open; on the same day, a later manual note
+        // or highlighted item wins over earlier/duplicate rows.
         var latest: [String: Mention] = [:]
-        for mention in mentions.sorted(by: { $0.day != $1.day ? $0.day < $1.day : (!($0.isHighlight) && $1.isHighlight) }) {
+        let orderedMentions = mentions.sorted { lhs, rhs in
+            if lhs.day != rhs.day { return lhs.day < rhs.day }
+            if lhs.isManualNote != rhs.isManualNote { return !lhs.isManualNote && rhs.isManualNote }
+            if lhs.isManualNote && rhs.isManualNote { return lhs.recordedAt < rhs.recordedAt }
+            return !lhs.isHighlight && rhs.isHighlight
+        }
+        for var mention in orderedMentions {
             if let kept = latest[mention.key], kept.day == mention.day {
-                if kept.open && !mention.open { continue }
-                if kept.isHighlight && !mention.isHighlight && kept.open == mention.open { continue }
+                if !mention.isManualNote {
+                    if kept.isManualNote && kept.recordedAt >= mention.recordedAt { continue }
+                    if kept.open && !mention.open { continue }
+                    if kept.isHighlight && !mention.isHighlight && kept.open == mention.open { continue }
+                }
+                if mention.open, mention.explicitNextAction == nil, let keptNext = kept.explicitNextAction {
+                    mention.explicitNextAction = keptNext
+                    mention.userLeftNextStep = kept.userLeftNextStep
+                }
             }
             latest[mention.key] = mention
         }
@@ -208,44 +557,194 @@ public enum LocalBriefing {
         }
         let completedTopicIDs = Set(state.matterCorrections.compactMap { $0.isTopicCompletion ? $0.topicID.map { state.canonicalTopicID($0) } : nil })
         func isClosed(_ mention: Mention, matched: MatterFile?) -> Bool {
-            if let matched, matched.latest.status == .completed { return true }
-            if completedTopicIDs.contains(mention.key) { return true }
-            if mention.key.hasPrefix("topic:"),
-               let uuid = UUID(uuidString: String(mention.key.dropFirst("topic:".count))),
-               let registered = registry.topic(id: uuid),
-               [.done, .archived].contains(registered.manualLifecycle) {
-                return true
+            if let matched {
+                if matched.latest.status == .completed { return true }
+                if matched.needsStatusUpdate(at: today, calendar: calendar) { return true }
+                if let reg = registry.resolvedTopic(for: matched),
+                   let manual = reg.manualLifecycle,
+                   [.done, .dormant, .archived].contains(manual) {
+                    if manual == .dormant,
+                       let lastAt = reg.lastEventAt,
+                       (mention.open || mention.waiting),
+                       mention.day > calendar.startOfDay(for: lastAt) {
+                        return false
+                    }
+                    return true
+                }
             }
-            if let name = mention.topic, let registered = registry.topic(forName: name),
-               [.done, .archived].contains(registered.manualLifecycle) {
+            if completedTopicIDs.contains(state.canonicalTopicID(mention.key)) || completedTopicIDs.contains(mention.key) { return true }
+            if let registered = registry.resolvedTopic(id: mention.key, fallbackTitle: mention.topic),
+               let manual = registered.manualLifecycle,
+               [.done, .dormant, .archived].contains(manual) {
+                if manual == .dormant,
+                   let lastAt = registered.lastEventAt,
+                   (mention.open || mention.waiting),
+                   mention.day > calendar.startOfDay(for: lastAt) {
+                    return false
+                }
                 return true
             }
             return false
         }
 
-        let rank = ["blocked": 0, "pending": 1, "inProgress": 2]
-        var seenTitles = Set<String>()
-        return latest.values
+        func urgencyRank(for mention: Mention, matched: MatterFile?) -> Int {
+            let hasUserStep = mention.userLeftNextStep || hasOpenUserNextStep(in: matched, usableByID: usableByID)
+            if hasUserStep { return 0 }
+            switch mention.status {
+            case "blocked": return 2
+            case "pending": return 3
+            default: return 4
+            }
+        }
+
+        var seenOpenTitles = Set<String>()
+        let openItems: [ResumeItem] = latest.values
             .filter { mention in
                 guard mention.open, mention.owned else { return false }
                 return !isClosed(mention, matched: resolveMatter(mention))
             }
-            .sorted { $0.day != $1.day ? $0.day > $1.day : (rank[$0.status] ?? 3) < (rank[$1.status] ?? 3) }
+            .sorted { lhs, rhs in
+                let leftRank = urgencyRank(for: lhs, matched: resolveMatter(lhs))
+                let rightRank = urgencyRank(for: rhs, matched: resolveMatter(rhs))
+                if leftRank != rightRank { return leftRank < rightRank }
+                if lhs.day != rhs.day { return lhs.day > rhs.day }
+                return lhs.recordedAt > rhs.recordedAt
+            }
             .compactMap { mention in
                 let normalizedTitle = DailyKnowledgeEngine.topicKey(mention.title)
-                guard seenTitles.insert(normalizedTitle).inserted else { return nil }
+                guard seenOpenTitles.insert(normalizedTitle).inserted else { return nil }
                 let matched = resolveMatter(mention)
                 let status = statusLabel(mention.status)
-                let first = firstClause(mention.detail)
+                let episodeStatus: WorkEpisodeStatus = switch mention.status {
+                case "blocked": .blocked
+                case "pending": .pending
+                default: .progressed
+                }
+                let cleanDetail = strippedDuplicatePrefix(detail: mention.detail, headline: mention.title, topic: mention.topic)
+                let first = firstClause(cleanDetail.isEmpty ? mention.detail : cleanDetail)
+                let resolvedTopicName = matched?.title ?? registry.resolvedTopic(id: mention.key, fallbackTitle: mention.topic)?.title ?? mention.topic
+                let resolvedTopicID = matched?.id ?? (mention.key.hasPrefix("topic:") ? mention.key : nil)
+                let userNext = mention.userLeftNextStep || hasOpenUserNextStep(in: matched, usableByID: usableByID)
+                let resolvedNextAction = mention.explicitNextAction
+                    ?? (matched?.latest.status.isOpenMatter == true ? matched?.resumeNextAction?.trimmingCharacters(in: .whitespacesAndNewlines) : nil)
+                let rank = urgencyRank(for: mention, matched: matched)
+                let destination: MemorySearchDestination = if let matched {
+                    .topic(matched.id)
+                } else if let reviewID = mention.review {
+                    .daily(reviewID)
+                } else if let firstEvidence = mention.evidence.first {
+                    .record(firstEvidence)
+                } else {
+                    .topic(mention.key)
+                }
                 return ResumeItem(
                     id: "matter-" + mention.key,
                     kind: .openMatter,
                     title: mention.title,
                     detail: first.isEmpty ? status : status + " · " + first,
-                    destination: matched.map { .topic($0.id) } ?? .daily(mention.review),
-                    date: mention.day
+                    destination: destination,
+                    date: mention.day,
+                    status: episodeStatus,
+                    summaryText: first,
+                    fullDetail: cleanDetail.isEmpty ? mention.detail : cleanDetail,
+                    nextAction: resolvedNextAction?.isEmpty == false ? resolvedNextAction : nil,
+                    hasUserNextStep: userNext,
+                    topicID: resolvedTopicID,
+                    topicTitle: resolvedTopicName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    evidenceIDs: mention.evidence,
+                    savedPageURL: firstSavedWebURL(in: mention.evidence, records: usableByID),
+                    referenceToken: extractReferenceToken(from: mention.title + " " + mention.detail),
+                    priorityRank: rank
                 )
             }
+
+        let waitingItems: [ResumeItem] = latest.values
+            .filter { mention in
+                guard mention.waiting, mention.owned else { return false }
+                return !isClosed(mention, matched: resolveMatter(mention))
+            }
+            .sorted { $0.day > $1.day }
+            .map { mention in
+                let matched = resolveMatter(mention)
+                let confirmed = lastConfirmedDayLabel(mention.day, today: today, calendar: calendar)
+                let cleanDetail = strippedDuplicatePrefix(detail: mention.detail, headline: mention.title, topic: mention.topic)
+                let summary = firstClause(cleanDetail.isEmpty ? mention.detail : cleanDetail)
+                let resolvedTopicName = matched?.title ?? registry.resolvedTopic(id: mention.key, fallbackTitle: mention.topic)?.title ?? mention.topic
+                let resolvedTopicID = matched?.id ?? (mention.key.hasPrefix("topic:") ? mention.key : nil)
+                return ResumeItem(
+                    id: "waiting-" + mention.key,
+                    kind: .waitingOnOthers,
+                    title: resolvedTopicName ?? mention.title,
+                    detail: RecallLocalization.both("\(confirmed)最后确认：", "Last confirmed \(confirmed): ") + (summary.isEmpty ? mention.title : summary),
+                    destination: matched.map { .topic($0.id) } ?? (mention.review.map { .daily($0) } ?? .topic(mention.key)),
+                    date: mention.day,
+                    summaryText: summary,
+                    fullDetail: cleanDetail.isEmpty ? mention.detail : cleanDetail,
+                    topicID: resolvedTopicID,
+                    topicTitle: resolvedTopicName,
+                    evidenceIDs: mention.evidence,
+                    savedPageURL: firstSavedWebURL(in: mention.evidence, records: usableByID),
+                    referenceToken: extractReferenceToken(from: mention.title + " " + mention.detail),
+                    priorityRank: 10
+                )
+            }
+
+        return (openItems, waitingItems)
+    }
+
+    private static func hasOpenUserNextStep(in file: MatterFile?, usableByID: [UUID: CaptureRecord]) -> Bool {
+        guard let file, file.latest.status.isOpenMatter else { return false }
+        for id in file.latest.evidenceIDs {
+            if let note = usableByID[id]?.manualMatter, note.resolvedNextAction != nil {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func strippedDuplicatePrefix(detail: String, headline: String, topic: String?) -> String {
+        var result = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        for candidate in [headline, topic].compactMap({ $0?.trimmingCharacters(in: .whitespacesAndNewlines) }) where !candidate.isEmpty {
+            for sep in ["：", ":"] where result.hasPrefix(candidate + sep) {
+                let rest = String(result.dropFirst((candidate + sep).count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !rest.isEmpty { result = rest }
+            }
+        }
+        return result
+    }
+
+    static func firstSavedWebURL(in ids: [UUID], records: [UUID: CaptureRecord]) -> String? {
+        for id in ids {
+            guard let raw = records[id]?.pageURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty,
+                  let url = URL(string: raw),
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https" else { continue }
+            return raw
+        }
+        return nil
+    }
+
+    static func extractReferenceToken(from text: String) -> String? {
+        let patterns = [
+            #"(?:PR|MR|Issue)\s*#\d+"#,
+            #"[A-Z][A-Z0-9]{1,9}-\d{1,6}"#,
+            #"#\d{2,6}"#
+        ]
+        for pattern in patterns {
+            if let range = text.range(of: pattern, options: .regularExpression) {
+                return String(text[range])
+            }
+        }
+        return nil
+    }
+
+    private static func lastConfirmedDayLabel(_ date: Date, today: Date, calendar: Calendar) -> String {
+        let day = calendar.startOfDay(for: date)
+        let offset = calendar.dateComponents([.day], from: day, to: today).day ?? 0
+        if offset <= 0 { return RecallLocalization.both("今天", "today") }
+        if offset == 1 { return RecallLocalization.both("昨天", "yesterday") }
+        return day.formatted(.dateTime.month().day())
     }
 
     /// The most recent day before today with records, when it has no review. Only the last 3 days count.
@@ -258,9 +757,9 @@ public enum LocalBriefing {
 
     private static func statusLabel(_ status: String) -> String {
         switch status {
-        case "blocked": RecallLocalization.both("受阻", "Blocked")
-        case "pending": RecallLocalization.both("待处理", "To do")
-        default: RecallLocalization.both("进行中", "In progress")
+        case "blocked": RecallLocalization.both("卡住了", "Blocked")
+        case "pending": RecallLocalization.both("还没做", "To do")
+        default: RecallLocalization.both("推进中", "In progress")
         }
     }
 
@@ -272,7 +771,7 @@ public enum LocalBriefing {
     }
 
     /// The first sentence of a review detail, cut on a clause boundary.
-    static func firstClause(_ text: String) -> String {
+    public static func firstClause(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let sentence = trimmed.split(whereSeparator: { "。；;\n".contains($0) }).first.map(String.init) ?? trimmed
         return truncatedAtClause(sentence, limit: 48)

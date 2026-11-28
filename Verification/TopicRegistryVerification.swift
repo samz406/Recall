@@ -17,7 +17,8 @@ enum TopicRegistryVerification {
         try lifecycleFollowsEvidenceAndUserMark()
         try await deletingTopicKeepsRecords()
         try await projectGrouping()
-        print("PASS: 8 topic registry scenarios (alias mapping, renamed topic stays one, stable identity, idempotent migration, review sync, lifecycle, deletion keeps records, project grouping)")
+        try await renameShelveAndAutoWake()
+        print("PASS: 9 topic registry scenarios (alias mapping, renamed topic stays one, stable identity, idempotent migration, review sync, lifecycle, deletion keeps records, project grouping, rename/shelve/auto-wake)")
     }
 
     private static func aliasesMapToCanonicalKey() throws {
@@ -196,6 +197,77 @@ enum TopicRegistryVerification {
         try expect(registry.topic(id: project.id) == nil, "项目应被删除")
         try expect(registry.topic(id: topic.id)?.parentID == nil, "删除项目后子主题应回到顶层")
         try expect(registry.topic(id: topic.id) != nil, "删除项目不应删除主题")
+    }
+
+    /// 主题重命名、手动搁置（移出今天接着干）与后续新进展自动唤醒，以及手动记录主题直接归入项目。
+    private static func renameShelveAndAutoWake() async throws {
+        let storage = try RecallStorage(rootURL: FileManager.default.temporaryDirectory.appendingPathComponent("recall-topic-shelve-" + UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        let store = try verificationStore(storage: storage)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+
+        let source = CaptureRecord(eventTemplate: .manualMoment, createdAt: yesterday, sourceAppName: "合成验证",
+            sourceBundleIdentifier: "example.shelve", contentHash: UUID().uuidString, ocrText: "合成：帮助入口改造 PR 已合入", textOrigin: .userInput)
+        try await store.addCapture(source)
+        try await store.upsertDailySummary(summary(day: yesterday, topic: "帮助入口移除", source: source, title: "帮助入口改造已合入但未发版"))
+
+        var state = await store.snapshot()
+        var files = MatterMemoryEngine().files(in: state)
+        guard let file = files.first else { throw Failure(message: "未生成初始主题") }
+        let initialResume = LocalBriefing.resume(in: state, matters: files)
+        try expect(initialResume.contains { $0.kind == .openMatter && $0.topicTitle == "帮助入口移除" && $0.status == .progressed }, "接着干应携带主题名与结构化状态")
+
+        // 重命名后显示名立即更新，旧名保留为别名。
+        let renamed = try await store.renameTopic(id: file.id, fallbackTitle: file.title, to: "帮助中心入口清理")
+        try expect(renamed, "重命名主题应成功")
+        state = await store.snapshot()
+        files = MatterMemoryEngine().files(in: state)
+        try expect(files.first?.title == "帮助中心入口清理", "重命名后主题列表显示名应立即变为新名称")
+        try expect(state.topicRegistry.topic(forName: "帮助入口移除")?.title == "帮助中心入口清理", "旧名应能通过别名解析到新名称")
+
+        // 先放一放（搁置）：不伪造完成更正，立即移出今天接着干，并进入已搁置分组。
+        try await store.setTopicLifecycle(id: file.id, fallbackTitle: "帮助中心入口清理", lifecycle: .dormant)
+        state = await store.snapshot()
+        files = MatterMemoryEngine().files(in: state)
+        try expect(state.matterCorrections.isEmpty, "先放一放不应伪造已完成更正")
+        try expect(!LocalBriefing.resume(in: state, matters: files).contains { $0.kind == .openMatter }, "搁置后的主题不应继续出现在今天接着干")
+        let split = TopicListPresentation.sections(files, registry: state.topicRegistry)
+        try expect(split.dormant.count == 1 && split.active.isEmpty, "搁置后的主题应进入已搁置分组")
+
+        // 新一天出现未完新进展时，自动唤醒回到进行中与今天接着干。
+        let newerSource = CaptureRecord(eventTemplate: .manualMoment, createdAt: today.addingTimeInterval(3600), sourceAppName: "合成验证",
+            sourceBundleIdentifier: "example.shelve", contentHash: UUID().uuidString, ocrText: "合成：开始灰度验证帮助中心入口清理", textOrigin: .userInput)
+        try await store.addCapture(newerSource)
+        try await store.upsertDailySummary(summary(day: today, topic: "帮助入口移除", source: newerSource, title: "开始灰度验证帮助中心入口清理"))
+        state = await store.snapshot()
+        files = MatterMemoryEngine().files(in: state)
+        try expect(TopicListPresentation.sections(files, registry: state.topicRegistry).active.count == 1, "新一天的新进展应自动唤醒已搁置主题")
+        try expect(LocalBriefing.resume(in: state, matters: files).contains { $0.kind == .openMatter && $0.topicTitle == "帮助中心入口清理" }, "唤醒后仍应保持用户重命名后的主题名")
+
+        // 尚未经过每日回顾迁移的手动记录主题也应支持直接归入项目分组。
+        let firstNoteAt = Date.now.addingTimeInterval(-60)
+        _ = try await store.addManualMatter(ManualMatterNote(title: "未迁移手动事项", detail: "合成手动进展", status: .progressed, eventAt: firstNoteAt), now: firstNoteAt)
+        guard let project = try await store.createProject(title: "合成迭代项目") else { throw Failure(message: "创建项目失败") }
+        state = await store.snapshot()
+        files = MatterMemoryEngine().files(in: state)
+        guard let manualFile = files.first(where: { $0.title == "未迁移手动事项" }) else { throw Failure(message: "缺少手动记录主题") }
+        try await store.setTopicParent(topicID: manualFile.id, parentID: "topic:" + project.id.uuidString)
+        state = await store.snapshot()
+        files = MatterMemoryEngine().files(in: state)
+        let grouped = TopicListPresentation.groupedByProject(files, registry: state.topicRegistry)
+        try expect(grouped.contains { $0.project?.id == project.id && $0.files.contains { $0.title == "未迁移手动事项" } }, "手动记录主题未能归入项目分组")
+
+        // 先放下的主题在补记「做完了」后应直接转入已做完，不再滞留于已搁置。
+        try await store.setTopicLifecycle(id: manualFile.id, fallbackTitle: "未迁移手动事项", lifecycle: .dormant)
+        let doneNoteAt = Date.now
+        _ = try await store.addManualMatter(ManualMatterNote(title: "未迁移手动事项", detail: "全部验证通过并结项", status: .completed, eventAt: doneNoteAt), now: doneNoteAt)
+        state = await store.snapshot()
+        files = MatterMemoryEngine().files(in: state)
+        let afterDoneSections = TopicListPresentation.sections(files, registry: state.topicRegistry)
+        try expect(afterDoneSections.done.contains { $0.title == "未迁移手动事项" } && !afterDoneSections.dormant.contains { $0.title == "未迁移手动事项" },
+                   "已搁置主题记下做完了结果后应进入已做完分组")
     }
 
     private static func summary(day: Date, topic: String, source: CaptureRecord, title: String) -> DailySummary {

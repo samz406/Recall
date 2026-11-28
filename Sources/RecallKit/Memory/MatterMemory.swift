@@ -8,13 +8,23 @@ public struct ManualMatterNote: Codable, Hashable, Sendable {
     public var status: WorkEpisodeStatus
     public var eventAt: Date
     public var reviewCategory: ReviewCategory?
+    public var nextAction: String?
 
-    public init(title: String, detail: String, status: WorkEpisodeStatus, eventAt: Date, reviewCategory: ReviewCategory? = nil) {
+    public init(
+        title: String,
+        detail: String,
+        status: WorkEpisodeStatus,
+        eventAt: Date,
+        reviewCategory: ReviewCategory? = nil,
+        nextAction: String? = nil
+    ) {
         self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         self.detail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
         self.status = status
         self.eventAt = eventAt
         self.reviewCategory = reviewCategory
+        let trimmedNext = nextAction?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.nextAction = (status != .completed && trimmedNext?.isEmpty == false) ? trimmedNext : nil
     }
 
     public var isValid: Bool {
@@ -22,12 +32,33 @@ public struct ManualMatterNote: Codable, Hashable, Sendable {
             && (1...4000).contains(detail.count)
     }
 
+    public var resolvedNextAction: String? {
+        guard status != .completed else { return nil }
+        return nextAction ?? Self.extractedNextAction(from: detail)
+    }
+
+    public static func extractedNextAction(from text: String) -> String? {
+        let prefixes = ["下一步：", "下一步:", "下次：", "下次:", "下次从哪开始：", "下次从哪开始:", "下次接手：", "下次接手:", "接下来：", "接下来:", "Next step:", "Next:"]
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            for prefix in prefixes where line.lowercased().hasPrefix(prefix.lowercased()) {
+                let value = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !value.isEmpty { return value }
+            }
+        }
+        return nil
+    }
+
     public func capture(recordedAt: Date = .now) throws -> CaptureRecord {
         guard isValid, eventAt <= recordedAt else { throw ValidationError.invalidNote }
+        var body = "事情：\(title)\n状态：\(status.manualMatterLabel)\n\(detail)"
+        if let nextAction, !nextAction.isEmpty, !detail.contains(nextAction) {
+            body += "\n下一步：\(nextAction)"
+        }
         return CaptureRecord(eventTemplate: .workCheckpoint, createdAt: recordedAt,
             sourceAppName: "手动记录", sourceBundleIdentifier: "im.recall.app",
             windowTitle: title, contentHash: UUID().uuidString,
-            ocrText: "事情：\(title)\n状态：\(status.manualMatterLabel)\n\(detail)",
+            ocrText: body,
             textOrigin: .userInput, manualMatter: self)
     }
 
@@ -41,10 +72,21 @@ public extension WorkEpisodeStatus {
     var manualMatterLabel: String {
         switch self {
         case .explored: "仅作记录"
-        case .progressed: "正在推进"
-        case .pending: "待处理"
-        case .blocked: "遇到阻碍"
-        case .completed: "已完成"
+        case .progressed: "推进中"
+        case .pending: "还没做"
+        case .blocked: "卡住了"
+        case .completed: "已做完"
+        }
+    }
+
+    /// Choice chip label when recording progress on a topic (spec §5.2(4): 推进中 / 还没做 / 卡住了 / 做完了).
+    var progressChoiceLabel: String {
+        switch self {
+        case .explored: RecallLocalization.both("仅作记录", "Note only")
+        case .progressed: RecallLocalization.both("推进中", "In progress")
+        case .pending: RecallLocalization.both("还没做", "To do")
+        case .blocked: RecallLocalization.both("卡住了", "Blocked")
+        case .completed: RecallLocalization.both("做完了", "Mark done")
         }
     }
 }
@@ -142,10 +184,10 @@ public extension WorkEpisodeStatus {
 
     var matterLabel: String {
         switch self {
-        case .completed: "记录为已完成"
-        case .progressed: "正在推进"
-        case .pending: "明确待办"
-        case .blocked: "遇到阻碍"
+        case .completed: "已做完"
+        case .progressed: "推进中"
+        case .pending: "还没做"
+        case .blocked: "卡住了"
         case .explored: "相关记录"
         }
     }
@@ -231,6 +273,9 @@ public struct MatterMemoryEngine: Sendable {
                         bucket.events[index].detail += "\n" + event.detail
                         bucket.events[index].quotes.append(event.detail)
                     }
+                    if bucket.events[index].status.isOpenMatter, bucket.events[index].nextAction == nil, let next = event.nextAction {
+                        bucket.events[index].nextAction = next
+                    }
                     continue
                 }
                 bucket.events.append(event)
@@ -276,12 +321,14 @@ public struct MatterMemoryEngine: Sendable {
             let renamed = corrections.last { $0.kind == .separate && !$0.text.isEmpty }
             let title = renamed?.text ?? note.title
             let key = (renamed == nil ? "topic:" : "user:") + MatterEvidence.key(title)
-            let detail = corrections.contains { $0.kind == .completed } ? "用户已标记完成：\(title)" : note.detail
+            let isCompleted = corrections.contains { $0.kind == .completed }
+            let detail = isCompleted ? "用户已标记完成：\(title)" : note.detail
             let event = MatterEvent(id: record.id, title: title, detail: detail,
                 recordedAt: captured[record.id]?.createdAt ?? record.createdAt,
                 eventAt: corrections.last { $0.kind == .eventDate }?.eventAt ?? note.eventAt,
-                status: corrections.contains { $0.kind == .completed } ? .completed : note.status,
-                evidenceIDs: [record.id])
+                status: isCompleted ? .completed : note.status,
+                evidenceIDs: [record.id],
+                nextAction: isCompleted ? nil : note.resolvedNextAction)
             groups[key, default: []].append(event)
             names[key] = title
         }
@@ -397,12 +444,17 @@ public extension RecallState {
     func canonicalTopicID(_ id: String) -> String { topicRegistry.canonicalID(id) }
 
     func applyingTopicCompletion(to file: MatterFile) -> MatterFile {
+        var result = file
+        if !topicRegistry.topics.isEmpty,
+           let registered = topicRegistry.resolvedTopic(for: file),
+           registered.aliases.contains(where: { DailyKnowledgeEngine.topicKey($0) == DailyKnowledgeEngine.topicKey(file.title) }) {
+            result.title = registered.title
+        }
         guard matterCorrections.last(where: {
-            $0.isTopicCompletion && canonicalTopicID($0.topicID ?? "") == file.id
+            $0.isTopicCompletion && canonicalTopicID($0.topicID ?? "") == canonicalTopicID(file.id)
                 && Set(file.evidenceIDs).isSubset(of: Set($0.evidenceIDs))
                 && file.latest.recordedAt <= $0.createdAt
-        }) != nil else { return file }
-        var result = file
+        }) != nil else { return result }
         let index = result.events.count - 1
         result.events[index].status = .completed
         result.events[index].resultStatus = .completed

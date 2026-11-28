@@ -11,7 +11,6 @@ struct RecallRootView: View {
     @State private var section: SidebarSection? = .today
     @State private var showingRecordSheet = false
     @State private var returnSection: SidebarSection?
-    @State private var noticeDismissal: Task<Void, Never>?
 
     var body: some View {
         NavigationSplitView {
@@ -70,7 +69,20 @@ struct RecallRootView: View {
             if !model.isPreview && !model.isLoadingSavedState && model.state.captures.isEmpty && !model.state.workflow.onboardingCompleted { model.showsOnboarding = true }
             if model.openAskRequested { section = .chat; model.openAskRequested = false }
         }
-        .onChange(of: model.openAskRequested) { _, requested in if requested { section = .chat; model.openAskRequested = false } }
+        .onChange(of: model.openAskRequested) { _, requested in
+            if requested {
+                if section != .chat { returnSection = section }
+                section = .chat
+                model.openAskRequested = false
+            }
+        }
+        .onChange(of: model.openMattersSectionRequested) { _, requested in
+            if requested {
+                returnSection = section
+                section = .matters
+                DispatchQueue.main.async { model.openMattersSectionRequested = false }
+            }
+        }
         .onChange(of: model.reviewsRequested) { _, requested in if requested { section = .today; DispatchQueue.main.async { model.reviewsRequested = false } } }
         .onReceive(NotificationCenter.default.publisher(for: .recallOpenAsk)) { _ in section = .chat }
         .onOpenURL { url in
@@ -138,51 +150,6 @@ struct RecallRootView: View {
             RecordSheet()
                 .environmentObject(model)
         }
-        .overlay(alignment: .topTrailing) {
-            if let notice = model.noticeMessage {
-                NoticeBanner(text: notice) {
-                    model.noticeMessage = nil
-                }
-                .frame(width: 380)
-                .padding(.top, 54)
-                .padding(.trailing, 22)
-                .transition(.move(edge: .top).combined(with: .opacity))
-                .zIndex(100)
-            }
-        }
-        .overlay(alignment: .bottom) {
-            if model.addedTodayUndo != nil {
-                HStack(spacing: 16) {
-                    Label(RecallLocalization.text("已加入今天"), systemImage: "checkmark.circle")
-                    Button(RecallLocalization.text("撤销")) { model.undoToday() }
-                    Button { model.addedTodayUndo = nil } label: { Image(systemName: "xmark") }
-                }.padding(14).background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 10)).padding(.bottom, 22)
-            } else if let deletion = model.deletionUndoNotice {
-                DeletionUndoBanner(item: deletion, undo: model.undoLastDeletion, dismiss: model.dismissDeletionUndoNotice)
-                    .padding(.bottom, 22)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .zIndex(110)
-            }
-        }
-        .animation(.easeInOut(duration: 0.22), value: model.noticeMessage)
-        .task(id: model.deletionUndoNotice?.id) {
-            guard let id = model.deletionUndoNotice?.id else { return }
-            try? await Task.sleep(for: .seconds(5))
-            guard !Task.isCancelled, model.deletionUndoNotice?.id == id else { return }
-            model.dismissDeletionUndoNotice()
-        }
-        .onChange(of: model.noticeMessage) { _, notice in
-            noticeDismissal?.cancel()
-            guard notice != nil else { return }
-            noticeDismissal = Task {
-                try? await Task.sleep(nanoseconds: 3_800_000_000)
-                guard !Task.isCancelled else { return }
-                model.noticeMessage = nil
-            }
-        }
-        .onDisappear {
-            noticeDismissal?.cancel()
-        }
         .onReceive(NotificationCenter.default.publisher(for: .recallOpenReminders)) { _ in
             section = .today
         }
@@ -190,6 +157,7 @@ struct RecallRootView: View {
             if let id = note.userInfo?["weeklyReportID"] as? String { model.weeklyReportToOpen = UUID(uuidString: id); model.reviewsRequested = true }
             section = .today
         }
+        .modifier(RecallNoticeAndUndoModifier())
         .modifier(RecallCaptureEntryPoints())
     }
 
@@ -310,6 +278,98 @@ private struct DeletionUndoBanner: View {
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().stroke(RecallPalette.border, lineWidth: 1))
         .shadow(color: RecallPalette.shadow.opacity(0.16), radius: 14, y: 6)
+    }
+}
+
+/// Toast and undo banners extracted so the root view modifier chain type-checks instantaneously.
+private struct RecallNoticeAndUndoModifier: ViewModifier {
+    @EnvironmentObject private var model: RecallAppModel
+    @State private var noticeDismissal: Task<Void, Never>?
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .topTrailing) {
+                if let notice = model.noticeMessage, model.topicActionUndo == nil {
+                    NoticeBanner(text: notice) {
+                        model.noticeMessage = nil
+                    }
+                    .frame(width: 380)
+                    .padding(.top, 54)
+                    .padding(.trailing, 22)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(100)
+                }
+            }
+            .overlay(alignment: .bottom) {
+                bottomBanner
+            }
+            .animation(.easeInOut(duration: 0.22), value: model.noticeMessage)
+            .animation(.easeInOut(duration: 0.2), value: model.topicActionUndo)
+            .task(id: model.topicActionUndo?.id) {
+                guard let id = model.topicActionUndo?.id else { return }
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled, model.topicActionUndo?.id == id else { return }
+                model.topicActionUndo = nil
+            }
+            .task(id: model.deletionUndoNotice?.id) {
+                guard let id = model.deletionUndoNotice?.id else { return }
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled, model.deletionUndoNotice?.id == id else { return }
+                model.dismissDeletionUndoNotice()
+            }
+            .onChange(of: model.noticeMessage) { _, notice in
+                noticeDismissal?.cancel()
+                guard notice != nil else { return }
+                noticeDismissal = Task {
+                    try? await Task.sleep(nanoseconds: 3_800_000_000)
+                    guard !Task.isCancelled else { return }
+                    model.noticeMessage = nil
+                }
+            }
+            .onDisappear {
+                noticeDismissal?.cancel()
+            }
+    }
+
+    @ViewBuilder
+    private var bottomBanner: some View {
+        if model.addedTodayUndo != nil {
+            HStack(spacing: 16) {
+                Label(RecallLocalization.text("已加入今天"), systemImage: "checkmark.circle")
+                Button(RecallLocalization.text("撤销")) { model.undoToday() }
+                Button { model.addedTodayUndo = nil } label: { Image(systemName: "xmark") }
+            }
+            .padding(14)
+            .background(RecallPalette.surface, in: RoundedRectangle(cornerRadius: 10))
+            .padding(.bottom, 22)
+        } else if let topicUndo = model.topicActionUndo {
+            HStack(spacing: 14) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(RecallPalette.accent)
+                Text(topicUndo.label)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                Button(RecallLocalization.both("撤销", "Undo")) { model.undoTopicAction() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                Button { model.topicActionUndo = nil } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(RecallPalette.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().stroke(RecallPalette.border, lineWidth: 1))
+            .shadow(color: RecallPalette.shadow.opacity(0.14), radius: 12, y: 5)
+            .padding(.bottom, 22)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .zIndex(110)
+        } else if let deletion = model.deletionUndoNotice {
+            DeletionUndoBanner(item: deletion, undo: model.undoLastDeletion, dismiss: model.dismissDeletionUndoNotice)
+                .padding(.bottom, 22)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .zIndex(110)
+        }
     }
 }
 
@@ -1181,9 +1241,20 @@ private struct ChatView: View {
                     messageTimeline
                 }
                 if !model.isThinking {
+                    let quickPrompts = model.chatScope.topicID != nil
+                        ? [
+                            RecallLocalization.both("梳理最近的进展与当前状态", "Summarize recent progress and current status"),
+                            RecallLocalization.both("查找当时的关键结论与原因", "Find key decisions and reasons"),
+                            RecallLocalization.both("这件事还有哪些待办或阻碍？", "What to-dos or blockers remain?")
+                        ]
+                        : [
+                            RecallLocalization.both("总结本周进展", "Summarize this week's progress"),
+                            RecallLocalization.both("我答应了谁什么事？", "What did I promise others?"),
+                            RecallLocalization.both("上次讨论的结论是什么？", "What was decided last time?")
+                        ]
                     ChatReadingColumn {
                         HStack(spacing: 8) {
-                            ForEach(["总结本周进展", "我答应了谁什么事？", "上次讨论的结论是什么？"], id: \.self) { prompt in
+                            ForEach(quickPrompts, id: \.self) { prompt in
                                 Button(prompt) { question = prompt }.buttonStyle(.plain).font(.caption).padding(.horizontal, 8).padding(.vertical, 5).background(RecallPalette.border.opacity(0.3), in: Capsule())
                             }
                             Spacer(minLength: 0)

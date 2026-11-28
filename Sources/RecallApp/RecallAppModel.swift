@@ -49,6 +49,9 @@ final class RecallAppModel: ObservableObject {
     @Published var showsTextEntry = false
     @Published var showsMeetingPanel = false
     @Published var addedTodayUndo: ReminderCandidate?
+    @Published var topicActionUndo: TopicActionUndo?
+    @Published var selectedWorkspaceTopicID: String?
+    @Published var openMattersSectionRequested = false
     @Published var lastExternalTarget: CaptureTarget?
     @Published var lastTimeQuery: LastTimeQuery?
     @Published var meetingBriefToShow: MeetingBrief?
@@ -111,7 +114,7 @@ final class RecallAppModel: ObservableObject {
     private var memoryMaintenanceTask: Task<Void, Never>?
     private var memoryMaintenanceAfter: Date = .distantPast
     @Published private(set) var matterBuildMessage: String?
-    @Published private(set) var completingMatterIDs: Set<String> = []
+    @Published var completingMatterIDs: Set<String> = []
     @Published private(set) var completingReminderIDs: Set<UUID> = []
     @Published private(set) var completingSummaryActionIDs: Set<UUID> = []
     @Published private(set) var dailyReviewActionMessages: [UUID: String] = [:]
@@ -843,7 +846,8 @@ final class RecallAppModel: ObservableObject {
             guard let project = try await store.createProject(title: name) else { return }
             if let file { try await store.setTopicParent(topicID: file.id, parentID: "topic:" + project.id.uuidString) }
             state = await store.snapshot()
-            rebuildMatterFiles()
+            applyTopicOverlayInPlace()
+            noticeMessage = RecallLocalization.both("已归入项目“\(project.title)”。", "Moved to project “\(project.title)”.")
         } catch { recordError(error, source: "Memory", message: "新建项目失败") }
     }
 
@@ -851,8 +855,29 @@ final class RecallAppModel: ObservableObject {
         do {
             try await store.setTopicParent(topicID: file.id, parentID: projectID)
             state = await store.snapshot()
-            rebuildMatterFiles()
+            applyTopicOverlayInPlace()
+            noticeMessage = projectID == nil
+                ? RecallLocalization.both("已从项目中移出。", "Removed from project.")
+                : RecallLocalization.both("已更新所属项目。", "Updated project.")
         } catch { recordError(error, source: "Memory", message: "设置所属项目失败") }
+    }
+
+    func deleteProject(_ project: Topic) async {
+        do {
+            try await store.deleteProject(id: "topic:" + project.id.uuidString)
+            state = await store.snapshot()
+            applyTopicOverlayInPlace()
+            noticeMessage = RecallLocalization.both("已移除项目分组，旗下主题保留。", "Project removed. Its topics were kept.")
+        } catch { recordError(error, source: "Memory", message: "删除项目失败") }
+    }
+
+    func applyTopicOverlayInPlace() {
+        if let projection = memoryWorkspace?.applyingTopicCompletions(in: state) {
+            matterFiles = projection.matters
+            memoryWorkspace = projection
+        } else {
+            matterFiles = matterFiles.map { state.applyingTopicCompletion(to: $0) }
+        }
     }
 
     /// 删除主题只清理登记表、小结与完成标记；原始记录与截图保留。
@@ -869,19 +894,23 @@ final class RecallAppModel: ObservableObject {
         guard let current = matterFiles.first(where: { $0.id == file.id }), current.latest.status.isOpenMatter,
               completingMatterIDs.insert(file.id).inserted else { return false }
         defer { completingMatterIDs.remove(file.id) }
+        let previousLifecycle = state.topicRegistry.resolvedTopic(for: current)?.manualLifecycle
         do {
             try await store.saveMatterCorrection(MatterCorrection(evidenceIDs: current.evidenceIDs, kind: .completed,
                 text: current.title, topicID: current.id))
             state = await store.snapshot()
             // Durable save is the completion boundary. Do not keep the button busy while
             // OCR, all topics and the review index are rebuilt on a large archive.
-            if let projection = memoryWorkspace?.applyingTopicCompletions(in: state) {
-                matterFiles = projection.matters
-                memoryWorkspace = projection
-            } else {
-                matterFiles = matterFiles.map { state.applyingTopicCompletion(to: $0) }
-            }
-            matterBuildMessage = RecallLocalization.both("已标记完成，可在“已完成”中查看。", "Marked complete. Find it in Completed.")
+            applyTopicOverlayInPlace()
+            let savedCorrectionID = state.matterCorrections.last(where: { $0.isTopicCompletion && state.canonicalTopicID($0.topicID ?? "") == state.canonicalTopicID(current.id) })?.id
+            topicActionUndo = TopicActionUndo(
+                label: RecallLocalization.both("已标为做完：\(current.title)", "Marked done: \(current.title)"),
+                topicID: current.id,
+                fallbackTitle: current.title,
+                correctionID: savedCorrectionID,
+                previousLifecycle: previousLifecycle
+            )
+            matterBuildMessage = RecallLocalization.both("已标为做完，可在“已做完”中查看。", "Marked done. Find it in Done.")
             noticeMessage = matterBuildMessage
             return true
         } catch {

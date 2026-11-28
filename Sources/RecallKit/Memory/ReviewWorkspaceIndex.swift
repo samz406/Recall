@@ -168,6 +168,8 @@ public actor MemoryWorkspaceCache {
         let excludedApps: Set<String>
         let timeZone: String
         let dailyFingerprint: String
+        let topicRegistry: TopicRegistry
+        let topicAliases: [String: String]
         init(_ state: RecallState, now: Date) {
             dailyFingerprint = DailyKnowledgeEngine().fingerprint(in: state)
             feedbackCorrections = state.summaryFeedback.filter { $0.state == .applied }.flatMap { $0.resolution?.corrections ?? [] }
@@ -177,6 +179,7 @@ public actor MemoryWorkspaceCache {
             usableClaims = Set(claims.filter { $0.usable(at: now) }.map(\.id))
             categories = state.reviewCategories; excludedApps = state.privacy.excludedBundleIdentifiers
             timeZone = TimeZone.current.identifier
+            topicRegistry = state.topicRegistry; topicAliases = state.topicAliases
         }
     }
     private var input: Input?

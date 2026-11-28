@@ -198,7 +198,7 @@ enum KanoImprovementsVerification {
         ]
         let open = LocalBriefing.resume(in: state, matters: [])
         let titles = open.map(\.title)
-        try expect(titles.first == "ReAct 改造方案已写好但代码未改" && open.first?.detail == "待处理 · 方案拆成三个 PR", "接着干没有使用回顾事项的标题和详情")
+        try expect(titles.first == "ReAct 改造方案已写好但代码未改" && open.first?.detail == "还没做 · 方案拆成三个 PR", "接着干没有使用回顾事项的标题和详情")
         try expect(!titles.contains("生产部署被叫停"), "后来已完成的主题仍显示为受阻")
         try expect(titles.contains("研究股市走势") && !titles.contains("消消乐改造特殊糖果") && !titles.contains("一键发版已部署生产"),
                    "接着干混入了资料类、他人或已完成的事项")

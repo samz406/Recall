@@ -68,6 +68,27 @@ public struct TopicRegistry: Codable, Equatable, Sendable {
         return topic(id: id)
     }
 
+    /// 统一按稳定 UUID、旧键迁移表或名称/别名解析登记表中的主题。
+    public func resolvedTopic(id: String, fallbackTitle: String? = nil) -> Topic? {
+        let canonical = canonicalID(id)
+        if canonical.hasPrefix("topic:"),
+           let uuid = UUID(uuidString: String(canonical.dropFirst("topic:".count))),
+           let found = topic(id: uuid) {
+            return found
+        }
+        if let uuid = UUID(uuidString: canonical), let found = topic(id: uuid) {
+            return found
+        }
+        if let fallbackTitle, !fallbackTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return topic(forName: fallbackTitle)
+        }
+        return nil
+    }
+
+    public func resolvedTopic(for file: MatterFile) -> Topic? {
+        resolvedTopic(id: file.id, fallbackTitle: file.title)
+    }
+
     /// 把旧的 `topic:<键>` 引用改写成稳定 ID；不是旧键时原样返回。
     public func rewritten(_ legacyID: String) -> String { canonicalID(legacyID) }
 
@@ -92,16 +113,18 @@ public struct TopicRegistry: Codable, Equatable, Sendable {
         return topic
     }
 
-    /// 改名只更新显示名，旧名进入别名，ID 不变。
+    /// 改名只更新显示名，旧名进入别名，ID 不变；改回曾用名时从别名移出避免自指。
     public mutating func rename(id: UUID, to newTitle: String) {
         let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let index = topics.firstIndex(where: { $0.id == id }) else { return }
         let old = topics[index].title
-        guard DailyKnowledgeEngine.topicKey(old) != DailyKnowledgeEngine.topicKey(trimmed) else {
+        let newKey = DailyKnowledgeEngine.topicKey(trimmed)
+        guard DailyKnowledgeEngine.topicKey(old) != newKey else {
             topics[index].title = trimmed
             return
         }
         topics[index].title = trimmed
+        topics[index].aliases.removeAll { DailyKnowledgeEngine.topicKey($0) == newKey }
         if !topics[index].aliases.contains(where: { DailyKnowledgeEngine.topicKey($0) == DailyKnowledgeEngine.topicKey(old) }) {
             topics[index].aliases.append(old)
         }
@@ -150,10 +173,18 @@ public struct TopicRegistry: Codable, Equatable, Sendable {
     }
 
     /// 状态推断：用户手动标记优先；最近事件已完成算完成；14 天没有动静算搁置；
-    /// 之后出现新事件会自动回到进行中，因为每次投影都重新推断。
+    /// 手动「先放下（dormant）」后若出现更新的未完进展自动唤醒，若出现完成事件则归入已完成。
     public static func lifecycle(for file: MatterFile, topic: Topic?, now: Date = .now,
                                  calendar: Calendar = .current) -> Topic.Lifecycle {
-        if let manual = topic?.manualLifecycle { return manual }
+        if let manual = topic?.manualLifecycle {
+            if manual == .dormant {
+                if file.latest.status == .completed { return .done }
+                if let lastAt = topic?.lastEventAt, file.latest.status.isOpenMatter, file.latest.date > lastAt {
+                    return .active
+                }
+            }
+            return manual
+        }
         if file.latest.status == .completed { return .done }
         if file.needsStatusUpdate(at: now, calendar: calendar) { return .dormant }
         return .active

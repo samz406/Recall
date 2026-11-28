@@ -23,7 +23,7 @@ extension RecallLayoutPreviews {
               model.matterFiles.first?.latest.status == .completed,
               model.state.matterCorrections.count == 1,
               model.state.captures == before.captures,
-              model.noticeMessage == RecallLocalization.both("已标记完成，可在“已完成”中查看。", "Marked complete. Find it in Completed."),
+              model.noticeMessage == RecallLocalization.both("已标为做完，可在“已做完”中查看。", "Marked done. Find it in Done."),
               buildStarts == 0, !model.isBuildingMatters,
               model.tasks.isEmpty, !model.isGeneratingDailySummary, !model.isGeneratingWeeklyReview else {
             throw TopicCompletionFailure(errorDescription: "按钮未更新列表、重复写入、缺少反馈或启动了全局任务")

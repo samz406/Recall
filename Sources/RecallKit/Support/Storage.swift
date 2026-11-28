@@ -870,6 +870,83 @@ public actor FileMemoryStore {
         do { try persistReviewState() } catch { state = before; throw error }
     }
 
+    /// 确保任意主题 ID（含尚未迁入登记表的 `topic:<键>`）都在登记表中有稳定条目。
+    private func ensureRegisteredTopic(id: String, fallbackTitle: String? = nil) -> Topic? {
+        var registry = state.topicRegistry
+        if let found = registry.resolvedTopic(id: id, fallbackTitle: fallbackTitle) {
+            if id.hasPrefix("topic:"), UUID(uuidString: String(id.dropFirst("topic:".count))) == nil {
+                let newTopicID = "topic:" + found.id.uuidString
+                registry.legacyAliases[id] = found.id
+                state.topicRegistry = registry
+                conversationArchive.rewriteTopicID(from: id, to: newTopicID)
+            }
+            return found
+        }
+        let resolvedTitle = fallbackTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? MatterMemoryEngine().files(in: state).first(where: { $0.id == id })?.title
+        guard let title = resolvedTitle, !title.isEmpty else { return nil }
+        let created = registry.resolveOrCreate(name: title, at: .now)
+        if id.hasPrefix("topic:"), UUID(uuidString: String(id.dropFirst("topic:".count))) == nil {
+            let newTopicID = "topic:" + created.id.uuidString
+            registry.legacyAliases[id] = created.id
+            conversationArchive.rewriteTopicID(from: id, to: newTopicID)
+        }
+        state.topicRegistry = registry
+        return created
+    }
+
+    /// 重命名主题显示名：旧名自动进入别名，历史来源与新记录继续归入同一主题。
+    @discardableResult
+    public func renameTopic(id: String, fallbackTitle: String? = nil, to newTitle: String) throws -> Bool {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (2...80).contains(trimmed.count) else { return false }
+        let before = state
+        guard let target = ensureRegisteredTopic(id: id, fallbackTitle: fallbackTitle) else {
+            state = before
+            return false
+        }
+        var registry = state.topicRegistry
+        // 若新名字已经属于另一个普通主题，不允许隐式撞名覆盖；合并应走显式合并入口。
+        if let conflict = registry.topic(forName: trimmed), conflict.id != target.id {
+            state = before
+            return false
+        }
+        registry.rename(id: target.id, to: trimmed)
+        state.topicRegistry = registry
+        state.conversationSummary = nil
+        state.conversationSummaryCoveredMessageCount = state.messages.count
+        do { try persistReviewState(indexChanged: true) } catch { state = before; throw error }
+        return true
+    }
+
+    /// 手动调整主题生命周期（例如「先放一放」设为 `.dormant`，「恢复跟进」设为 `.active` 或 `nil`）。
+    /// 不伪造完成记录、不改动原始截图与文本。
+    public func setTopicLifecycle(id: String, fallbackTitle: String? = nil, lifecycle: Topic.Lifecycle?) throws {
+        let before = state
+        guard var target = ensureRegisteredTopic(id: id, fallbackTitle: fallbackTitle) else {
+            state = before
+            return
+        }
+        var registry = state.topicRegistry
+        if lifecycle == .dormant {
+            let latestKnown = MatterMemoryEngine().files(in: state)
+                .first { registry.canonicalID($0.id) == registry.canonicalID(id) }?.latest.date
+            if let latestKnown, (target.lastEventAt ?? .distantPast) < latestKnown {
+                target.lastEventAt = latestKnown
+            } else if target.lastEventAt == nil {
+                target.lastEventAt = .now
+            }
+        }
+        target.manualLifecycle = lifecycle
+        registry.upsert(target)
+        state.topicRegistry = registry
+        if lifecycle != .done {
+            let canonical = registry.canonicalID(id)
+            state.matterCorrections.removeAll { $0.isTopicCompletion && registry.canonicalID($0.topicID ?? "") == canonical }
+        }
+        do { try persistReviewState() } catch { state = before; throw error }
+    }
+
     /// 新建项目（只是分组容器，没有自己的事件）。
     @discardableResult
     public func createProject(title: String) throws -> Topic? {
@@ -877,26 +954,34 @@ public actor FileMemoryStore {
         guard !name.isEmpty else { return nil }
         let before = state
         var registry = state.topicRegistry
+        if let existing = registry.topics.first(where: { $0.isProject && DailyKnowledgeEngine.topicKey($0.title) == DailyKnowledgeEngine.topicKey(name) }) {
+            return existing
+        }
         let project = Topic(title: name, isProject: true)
         registry.upsert(project)
         state.topicRegistry = registry
-        do { try persist() } catch { state = before; throw error }
+        do { try persistReviewState() } catch { state = before; throw error }
         return project
     }
 
     /// 设置主题所属项目；parentID 传 nil 表示移出项目。
     public func setTopicParent(topicID: String, parentID: String?) throws {
-        let canonical = state.topicRegistry.canonicalID(topicID)
-        guard let id = UUID(uuidString: canonical.hasPrefix("topic:") ? String(canonical.dropFirst("topic:".count)) : canonical) else { return }
+        let before = state
+        guard let target = ensureRegisteredTopic(id: topicID) else {
+            state = before
+            return
+        }
         let parentUUID = parentID.flatMap { parent -> UUID? in
             let value = state.topicRegistry.canonicalID(parent)
             return UUID(uuidString: value.hasPrefix("topic:") ? String(value.dropFirst("topic:".count)) : value)
         }
-        let before = state
         var registry = state.topicRegistry
-        guard registry.setParent(parentUUID, of: id) else { throw WeeklyReviewError.changedSources }
+        guard registry.setParent(parentUUID, of: target.id) else {
+            state = before
+            throw WeeklyReviewError.changedSources
+        }
         state.topicRegistry = registry
-        do { try persist() } catch { state = before; throw error }
+        do { try persistReviewState() } catch { state = before; throw error }
     }
 
     /// 删除项目：子主题回到顶层，不删除主题本身。
@@ -1105,14 +1190,30 @@ public actor FileMemoryStore {
     /// 只记录名字与时间，不含原文。
     func syncTopicRegistry(for summary: DailySummary) {
         var registry = state.topicRegistry
+        func recordTopic(name: String, topicID: UUID?, status: String, occurredAt: Date) {
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            var topic: Topic
+            if let id = topicID, let existing = registry.topic(id: id) { topic = existing }
+            else { topic = registry.resolveOrCreate(name: trimmed, at: occurredAt) }
+            let isNewerOpenActivity = occurredAt > (topic.lastEventAt ?? .distantPast)
+                && ["pending", "blocked", "inProgress", "progressed"].contains(status)
+            if isNewerOpenActivity, topic.manualLifecycle == .dormant {
+                topic.manualLifecycle = nil
+            } else if status == "completed", topic.manualLifecycle == .dormant {
+                topic.manualLifecycle = nil
+            }
+            if (topic.lastEventAt ?? .distantPast) < occurredAt { topic.lastEventAt = occurredAt }
+            registry.upsert(topic)
+        }
         for item in summary.items {
             guard let knowledge = item.knowledge, knowledge.kind == .matter, knowledge.ownedByUser,
-                  let name = knowledge.topic?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { continue }
-            var topic: Topic
-            if let id = knowledge.topicID, let existing = registry.topic(id: id) { topic = existing }
-            else { topic = registry.resolveOrCreate(name: name, at: summary.day) }
-            if (topic.lastEventAt ?? .distantPast) < summary.day { topic.lastEventAt = summary.day }
-            registry.upsert(topic)
+                  let name = knowledge.topic else { continue }
+            recordTopic(name: name, topicID: knowledge.topicID, status: knowledge.status, occurredAt: summary.day)
+        }
+        for entry in summary.ledger where entry.kind == .matter && entry.ownedByUser {
+            guard let name = entry.topic else { continue }
+            recordTopic(name: name, topicID: nil, status: entry.status, occurredAt: entry.occurredAt ?? summary.day)
         }
         state.topicRegistry = registry
     }
@@ -1567,6 +1668,17 @@ public actor FileMemoryStore {
         let previous = state
         do {
             state.captures.insert(record, at: 0)
+            if var topic = state.topicRegistry.topic(forName: note.title) {
+                if note.status.isOpenMatter, topic.manualLifecycle == .dormant {
+                    topic.manualLifecycle = nil
+                } else if note.status == .completed, topic.manualLifecycle == .dormant {
+                    topic.manualLifecycle = nil
+                }
+                if (topic.lastEventAt ?? .distantPast) < note.eventAt { topic.lastEventAt = note.eventAt }
+                var registry = state.topicRegistry
+                registry.upsert(topic)
+                state.topicRegistry = registry
+            }
             try persist()
         } catch {
             state = previous
@@ -1603,7 +1715,8 @@ public actor FileMemoryStore {
 
     /// 切到某个作用域的会话：全局传 nil，主题传主题 ID。消息互不相通。
     public func activateSession(topicID: String?) throws {
-        let scope = topicID.map(ConversationArchive.topicScope) ?? ConversationArchive.globalScope
+        let canonicalTopicID = topicID.map { state.topicRegistry.canonicalID($0) }
+        let scope = canonicalTopicID.map(ConversationArchive.topicScope) ?? ConversationArchive.globalScope
         guard scope != conversationArchive.activeScope else { return }
         let previousState = state
         let previousArchive = conversationArchive

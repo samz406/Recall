@@ -48,7 +48,74 @@ extension RecallLayoutPreviews {
               model.tasks.isEmpty, !model.isGeneratingDailySummary, !model.isGeneratingWeeklyReview else {
             throw MemoryExperienceFailure(errorDescription: "不再记住误删了来源、重新整理全库或未停止参考")
         }
-        print("PASS: native unified-memory actions: readable topic completion, own question with topic scope, About me save/forget without source deletion or global task refresh")
+
+        // Verify undo of completion, rename, shelve, and custom-question topic ask.
+        model.undoTopicAction()
+        for _ in 0..<400 {
+            if model.matterFiles.first?.latest.status == .progressed && !model.isBuildingMatters { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard let reopenedTopic = model.matterFiles.first, reopenedTopic.latest.status == .progressed else {
+            throw MemoryExperienceFailure(errorDescription: "底部撤销入口未能恢复已完成主题")
+        }
+        guard await model.renameTopic(reopenedTopic, to: "Atlas 核心方案核对"),
+              model.matterFiles.first?.title == "Atlas 核心方案核对" else {
+            throw MemoryExperienceFailure(errorDescription: "主题重命名未能即时刷新列表标题")
+        }
+        let resumeItem = LocalBriefing.ResumeItem(
+            id: "matter-" + reopenedTopic.id,
+            kind: .openMatter,
+            title: "Atlas 方案核对进展",
+            detail: "进行中 · 下一轮继续验证",
+            destination: .topic(reopenedTopic.id),
+            date: date,
+            status: .progressed,
+            summaryText: "下一轮继续验证",
+            topicID: reopenedTopic.id,
+            topicTitle: "Atlas 核心方案核对",
+            evidenceIDs: reopenedTopic.evidenceIDs
+        )
+        guard await model.shelveResumeItem(resumeItem),
+              model.topicActionUndo?.label.contains("已先放下") == true,
+              TopicListPresentation.lifecycle(for: model.matterFiles[0], registry: model.state.topicRegistry) == .dormant else {
+            throw MemoryExperienceFailure(errorDescription: "从今天先放下未能将主题设为已搁置并生成撤销条")
+        }
+        model.undoTopicAction()
+        for _ in 0..<400 {
+            if TopicListPresentation.lifecycle(for: model.matterFiles[0], registry: model.state.topicRegistry) == .active { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard TopicListPresentation.lifecycle(for: model.matterFiles[0], registry: model.state.topicRegistry) == .active else {
+            throw MemoryExperienceFailure(errorDescription: "先放下后一键撤销未恢复推进中状态")
+        }
+
+        // Verify reopenTopic + undo, and opening scoped topic session without auto-sending a robotic question.
+        guard await model.completeMatter(model.matterFiles[0]),
+              await model.reopenTopic(model.matterFiles[0]) else {
+            throw MemoryExperienceFailure(errorDescription: "已完成主题恢复跟进失败")
+        }
+        for _ in 0..<400 {
+            if !model.isBuildingMatters && model.matterFiles.first?.latest.status == .progressed { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let userCountBeforeSilentOpen = model.state.messages.filter { $0.role == .user }.count
+        model.openTopicConversation(reopenedTopic.id, question: nil)
+        try await Task.sleep(for: .milliseconds(50))
+        guard model.state.messages.filter({ $0.role == .user }).count == userCountBeforeSilentOpen,
+              !model.state.messages.isEmpty,
+              !model.isThinking else {
+            throw MemoryExperienceFailure(errorDescription: "不输入问题进入主题会话时不应机械自动发送模板提问，且应恢复原主题会话")
+        }
+        model.openTopicConversation(reopenedTopic.id, question: "上次比较了哪两种方案？")
+        for _ in 0..<2_000 {
+            if !model.isThinking { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard model.state.messages.last(where: { $0.role == .user })?.content == "上次比较了哪两种方案？" else {
+            throw MemoryExperienceFailure(errorDescription: "主题内联自定义提问未发送用户自己的问题")
+        }
+
+        print("PASS: native unified-memory actions: readable topic completion, undo, rename, shelve, custom topic ask, About me save/forget without source deletion or global task refresh")
     }
 }
 

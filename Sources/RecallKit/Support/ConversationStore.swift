@@ -165,6 +165,31 @@ struct ConversationArchive: Codable, Sendable {
         syncLegacyScopes()
     }
 
+    mutating func rewriteTopicID(from oldTopicID: String, to newTopicID: String) {
+        guard oldTopicID != newTopicID else { return }
+        let oldScope = Self.topicScope(oldTopicID)
+        let newScope = Self.topicScope(newTopicID)
+        var changed = false
+        for index in threads.indices where threads[index].topicID == oldTopicID {
+            threads[index].topicID = newTopicID
+            changed = true
+        }
+        if let activeID = activeThreadByScope.removeValue(forKey: oldScope) {
+            if activeThreadByScope[newScope] == nil {
+                activeThreadByScope[newScope] = activeID
+            }
+            changed = true
+        }
+        if activeScope == oldScope {
+            activeScope = newScope
+            changed = true
+        }
+        if changed {
+            scopes.removeValue(forKey: oldScope)
+            syncLegacyScopes()
+        }
+    }
+
     func currentCitations() -> [UUID] {
         guard let id = activeThreadByScope[activeScope],
               let thread = threads.first(where: { $0.id == id }) else {
