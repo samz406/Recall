@@ -70,7 +70,7 @@ struct MatterWorkspaceView: View {
                             VStack(alignment: .leading, spacing: 10) {
                                 Text(RecallLocalization.both(search.isEmpty ? "从一件事开始" : "没有找到相关主题", search.isEmpty ? "Start with a topic" : "No matching topics")).font(.headline)
                                 Text(RecallLocalization.both("保存的相关记录会串联在这里。点开主题即可回看进展、结论和来源。", "Related records appear together here. Open a topic to read its progress, conclusions and sources.")).foregroundStyle(RecallPalette.secondary)
-                                if search.isEmpty { Button(RecallLocalization.text("补充记录")) { adding = true } }
+                                if search.isEmpty { Button(RecallLocalization.text("补充记录")) { addingTitle = ""; adding = true } }
                                 else { Button(RecallLocalization.text("清空搜索")) { search = ""; filter = 0 } }
                             }.recallSurface()
                         }
@@ -110,7 +110,7 @@ struct MatterWorkspaceView: View {
         .onChange(of: model.navigationRevision) { _, _ in openRequested() }
         .onChange(of: search) { _, _ in limit = 20 }
         .onChange(of: filter) { _, _ in limit = 20 }
-        .sheet(isPresented: $adding) { ManualMatterSheet(title: addingTitle) { await model.saveManualMatter($0) } }
+        .sheet(isPresented: $adding) { ManualMatterSheet(title: addingTitle, status: addingTitle.isEmpty ? .explored : .progressed) { await model.saveManualMatter($0) } }
         .alert(RecallLocalization.both("新建项目", "New project"),
                isPresented: Binding(get: { pendingProjectFor != nil }, set: { if !$0 { pendingProjectFor = nil } })) {
             TextField(RecallLocalization.both("项目名称", "Project name"), text: $newProjectName)
@@ -171,7 +171,7 @@ struct MatterWorkspaceView: View {
         .accessibilityIdentifier("open-topic-" + file.id)
         .contextMenu {
             Button(RecallLocalization.both("继续问", "Ask about this")) { continueChat(file.id) }
-            Button(RecallLocalization.both("补充进展", "Add progress")) { addingTitle = file.title; adding = true }
+            Button(RecallLocalization.both("补充进展", "Add progress")) { addingTitle = file.noteTitle; adding = true }
             if file.latest.status.isOpenMatter {
                 Button(RecallLocalization.both("标记完成", "Mark complete")) { Task { await model.completeMatter(file) } }
                     .disabled(model.completingMatterIDs.contains(file.id))
@@ -210,85 +210,64 @@ struct TopicDetailView: View {
     @State private var aliases = false
     @State private var source: CaptureRecord?
     @State private var correcting: MatterEvent?
-    private var preferredHeight: CGFloat { min(680, 370 + CGFloat(model.state.topicReviews.first { $0.id == topicID }?.points.count ?? 0) * 60) }
+    @State private var writingStep = false
     private var file: MatterFile? { model.matterFiles.first { $0.id == topicID } }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let file {
-                let reading = TopicReading(file: file, review: model.state.topicReviews.first { $0.id == topicID })
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(file.title).font(.title2.bold())
-                        Text(RecallLocalization.text(file.latest.status.manualMatterLabel)).font(.caption).foregroundStyle(RecallPalette.secondary)
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(file.title).font(.title2.bold()).textSelection(.enabled)
+                        Text(RecallLocalization.text(file.latest.status.manualMatterLabel) + " · " + file.latest.date.formatted(date: .abbreviated, time: .omitted))
+                            .font(.callout).foregroundStyle(RecallPalette.secondary)
                     }
                     Spacer()
-                    Button { dismiss() } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel(RecallLocalization.both("关闭", "Close"))
-                }.padding(24)
+                    Button { dismiss() } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel(RecallLocalization.both("关闭", "Close"))
+                }.padding(22)
                 Divider()
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        if let latestDateTitle = reading.latestDateTitle {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(latestDateTitle).font(.headline)
-                                Text(reading.overview).foregroundStyle(RecallPalette.secondary).textSelection(.enabled)
-                            }
-                        } else {
-                            Text(reading.overview).font(RecallTypography.body).textSelection(.enabled)
-                        }
-                        ForEach(Array(reading.points.enumerated()), id: \.offset) { _, point in
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(point.title).font(.headline)
-                                if point.detail != point.title { Text(point.detail).foregroundStyle(RecallPalette.secondary).textSelection(.enabled) }
-                            }
-                        }
-                        if !reading.hasUpdatedSummary, let previous = model.state.topicReviews.first(where: { $0.id == topicID }) {
-                            DisclosureGroup(RecallLocalization.both("上次整理的小结", "Previous summary")) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        handoff(file)
+                        if let review = model.state.topicReviews.first(where: { $0.id == topicID }) {
+                            let current = TopicReading(file: file, review: review).hasUpdatedSummary
+                            DisclosureGroup(current ? RecallLocalization.both("主题小结", "Topic summary") : RecallLocalization.both("上次整理的小结", "Previous summary")) {
                                 VStack(alignment: .leading, spacing: 12) {
-                                    Text(previous.overview).textSelection(.enabled)
-                                    ForEach(Array(previous.points.enumerated()), id: \.offset) { _, point in Text(point.detail).foregroundStyle(RecallPalette.secondary) }
-                                }.padding(.top, 12)
+                                    Text(review.overview)
+                                    ForEach(Array(review.points.enumerated()), id: \.offset) { _, point in
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(point.title).font(.headline)
+                                            if point.detail != point.title { Text(point.detail).foregroundStyle(RecallPalette.secondary) }
+                                        }
+                                    }
+                                }.textSelection(.enabled).padding(.top, 8).frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                         if model.generatingTopicID == topicID {
-                            HStack { ProgressView().controlSize(.small); Text(RecallLocalization.both("正在更新小结，已有记录仍可阅读", "Updating the summary; saved records remain available")).font(.caption); Spacer(); Button(RecallLocalization.text("停止生成")) { model.cancelTopicReview() } }
-                        }
-                        Menu(RecallLocalization.both("查看来源（\(file.evidenceIDs.count)）", "Sources (\(file.evidenceIDs.count))")) {
-                            ForEach(file.evidenceIDs.compactMap { model.memoryWorkspace?.sources[$0] }) { value in
-                                Button((value.sourceAppName ?? "记录") + " · " + value.createdAt.formatted()) { source = value }
+                            HStack {
+                                ProgressView().controlSize(.small)
+                                Text(RecallLocalization.both("正在更新小结…", "Updating summary…")).font(.caption)
+                                Spacer()
+                                Button(RecallLocalization.text("停止生成")) { model.cancelTopicReview() }
                             }
-                        }.fixedSize()
-                        DisclosureGroup(RecallLocalization.both("关键记录（\(reading.records.count)）", "History (\(reading.records.count))"), isExpanded: $history) {
-                            LazyVStack(alignment: .leading, spacing: 18) {
-                                ForEach(reading.records) { event in
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        Text(event.date.formatted()).font(.caption).foregroundStyle(RecallPalette.secondary)
-                                        Text(event.detail).textSelection(.enabled)
-                                        if let next = event.nextAction { Text(next).foregroundStyle(RecallPalette.secondary) }
-                                        Button(RecallLocalization.text("更正内容")) { correcting = event }.font(.caption)
-                                    }
-                                    Divider()
-                                }
-                            }.padding(.top, 12)
                         }
-                    }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
+                        historySection(file)
+                    }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Divider()
-                HStack(spacing: 12) {
-                    Button(RecallLocalization.both("补充进展", "Add progress")) { adding = true }
-                    Menu {
-                        Button(RecallLocalization.both("记住这个主题的要求", "Remember a topic instruction")) { agreement = true }
-                        if model.state.memoryKnowledge.entities.contains(where: { $0.id == topicID }) { Button(RecallLocalization.text("管理别名")) { aliases = true } }
-                        Button(RecallLocalization.both("整理成报告…", "Create a report…")) { model.reviewTopicToOpen = WeeklyReviewEngine.topicID(for: file); model.reviewsRequested = true; dismiss() }
-                        Button(RecallLocalization.both("更新小结", "Update summary")) { model.generateTopicReview(file) }.disabled(model.generatingTopicID != nil)
-                        if file.latest.status.isOpenMatter { Button(RecallLocalization.both("标记完成", "Mark complete")) { Task { await model.completeMatter(file) } } }
-                        else if model.state.matterCorrections.contains(where: { $0.topicID == topicID && $0.isTopicCompletion }) { Button(RecallLocalization.both("撤销完成标记", "Undo completion")) { model.undoTopicCompletion(topicID) } }
-                    } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).fixedSize()
-                    Spacer()
-                    Button(RecallLocalization.both("继续问", "Ask about this")) { continueChat(topicID) }.buttonStyle(.borderedProminent)
-                }.padding(24)
-            } else { Text(RecallLocalization.both("这个主题已移除", "This topic was removed")).padding(24); Button(RecallLocalization.both("关闭", "Close")) { dismiss() } }
-        }.frame(minWidth: 580, idealWidth: 760, minHeight: 360, idealHeight: preferredHeight)
-        .sheet(isPresented: $adding) { ManualMatterSheet(title: file?.title ?? "") { await model.saveManualMatter($0) } }
+                actions(file).padding(.horizontal, 22).padding(.vertical, 14)
+            } else {
+                Text(RecallLocalization.both("这个主题已移除", "This topic was removed")).padding(22)
+                Button(RecallLocalization.both("关闭", "Close")) { dismiss() }
+            }
+        }.frame(minWidth: 520, idealWidth: 660, minHeight: 400, idealHeight: 480)
+        .sheet(isPresented: $writingStep) {
+            if let file { TopicNextStepSheet(file: file, previous: file.resumeNextAction) }
+        }
+        .sheet(isPresented: $adding) {
+            if let file { ManualMatterSheet(title: file.noteTitle, status: .progressed) { await model.saveManualMatter($0) } }
+        }
         .sheet(isPresented: $agreement) {
             let topic = MemoryEntity(id: topicID, name: file?.title ?? "", aliases: [], kind: "topic", sourceIDs: file?.evidenceIDs ?? [])
             MemoryAgreementEditor(claim: nil, topics: [topic], initialTopic: topic) { content, scope, scopeID, until in await model.saveMemoryAgreement(content: content, scope: scope, scopeID: scopeID, validUntil: until) }
@@ -297,6 +276,94 @@ struct TopicDetailView: View {
         .sheet(item: $source) { CaptureDetailSheet(capture: $0).environmentObject(model) }
         .sheet(item: $correcting) { event in MatterCorrectionSheet(event: event) { model.correctMatter($0); correcting = nil } }
     }
+    @ViewBuilder private func handoff(_ file: MatterFile) -> some View {
+        let handoff = TopicHandoff(file: file)
+        let next = handoff.nextStep
+        if let headline = handoff.progress {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(RecallLocalization.both("上次进展", "Last update"))
+                    .font(.caption.weight(.semibold)).foregroundStyle(RecallPalette.secondary)
+                Text(headline).font(RecallTypography.title).textSelection(.enabled)
+                if let date = handoff.progressDate, !Calendar.current.isDate(date, inSameDayAs: file.latest.date) {
+                    Text(date.formatted(date: .abbreviated, time: .omitted)).font(.caption).foregroundStyle(RecallPalette.secondary)
+                }
+            }
+        }
+        if file.latest.status.isOpenMatter {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label(RecallLocalization.both("下一步", "Next step"), systemImage: "arrow.turn.down.right")
+                        .font(.headline).foregroundStyle(RecallPalette.accent)
+                    Spacer()
+                    Button(next == nil ? RecallLocalization.both("留一句", "Write a step") : RecallLocalization.both("改写下一步", "Revise step")) {
+                        writingStep = true
+                    }.buttonStyle(.link)
+                }
+                if let next { Text(next).font(RecallTypography.body).textSelection(.enabled) }
+                else { Text(RecallLocalization.both("还没记下从哪里继续。", "No next step recorded yet.")).foregroundStyle(RecallPalette.secondary) }
+            }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                .background(RecallPalette.selected, in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    private func historySection(_ file: MatterFile) -> some View {
+        DisclosureGroup(RecallLocalization.both("进展记录（\(file.events.count)）", "History (\(file.events.count))"), isExpanded: $history) {
+            if history {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(file.events.reversed()) { event in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(event.date.formatted() + " · " + RecallLocalization.text(event.status.manualMatterLabel))
+                                .font(.caption).foregroundStyle(RecallPalette.secondary)
+                            Text(event.detail).textSelection(.enabled)
+                            if let next = event.nextAction, next != event.detail && next != event.headline {
+                                Text(RecallLocalization.both("下一步 · ", "Next step · ") + next).foregroundStyle(RecallPalette.secondary)
+                            }
+                            HStack(spacing: 14) {
+                                let sources = event.evidenceIDs.compactMap { model.memoryWorkspace?.sources[$0] }
+                                if sources.count == 1, let only = sources.first {
+                                    Button(RecallLocalization.text("查看来源")) { source = only }
+                                } else if !sources.isEmpty {
+                                    Menu(RecallLocalization.both("查看来源（\(sources.count)）", "Sources (\(sources.count))")) {
+                                        ForEach(sources) { record in
+                                            Button((record.sourceAppName ?? RecallLocalization.both("记录", "Record")) + " · " + record.createdAt.formatted()) { source = record }
+                                        }
+                                    }.menuStyle(.borderlessButton).fixedSize()
+                                }
+                                Button(RecallLocalization.text("更正内容")) { correcting = event }
+                            }.buttonStyle(.link).font(.caption)
+                        }
+                        Divider()
+                    }
+                }.padding(.top, 10)
+            }
+        }
+    }
+
+    private func actions(_ file: MatterFile) -> some View {
+        HStack(spacing: 12) {
+            Button(RecallLocalization.both("记进展", "Add progress")) { adding = true }.buttonStyle(.borderedProminent)
+            Button(RecallLocalization.both("继续问", "Ask about this")) { continueChat(topicID) }
+            Menu {
+                Button(RecallLocalization.both("更新小结", "Update summary")) { model.generateTopicReview(file) }.disabled(model.generatingTopicID != nil)
+                Button(RecallLocalization.both("整理成报告…", "Create a report…")) { model.reviewTopicToOpen = WeeklyReviewEngine.topicID(for: file); model.reviewsRequested = true; dismiss() }
+                Divider()
+                Button(RecallLocalization.both("记住这个主题的要求", "Remember a topic instruction")) { agreement = true }
+                if model.state.memoryKnowledge.entities.contains(where: { $0.id == topicID }) {
+                    Button(RecallLocalization.text("管理别名")) { aliases = true }
+                }
+            } label: { Image(systemName: "ellipsis.circle") }
+                .menuStyle(.borderlessButton).fixedSize().accessibilityLabel(RecallLocalization.both("更多主题操作", "More topic actions"))
+            Spacer()
+            if file.latest.status.isOpenMatter {
+                Button(model.completingMatterIDs.contains(file.id) ? RecallLocalization.both("保存中…", "Saving…") : RecallLocalization.both("标记完成", "Mark complete")) {
+                    Task { await model.completeMatter(file) }
+                }.disabled(model.completingMatterIDs.contains(file.id))
+            } else if model.state.matterCorrections.contains(where: { $0.isTopicCompletion && model.state.canonicalTopicID($0.topicID ?? "") == topicID }) {
+                Button(RecallLocalization.both("撤销完成", "Undo completion")) { model.undoTopicCompletion(topicID) }
+            }
+        }
+    }
+
 }
 
 private struct MatterCorrectionHistorySheet: View {
@@ -375,8 +442,9 @@ private struct ManualMatterSheet: View {
     @State private var saveError: String?
     private var note: ManualMatterNote { ManualMatterNote(title: title, detail: detail, status: status, eventAt: eventAt, reviewCategory: category) }
 
-    init(title: String = "", save: @escaping (ManualMatterNote) async -> Bool) {
+    init(title: String = "", status: WorkEpisodeStatus = .explored, save: @escaping (ManualMatterNote) async -> Bool) {
         _title = State(initialValue: title)
+        _status = State(initialValue: status)
         self.save = save
     }
 

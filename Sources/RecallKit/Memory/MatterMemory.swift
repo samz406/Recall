@@ -8,6 +8,8 @@ public struct ManualMatterNote: Codable, Hashable, Sendable {
     public var status: WorkEpisodeStatus
     public var eventAt: Date
     public var reviewCategory: ReviewCategory?
+    /// A next step explicitly left in a topic. Older handwritten notes have no topic link.
+    public private(set) var nextStepTopicID: String?
 
     public init(title: String, detail: String, status: WorkEpisodeStatus, eventAt: Date, reviewCategory: ReviewCategory? = nil) {
         self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -18,8 +20,23 @@ public struct ManualMatterNote: Codable, Hashable, Sendable {
     }
 
     public var isValid: Bool {
-        (3...80).contains(title.count) && title.filter { $0.isLetter || $0.isNumber }.count >= 2
-            && (1...4000).contains(detail.count)
+        let validTitle = nextStepTopicID == nil
+            ? (3...80).contains(title.count) && title.filter { $0.isLetter || $0.isNumber }.count >= 2
+            : !title.isEmpty && status == .pending
+        return validTitle && (1...4000).contains(detail.count)
+    }
+
+    public init(nextStep: String, for file: MatterFile, at date: Date = .now) {
+        // A merged file is a display group. Append to its most recent member so the
+        // note stays in the group and remains attached to that member if it is unmerged.
+        self.init(title: file.noteTitle,
+                  detail: nextStep, status: .pending, eventAt: date)
+        nextStepTopicID = file.id
+    }
+
+    public init(nextStep: String, starting topic: String, at date: Date = .now) {
+        self.init(title: topic, detail: nextStep, status: .pending, eventAt: date)
+        if isValid { nextStepTopicID = "topic:" + DailyKnowledgeEngine.topicKey(title) }
     }
 
     public func capture(recordedAt: Date = .now) throws -> CaptureRecord {
@@ -116,15 +133,17 @@ public struct MatterFile: Identifiable, Equatable, Sendable {
         self.id = id; self.title = title; self.events = events
     }
     public var evidenceIDs: [UUID] { Array(Set(events.flatMap(\.evidenceIDs))).sorted { $0.uuidString < $1.uuidString } }
+    public var noteTitle: String { id.hasPrefix("group:") ? latest.title : title }
     public var resumeProgress: MatterEvent {
-        if latest.status == .pending, latest.nextAction == nil,
+        if latest.status == .pending, latest.nextAction == nil || latest.nextAction == latest.detail,
            let actual = events.last(where: { $0.status == .progressed || $0.status == .completed || $0.status == .blocked }) {
             return actual
         }
         return latest
     }
     public var resumeNextAction: String? {
-        latest.nextAction ?? (latest.status == .pending && resumeProgress.id != latest.id ? latest.detail : nil)
+        guard latest.status.isOpenMatter else { return nil }
+        return latest.nextAction ?? (latest.status == .pending && resumeProgress.id != latest.id ? latest.detail : nil)
     }
     public var resumeText: String {
         resumeProgress.detail
@@ -202,7 +221,9 @@ public struct MatterMemoryEngine: Sendable {
             }
         }
         // 分桶用规范键（含别名映射）；主题 ID 优先取登记表里的稳定 ID。
-        func bucketKey(_ title: String) -> String { DailyKnowledgeEngine.canonicalKey(title, aliases: state.topicAliases) }
+        func bucketKey(_ title: String) -> String {
+            DailyKnowledgeEngine.canonicalKey(state.topicRegistry.topic(forName: title)?.title ?? title, aliases: state.topicAliases)
+        }
         func fileID(_ key: String, title: String) -> String {
             state.topicRegistry.topic(forName: title).map { "topic:" + $0.id.uuidString } ?? "topic:" + key
         }
@@ -222,7 +243,8 @@ public struct MatterMemoryEngine: Sendable {
                 // A pre-review note is part of that day's account. Keep its sources and
                 // any omitted user text without counting the topic twice. Notes saved after
                 // generation are genuinely new progress and remain separate events.
-                if !fromReview && manual(event), let index = bucket.events.lastIndex(where: { review in
+                if !fromReview && manual(event), !event.evidenceIDs.contains(where: { captures[$0]?.manualMatter?.nextStepTopicID != nil }),
+                   let index = bucket.events.lastIndex(where: { review in
                     calendar.isDate(review.date, inSameDayAs: day)
                         && (Set(event.evidenceIDs).isSubset(of: Set(review.evidenceIDs)) || event.recordedAt <= (reviewedAt[key]?[day] ?? .distantPast))
                 }) {
@@ -274,14 +296,19 @@ public struct MatterMemoryEngine: Sendable {
             guard record.textOrigin == .userInput, let note = record.manualMatter, note.isValid else { continue }
             let corrections = state.matterCorrections.filter { !$0.isTopicCompletion && $0.evidenceIDs.contains(record.id) }
             let renamed = corrections.last { $0.kind == .separate && !$0.text.isEmpty }
-            let title = renamed?.text ?? note.title
+            let linkedTopic = note.nextStepTopicID.flatMap { id -> Topic? in
+                let canonical = state.canonicalTopicID(id)
+                guard canonical.hasPrefix("topic:"), let uuid = UUID(uuidString: String(canonical.dropFirst(6))) else { return nil }
+                return state.topicRegistry.topic(id: uuid)
+            }
+            let title = renamed?.text ?? linkedTopic?.title ?? note.title
             let key = (renamed == nil ? "topic:" : "user:") + MatterEvidence.key(title)
             let detail = corrections.contains { $0.kind == .completed } ? "用户已标记完成：\(title)" : note.detail
             let event = MatterEvent(id: record.id, title: title, detail: detail,
                 recordedAt: captured[record.id]?.createdAt ?? record.createdAt,
                 eventAt: corrections.last { $0.kind == .eventDate }?.eventAt ?? note.eventAt,
                 status: corrections.contains { $0.kind == .completed } ? .completed : note.status,
-                evidenceIDs: [record.id])
+                evidenceIDs: [record.id], nextAction: note.nextStepTopicID != nil && !corrections.contains { $0.kind == .completed } ? note.detail : nil)
             groups[key, default: []].append(event)
             names[key] = title
         }

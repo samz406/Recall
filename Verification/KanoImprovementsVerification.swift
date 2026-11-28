@@ -17,6 +17,7 @@ enum KanoImprovementsVerification {
         try await textSavesAndNotes()
         try localModelEndpoints()
         try localBriefs()
+        try todayHandoffs()
         try attentionBudget()
         try meetingBriefs()
         print("PASS: kano improvements cover secure input/title/site exclusion, URL sanitizing, text saves, notes, keyless local models, offline review, resume, commitments, glance, budget, briefs and defaults")
@@ -149,6 +150,57 @@ enum KanoImprovementsVerification {
         try expect(LLMConfiguration.isLoopback("http://127.0.0.1:1234/v1") && !LLMConfiguration.isLoopback("http://192.168.1.2/v1"), "回环地址判断错误")
         let list = #"{"data":[{"id":"nomic-embed-text"},{"id":"qwen3:8b"}]}"#
         try expect(LocalModelDiscovery.modelNames(from: Data(list.utf8)) == ["qwen3:8b", "nomic-embed-text"], "嵌入模型没有排在最后")
+    }
+
+    private static func todayHandoffs() throws {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: Date())
+        let now = start.addingTimeInterval(12 * 3600)
+        let last = now.addingTimeInterval(-3600)
+        let first = try ManualMatterNote(title: "Atlas 验收", detail: "已确认预览版。", status: .progressed, eventAt: last).capture(recordedAt: last)
+        var state = RecallState(captures: [first])
+        let engine = MatterMemoryEngine()
+        let file = try unwrap(engine.files(in: state).first, "缺少原主题")
+        let step = ManualMatterNote(nextStep: "打开测试版本核对导出页", for: file, at: now)
+        let saved = try step.capture(recordedAt: now)
+        state.captures.append(saved)
+        // A synced archive may predate the new optional field.
+        let old = try JSONDecoder().decode(ManualMatterNote.self, from: JSONEncoder().encode(first.manualMatter!))
+        try expect(old.nextStepTopicID == nil && old.isValid, "旧手写记录无法读取")
+        func plan(_ state: RecallState, at date: Date? = nil) -> LocalBriefing.TodayPlan {
+            LocalBriefing.today(in: state, matters: engine.files(in: state), now: date ?? now, calendar: calendar)
+        }
+        let pending = try unwrap(engine.files(in: state).first, "缺少后续主题")
+        let handoff = TopicHandoff(file: pending)
+        try expect(handoff.nextStep == step.detail && handoff.progress?.contains("已确认预览版") == true,
+                   "新行动覆盖了上一次的实际进展")
+        try expect(plan(state).matters.map(\.title) == [step.detail] && plan(state).matters.first?.destination == .topic(file.id),
+                   "无回顾时手写的下一步未直接回到原主题")
+
+        let other = try ManualMatterNote(nextStep: "核对阅读笔记目录", starting: "阅读笔记", at: last).capture(recordedAt: last)
+        state.captures.append(other)
+        let firstPlan = plan(state)
+        let alternate = try unwrap(firstPlan.matters.first { $0.title == other.manualMatter?.detail }, "缺少第二项")
+        let choice = firstPlan.selectionKey(for: alternate)
+        try expect(firstPlan.focus(selection: "")?.title == step.detail && firstPlan.focus(selection: choice)?.id == alternate.id,
+                   "默认排序或手选重点无效")
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: now)!
+        try expect(plan(state, at: tomorrow).focus(selection: choice)?.title == step.detail, "昨天的选择覆盖了今天的重点")
+        var completed = state
+        completed.matterCorrections = [MatterCorrection(evidenceIDs: pending.evidenceIDs, kind: .completed, text: file.title, topicID: file.id)]
+        completed.matterCorrections[0].createdAt = now
+        try expect(!plan(completed).matters.contains { $0.destination == .topic(file.id) }, "已完成仍占据今天的重点")
+        let next = try ManualMatterNote(nextStep: "打开另一份验收结果", for: pending, at: now.addingTimeInterval(30)).capture(recordedAt: now.addingTimeInterval(30))
+        completed.captures.append(next)
+        try expect(plan(completed).matters.first?.title == next.manualMatter?.detail, "旧完成标记遮住了新的下一步")
+        state.captures.removeAll { $0.id == other.id }
+        try expect(plan(state).focus(selection: choice)?.title == step.detail, "已删除的重点仍被选中")
+        state.matterCorrections = [MatterCorrection(evidenceIDs: [saved.id], kind: .notMine)]
+        try expect(plan(state).matters.isEmpty, "被更正的手写记录仍被使用")
+        state.matterCorrections = []
+        state.privacy.excludedBundleIdentifiers.insert("im.recall.app")
+        try expect(plan(state).matters.isEmpty, "被排除来源的手写记录仍被使用")
+        print("PASS: Today resumes handwritten next steps without a model, preserves prior progress, expires choices and respects completion, reopening, source deletion and corrections")
     }
 
     // MARK: Local briefs

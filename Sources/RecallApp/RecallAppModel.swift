@@ -773,6 +773,9 @@ final class RecallAppModel: ObservableObject {
             try await store.addManualMatter(note)
             state = await store.snapshot()
             rebuildMatterFiles()
+            if note.nextStepTopicID != nil {
+                noticeMessage = RecallLocalization.both("下一步已保存，可在「今天」继续。", "Next step saved to Today.")
+            }
             matterBuildMessage = "记录已保存，同名主题的相关内容会串联在一起。"
             return true
         } catch {

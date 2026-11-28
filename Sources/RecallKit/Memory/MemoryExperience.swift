@@ -1,5 +1,26 @@
 import Foundation
 
+/// A short handoff from the latest evidence. Keep a pending instruction out of the progress line.
+public struct TopicHandoff: Sendable {
+    public let progress: String?
+    public let progressDate: Date?
+    public let nextStep: String?
+
+    public init(file: MatterFile) {
+        nextStep = file.resumeNextAction?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        var event: MatterEvent? = file.resumeProgress
+        if let step = nextStep, let current = event,
+           current.detail == step || current.headline == step || current.detail.hasPrefix(step + "：") {
+            event = file.events.dropLast().last { [.progressed, .blocked, .completed].contains($0.status) }
+        }
+        progress = event.map { event in
+            if let headline = event.headline?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty { return headline }
+            return ReviewContentQuality.shortDetail(event.detail)
+        }
+        progressDate = event?.date
+    }
+}
+
 /// Reading a topic never requires a model call. Only saved, evidence-backed text is used here.
 public struct TopicReading: Sendable {
     public let overview: String

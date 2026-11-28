@@ -82,7 +82,7 @@ extension RecallAppModel {
     func undoTopicCompletion(_ topicID: String) {
         Task {
             do {
-                let ids = state.matterCorrections.filter { $0.isTopicCompletion && $0.topicID == topicID }.map(\.id)
+                let ids = state.matterCorrections.filter { $0.isTopicCompletion && state.canonicalTopicID($0.topicID ?? "") == state.canonicalTopicID(topicID) }.map(\.id)
                 for id in ids { try await store.removeMatterCorrection(id: id) }
                 state = await store.snapshot(); rebuildMatterFiles()
                 noticeMessage = RecallLocalization.both("已撤销完成标记。", "Completion undone.")
