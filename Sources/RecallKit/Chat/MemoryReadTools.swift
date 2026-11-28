@@ -92,7 +92,7 @@ struct MemoryReadTools: Sendable {
         if ids.isEmpty {
             ids = MemorySearchEngine().search(MemorySearchQuery(text: question, startDate: bounds?.start, endDate: bounds?.end), in: allowed, limit: limit * 4).map(\.capture.id)
         }
-        for entry in interpreted.entries(forRecords: ids, reviews: reviews).entries where !entries.contains(where: { $0.id == entry.id }) {
+        for entry in interpreted.entries(forRecords: ids, reviews: reviews).entries where !entries.contains(where: { InterpretedEvidence.isDuplicate(entry, of: $0) }) {
             entries.append(entry)
         }
         if entries.count < min(4, limit), let range {
@@ -102,12 +102,12 @@ struct MemoryReadTools: Sendable {
             let blocks = rangedReviews.map { interpreted.entries(of: $0, budget: 2_000) }
             let allByID = Dictionary(blocks.joined().map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             for id in Self.interleaved(blocks.map { $0.map(\.id) }) {
-                if let entry = allByID[id], !entries.contains(where: { $0.id == entry.id }) {
+                if let entry = allByID[id], !entries.contains(where: { InterpretedEvidence.isDuplicate(entry, of: $0) }) {
                     entries.append(entry)
                 }
             }
         }
-        return Array(entries.prefix(limit)).map { item in
+        return Array(InterpretedEvidence.deduplicate(entries).prefix(limit)).map { item in
             var copy = item
             if copy.text.count > 600 { copy.text = String(copy.text.prefix(599)) + "…" }
             return copy
@@ -234,8 +234,8 @@ struct MemoryReadTools: Sendable {
         }
         let found = interpreted.entries(forRecords: matches.prefix(60).map(\.id), reviews: reviews)
         var combined = directEntries
-        for entry in found.entries where !combined.contains(where: { $0.id == entry.id }) { combined.append(entry) }
-        let entries = Array(combined.prefix(24))
+        for entry in found.entries where !combined.contains(where: { InterpretedEvidence.isDuplicate(entry, of: $0) }) { combined.append(entry) }
+        let entries = Array(InterpretedEvidence.deduplicate(combined).prefix(24))
         // Days that already have a saved DailySummary are never "missing a review" just because an auxiliary screenshot wasn't cited.
         let missing = Array(Set(found.uncovered.map { calendar.startOfDay(for: $0.createdAt) }).subtracting(reviewDays)).sorted()
         guard !entries.isEmpty || !missing.isEmpty else { return note("没有匹配的记录。") }
@@ -277,12 +277,15 @@ struct MemoryReadTools: Sendable {
             let s = score(claim.title + " " + claim.content)
             if s > 0 {
                 let mapped = entry(claim, label: "主题")
-                if seen.insert(mapped.id).inserted { scored.append((mapped, s)) }
+                if seen.insert(mapped.id).inserted,
+                   !scored.contains(where: { InterpretedEvidence.isDuplicate(mapped, of: $0.entry) }) {
+                    scored.append((mapped, s))
+                }
             }
         }
-        return scored.sorted { lhs, rhs in
+        return InterpretedEvidence.deduplicate(scored.sorted { lhs, rhs in
             lhs.score == rhs.score ? lhs.entry.day > rhs.entry.day : lhs.score > rhs.score
-        }.map(\.entry)
+        }.map(\.entry))
     }
 
     /// Reads records or review items by id. A record is shown as the review items that cite it or its own interpretation.
@@ -323,9 +326,9 @@ struct MemoryReadTools: Sendable {
         let reviewMatches = structuredMatches(query: name, reviews: allowedReviews(), allowedIDs: allowedIDs, bounds: nil)
         let claimEntries = claims.suffix(30).map { entry($0, label: "主题") }
         var combined = reviewMatches
-        for item in claimEntries where !combined.contains(where: { $0.id == item.id }) { combined.append(item) }
+        for item in claimEntries where !combined.contains(where: { InterpretedEvidence.isDuplicate(item, of: $0) }) { combined.append(item) }
         guard !combined.isEmpty else { return note("没有找到这个主题的有依据条目。") }
-        return pack("", entries: Array(combined.prefix(30)))
+        return pack("", entries: Array(InterpretedEvidence.deduplicate(combined).prefix(30)))
     }
 
     private func memories() -> MemoryToolResult {

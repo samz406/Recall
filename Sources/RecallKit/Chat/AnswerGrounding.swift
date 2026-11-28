@@ -83,24 +83,50 @@ public struct AnswerGrounding: Sendable {
         let support = cited.isEmpty ? entries : cited
         let corpus = support.map(\.text).joined(separator: "\n") + " " + support.map { recordedDateText($0.day) }.joined(separator: " ")
         let claim = stripStructuralPrefix(unit.text.replacingOccurrences(of: #"\[\d+\]"#, with: "", options: .regularExpression))
-        guard numbers(claim).isSubset(of: numbers(corpus)), dateTerms(claim).isSubset(of: dateTerms(corpus)) else { return false }
+        let claimWithoutSummaryCount = claim.replacingOccurrences(
+            of: #"(?:共|共有|分为|分|以下|包括|主要有)\s*[1-9]\s*(?:项|条|点|件事|个方面|处)"#,
+            with: "",
+            options: .regularExpression
+        )
+        guard numbers(claimWithoutSummaryCount).isSubset(of: numbers(corpus)), dateTerms(claim).isSubset(of: dateTerms(corpus)) else { return false }
         for outcome in outcomes where claim.range(of: outcome.claim, options: [.regularExpression, .caseInsensitive]) != nil {
-            guard support.contains(where: { supportsOutcome(outcome.evidence, in: $0.text) }) else { return false }
+            guard support.contains(where: { supportsOutcome(outcome, claim: claim, in: $0.text) }) else { return false }
         }
         return true
     }
 
-    private static let outcomes: [(claim: String, evidence: String)] = [
-        (#"已上线|已发布|已部署|上线了|发布了|部署了|已经上线|deployed|released"#, #"上线|发布|部署|deploy|release"#),
-        (#"已完成|完成了|已经完成|\bcompleted\b"#, #"完成|合并|合入|\bcompleted\b|\bdone\b"#)
+    private struct OutcomeRule {
+        let claim: String
+        let evidence: String
+        let allowsQualifiedSubstepCompletion: Bool
+    }
+
+    private static let outcomes: [OutcomeRule] = [
+        OutcomeRule(
+            claim: #"已上线|已发布|已部署|上线了|发布了|部署了|已经上线|deployed|released"#,
+            evidence: #"上线|发布|部署|deploy|release"#,
+            allowsQualifiedSubstepCompletion: false
+        ),
+        OutcomeRule(
+            claim: #"已完成|完成了|已经完成|\bcompleted\b"#,
+            evidence: #"完成|合并|合入|\bcompleted\b|\bdone\b"#,
+            allowsQualifiedSubstepCompletion: true
+        )
     ]
 
     /// The outcome word must appear without a negation in front of it, and an item that still names a condition or
-    /// a missing step only supports it when the item itself is marked done.
-    private static func supportsOutcome(_ pattern: String, in text: String) -> Bool {
-        guard text.range(of: #"(?<![未没不待])(?:"# + pattern + ")", options: [.regularExpression, .caseInsensitive]) != nil else { return false }
+    /// a missing step only supports it when the item itself is marked done — OR when the sentence explicitly qualifies
+    /// that a sub-step (such as code merge) finished while overall deployment/verification is still pending.
+    private static func supportsOutcome(_ rule: OutcomeRule, claim: String, in text: String) -> Bool {
+        guard text.range(of: #"(?<![未没不待])(?:"# + rule.evidence + ")", options: [.regularExpression, .caseInsensitive]) != nil else { return false }
         let uncertain = #"尚未|未完成|未上线|没有完成|还没|待确认|如果|若|等.{0,20}后|not yet|pending|waiting"#
-        return text.range(of: uncertain, options: [.regularExpression, .caseInsensitive]) == nil || text.contains("（已完成")
+        if text.range(of: uncertain, options: [.regularExpression, .caseInsensitive]) == nil || text.contains("（已完成") {
+            return true
+        }
+        guard rule.allowsQualifiedSubstepCompletion else { return false }
+        let claimCaveat = #"尚未|未上线|未发布|未部署|没有上线|没有部署|仍是旧版本|还没|还未|待确认|待推进|待验证|进行中|not yet|pending"#
+        let claimsRelease = claim.range(of: outcomes[0].claim, options: [.regularExpression, .caseInsensitive]) != nil
+        return !claimsRelease && claim.range(of: claimCaveat, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     /// Worth a model check only when a sentence makes an outcome, number or date claim.
@@ -115,12 +141,22 @@ public struct AnswerGrounding: Sendable {
         text.replacingOccurrences(of: #"^\s*(?:[-*•]\s*)?(?:\d+[.、)）]|[（(]\d+[)）])\s*"#, with: "", options: .regularExpression)
     }
 
+    /// Removes `<think>...</think>` or `<thinking>...</thinking>` blocks emitted by reasoning gateways.
+    static func stripThinking(_ raw: String) -> String {
+        var cleaned = raw.replacingOccurrences(of: #"(?is)<think(?:ing)?>.*?</think(?:ing)?>"#, with: "", options: .regularExpression)
+        if let closingRange = cleaned.range(of: #"</think(?:ing)?>"#, options: [.regularExpression, .caseInsensitive]) {
+            cleaned = String(cleaned[closingRange.upperBound...])
+        }
+        return cleaned
+    }
+
     public static func verify(draft: String, question: String, entries: [InterpretedEvidence.Entry], responder: any LLMResponding) async throws -> Result {
-        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = stripThinking(draft).trimmingCharacters(in: .whitespacesAndNewlines)
         if isNoEvidenceReply(trimmed) || entries.isEmpty { return Result(content: noEvidence, sourceIDs: [], removedCount: 0) }
         let all = units(trimmed)
         var removed = Set(all.indices.filter { !locallySupported(all[$0], entries: entries) })
         var reason: String? = removed.isEmpty ? nil : "local-removed=\(removed.count)"
+        var auditUnavailable = false
         let checkable = all.indices.filter { !removed.contains($0) && isRisky(all[$0]) }
         if !checkable.isEmpty {
             do {
@@ -128,15 +164,14 @@ public struct AnswerGrounding: Sendable {
                 removed.formUnion(flagged)
                 if !flagged.isEmpty { reason = (reason.map { $0 + "," } ?? "") + "audit-removed=\(flagged.count)" }
             } catch is CancellationError { throw CancellationError() }
-            catch { reason = (reason.map { $0 + "," } ?? "") + "audit-unavailable" }
+            catch {
+                auditUnavailable = true
+                reason = (reason.map { $0 + "," } ?? "") + "audit-unavailable"
+            }
         }
         let kept = all.indices.filter { !removed.contains($0) }
-        guard kept.contains(where: { !all[$0].citations.isEmpty }) else {
-            // A plain reply without marks stands as written and stays traceable to the items it was written from.
-            if removed.isEmpty && !all.contains(where: isRisky) {
-                return Result(content: trimmed, sourceIDs: entries.prefix(8).flatMap(\.sourceIDs).memoryUnique(), removedCount: 0, reason: "uncited")
-            }
-            return fallback(entries: entries, removed: removed.count, reason: reason ?? "no-cited-sentence")
+        guard !kept.isEmpty else {
+            return fallback(entries: entries, removed: removed.count, reason: reason ?? "no-supported-sentence")
         }
         var lines = trimmed.components(separatedBy: "\n")
         for line in Set(all.map(\.line)) {
@@ -147,6 +182,18 @@ public struct AnswerGrounding: Sendable {
         }
         let body = lines.filter { $0 != "\u{0}" }.joined(separator: "\n")
             .replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+        guard kept.contains(where: { !all[$0].citations.isEmpty }) else {
+            let keptHasUnverifiedRisk = auditUnavailable && kept.contains(where: { isRisky(all[$0]) })
+            if !keptHasUnverifiedRisk, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return Result(
+                    content: body.trimmingCharacters(in: .whitespacesAndNewlines),
+                    sourceIDs: entries.prefix(8).flatMap(\.sourceIDs).memoryUnique(),
+                    removedCount: removed.count,
+                    reason: reason ?? "uncited"
+                )
+            }
+            return fallback(entries: entries, removed: removed.count, reason: reason ?? "no-cited-sentence")
+        }
         let renumbered = renumber(body, entries: entries)
         return Result(content: renumbered.content, sourceIDs: renumbered.sourceIDs, removedCount: removed.count, reason: reason)
     }
@@ -208,14 +255,15 @@ public struct AnswerGrounding: Sendable {
 
     /// Shown when no checked sentence remains: the interpreted items themselves, grouped by day, newest first.
     static func fallback(entries: [InterpretedEvidence.Entry], removed: Int = 0, reason: String? = nil) -> Result {
-        guard !entries.isEmpty else { return Result(content: noEvidence, sourceIDs: [], removedCount: removed, reason: reason) }
+        let uniqueEntries = InterpretedEvidence.deduplicate(entries)
+        guard !uniqueEntries.isEmpty else { return Result(content: noEvidence, sourceIDs: [], removedCount: removed, reason: reason) }
         let formatter = DateFormatter(); formatter.dateFormat = RecallLocalization.both("M月d日", "MMM d")
-        let days = Dictionary(grouping: entries.prefix(20).enumerated(), by: { $0.element.day }).sorted { $0.key > $1.key }
+        let days = Dictionary(grouping: uniqueEntries.prefix(20).enumerated(), by: { $0.element.day }).sorted { $0.key > $1.key }
         var lines = [RecallLocalization.both("没能整理成完整回答，下面是相关的已整理事项：", "I could not write a full answer. These are the related items on record:")]
         for (day, items) in days {
             lines.append("**\(formatter.string(from: day))**\n" + items.map { "- \($0.element.text) [\($0.offset + 1)]" }.joined(separator: "\n"))
         }
-        let renumbered = renumber(lines.joined(separator: "\n\n"), entries: entries)
+        let renumbered = renumber(lines.joined(separator: "\n\n"), entries: uniqueEntries)
         return Result(content: renumbered.content, sourceIDs: renumbered.sourceIDs, removedCount: removed, reason: reason)
     }
 

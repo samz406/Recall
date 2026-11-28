@@ -35,7 +35,11 @@ public struct MemoryQueryScope: Hashable, Sendable {
             return copy.evidence.isEmpty ? nil : copy
         }
         dated.reminders.removeAll { $0.sourceCaptureIDs.isEmpty ? !contains($0.createdAt) : !Set($0.sourceCaptureIDs).isSubset(of: ids) }
-        if !isRestricted { dated.messages = selected.messages }
+        if start == nil, end == nil, recentDays == nil {
+            dated.messages = selected.messages
+            dated.conversationSummary = selected.conversationSummary
+            dated.conversationSummaryCoveredMessageCount = selected.conversationSummaryCoveredMessageCount
+        }
         return dated
     }
 
@@ -67,8 +71,17 @@ public struct MemoryQueryScope: Hashable, Sendable {
             var copy = entity; copy.sourceIDs = copy.sourceIDs.filter(ids.contains)
             return copy.sourceIDs.isEmpty ? nil : copy
         }
-        state.conversationSummary = nil
-        state.messages = []
+        if start != nil || end != nil {
+            state.conversationSummary = nil
+            state.messages = []
+        } else {
+            let filteredMessages = original.messages.filter { $0.citations.isEmpty || Set($0.citations).isSubset(of: ids) }
+            state.messages = filteredMessages
+            if filteredMessages.count != original.messages.count {
+                state.conversationSummary = nil
+                state.conversationSummaryCoveredMessageCount = 0
+            }
+        }
         return state
     }
 }

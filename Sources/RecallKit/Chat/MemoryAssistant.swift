@@ -219,7 +219,8 @@ public final class MemoryAssistant: Sendable {
                 context: entries.map(\.record),
                 conversationSummary: safeSummary,
                 supplementaryContext: request.supplementaryContext.map(privacyEngine.redact),
-                recentMessages: safeRecentMessages
+                recentMessages: safeRecentMessages,
+                outputTokenLimit: 3_000
             )
             let modelStarted = clock.now
             let responder = LiveMemoryResponder(base: base, store: store, original: originalState, originalCaptureRevision: originalCaptureRevision)

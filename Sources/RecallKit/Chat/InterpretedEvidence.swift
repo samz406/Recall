@@ -132,4 +132,46 @@ public struct InterpretedEvidence: Sendable {
             captures[id].map { CaptureUnderstandingEngine.eligible($0, in: state) && CaptureUnderstandingEngine.sourceVersion($0, in: state) == signature } ?? false
         }
     }
+
+    /// Collapses twin entries produced when a `MemoryClaim` mirrors a `DailySummaryItem` over the same source records.
+    static func deduplicate(_ entries: [Entry]) -> [Entry] {
+        var kept: [Entry] = []
+        for candidate in entries where !kept.contains(where: { isDuplicate(candidate, of: $0) }) {
+            kept.append(candidate)
+        }
+        return kept
+    }
+
+    static func isDuplicate(_ candidate: Entry, of existing: Entry) -> Bool {
+        if candidate.id == existing.id { return true }
+        let rawA = normalizedFingerprint(candidate.text, stripLeadingTopic: false)
+        let rawB = normalizedFingerprint(existing.text, stripLeadingTopic: false)
+        if !rawA.isEmpty, rawA == rawB { return true }
+        let coreA = normalizedFingerprint(candidate.text, stripLeadingTopic: true)
+        let coreB = normalizedFingerprint(existing.text, stripLeadingTopic: true)
+        if !coreA.isEmpty, coreA == coreB { return true }
+        guard candidate.day == existing.day,
+              !Set(candidate.sourceIDs).isDisjoint(with: existing.sourceIDs) else { return false }
+        let compareA = coreA.isEmpty ? rawA : coreA
+        let compareB = coreB.isEmpty ? rawB : coreB
+        guard compareA.count >= 14, compareB.count >= 14 else { return false }
+        if compareA.contains(compareB) || compareB.contains(compareA) { return true }
+        return compareA.count >= 24 && compareB.count >= 24 && compareA.prefix(24) == compareB.prefix(24)
+    }
+
+    private static func normalizedFingerprint(_ text: String, stripLeadingTopic: Bool) -> String {
+        var body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        body = body.replacingOccurrences(of: #"（(?:已完成|进行中|待处理|受阻|已取消|状态未明)）$"#, with: "", options: .regularExpression)
+        if body.hasSuffix("…") { body.removeLast() }
+        if stripLeadingTopic {
+            body = body.replacingOccurrences(of: #"^[\[\【][^\]\】]{1,30}[\]\】]\s*"#, with: "", options: .regularExpression)
+            if let colon = body.firstIndex(where: { $0 == "：" || $0 == ":" }),
+               body.distance(from: body.startIndex, to: colon) <= 24 {
+                let tail = body[body.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                if tail.count >= 12 { body = tail }
+            }
+        }
+        return body.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .filter { $0.isLetter || $0.isNumber }
+    }
 }

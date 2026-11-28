@@ -121,6 +121,8 @@ final class RecallAppModel: ObservableObject {
     @Published var isThinking = false
     @Published private(set) var chatStatusMessage: String?
     @Published var chatScope = MemoryQueryScope.all
+    @Published private(set) var chatSessions: [ConversationSessionSummary] = []
+    private var activeSessionTopicID: String? = nil
     @Published private(set) var chatEvidenceCount: Int?
     @Published private(set) var typingMessageContent = ""
     private var chatTask: Task<Void, Never>?
@@ -210,6 +212,7 @@ final class RecallAppModel: ObservableObject {
                 chatSources.update(previewState)
                 globalSearch.update(previewState, matters: matterFiles)
                 rebuildMatterFiles()
+                Task { self.chatSessions = await store.conversationSessions() }
                 return
             }
             targetObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
@@ -249,6 +252,7 @@ final class RecallAppModel: ObservableObject {
             }
             Task {
                 state = await store.snapshot()
+                chatSessions = await store.conversationSessions()
                 credentialMaintenanceWarning = await store.credentialMaintenanceWarning
                 isLoadingSavedState = false
                 configureShortcuts()
@@ -286,6 +290,7 @@ final class RecallAppModel: ObservableObject {
         do { try await store.maintainReminders() }
         catch { recordError(error, source: "Reminders", message: "整理提醒历史失败，将重试") }
         state = await store.snapshot()
+        chatSessions = await store.conversationSessions()
         archiveBackupPending = await store.backupPending
         pendingFileCleanupCount = (state.pendingFileDeletions ?? []).count + (state.pendingRecoveryCleanup == true ? 1 : 0)
         guard !isFinishingStartup else { return }
@@ -1311,9 +1316,94 @@ final class RecallAppModel: ObservableObject {
         chatScope = MemoryQueryScope(topicID: topicID, topicEvidenceIDs: Set(file.evidenceIDs))
         openAskRequested = true
         ask(RecallLocalization.both(
-            "关于“\(file.title)”，请找回上次的进展、已确认的结论和仍缺少的信息。",
-            "About “\(file.title)”: recall the last progress, confirmed conclusions and missing information."
+            "梳理一下“\(file.title)”最近的进展和当前状态。",
+            "Summarize the recent progress and current status of “\(file.title)”."
         ))
+    }
+
+    func setChatScope(_ scope: MemoryQueryScope) {
+        guard !isThinking else { return }
+        chatScope = scope
+        guard activeSessionTopicID != scope.topicID else { return }
+        let targetTopicID = scope.topicID
+        Task {
+            do {
+                try await store.activateSession(topicID: targetTopicID)
+                activeSessionTopicID = targetTopicID
+                state = await store.snapshot()
+                chatSessions = await store.conversationSessions()
+            } catch {
+                recordError(error, source: "Chat", message: "切换对话范围失败")
+            }
+        }
+    }
+
+    func startNewChat() {
+        chatTask?.cancel()
+        chatTask = nil
+        chatRequestID = UUID()
+        isThinking = false
+        chatStatusMessage = nil
+        typingMessageContent = ""
+        chatEvidenceCount = nil
+        let targetTopicID = chatScope.topicID
+        Task {
+            do {
+                _ = try await store.startNewConversation(topicID: targetTopicID)
+                activeSessionTopicID = targetTopicID
+                state = await store.snapshot()
+                chatSessions = await store.conversationSessions()
+            } catch {
+                recordError(error, source: "Chat", message: "新建对话失败")
+            }
+        }
+    }
+
+    func selectChatSession(_ session: ConversationSessionSummary) {
+        guard !isThinking else { return }
+        Task {
+            do {
+                let topicID = try await store.selectConversation(id: session.id)
+                activeSessionTopicID = topicID
+                if let topicID {
+                    let evidenceIDs = matterFiles.first(where: { $0.id == topicID }).map { Set($0.evidenceIDs) }
+                    chatScope = MemoryQueryScope(topicID: topicID, topicEvidenceIDs: evidenceIDs)
+                } else if chatScope.topicID != nil {
+                    chatScope = .all
+                }
+                state = await store.snapshot()
+                chatSessions = await store.conversationSessions()
+            } catch {
+                recordError(error, source: "Chat", message: "切换历史对话失败")
+            }
+        }
+    }
+
+    func deleteChatSession(_ session: ConversationSessionSummary) {
+        guard !isThinking else { return }
+        Task {
+            do {
+                try await store.deleteConversation(id: session.id)
+                state = await store.snapshot()
+                chatSessions = await store.conversationSessions()
+            } catch {
+                recordError(error, source: "Chat", message: "删除历史对话失败")
+            }
+        }
+    }
+
+    func regenerateChatAnswer(_ message: ConversationMessage) {
+        guard !isThinking else { return }
+        Task {
+            do {
+                guard let question = try await store.prepareRegeneration(removingAssistantMessageID: message.id) else { return }
+                state = await store.snapshot()
+                chatSessions = await store.conversationSessions()
+                ask(question)
+            } catch {
+                recordError(error, source: "Chat", message: "准备重新回答失败")
+            }
+        }
     }
 
     func ask(_ question: String) {
@@ -1329,19 +1419,28 @@ final class RecallAppModel: ObservableObject {
         chatStatusMessage = RecallLocalization.both("正在理解这个问题…", "Reading the question…")
         let userMessage = ConversationMessage(role: .user, content: question)
         let isCommand = ChatCommand.isCommandInput(question)
-        if isClear { state.messages = [] }
-        if !isCommand { state.messages.append(userMessage) }
         let requestScope = chatScope
+        if isClear { state.messages = [] }
+        if !isCommand {
+            if activeSessionTopicID != requestScope.topicID {
+                state.messages = [userMessage]
+            } else {
+                state.messages.append(userMessage)
+            }
+        }
         isThinking = true
         chatTask = Task {
             do {
                 // 每个作用域一套会话：切换后消息互不相通，在途回答也不会写错会话。
                 try? await store.activateSession(topicID: requestScope.topicID)
+                activeSessionTopicID = requestScope.topicID
                 _ = try await assistant.ask(question, userMessage: userMessage, scope: requestScope) { [weak self] in
                     guard let self else { return }
                     let snapshot = await self.store.snapshot()
+                    let sessions = await self.store.conversationSessions()
                     guard !Task.isCancelled, self.chatRequestID == requestID else { return }
                     self.state = snapshot
+                    self.chatSessions = sessions
                 } onRetrievalWarning: { [weak self] in
                     self?.recordDiagnostic(.warning, source: "Memory", message: "语义补查未完成，已使用本地检索结果")
                 } onEvidenceReady: { [weak self] count in
@@ -1358,11 +1457,13 @@ final class RecallAppModel: ObservableObject {
                     self?.recordDiagnostic(isReason ? .warning : .info, source: "Chat", message: isReason ? "问一问回退原因" : "问一问耗时", metadata: ["step": name, "ms": "\(ms)"])
                 }
                 let snapshot = await store.snapshot()
+                let sessions = await store.conversationSessions()
                 guard !Task.isCancelled, chatRequestID == requestID else { return }
                 isThinking = false
                 chatStatusMessage = nil
                 typingMessageContent = ""
                 state = snapshot
+                chatSessions = sessions
                 if chatRequestID == requestID { chatTask = nil }
             } catch is CancellationError {
                 guard chatRequestID == requestID else { return }

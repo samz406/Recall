@@ -33,7 +33,8 @@ enum AskAgentVerification {
         try await topicScopeKeepsDailyReviewItems()
         try await plannerFormattingAndGroundingResilience()
         try await middaySummaryRefreshesTodayAutomatically()
-        print("PASS: 23 ask-agent scenarios (stream, direct answer, tools, refusal, budget, fallback, deletion, cancellation, greeting, reply, status, synthesis, topic scope, grounding, midday refresh)")
+        try await scopedMultiTurnMetaFollowUpAndDeduplication()
+        print("PASS: 24 ask-agent scenarios (stream, direct answer, tools, refusal, budget, fallback, deletion, cancellation, greeting, reply, status, synthesis, topic scope, grounding, midday refresh, multi-turn meta follow-up)")
     }
 
     private static func streamLines() throws {
@@ -566,6 +567,64 @@ enum AskAgentVerification {
         var secondSteps: [String] = []
         _ = try await MemoryAssistant(store: store).ask("总结最近3天进展", model: model, onStep: { name, _ in secondSteps.append(name) })
         try expect(!secondSteps.contains("today-review"), "今日无新增记录时重复触发了每日回顾生成：\(secondSteps)")
+    }
+
+    private static func scopedMultiTurnMetaFollowUpAndDeduplication() async throws {
+        let (storage, store, placeholder) = try await fixture("placeholder")
+        defer { try? FileManager.default.removeItem(at: storage.rootURL) }
+        _ = try await store.deleteCapture(id: placeholder.id)
+        let day = Calendar.current.date(byAdding: .day, value: -1, to: Calendar.current.startOfDay(for: .now))!.addingTimeInterval(3_600)
+        let cap = CaptureRecord(
+            eventTemplate: .enterKeyTrigger,
+            createdAt: day,
+            sourceAppName: "合成编辑器",
+            sourceBundleIdentifier: "example.allowed",
+            contentHash: "nova-cleanup-pr",
+            ocrText: "RAWOCR-NOVA PR #210 merged, production still old",
+            textOrigin: .screenOCR
+        )
+        try await store.addCapture(cap)
+        let review = DailySummary(day: day, content: "", sourceCaptureIDs: [cap.id], todos: [], generationKind: .cloud, items: [
+            DailySummaryItem(
+                section: .progress,
+                title: "Nova入口移除已合入 main，但线上仍是旧版本",
+                detail: "相关改动已完成并通过 PR #210 合入 main，当前尚未部署生产环境。",
+                evidenceIDs: [cap.id],
+                knowledge: DailyItemKnowledge(topic: "Nova入口移除", kind: .matter, status: "inProgress", ownedByUser: true, quotes: ["PR #210 merged"])
+            )
+        ])
+        try await store.upsertDailySummary(review)
+        _ = try await store.organizeMemoryInBackground(force: true)
+
+        let topicID = "topic:nova-cleanup"
+        try await store.activateSession(topicID: topicID)
+        let scope = MemoryQueryScope(topicID: topicID, topicEvidenceIDs: [cap.id])
+
+        let turn1Model = ScriptedAskModel { request in
+            if request.purpose == .chatPlanning, !request.question.contains("已读取的工具结果") {
+                return LLMAnswer(content: #"{"calls":[{"tool":"get_topic","args":{"name":"Nova入口移除"}}]}"#, citedCaptureIDs: [])
+            }
+            return LLMAnswer(content: #"{"answer":"Nova入口移除改动已完成并合入 main（PR #210），但当前尚未部署生产环境。[1]"}"#, citedCaptureIDs: [])
+        }
+        let turn1 = try await MemoryAssistant(store: store).ask("梳理一下“Nova入口移除”最近的进展和当前状态。", scope: scope, model: turn1Model)
+        let turn1Contexts = await turn1Model.recorded().last?.context ?? []
+        try expect(turn1Contexts.count == 1, "同源的每日回顾事项与主题知识条目未去重，重复送入了上下文：\(turn1Contexts.map(\.ocrText))")
+        try expect(!turn1.content.contains("没能整理成完整回答") && turn1.citations == [cap.id],
+                   "带明确未部署限定条件的子步骤已完成表述被核验误杀：\(turn1.content)")
+
+        let turn2Model = ScriptedAskModel { request in
+            LLMAnswer(
+                content: "<think>用户觉得上一条太绕，用大白话讲清楚</think>我刚才主要汇报了共 2 点情况：\n- 代码改动已完成并合入 main（PR #210）\n- 但目前尚未部署到生产环境，线上仍是旧版本",
+                citedCaptureIDs: []
+            )
+        }
+        let turn2 = try await MemoryAssistant(store: store).ask("你这个都回复了什么啊", scope: scope, model: turn2Model)
+        let turn2Recorded = await turn2Model.recorded()
+        try expect(turn2Recorded.first?.purpose == .chat && turn2Recorded.first?.question.contains("此前对话") == true,
+                   "限定主题范围下追问丢失了上一轮会话上下文：\(turn2Recorded.map(\.purpose))")
+        try expect(!turn2.content.contains("<think>") && !turn2.content.contains("没能整理成完整回答") && turn2.content.contains("尚未部署"),
+                   "追问澄清回复未剥离 <think> 或因无显式 [1] 标记跌入兜底：\(turn2.content)")
+        try expect(turn2.citations == [cap.id], "追问澄清回复丢失了上一轮继承的可追溯来源：\(turn2.citations)")
     }
 
     static func fixture(_ text: String) async throws -> (RecallStorage, FileMemoryStore, CaptureRecord) {

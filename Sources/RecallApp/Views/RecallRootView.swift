@@ -1134,6 +1134,7 @@ private struct ChatView: View {
     @State private var scrollRequest = 0
     @State private var messageContentFrame: CGRect = .zero
     @State private var messageViewportHeight: CGFloat = 0
+    @State private var showsSessionHistory = false
     private var scopeTitle: String {
         if let days = model.chatScope.recentDays { return RecallLocalization.both("最近\(days)天", "Last \(days) days") }
         if let id = model.chatScope.topicID { return model.matterFiles.first { $0.id == id }?.title ?? "所选主题" }
@@ -1169,7 +1170,7 @@ private struct ChatView: View {
                     HStack {
                         Label(RecallLocalization.both("正在围绕“\(scopeTitle)”提问", "Asking about “\(scopeTitle)”"), systemImage: "square.stack.3d.up").font(.caption).foregroundStyle(RecallPalette.secondary)
                         Spacer()
-                        Button(RecallLocalization.both("取消限定", "Use all memories")) { model.chatScope = .all }.font(.caption)
+                        Button(RecallLocalization.both("取消限定", "Use all memories")) { model.setChatScope(.all) }.font(.caption).disabled(model.isThinking)
                     }.padding(.horizontal, 28).padding(.vertical, 8)
                 }
                 if !hasChatMessages && !model.isThinking {
@@ -1205,20 +1206,20 @@ private struct ChatView: View {
     private var chatHeader: some View {
         RecallPageHeader(title: "问一问", subtitle: "基于你的本地记忆，回答带来源") {
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) { scopeControl; modelStatus; newConversation }
-                VStack(alignment: .trailing, spacing: 8) { HStack { scopeControl; newConversation }; modelStatus }
+                HStack(spacing: 10) { scopeControl; modelStatus; historyControl; newConversation }
+                VStack(alignment: .trailing, spacing: 8) { HStack { scopeControl; historyControl; newConversation }; modelStatus }
             }
         }
     }
     private var scopeControl: some View {
         Menu {
-            Button(RecallLocalization.text("全部记忆")) { model.chatScope = .all }
+            Button(RecallLocalization.text("全部记忆")) { model.setChatScope(.all) }
             Button(RecallLocalization.text("最近七天")) { setRange(days: 7) }
             Button(RecallLocalization.text("最近三十天")) { setRange(days: 30) }
             if !model.matterFiles.isEmpty {
                 Menu(RecallLocalization.text("指定主题")) {
                     ForEach(model.matterFiles) { file in
-                        Button(file.title) { model.chatScope = MemoryQueryScope(topicID: file.id, topicEvidenceIDs: Set(file.evidenceIDs)) }
+                        Button(file.title) { model.setChatScope(MemoryQueryScope(topicID: file.id, topicEvidenceIDs: Set(file.evidenceIDs))) }
                     }
                 }
             }
@@ -1226,14 +1227,39 @@ private struct ChatView: View {
             .disabled(model.isThinking).help(RecallLocalization.text("限制本次提问检索的记忆范围"))
     }
     private func setRange(days: Int) {
-        model.chatScope = MemoryQueryScope(recentDays: days)
+        model.setChatScope(MemoryQueryScope(recentDays: days))
     }
     private var modelStatus: some View {
         Label(isCloudModel ? model.state.llmConfiguration.model + RecallLocalization.both(" · 仅发脱敏文本", " · Redacted text only") : RecallLocalization.both("本地模式 · 数据不外发", "Local mode · Stays on this Mac"), systemImage: isCloudModel ? "cloud" : "lock")
             .font(.caption).foregroundStyle(RecallPalette.secondary).lineLimit(1).help(isCloudModel ? model.state.llmConfiguration.provider.title : "未启用云端模型")
     }
+    private var historyControl: some View {
+        Button { showsSessionHistory.toggle() } label: {
+            Label(RecallLocalization.text("历史对话"), systemImage: "clock.arrow.circlepath")
+        }
+        .disabled(model.isThinking)
+        .help(RecallLocalization.both("查看、切换或删除历史对话", "Browse, switch, or delete saved chats"))
+        .popover(isPresented: $showsSessionHistory, arrowEdge: .bottom) {
+            ChatSessionHistoryPopover(
+                sessions: model.chatSessions,
+                topicTitle: { id in model.matterFiles.first { $0.id == id }?.title ?? RecallLocalization.both("主题对话", "Topic chat") },
+                onSelect: { session in
+                    showsSessionHistory = false
+                    model.selectChatSession(session)
+                },
+                onDelete: { session in
+                    model.deleteChatSession(session)
+                },
+                onNewChat: {
+                    showsSessionHistory = false
+                    question = ""
+                    model.startNewChat()
+                }
+            )
+        }
+    }
     private var newConversation: some View {
-        Button { question = ""; model.ask("/clear") } label: { Label(RecallLocalization.text("新对话"), systemImage: "plus") }
+        Button { question = ""; model.startNewChat() } label: { Label(RecallLocalization.text("新对话"), systemImage: "plus") }
     }
 
     private var messageTimeline: some View {
@@ -1368,6 +1394,110 @@ private struct ChatWelcomeView: View {
     }
 }
 
+private struct ChatSessionHistoryPopover: View {
+    let sessions: [ConversationSessionSummary]
+    let topicTitle: (String) -> String
+    let onSelect: (ConversationSessionSummary) -> Void
+    let onDelete: (ConversationSessionSummary) -> Void
+    let onNewChat: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(RecallLocalization.text("历史对话")).font(.headline)
+                if !sessions.isEmpty {
+                    Text("\(sessions.count)")
+                        .font(.caption)
+                        .foregroundStyle(RecallPalette.secondary)
+                }
+                Spacer()
+                Button(action: onNewChat) {
+                    Label(RecallLocalization.text("新对话"), systemImage: "plus")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            Divider()
+            if sessions.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 24, weight: .light))
+                        .foregroundStyle(RecallPalette.secondary)
+                    Text(RecallLocalization.text("暂无历史对话"))
+                        .font(.subheadline.weight(.medium))
+                    Text(RecallLocalization.both("提问后会自动保存在本地，可随时切回继续追问或删除。", "Saved locally as you ask questions. Switch back or delete anytime."))
+                        .font(.caption)
+                        .foregroundStyle(RecallPalette.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.horizontal, 16)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(sessions) { session in
+                            HStack(spacing: 8) {
+                                Button {
+                                    onSelect(session)
+                                } label: {
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Circle()
+                                            .fill(session.isActive ? RecallPalette.accent : Color.clear)
+                                            .frame(width: 6, height: 6)
+                                            .padding(.top, 6)
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(session.title)
+                                                .font(.system(size: 13, weight: session.isActive ? .semibold : .regular))
+                                                .foregroundStyle(RecallPalette.text)
+                                                .lineLimit(1)
+                                            HStack(spacing: 6) {
+                                                Text(session.topicID.map(topicTitle) ?? RecallLocalization.text("全部记忆"))
+                                                Text("·")
+                                                Text(RecallLocalization.both("\(session.messageCount) 条", "\(session.messageCount) msgs"))
+                                                Text("·")
+                                                Text(session.updatedAt.formatted(.dateTime.month().day().hour().minute()))
+                                            }
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(RecallPalette.secondary)
+                                            .lineLimit(1)
+                                        }
+                                        Spacer(minLength: 0)
+                                    }
+                                    .padding(.vertical, 7)
+                                    .padding(.leading, 8)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    onDelete(session)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(RecallPalette.secondary)
+                                        .frame(width: 26, height: 26)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .help(RecallLocalization.text("删除对话"))
+                                .padding(.trailing, 4)
+                            }
+                            .background(
+                                session.isActive ? RecallPalette.selected.opacity(0.65) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 360, height: min(max(CGFloat(sessions.count) * 56 + 76, 190), 400))
+        .background(RecallPalette.surface)
+    }
+}
+
 private struct RecallMessageCard: View {
     @EnvironmentObject private var model: RecallAppModel
     let message: ConversationMessage
@@ -1402,7 +1532,7 @@ private struct RecallMessageCard: View {
                             Button(RecallLocalization.text("复制并附来源")) { model.exportAnswer(message, toFile: false) }
                             Button(RecallLocalization.text("导出 Markdown")) { model.exportAnswer(message, toFile: true) }
                         } label: { Image(systemName: "square.and.arrow.up") }.disabled(message.citations.isEmpty)
-                        Button(RecallLocalization.text("重新回答")) { if let index = model.state.messages.firstIndex(where: { $0.id == message.id }), let question = model.state.messages[..<index].last(where: { $0.role == .user })?.content { model.ask(question) } }.disabled(model.isThinking)
+                        Button(RecallLocalization.text("重新回答")) { model.regenerateChatAnswer(message) }.disabled(model.isThinking)
                         Button { model.rateChatMessage(message, helpful: true) } label: { Image(systemName: message.helpful == true ? "hand.thumbsup.fill" : "hand.thumbsup") }.help(RecallLocalization.text("回答有帮助"))
                         Button { model.rateChatMessage(message, helpful: false) } label: { Image(systemName: message.helpful == false ? "hand.thumbsdown.fill" : "hand.thumbsdown") }.help(RecallLocalization.text("回答不准确"))
                     }.buttonStyle(.plain).font(.caption).foregroundStyle(RecallPalette.secondary)
